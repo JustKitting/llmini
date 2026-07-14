@@ -34,6 +34,88 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-14
 commit: accepted local jj commit after full gate
+experiment: Reduce four tensor-amax chunk maxima per thread iteration.
+status: accepted_900s_gate
+change:
+  Vectorized the generic tensor_amax_from_chunks_f32_kernel reduction across
+  four block-stride-separated chunk maxima per thread. Each iteration now
+  loads chunk, chunk + stride, chunk + 2 * stride, and chunk + 3 * stride,
+  combines them with max4_f32, and advances by four strides. Bounds-checked
+  tail loads contribute zero. The chunk partition, max reduction, quantization
+  scale math, optimizer math, model shape, seed, batch size, and learning rates
+  are unchanged.
+verification:
+  cargo fmt --all: pass.
+  cargo fmt --all --check: pass.
+  cargo check -q: pass.
+  cargo oxide build --arch sm_120a: pass.
+  CUDA_DEVICE_INDEX=0 cargo test -q -p rust-kernels-cuda --test nvfp4_quant
+    -- --ignored --nocapture --test-threads=1: pass, 3 tests.
+  CUDA_DEVICE_INDEX=1 cargo test -q -p rust-kernels-cuda --test projection_tma
+    -- --ignored --nocapture --test-threads=1: pass, 5 tests.
+  Filtered Nsight Compute duration profile:
+    target/ncu/20260714_tensor_amax_unroll4.ncu-rep
+    target/ncu/20260714_tensor_amax_unroll4.csv
+  Candidate 30s screen:
+    target/runs/20260714_192902Z_synth_30s
+    val_loss=6.466424, train_elapsed_s=30.103, completed_steps=43.
+  Candidate 900s gate:
+    target/runs/20260714_192949Z_synth_900s
+    val_loss=3.771522, train_elapsed_s=900.545, completed_steps=1247.
+    Finite=1, Nonzero=1, Update_skipped=0, Skip_non_finite=0,
+    Skip_loss_spike=0, and Skip_grad_norm_spike=0 throughout all 25 logged
+    samples.
+measured_effect:
+  On the same 1132-launch tensor_amax_from_chunks_f32_kernel mix, total target
+  kernel time fell from 15.875840ms to 5.778432ms, a 63.60% local reduction.
+  30s screen versus the accepted baseline:
+    completed_steps: 43 -> 43 (unchanged).
+    val_loss: 6.465710 -> 6.466424 (+0.000714 / +0.011%).
+    seconds/step: 0.702488 -> 0.700070 (-0.34%).
+  900s gate versus the accepted baseline in notes/sweep_baseline.env:
+    completed_steps: 1246 -> 1247 (+1 / +0.080%).
+    val_loss: 3.772336 -> 3.771522 (-0.000814 / -0.022%).
+    seconds/step: 0.722685 -> 0.722169 (-0.071%).
+decision:
+  Accept and promote. The full 900s gate improved both held-out validation
+  loss and completed step count, with finite nonzero training and no skipped
+  updates. notes/sweep_baseline.env now points at this run.
+```
+
+```text
+date: 2026-07-14
+commit: rejected uncommitted candidate, code reverted
+experiment: Release TMA NVFP4 pipeline stages once per consumer warp.
+status: rejected_profile_gate
+change:
+  Changed the nvfp4_gemm_tma_kernel empty-stage barrier from 256 arrivals to
+  eight arrivals. Each independent MMA warp synchronized all lanes before its
+  leader issued the async-proxy fence and mbarrier arrival. TMA tiling,
+  pipeline depth, MMA issue order, scale handling, quantization, and output
+  stores were unchanged.
+verification:
+  cargo fmt --all --check: pass.
+  cargo check -q: pass.
+  cargo oxide build --arch sm_120a: pass.
+  CUDA_DEVICE_INDEX=0 cargo test -q -p rust-kernels-cuda --test projection_tma
+    -- --ignored --nocapture --test-threads=1: pass, 5 tests.
+  CUDA_DEVICE_INDEX=1 cargo test -q -p rust-kernels-cuda --test optimizer
+    aurora:: -- --ignored --nocapture --test-threads=1: pass, 4 tests.
+  Filtered Nsight Compute duration profile:
+    target/ncu/20260714_tma_warp_release.ncu-rep
+    target/ncu/20260714_tma_warp_release.csv
+measured_effect:
+  On the same 698-launch nvfp4_gemm_tma_kernel mix, total kernel time regressed
+  from 99.378592ms to 99.604096ms (+0.23%). The reduced barrier arrival count
+  did not improve any of the high-cost grid shapes.
+decision:
+  Reject before the 30s screen and revert. Consumer barrier arrivals are not
+  the limiting cost in the current TMA GEMM pipeline.
+```
+
+```text
+date: 2026-07-14
+commit: accepted local jj commit after full gate
 experiment: Coalesce exact power-of-two four-six transpose loads through a shared-memory tile.
 status: accepted_900s_gate
 change:

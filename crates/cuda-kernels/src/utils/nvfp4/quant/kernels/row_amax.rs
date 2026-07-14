@@ -1,5 +1,6 @@
 use cuda_device::{DisjointSlice, SharedArray, cuda_module, kernel, thread};
 
+use crate::amax::max4_f32;
 use crate::block_reduce::block_max_store_f32;
 use crate::float_ptx::{abs_f32, max_f32};
 use crate::warp_reduce::thread_lane_warp;
@@ -91,13 +92,31 @@ pub(crate) mod module {
         let (thread, lane, warp_in_block) = thread_lane_warp();
         let mut chunk = thread;
         let mut local_amax = 0.0;
+        let stride = thread::blockDim_x();
 
         while chunk < chunk_count {
-            local_amax = max_f32(local_amax, chunk_amax[chunk as usize]);
-            chunk += thread::blockDim_x();
+            local_amax = max_f32(
+                local_amax,
+                max4_f32(
+                    chunk_amax_or_zero(chunk_amax, chunk, chunk_count),
+                    chunk_amax_or_zero(chunk_amax, chunk + stride, chunk_count),
+                    chunk_amax_or_zero(chunk_amax, chunk + stride * 2, chunk_count),
+                    chunk_amax_or_zero(chunk_amax, chunk + stride * 3, chunk_count),
+                ),
+            );
+            chunk += stride * 4;
         }
 
         block_max_store_f32!(TENSOR_AMAX, out[0], local_amax, lane, warp_in_block);
+    }
+
+    #[inline(always)]
+    fn chunk_amax_or_zero(chunk_amax: &[f32], chunk: u32, chunk_count: u32) -> f32 {
+        if chunk < chunk_count {
+            chunk_amax[chunk as usize]
+        } else {
+            0.0
+        }
     }
 
     #[inline(always)]
