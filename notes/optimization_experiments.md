@@ -34,6 +34,59 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-14
 commit: accepted local jj commit after full gate
+experiment: Coalesce rowwise NVFP4 transpose decode through a shared-memory MS-EDEN tile.
+status: accepted_900s_gate
+change:
+  Added an exact no-pad specialization for power-of-two source column counts
+  when source rows are divisible by 32 and source columns are divisible by 8.
+  Each 256-thread CTA decodes a coalesced 32x8 source tile into a padded 32x9
+  shared-memory tile, then its eight warps read columns from that tile and emit
+  the same eight transposed MS-EDEN chunks. Chunk mapping, random signs,
+  Hadamard transforms, stochastic scale seeds, quantization scale math,
+  optimizer math, model shape, seed, batch size, and learning rates are
+  unchanged. Unsupported shapes keep the existing exact or padded kernels.
+verification:
+  cargo fmt --all: pass.
+  cargo check -q: pass.
+  cargo oxide build --arch sm_120a: pass.
+  CUDA_DEVICE_INDEX=0 cargo test -q -p rust-kernels-cuda --test
+    ms_eden_transpose -- --ignored --nocapture --test-threads=1: pass, 4 tests.
+    The direct rowwise NVFP4 transpose path matches materialized decode and
+    MS-EDEN quantization bit-for-bit.
+  CUDA_DEVICE_INDEX=1 cargo test -q -p rust-kernels-cuda --test projection_tma
+    -- --ignored --nocapture --test-threads=1: pass, 5 tests.
+  Filtered Nsight Compute duration profile:
+    target/ncu/20260714_ms_eden_rowwise_transpose_tiled.ncu-rep
+    target/ncu/20260714_ms_eden_rowwise_transpose_tiled.csv
+  Candidate 30s screen:
+    target/runs/20260714_203805Z_synth_30s
+    val_loss=6.438080, train_elapsed_s=30.031, completed_steps=44.
+  Candidate 900s gate:
+    target/runs/20260714_203848Z_synth_900s
+    val_loss=3.762397, train_elapsed_s=900.012, completed_steps=1278.
+    Finite=1, Nonzero=1, Update_skipped=0, Skip_non_finite=0,
+    Skip_loss_spike=0, and Skip_grad_norm_spike=0 throughout all 26 logged
+    samples.
+measured_effect:
+  On the same 36-launch rowwise NVFP4 transpose-to-MS-EDEN mix, total target
+  kernel time fell from 30.042144ms to 11.637536ms, a 61.26% local reduction.
+  30s screen versus the accepted baseline:
+    completed_steps: 43 -> 44 (+1 / +2.33%).
+    val_loss: 6.466424 -> 6.438080 (-0.028344 / -0.438%).
+    seconds/step: 0.700070 -> 0.682523 (-2.51%).
+  900s gate versus the accepted baseline in notes/sweep_baseline.env:
+    completed_steps: 1247 -> 1278 (+31 / +2.49%).
+    val_loss: 3.771522 -> 3.762397 (-0.009125 / -0.242%).
+    seconds/step: 0.722169 -> 0.704235 (-2.48%).
+decision:
+  Accept and promote. The full 900s gate improved both held-out validation
+  loss and completed step count, with finite nonzero training and no skipped
+  updates. notes/sweep_baseline.env now points at this run.
+```
+
+```text
+date: 2026-07-14
+commit: accepted local jj commit after full gate
 experiment: Reduce four tensor-amax chunk maxima per thread iteration.
 status: accepted_900s_gate
 change:
