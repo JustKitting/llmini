@@ -7,21 +7,28 @@ use crate::warp_reduce::thread_lane_warp;
 
 use super::super::config::WARPS_PER_BLOCK;
 
-pub(crate) const TENSOR_AMAX_VALUES_PER_BLOCK: u32 = 1024;
+pub(crate) const TENSOR_AMAX_VALUES_PER_BLOCK: u32 = 2048;
 
-macro_rules! tensor_chunk_amax4 {
-    ($base:expr, $count:expr, [$i0:expr, $i1:expr, $i2:expr, $i3:expr], $value:ident($($value_arg:expr),+), $checked:ident($($checked_arg:expr),+)) => {{
+macro_rules! tensor_chunk_amax8 {
+    ($base:expr, $count:expr, [$i0:expr, $i1:expr, $i2:expr, $i3:expr, $i4:expr, $i5:expr, $i6:expr, $i7:expr], $value:ident($($value_arg:expr),+), $checked:ident($($checked_arg:expr),+)) => {{
         if $base + $crate::nvfp4_quant::kernels::row_amax::TENSOR_AMAX_VALUES_PER_BLOCK <= $count {
-            $crate::amax::amax4_f32($value($($value_arg),+, $i0), $value($($value_arg),+, $i1), $value($($value_arg),+, $i2), $value($($value_arg),+, $i3))
+            $crate::float_ptx::max_f32(
+                $crate::amax::amax4_f32($value($($value_arg),+, $i0), $value($($value_arg),+, $i1), $value($($value_arg),+, $i2), $value($($value_arg),+, $i3)),
+                $crate::amax::amax4_f32($value($($value_arg),+, $i4), $value($($value_arg),+, $i5), $value($($value_arg),+, $i6), $value($($value_arg),+, $i7)),
+            )
         } else {
-            $crate::amax::max4_f32($checked($($checked_arg),+, $i0, $count), $checked($($checked_arg),+, $i1, $count), $checked($($checked_arg),+, $i2, $count), $checked($($checked_arg),+, $i3, $count))
+            $crate::float_ptx::max_f32(
+                $crate::amax::max4_f32($checked($($checked_arg),+, $i0, $count), $checked($($checked_arg),+, $i1, $count), $checked($($checked_arg),+, $i2, $count), $checked($($checked_arg),+, $i3, $count)),
+                $crate::amax::max4_f32($checked($($checked_arg),+, $i4, $count), $checked($($checked_arg),+, $i5, $count), $checked($($checked_arg),+, $i6, $count), $checked($($checked_arg),+, $i7, $count)),
+            )
         }
     }};
 }
-pub(crate) use tensor_chunk_amax4;
+pub(crate) use tensor_chunk_amax8;
 
 #[inline(always)]
-pub(crate) fn tensor_amax_chunk_indices() -> (u32, u32, u32, u32, u32, u32, u32, u32) {
+pub(crate) fn tensor_amax_chunk_indices()
+-> (u32, u32, u32, u32, u32, u32, u32, u32, u32, u32, u32, u32) {
     let chunk = thread::blockIdx_x();
     let (thread, lane, warp_in_block) = thread_lane_warp();
     let base = chunk * TENSOR_AMAX_VALUES_PER_BLOCK;
@@ -30,7 +37,24 @@ pub(crate) fn tensor_amax_chunk_indices() -> (u32, u32, u32, u32, u32, u32, u32,
     let i1 = i0 + stride;
     let i2 = i1 + stride;
     let i3 = i2 + stride;
-    (chunk, lane, warp_in_block, base, i0, i1, i2, i3)
+    let i4 = i3 + stride;
+    let i5 = i4 + stride;
+    let i6 = i5 + stride;
+    let i7 = i6 + stride;
+    (
+        chunk,
+        lane,
+        warp_in_block,
+        base,
+        i0,
+        i1,
+        i2,
+        i3,
+        i4,
+        i5,
+        i6,
+        i7,
+    )
 }
 
 #[cuda_module]
@@ -70,12 +94,13 @@ pub(crate) mod module {
         mut out: DisjointSlice<f32>,
         element_count: u32,
     ) {
-        let (chunk, lane, warp_in_block, base, i0, i1, i2, i3) = tensor_amax_chunk_indices();
+        let (chunk, lane, warp_in_block, base, i0, i1, i2, i3, i4, i5, i6, i7) =
+            tensor_amax_chunk_indices();
 
-        let local_amax = tensor_chunk_amax4!(
+        let local_amax = tensor_chunk_amax8!(
             base,
             element_count,
-            [i0, i1, i2, i3],
+            [i0, i1, i2, i3, i4, i5, i6, i7],
             abs_f32_at(x),
             checked_abs_f32(x)
         );

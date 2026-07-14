@@ -37,7 +37,7 @@ pub(super) fn update_master_chunks(
 
     while chunk < chunk_count {
         let base = chunk * UPDATE_VALUES_PER_CHUNK;
-        let local_amax = chunk::update_four_amax(
+        let local_amax = chunk::update_eight_amax(
             u,
             z_master,
             x_master,

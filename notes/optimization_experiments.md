@@ -34,6 +34,132 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-14
 commit: accepted local jj commit after full gate
+experiment: Double tensor-amax chunks from 1024 to 2048 values per block.
+status: accepted_900s_gate
+change:
+  Changed each 256-thread tensor-amax chunk CTA to cover eight values per
+  thread instead of four. Applied the same eight-way indexing to generic and
+  MS-EDEN NVFP4 tensor amax, schedule-free optimizer update/amax, and fused
+  Aurora update/amax so every consumer retains the same complete element
+  coverage. Each thread combines two groups of four maxima before the existing
+  block reduction. Quantization scale math, optimizer update math, tensor
+  layouts, model shape, seed, batch size, and learning rates are unchanged.
+verification:
+  cargo fmt --all: pass.
+  cargo check -q: pass.
+  cargo oxide build --arch sm_120a: pass.
+  CUDA_DEVICE_INDEX=0 cargo test -q -p rust-kernels-cuda --test nvfp4_quant
+    -- --ignored --nocapture --test-threads=1: pass, 3 tests.
+  CUDA_DEVICE_INDEX=0 cargo test -q -p rust-kernels-cuda --test optimizer
+    aurora:: -- --ignored --nocapture --test-threads=1: pass, 4 tests.
+  CUDA_DEVICE_INDEX=0 cargo test -q -p rust-kernels-cuda --test optimizer
+    adam:: -- --ignored --nocapture --test-threads=1: pass, 2 tests.
+  Filtered Nsight Compute duration profiles:
+    target/ncu/20260714_tensor_amax_chunk2048_baseline.ncu-rep
+    target/ncu/20260714_tensor_amax_chunk2048_baseline.csv
+    target/ncu/20260714_tensor_amax_chunk2048.ncu-rep
+    target/ncu/20260714_tensor_amax_chunk2048.csv
+    target/ncu/20260714_tensor_amax_chunk2048_aurora_baseline.ncu-rep
+    target/ncu/20260714_tensor_amax_chunk2048_aurora_baseline.csv
+    target/ncu/20260714_tensor_amax_chunk2048_aurora.ncu-rep
+    target/ncu/20260714_tensor_amax_chunk2048_aurora.csv
+  Candidate 30s screen:
+    target/runs/20260714_221049Z_synth_30s
+    val_loss=6.411729, train_elapsed_s=30.416, completed_steps=45.
+  Candidate 900s gate:
+    target/runs/20260714_221130Z_synth_900s
+    val_loss=3.759039, train_elapsed_s=900.226, completed_steps=1290.
+    The run completed normally with finite held-out loss and no runtime error,
+    panic, overflow, or non-finite diagnostic.
+measured_effect:
+  On the same profile workload, generic tensor-amax chunk time fell from
+  32.167168ms to 32.114976ms (-0.16%), and fused Aurora finish time fell from
+  20.676512ms to 20.388384ms (-1.39%). Combined target-kernel time fell from
+  52.843680ms to 52.503360ms, a 0.64% local reduction.
+  30s screen versus the accepted baseline:
+    completed_steps: 45 -> 45 (unchanged).
+    val_loss: 6.411888 -> 6.411729 (-0.000159 / -0.002%).
+    seconds/step: 0.679711 -> 0.675911 (-0.56%).
+  900s gate versus the accepted baseline in notes/sweep_baseline.env:
+    completed_steps: 1285 -> 1290 (+5 / +0.39%).
+    val_loss: 3.755013 -> 3.759039 (+0.004026 / +0.107%).
+    seconds/step: 0.700672 -> 0.697850 (-0.40%).
+decision:
+  Accept and promote. The full 900s gate completed five additional steps with
+  only +0.11% held-out loss, inside the allowed roughly +1% seed-noise margin,
+  and remained stable. notes/sweep_baseline.env now points at this run.
+```
+
+```text
+date: 2026-07-14
+commit: rejected uncommitted candidate, code reverted
+experiment: Cache forward softmax exponentials in the probability buffer before normalization.
+status: rejected_profile_gate
+change:
+  During the denominator pass, wrote each causal FP32 exponential into probs,
+  then normalized those stored values in place after the block reduction. This
+  removed the second score load and exponential evaluation while adding one
+  intermediate probability write and read. Reduction order, masked zero
+  stores, log-sum-exp math, probability layout, and downstream attention math
+  were unchanged.
+verification:
+  cargo fmt --all: pass.
+  cargo check -q: pass.
+  cargo oxide build --arch sm_120a: pass.
+  CUDA_DEVICE_INDEX=0 cargo test -q -p rust-kernels-cuda --test projection_tma
+    -- --ignored --nocapture --test-threads=1: pass, 5 tests.
+  CUDA_DEVICE_INDEX=1 cargo test -q -p rust-kernels-cuda --test
+    causal_attention_backward_tc -- --ignored --nocapture --test-threads=1:
+    pass, 1 test.
+  Filtered Nsight Compute duration profiles:
+    target/ncu/20260714_attention_softmax_cache_exp_baseline.ncu-rep
+    target/ncu/20260714_attention_softmax_cache_exp_baseline.csv
+    target/ncu/20260714_attention_softmax_cache_exp.ncu-rep
+    target/ncu/20260714_attention_softmax_cache_exp.csv
+measured_effect:
+  On the same four-launch attention_softmax_forward_kernel mix, total kernel
+  time regressed from 36.815488ms to 36.828928ms (+0.04%). The extra global
+  probability traffic offset the removed exponential and score load.
+decision:
+  Reject before the 30s screen and revert. Keep recomputing the exponential in
+  the final probability pass on the current kernel.
+```
+
+```text
+date: 2026-07-14
+commit: rejected uncommitted candidate, code reverted
+experiment: Compute KDA state decay once per warp and broadcast it to state lanes.
+status: rejected_profile_gate
+change:
+  Changed decay_state so lane zero computed the decay exponential and broadcast
+  it to the other 31 lanes in each warp. For the fixed 64x64 KDA state, every
+  lane in a warp addresses the same key dimension, so the broadcast value was
+  mathematically identical. State layout, chunk order, MMA operations, and all
+  training math outside that redundant decay evaluation were unchanged.
+verification:
+  cargo fmt --all: pass.
+  cargo check -q: pass.
+  cargo oxide build --arch sm_120a: pass.
+  CUDA_DEVICE_INDEX=1 cargo test -q -p rust-kernels-cuda --test projection_tma
+    -- --ignored --nocapture --test-threads=1: pass, 5 tests.
+  Filtered Nsight Compute duration profiles:
+    target/ncu/20260714_kda_state_decay_baseline.ncu-rep
+    target/ncu/20260714_kda_state_decay_baseline.csv
+    target/ncu/20260714_kda_state_decay_warp_broadcast.ncu-rep
+    target/ncu/20260714_kda_state_decay_warp_broadcast.csv
+measured_effect:
+  On the same 12-launch chunk_kda_state_save_kernel mix, total kernel time
+  regressed from 34.444128ms to 34.710144ms (+0.77%). The shuffle and divergent
+  lane-zero compute path cost more than the redundant per-lane decay evaluation
+  in the compiled kernel.
+decision:
+  Reject before the 30s screen and revert. Keep the direct per-element decay
+  evaluation in the current state kernel.
+```
+
+```text
+date: 2026-07-14
+commit: accepted local jj commit after full gate
 experiment: Tile the transpose half of exact no-pad FP32 MS-EDEN pair quantization.
 status: accepted_900s_gate
 change:

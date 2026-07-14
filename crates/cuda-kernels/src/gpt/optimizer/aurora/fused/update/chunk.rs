@@ -1,5 +1,6 @@
 use crate::amax::max4_f32;
 use crate::f16_tc_matmul::cta_tile::CTA_THREADS;
+use crate::float_ptx::max_f32;
 
 use super::one::update_one;
 
@@ -39,7 +40,7 @@ impl UpdateChunk {
 }
 
 #[expect(clippy::too_many_arguments, reason = "CUDA ABI uses explicit buffers")]
-pub(super) fn update_four_amax(
+pub(super) fn update_eight_amax(
     u: *const f32,
     z_master: *mut f32,
     x_master: *mut f32,
@@ -69,5 +70,8 @@ pub(super) fn update_four_amax(
         base,
         tid,
     };
-    max4_f32(chunk.at(0), chunk.at(1), chunk.at(2), chunk.at(3))
+    max_f32(
+        max4_f32(chunk.at(0), chunk.at(1), chunk.at(2), chunk.at(3)),
+        max4_f32(chunk.at(4), chunk.at(5), chunk.at(6), chunk.at(7)),
+    )
 }

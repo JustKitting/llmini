@@ -10,7 +10,7 @@ use super::AMAX_WARPS_PER_BLOCK;
 use super::input::{
     checked_nvfp4_abs_value, checked_rowwise_abs_value, nvfp4_value_at, rowwise_value_at,
 };
-use crate::nvfp4_quant::kernels::row_amax::{tensor_amax_chunk_indices, tensor_chunk_amax4};
+use crate::nvfp4_quant::kernels::row_amax::{tensor_amax_chunk_indices, tensor_chunk_amax8};
 
 #[cuda_module]
 pub(crate) mod module {
@@ -29,12 +29,13 @@ pub(crate) mod module {
         cols: u32,
     ) {
         let element_count = rows * cols;
-        let (chunk, lane, warp_in_block, base, i0, i1, i2, i3) = tensor_amax_chunk_indices();
+        let (chunk, lane, warp_in_block, base, i0, i1, i2, i3, i4, i5, i6, i7) =
+            tensor_amax_chunk_indices();
 
-        let local_amax = tensor_chunk_amax4!(
+        let local_amax = tensor_chunk_amax8!(
             base,
             element_count,
-            [i0, i1, i2, i3],
+            [i0, i1, i2, i3, i4, i5, i6, i7],
             rowwise_value_at(bytes, scales, global_scales, cols),
             checked_rowwise_abs_value(bytes, scales, global_scales, cols)
         );
@@ -50,12 +51,13 @@ pub(crate) mod module {
         mut out: DisjointSlice<f32>,
         element_count: u32,
     ) {
-        let (chunk, lane, warp_in_block, base, i0, i1, i2, i3) = tensor_amax_chunk_indices();
+        let (chunk, lane, warp_in_block, base, i0, i1, i2, i3, i4, i5, i6, i7) =
+            tensor_amax_chunk_indices();
 
-        let local_amax = tensor_chunk_amax4!(
+        let local_amax = tensor_chunk_amax8!(
             base,
             element_count,
-            [i0, i1, i2, i3],
+            [i0, i1, i2, i3, i4, i5, i6, i7],
             nvfp4_value_at(bytes, scales, global_scale),
             checked_nvfp4_abs_value(bytes, scales, global_scale)
         );
