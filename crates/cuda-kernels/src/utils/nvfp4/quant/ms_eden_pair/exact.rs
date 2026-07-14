@@ -27,7 +27,7 @@ impl Nvfp4QuantModule {
             {
                 return Some(
                     self.ms_eden_fp32_pair
-                        .fp32_pair_to_nvfp4_ms_eden_device_scale_no_chunk_amax_exact_no_pad_pow2_kernel(
+                        .fp32_pair_to_nvfp4_ms_eden_device_scale_no_chunk_amax_exact_no_pad_pow2_tiled_kernel(
                             args.stream,
                             grid,
                             args.x,
@@ -52,7 +52,7 @@ impl Nvfp4QuantModule {
 
             return Some(
                 self.ms_eden_fp32_pair
-                    .fp32_pair_to_nvfp4_ms_eden_device_scale_no_chunk_amax_exact_no_pad_kernel(
+                    .fp32_pair_to_nvfp4_ms_eden_device_scale_no_chunk_amax_exact_no_pad_tiled_kernel(
                         args.stream,
                         grid,
                         args.x,

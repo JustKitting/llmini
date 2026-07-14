@@ -34,6 +34,64 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-14
 commit: accepted local jj commit after full gate
+experiment: Tile the transpose half of exact no-pad FP32 MS-EDEN pair quantization.
+status: accepted_900s_gate
+change:
+  Added tiled variants of the power-of-two and generic exact no-pad FP32 pair
+  kernels. Row-output CTAs keep the existing path. Transpose-output CTAs map
+  their linear block index to a 32-row by 8-column source tile, load that FP32
+  tile coalesced into a padded 32x9 shared-memory tile, and let the eight warps
+  emit the same transposed chunks. Chunk mapping, random signs, Hadamard
+  transforms, stochastic scale seeds, quantization scale math, optimizer math,
+  model shape, seed, batch size, and learning rates are unchanged. Padded and
+  unsupported shapes retain their existing kernels.
+verification:
+  cargo fmt --all: pass.
+  cargo check -q: pass.
+  cargo oxide build --arch sm_120a: pass.
+  Added fp32_pair_tiled_matches_independent_row_and_transpose_quantization,
+    which compares both fused outputs against independent exact quantization
+    with the same derived global scale and seeds: pass.
+  CUDA_DEVICE_INDEX=0 cargo test -q -p rust-kernels-cuda --test
+    ms_eden_transpose -- --ignored --nocapture --test-threads=1: pass, 5 tests.
+  CUDA_DEVICE_INDEX=1 cargo test -q -p rust-kernels-cuda --test projection_tma
+    -- --ignored --nocapture --test-threads=1: pass, 5 tests.
+  Filtered Nsight Compute duration profiles:
+    target/ncu/20260714_ms_eden_fp32_pair_pow2_tiled.ncu-rep
+    target/ncu/20260714_ms_eden_fp32_pair_pow2_tiled.csv
+    target/ncu/20260714_ms_eden_fp32_pair_generic_tiled.ncu-rep
+    target/ncu/20260714_ms_eden_fp32_pair_generic_tiled.csv
+  Candidate 30s screen:
+    target/runs/20260714_210056Z_synth_30s
+    val_loss=6.411888, train_elapsed_s=30.587, completed_steps=45.
+  Candidate 900s gate:
+    target/runs/20260714_210139Z_synth_900s
+    val_loss=3.755013, train_elapsed_s=900.363, completed_steps=1285.
+    Finite=1, Nonzero=1, Update_skipped=0, Skip_non_finite=0,
+    Skip_loss_spike=0, and Skip_grad_norm_spike=0 throughout all 26 logged
+    samples.
+measured_effect:
+  Across the same launch mix, the 27-call power-of-two pair kernel fell from
+  23.698144ms to 21.374464ms (-9.81%), and the 9-call generic pair kernel fell
+  from 24.703232ms to 24.506880ms (-0.80%). Combined target-kernel time fell
+  from 48.401376ms to 45.881344ms, a 5.21% local reduction.
+  30s screen versus the accepted baseline:
+    completed_steps: 44 -> 45 (+1 / +2.27%).
+    val_loss: 6.438080 -> 6.411888 (-0.026192 / -0.407%).
+    seconds/step: 0.682523 -> 0.679711 (-0.41%).
+  900s gate versus the accepted baseline in notes/sweep_baseline.env:
+    completed_steps: 1278 -> 1285 (+7 / +0.55%).
+    val_loss: 3.762397 -> 3.755013 (-0.007384 / -0.196%).
+    seconds/step: 0.704235 -> 0.700672 (-0.51%).
+decision:
+  Accept and promote. The full 900s gate improved both held-out validation
+  loss and completed step count, with finite nonzero training and no skipped
+  updates. notes/sweep_baseline.env now points at this run.
+```
+
+```text
+date: 2026-07-14
+commit: accepted local jj commit after full gate
 experiment: Coalesce rowwise NVFP4 transpose decode through a shared-memory MS-EDEN tile.
 status: accepted_900s_gate
 change:

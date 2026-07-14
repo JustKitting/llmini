@@ -13,6 +13,14 @@ macro_rules! assert_buffer_fields_eq {
 }
 
 impl QuantScratch {
+    pub(crate) fn assert_payload_eq(
+        &self,
+        stream: &CudaStream,
+        expected: &Self,
+    ) -> Result<(), DriverError> {
+        assert_buffer_fields_eq!(stream, self, expected, [bytes, scales, global_scales])
+    }
+
     pub(crate) fn assert_ms_eden_eq(
         &self,
         stream: &CudaStream,
