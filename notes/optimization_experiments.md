@@ -34,6 +34,95 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-14
 commit: accepted local jj commit after full gate
+experiment: Swap KDA backward dH shared-buffer roles instead of copying the tile.
+status: accepted_900s_gate
+change:
+  After each reverse KDA chunk, rotated the two dH shared-buffer references so
+  the newly computed tile becomes the next iteration's input. This replaces
+  the old 4096-element shared-memory copy and its following block barrier. The
+  existing barrier after the tensor-core computation still completes every
+  dH write before the buffers exchange roles. Chunk order, state recurrence,
+  tensor-core math, gradient stores, layouts, model shape, seed, batch size,
+  and learning rates are unchanged.
+verification:
+  cargo fmt --all: pass.
+  cargo check -q: pass.
+  cargo oxide build --arch sm_120a: pass.
+  CUDA_DEVICE_INDEX=0 cargo test -q -p rust-kernels-cuda --test
+    causal_attention_backward_tc -- --ignored --nocapture --test-threads=1:
+    pass, 1 test.
+  Filtered Nsight Compute duration profiles:
+    target/ncu/20260714_kda_chunkwise_dead_state_baseline.ncu-rep
+    target/ncu/20260714_kda_chunkwise_dead_state_baseline.csv
+    target/ncu/20260714_kda_chunkwise_swap_dh_buffers.ncu-rep
+    target/ncu/20260714_kda_chunkwise_swap_dh_buffers.csv
+  Candidate 30s screen:
+    target/runs/20260714_223922Z_synth_30s
+    val_loss=6.411225, train_elapsed_s=30.412, completed_steps=45.
+  Candidate 900s gate:
+    target/runs/20260714_224001Z_synth_900s
+    val_loss=3.752669, train_elapsed_s=900.186, completed_steps=1293.
+    The run completed normally with finite held-out loss and no runtime error,
+    panic, overflow, or non-finite diagnostic.
+measured_effect:
+  On the same six-launch chunkwise_kda_backward_kernel mix, total target time
+  fell from 24.248192ms to 24.041152ms, a 0.85% local reduction. Static shared
+  memory remained 54.272KB; compiled registers fell from 67 to 58 per thread.
+  30s screen versus the accepted baseline:
+    completed_steps: 45 -> 45 (unchanged).
+    val_loss: 6.411729 -> 6.411225 (-0.000504 / -0.008%).
+    seconds/step: 0.675911 -> 0.675822 (-0.013%).
+  900s gate versus the accepted baseline in notes/sweep_baseline.env:
+    completed_steps: 1290 -> 1293 (+3 / +0.23%).
+    val_loss: 3.759039 -> 3.752669 (-0.006370 / -0.169%).
+    seconds/step: 0.697850 -> 0.696200 (-0.24%).
+decision:
+  Accept and promote. The full 900s gate improved completed steps, seconds per
+  step, and held-out validation loss while remaining stable.
+  notes/sweep_baseline.env now points at this run.
+```
+
+```text
+date: 2026-07-14
+commit: rejected uncommitted candidate, code reverted
+experiment: Remove the unused chunk-state reload from chunkwise KDA backward.
+status: rejected_profile_gate
+change:
+  Removed the per-chunk 64x64 f16-to-f32 state reload and its shared tile from
+  chunkwise_kda_backward_kernel after confirming that the loaded tile has no
+  reader in the current split backward implementation. Also removed the now
+  unused kernel argument and helper. A follow-up retained the old static tile
+  declaration to test whether its resource footprint controlled scheduling,
+  but the compiler eliminated that unused allocation too.
+verification:
+  cargo fmt --all: pass.
+  cargo check -q: pass.
+  cargo oxide build --arch sm_120a: pass.
+  CUDA_DEVICE_INDEX=0 cargo test -q -p rust-kernels-cuda --test
+    causal_attention_backward_tc -- --ignored --nocapture --test-threads=1:
+    pass, 1 test.
+  Filtered Nsight Compute duration profiles:
+    target/ncu/20260714_kda_chunkwise_dead_state_baseline.ncu-rep
+    target/ncu/20260714_kda_chunkwise_dead_state_baseline.csv
+    target/ncu/20260714_kda_chunkwise_dead_state_removed.ncu-rep
+    target/ncu/20260714_kda_chunkwise_dead_state_removed.csv
+    target/ncu/20260714_kda_chunkwise_dead_load_removed_static_pad.ncu-rep
+    target/ncu/20260714_kda_chunkwise_dead_load_removed_static_pad.csv
+measured_effect:
+  On the same six-launch chunkwise_kda_backward_kernel mix, total time
+  regressed from 24.248192ms to 24.821312ms (+2.36%). Static shared memory fell
+  from 54.272KB to 37.888KB and registers from 67 to 64. Retaining the unused
+  static declaration still compiled to 37.888KB and measured 24.738592ms
+  (+2.02%). The removed loads were apparently hidden better than the resulting
+  compiled resource/scheduling change.
+decision:
+  Reject before the 30s screen and revert. Keep the apparently dead state load
+  until a replacement preserves the faster compiled kernel schedule.
+```
+
+```text
+date: 2026-07-14
+commit: accepted local jj commit after full gate
 experiment: Double tensor-amax chunks from 1024 to 2048 values per block.
 status: accepted_900s_gate
 change:

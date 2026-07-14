@@ -31,7 +31,7 @@ pub(crate) fn chunkwise_kda_backward_body(
     states: (&mut KdaStateTile, &mut KdaStateTile, &mut KdaStateTile),
     tiles: (&mut CtaATile, &mut CtaBTile),
 ) {
-    let (state, d_h_next, d_h) = states;
+    let (state, mut d_h_next, mut d_h) = states;
     let (a_tile, b_tile) = tiles;
     let bh = thread::blockIdx_x();
     let tid = thread::threadIdx_x();
@@ -90,12 +90,9 @@ pub(crate) fn chunkwise_kda_backward_body(
         );
         thread::sync_threads();
 
-        idx = tid;
-        while idx < state_elems {
-            d_h_next[idx as usize] = d_h[idx as usize];
-            idx += TC_BACKWARD_THREADS_PER_BLOCK;
-        }
-        thread::sync_threads();
+        let completed = d_h_next;
+        d_h_next = d_h;
+        d_h = completed;
 
         chunk_remaining -= 1;
     }
