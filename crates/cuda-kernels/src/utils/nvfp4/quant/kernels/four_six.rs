@@ -1,9 +1,16 @@
-use cuda_device::{DisjointSlice, cuda_module, kernel};
+use cuda_device::{DisjointSlice, SharedArray, cuda_module, kernel, thread};
 
 use super::convert::cvt_rn_satfinite_e2m1x2_f32;
 
 #[path = "four_six/helpers.rs"]
 pub(crate) mod helpers;
+
+const TRANSPOSE_TILE_ROWS: usize = 16;
+const TRANSPOSE_TILE_COLS: usize = 64;
+const TRANSPOSE_TILE_STRIDE: usize = TRANSPOSE_TILE_COLS + 1;
+const TRANSPOSE_TILE_ELEMS: usize = TRANSPOSE_TILE_ROWS * TRANSPOSE_TILE_STRIDE;
+const TRANSPOSE_TILE_LOAD_ELEMS: usize = TRANSPOSE_TILE_ROWS * TRANSPOSE_TILE_COLS;
+const TRANSPOSE_GROUPS_PER_ROUND: usize = 256 / TRANSPOSE_TILE_ROWS;
 
 #[cuda_module]
 pub(crate) mod module {
@@ -281,6 +288,70 @@ pub(crate) mod module {
                 scale_override,
                 value,
             );
+        }
+    }
+
+    #[kernel]
+    pub fn fp32_transpose_to_nvfp4_four_six_exact_pow2_tiled_kernel(
+        x: &[f32],
+        amax: &[f32],
+        mut out_fp4: DisjointSlice<u8>,
+        mut out_scales: DisjointSlice<u8>,
+        mut out_global_scale: DisjointSlice<f32>,
+        source_rows: u32,
+        source_cols: u32,
+        scale_override: f32,
+    ) {
+        static mut TILE: SharedArray<f32, TRANSPOSE_TILE_ELEMS> = SharedArray::UNINIT;
+
+        let thread_id = thread::threadIdx_x() as usize;
+        let source_row_base = thread::blockIdx_y() as usize * TRANSPOSE_TILE_ROWS;
+        let source_col_base = thread::blockIdx_x() as usize * TRANSPOSE_TILE_COLS;
+        let source_cols_usize = source_cols as usize;
+
+        let mut load_offset = thread_id;
+        while load_offset < TRANSPOSE_TILE_LOAD_ELEMS {
+            let row = load_offset / TRANSPOSE_TILE_COLS;
+            let col = load_offset - row * TRANSPOSE_TILE_COLS;
+            unsafe {
+                TILE[row * TRANSPOSE_TILE_STRIDE + col] =
+                    x[(source_row_base + row) * source_cols_usize + source_col_base + col];
+            }
+            load_offset += 256;
+        }
+        thread::sync_threads();
+
+        let (lane, mask, leader) = four_six_lane();
+        let half_warp = thread_id / TRANSPOSE_TILE_ROWS;
+        let groups_per_output_row = source_rows as usize / GROUP_SIZE;
+        let group_in_output_row = source_row_base / GROUP_SIZE;
+        let global_scale = four_six_global_scale(amax[0], scale_override);
+        let mut col = half_warp;
+
+        while col < TRANSPOSE_TILE_COLS {
+            let value = unsafe { TILE[lane * TRANSPOSE_TILE_STRIDE + col] };
+            let group = (source_col_base + col) * groups_per_output_row + group_in_output_row;
+            let base = group * GROUP_SIZE;
+            let (scale_bits, inv_scale) =
+                four_six_group_scale(value, global_scale, scale_override, mask, leader, lane);
+            let pair = leader + lane as u32 * 2;
+            let hi = cuda_device::warp::shuffle_f32_sync(mask, value, pair);
+            let lo = cuda_device::warp::shuffle_f32_sync(mask, value, pair + 1);
+
+            unsafe {
+                if group == 0 && lane == 0 {
+                    *out_global_scale.get_unchecked_mut(0) = global_scale;
+                }
+                if lane == 0 {
+                    *out_scales.get_unchecked_mut(group) = scale_bits;
+                }
+                if lane < GROUP_SIZE / 2 {
+                    *out_fp4.get_unchecked_mut(base / 2 + lane) =
+                        cvt_rn_satfinite_e2m1x2_f32(lo * inv_scale, hi * inv_scale);
+                }
+            }
+
+            col += TRANSPOSE_GROUPS_PER_ROUND;
         }
     }
 

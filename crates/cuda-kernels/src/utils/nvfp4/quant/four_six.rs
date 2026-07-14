@@ -4,7 +4,7 @@ use super::args::{
     Nvfp4QuantArgs, Nvfp4QuantPaddedArgs, Nvfp4QuantRowwiseArgs, Nvfp4QuantTransposePaddedArgs,
 };
 use super::launcher::Nvfp4QuantModule;
-use super::shape::{four_six_grid_config, four_six_rowwise_pow2};
+use super::shape::{four_six_grid_config, four_six_rowwise_pow2, four_six_transpose_tiled_config};
 
 const SCALE_OVERRIDE: f32 = 1.0;
 
@@ -74,6 +74,26 @@ impl Nvfp4QuantModule {
         let padded_elements = args.padded_rows * args.padded_cols;
         assert!(padded_elements.is_multiple_of(16));
         if args.source_cols == args.padded_rows && args.source_rows == args.padded_cols {
+            if args.source_rows.is_power_of_two()
+                && args.source_rows.is_multiple_of(16)
+                && args.source_cols.is_multiple_of(64)
+            {
+                return self
+                    .four_six
+                    .fp32_transpose_to_nvfp4_four_six_exact_pow2_tiled_kernel(
+                        args.stream,
+                        four_six_transpose_tiled_config(args.source_rows, args.source_cols),
+                        args.x,
+                        args.amax,
+                        args.out_fp4,
+                        args.out_scales,
+                        args.out_global_scale,
+                        args.source_rows,
+                        args.source_cols,
+                        SCALE_OVERRIDE,
+                    );
+            }
+
             if args.source_rows.is_power_of_two() {
                 return self
                     .four_six

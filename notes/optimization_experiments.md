@@ -32,6 +32,72 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```
 
 ```text
+date: 2026-07-14
+commit: accepted local jj commit after full gate
+experiment: Coalesce exact power-of-two four-six transpose loads through a shared-memory tile.
+status: accepted_900s_gate
+change:
+  Added an exact-shape transpose-quantization kernel for source shapes with a
+  power-of-two row count, rows divisible by 16, and columns divisible by 64.
+  Each 256-thread CTA loads a 16x64 FP32 source tile coalesced into a 16x65
+  shared-memory tile, then packs the transposed 16-value groups with the
+  existing four-vs-six scale selection and FP4 conversion. The padded shared
+  stride avoids bank conflicts when half warps read source columns. Unsupported
+  shapes keep the existing exact-power-of-two or generic transpose kernels.
+  Quantization scale math, scale override, optimizer math, model shape, seed,
+  batch size, and learning rates are unchanged.
+verification:
+  cargo fmt --all: pass.
+  cargo check -q: pass.
+  cargo oxide build --arch sm_120a: pass.
+  CUDA_DEVICE_INDEX=0 cargo test -q -p rust-kernels-cuda --test nvfp4_quant
+    -- --ignored --nocapture --test-threads=1: pass, 3 tests.
+    The new test compares the tiled kernel bit-for-bit against an explicit
+    transpose followed by the existing exact four-six quantizer.
+  CUDA_DEVICE_INDEX=1 cargo test -q -p rust-kernels-cuda --test
+    ms_eden_transpose -- --ignored --nocapture --test-threads=1: pass, 4 tests.
+  CUDA_DEVICE_INDEX=0 cargo test -q -p rust-kernels-cuda --test projection_tma
+    -- --ignored --nocapture --test-threads=1: pass, 5 tests.
+  CUDA_DEVICE_INDEX=1 cargo test -q -p rust-kernels-cuda --test
+    causal_attention_backward_tc -- --ignored --nocapture --test-threads=1:
+    pass, 1 test.
+  Rebuilt 30s baseline:
+    target/runs/20260714_185130Z_synth_30s
+    val_loss=6.495960, train_elapsed_s=30.094, completed_steps=42.
+  Candidate 30s screen:
+    target/runs/20260714_185754Z_synth_30s
+    val_loss=6.465710, train_elapsed_s=30.207, completed_steps=43.
+  Filtered Nsight Compute duration profile:
+    target/ncu/20260714_four_six_transpose_tiled.ncu-rep
+    target/ncu/20260714_four_six_transpose_tiled.csv
+  Candidate 900s gate:
+    target/runs/20260714_185926Z_synth_900s
+    val_loss=3.772336, train_elapsed_s=900.466, completed_steps=1246.
+    Finite=1, Nonzero=1, Update_skipped=0, Skip_non_finite=0,
+    Skip_loss_spike=0, and Skip_grad_norm_spike=0 throughout logged samples.
+measured_effect:
+  The filtered one-step launch mix kept the same 350 transpose-quantization
+  calls while total target-kernel time fell from 37.409856ms for
+  fp32_transpose_to_nvfp4_four_six_exact_pow2_kernel to 22.380480ms for the
+  tiled kernel, a 40.17% local reduction.
+  30s screen versus the rebuilt current baseline:
+    completed_steps: 42 -> 43 (+1 / +2.38%).
+    val_loss: 6.495960 -> 6.465710 (-0.030250 / -0.47%).
+    seconds/step: 0.716524 -> 0.702488 (-1.96%).
+  900s gate versus the accepted baseline in notes/sweep_baseline.env:
+    completed_steps: 1220 -> 1246 (+26 / +2.13%).
+    val_loss: 3.788687 -> 3.772336 (-0.016351 / -0.43%).
+    seconds/step: 0.737997 -> 0.722685 (-2.07%).
+  Logged optimizer time moved from 161.139ms to 147.264ms on average, and the
+  Aurora component moved from 155.180ms to 141.328ms, consistent with the
+  intended transpose-quantization reduction.
+decision:
+  Accept and promote. The full 900s gate improved both held-out validation
+  loss and completed step count, with finite nonzero training and no skipped
+  updates. notes/sweep_baseline.env now points at this run.
+```
+
+```text
 date: 2026-07-02
 commit: accepted local jj commit after full gate
 experiment: Reuse four-six NVFP4 pack input values with warp shuffles.

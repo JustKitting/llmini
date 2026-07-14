@@ -41,6 +41,13 @@ pub(in crate::nvfp4_quant) fn four_six_grid_config(group_count: u32) -> LaunchCo
     grid_config(group_count.div_ceil(GROUPS_PER_BLOCK))
 }
 
+pub(in crate::nvfp4_quant) fn four_six_transpose_tiled_config(
+    source_rows: u32,
+    source_cols: u32,
+) -> LaunchConfig {
+    crate::launch::launch_config((source_cols / 64, source_rows / 16, 1), THREADS_PER_BLOCK)
+}
+
 pub(in crate::nvfp4_quant) fn four_six_rowwise_pow2(row_len: u32, group_count: u32) -> bool {
     row_len.is_power_of_two() && group_count.is_multiple_of(GROUPS_PER_BLOCK)
 }

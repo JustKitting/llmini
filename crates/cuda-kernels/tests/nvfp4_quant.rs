@@ -1,7 +1,10 @@
 use std::error::Error;
 
 use cuda_core::DeviceBuffer;
-use rust_kernels_cuda::nvfp4_quant::{MsEdenQuantArgs, Nvfp4QuantArgs, Nvfp4QuantModule};
+use rust_kernels_cuda::nvfp4_quant::{
+    MsEdenQuantArgs, Nvfp4QuantArgs, Nvfp4QuantModule, Nvfp4QuantPaddedArgs,
+    Nvfp4QuantTransposePaddedArgs,
+};
 use rust_kernels_cuda::quartet::QUARTET_MS_EDEN_SCALE_OVERRIDE;
 
 mod common;
@@ -39,6 +42,77 @@ fn fp32_to_nvfp4_four_six_writes_quantized_outputs() -> Result<(), Box<dyn Error
 
     common::assert_nvfp4_buffers_nonzero(&fp4, &scales);
     assert!((global_scale[0] - 8.0 / (256.0 * 6.0)).abs() <= 1.0e-8);
+    Ok(())
+}
+
+#[ignore = "requires generated sm_120a PTX"]
+#[test]
+fn tiled_four_six_transpose_matches_explicit_transpose() -> Result<(), Box<dyn Error>> {
+    const ROWS: usize = 16;
+    const COLS: usize = 64;
+    let x = (0..ROWS * COLS)
+        .map(|index| {
+            let row = index / COLS;
+            let col = index % COLS;
+            ((row * 17 + col * 13) as f32 - 512.0) * 0.03125
+        })
+        .collect::<Vec<_>>();
+    let mut x_t = vec![0.0f32; x.len()];
+    for row in 0..ROWS {
+        for col in 0..COLS {
+            x_t[col * ROWS + row] = x[row * COLS + col];
+        }
+    }
+    let amax = [x.iter().fold(0.0f32, |max, value| max.max(value.abs()))];
+
+    let (_, stream, module) = common::cuda_test_module(Nvfp4QuantModule::from_module)?;
+    let x_dev = DeviceBuffer::from_host(&stream, &x)?;
+    let x_t_dev = DeviceBuffer::from_host(&stream, &x_t)?;
+    let amax_dev = DeviceBuffer::from_host(&stream, &amax)?;
+    let mut tiled_fp4 = DeviceBuffer::<u8>::zeroed(&stream, x.len() / 2)?;
+    let mut tiled_scales = DeviceBuffer::<u8>::zeroed(&stream, x.len() / 16)?;
+    let mut tiled_global = DeviceBuffer::<f32>::zeroed(&stream, 1)?;
+    let mut reference_fp4 = DeviceBuffer::<u8>::zeroed(&stream, x.len() / 2)?;
+    let mut reference_scales = DeviceBuffer::<u8>::zeroed(&stream, x.len() / 16)?;
+    let mut reference_global = DeviceBuffer::<f32>::zeroed(&stream, 1)?;
+
+    module.fp32_transpose_to_nvfp4_four_six_padded(Nvfp4QuantTransposePaddedArgs {
+        stream: &stream,
+        x: &x_dev,
+        amax: &amax_dev,
+        out_fp4: &mut tiled_fp4,
+        out_scales: &mut tiled_scales,
+        out_global_scale: &mut tiled_global,
+        source_rows: ROWS as u32,
+        source_cols: COLS as u32,
+        padded_rows: COLS as u32,
+        padded_cols: ROWS as u32,
+    })?;
+    module.fp32_to_nvfp4_four_six_padded(Nvfp4QuantPaddedArgs {
+        stream: &stream,
+        x: &x_t_dev,
+        amax: &amax_dev,
+        out_fp4: &mut reference_fp4,
+        out_scales: &mut reference_scales,
+        out_global_scale: &mut reference_global,
+        rows: COLS as u32,
+        cols: ROWS as u32,
+        padded_rows: COLS as u32,
+        padded_cols: ROWS as u32,
+    })?;
+
+    assert_eq!(
+        tiled_fp4.to_host_vec(&stream)?,
+        reference_fp4.to_host_vec(&stream)?
+    );
+    assert_eq!(
+        tiled_scales.to_host_vec(&stream)?,
+        reference_scales.to_host_vec(&stream)?
+    );
+    assert_eq!(
+        tiled_global.to_host_vec(&stream)?,
+        reference_global.to_host_vec(&stream)?
+    );
     Ok(())
 }
 
