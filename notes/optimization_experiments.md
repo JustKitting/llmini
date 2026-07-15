@@ -33,6 +33,222 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 
 ```text
 date: 2026-07-15
+commit: rejected uncommitted candidate after full gate, code reverted
+experiment: Remove supported-shape bounds predicates from KDA output matrix staging.
+status: rejected_900s_runtime
+change:
+  Removed the per-value row/source validity checks from stage_chunk_matrix_a in
+  chunk_kda_output_from_state_kernel. KdaChunkTileCtx already rejects shapes
+  whose chunk_size or head_dim differs from 64, and the CTA row plus 16-wide K
+  loop spans exactly 0..63, so every staged chunk-matrix coordinate is valid.
+  Indexing, FP16 conversion, tensor-core accumulation order, stores, layouts,
+  model shape, and training math were unchanged.
+verification:
+  cargo fmt --all --check: pass.
+  cargo check -q: pass.
+  cargo oxide build --arch sm_120a: pass.
+  Exact 1B FineWeb one-step diagnostic:
+    target/runs/20260715_035452Z_fineweb_60s
+    val_loss=10.409149, train_elapsed_s=0.809, completed_steps=1.
+    This is correctness-only evidence, not a promotion gate.
+  Focused Nsight Compute duration profile:
+    target/ncu/20260715_1b_b2_kda_output_no_matrix_bounds.ncu-rep
+  Required 1B FineWeb 30-second screen:
+    target/runs/20260715_035528Z_fineweb_30s
+    val_loss=7.052975, train_elapsed_s=30.434, completed_steps=37.
+  Required 1B FineWeb 900-second gate:
+    target/runs/20260715_035610Z_fineweb_900s
+    val_loss=5.091900, train_elapsed_s=900.002, completed_steps=1059.
+    All 22 high-fidelity metric samples were finite and nonzero, with zero
+    skipped updates, loss-spike skips, grad-norm-spike skips, or nonfinite
+    skips.
+measured_effect:
+  Focused kernel timing improved across the same 36
+  chunk_kda_output_from_state_kernel launches from 22.031968ms to 21.868960ms
+  (-0.740%); mean launch time fell from 611.999111us to 607.471111us.
+  Against the accepted fixed-1B FineWeb baseline
+  target/runs/20260715_032606Z_fineweb_900s:
+    completed_steps: 1067 -> 1059 (-8, -0.750%).
+    average step time: 0.844045s -> 0.849860s (+0.689%).
+    held-out val_loss: 5.083047 -> 5.091900 (+0.008853, +0.174%).
+decision:
+  Reject and revert. The loss and stability checks passed within tolerance,
+  but the required full wall-clock gate showed no end-to-end speed win and a
+  material eight-step regression. Preserve both local and full-gate evidence;
+  do not promote this predicate cleanup from an isolated kernel profile.
+```
+
+```text
+date: 2026-07-15
+commit: rejected uncommitted candidate, code reverted
+experiment: Reduce the NVFP4 TMA GEMM K tile from 128 to 64.
+status: rejected_correctness_pre_profile
+change:
+  Changed the generated default TMA TILE_K from 128 to 64 while keeping five
+  pipeline stages, the 128x128 M/N tile, descriptors, output path, and ordered
+  64-wide native MMA atoms. The intended trade was half-sized staged payloads
+  and potentially two resident CTAs in exchange for twice as many stage
+  turnovers.
+verification:
+  cargo fmt --all --check: pass.
+  cargo check -q: pass with K=64-only unused-macro warnings.
+  cargo oxide build --arch sm_120a: pass with the same warnings.
+  CUDA_DEVICE_INDEX=0 cargo test -q -p rust-kernels-cuda --test projection_tma
+    -- --ignored --nocapture --test-threads=1: fail, 0 passed / 5 failed.
+failure:
+  Every TMA projection equivalence test failed immediately. Representative
+  error from tma_affine_padded_output_matches_old_qkv_projection:
+    index=1 actual=2.39062500e0 expected=0.00000000e0
+    error=2.39062500e0 tolerance=9.99999975e-6.
+  Other tests produced the same 2.390625 discrepancy or similarly large
+  mismatches. The current TMA staging/scale layout has an implicit two-K-atom
+  contract that the build-time TILE_K divisibility check does not express.
+decision:
+  Reject before one-step diagnostics or profiling and restore TILE_K=128. Do
+  not use K=64 as a speed candidate without first redesigning and independently
+  validating the single-atom TMA payload/scale layouts.
+```
+
+```text
+date: 2026-07-15
+commit: rejected uncommitted candidate, code reverted
+experiment: Overlap TMA descriptor prefetch with stage-barrier initialization.
+status: rejected_profile_gate
+change:
+  Moved the four prefetch.tensormap instructions from thread 0 to the elected
+  TMA producer-warp leader. Thread 0 initialized the ten full/empty stage
+  barriers concurrently, and the existing block synchronization still joined
+  both setup paths before any producer or consumer work. Descriptors, stage
+  count, barrier state, TMA loads, MMA issue order, and output math were
+  unchanged.
+verification:
+  cargo fmt --all --check: pass.
+  cargo check -q: pass.
+  cargo oxide build --arch sm_120a: pass.
+  CUDA_DEVICE_INDEX=0 cargo test -q -p rust-kernels-cuda --test projection_tma
+    -- --ignored --nocapture --test-threads=1: pass, 5 tests.
+  Exact 1B FineWeb one-step diagnostic:
+    target/runs/20260715_035052Z_fineweb_60s
+    val_loss=10.409149, train_elapsed_s=0.807, completed_steps=1.
+    This is correctness-only evidence, not a promotion gate.
+  Focused Nsight Compute duration profile:
+    target/ncu/20260715_1b_b2_tma_prefetch_producer.ncu-rep
+measured_effect:
+  Across the same 1403 nvfp4_gemm_tma_kernel launches, aggregate time
+  regressed from 145.408608ms to 145.929984ms (+0.359%). Mean launch time
+  regressed from 103.641203us to 104.012818us. Splitting setup across the two
+  warps created a worse scheduled path than the serial elected-thread setup.
+decision:
+  Reject before the 30-second training screen and restore thread-0 prefetch.
+  Do not split this setup again without evidence that the block-sync critical
+  path, rather than pipeline execution, dominates.
+```
+
+```text
+date: 2026-07-15
+commit: rejected uncommitted candidate, code reverted
+experiment: Reduce the NVFP4 TMA GEMM pipeline from five stages to four.
+status: rejected_profile_gate
+change:
+  Changed the generated default NVFP4 TMA stage count from five to four. This
+  reduced the statically staged A/B payload, scale tiles, and barrier arrays by
+  one stage while preserving tile shapes, TMA descriptors, MMA issue and
+  accumulation order, output stores, and all training math.
+verification:
+  cargo fmt --all --check: pass.
+  cargo check -q: pass.
+  cargo oxide build --arch sm_120a: pass.
+  CUDA_DEVICE_INDEX=0 cargo test -q -p rust-kernels-cuda --test projection_tma
+    -- --ignored --nocapture --test-threads=1: pass, 5 tests.
+  Exact 1B FineWeb one-step diagnostic:
+    target/runs/20260715_034908Z_fineweb_60s
+    val_loss=10.409149, train_elapsed_s=0.807, completed_steps=1.
+    This is correctness-only evidence, not a promotion gate.
+  Focused Nsight Compute duration profile:
+    target/ncu/20260715_1b_b2_tma_stages4.ncu-rep
+measured_effect:
+  Across the same 1403 nvfp4_gemm_tma_kernel launches, aggregate time
+  regressed from 145.408608ms to 146.615200ms (+0.830%). Mean launch time
+  regressed from 103.641203us to 104.501212us. The fifth stage provides useful
+  TMA latency coverage on the active launch mix.
+decision:
+  Reject before the 30-second training screen and restore five stages. Do not
+  retry a shallower pipeline without a design that also shortens the consumer
+  critical path.
+```
+
+```text
+date: 2026-07-15
+commit: rejected uncommitted candidate, code reverted
+experiment: Route exact-grid Aurora linear3 shapes through an unguarded kernel.
+status: rejected_profile_gate
+change:
+  Added a dedicated f32_linear3_in_place_exact_kernel and routed lengths that
+  are exact multiples of the 256-thread CTA through it. All 335 active fixed-1B
+  launches met that contract. The exact entry processed one element per thread
+  without the generic grid-stride loop, length comparison, or stride update;
+  the guarded entry remained available for general lengths. Arithmetic,
+  memory order, coefficients, and launch grids were unchanged.
+verification:
+  cargo fmt --all --check: pass.
+  cargo check -q: pass.
+  cargo oxide build --arch sm_120a: pass.
+  Exact 1B FineWeb one-step diagnostic:
+    target/runs/20260715_034632Z_fineweb_60s
+    val_loss=10.409149, train_elapsed_s=0.807, completed_steps=1.
+    This is correctness-only evidence, not a promotion gate.
+  Focused Nsight Compute duration profile:
+    target/ncu/20260715_1b_b2_linear3_exact_grid.ncu-rep
+measured_effect:
+  Across the same 335 linear3 launches, aggregate time regressed from
+  33.906592ms for f32_linear3_in_place_kernel to 33.969984ms for the exact
+  entry (+0.187%). Mean launch time changed from 101.213707us to 101.402937us.
+  The generic grid-stride control is not a meaningful cost for these shapes.
+decision:
+  Reject before the 30-second training screen and restore the single guarded
+  kernel. Do not retry an exact-grid entry without additional per-element work
+  elimination or a memory-traffic reduction.
+```
+
+```text
+date: 2026-07-15
+commit: rejected uncommitted candidate, code reverted
+experiment: Double the exact four-six transpose tile from 16x64 to 16x128.
+status: rejected_profile_gate
+change:
+  Doubled the source-column payload handled by each 256-thread CTA from 64 to
+  128 values, halving grid.x for every active fixed-1B shape. Each CTA loaded a
+  16x128 source tile coalesced into a padded 16x129 shared tile and processed
+  eight columns per half-warp instead of four. Shapes not divisible by 128
+  retained the exact power-of-two fallback. Quantization values, scale
+  selection, output layouts, and optimizer math were unchanged.
+verification:
+  cargo fmt --all --check: pass.
+  cargo check -q: pass.
+  cargo oxide build --arch sm_120a: pass.
+  Updated the bit-exact tiled transpose test to exercise 16x128:
+    CUDA_DEVICE_INDEX=0 cargo test -q -p rust-kernels-cuda --test nvfp4_quant
+      -- --ignored --nocapture --test-threads=1: pass, 3 tests.
+  Exact 1B FineWeb one-step diagnostic:
+    target/runs/20260715_034405Z_fineweb_60s
+    val_loss=10.409149, train_elapsed_s=0.807, completed_steps=1.
+    This is correctness-only evidence, not a promotion gate.
+  Focused Nsight Compute duration profile:
+    target/ncu/20260715_1b_b2_four_six_transpose_tile128.ncu-rep
+measured_effect:
+  Across the same 670
+  fp32_transpose_to_nvfp4_four_six_exact_pow2_tiled_kernel launches,
+  aggregate time regressed from 46.781088ms to 47.028672ms (+0.529%). Mean
+  launch time regressed from 69.822519us to 70.192048us. The smaller grids did
+  not offset twice the per-CTA work and larger shared-memory tile.
+decision:
+  Reject before the 30-second training screen. Restore the accepted 16x64 tile
+  and its 64-column eligibility/test shape; do not retry a wider tile without
+  a new work decomposition that reduces per-value quantization cost.
+```
+
+```text
+date: 2026-07-15
 commit: accepted local jj commit after full gate
 experiment: Reuse Aurora four-six scale-pass values when packing NVFP4 bytes.
 status: accepted_900s
