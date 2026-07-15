@@ -65,6 +65,7 @@ pub(super) fn muon_matrix_update_body(
         scalars.learning_rate,
         scalars.weight_decay,
         scalars.average_coefficient,
+        1.0,
         tiles.warp_sums,
         work,
     );
@@ -73,6 +74,7 @@ pub(super) fn muon_matrix_update_body(
     quantize_updated_master(
         state.x_master,
         scratch.polar_chunks,
+        state.schedule_amax,
         state.out_fp4,
         state.out_scales,
         state.out_global_scale,

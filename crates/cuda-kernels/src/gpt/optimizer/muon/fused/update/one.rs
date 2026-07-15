@@ -2,6 +2,12 @@ use crate::float_ptx::abs_f32;
 
 use crate::device_ptr::read_f32;
 
+#[derive(Clone, Copy)]
+pub(super) struct UpdateAmax {
+    pub(super) master: f32,
+    pub(super) schedule: f32,
+}
+
 #[expect(clippy::too_many_arguments, reason = "CUDA ABI uses explicit buffers")]
 pub(super) fn update_one(
     u: *const f32,
@@ -16,10 +22,14 @@ pub(super) fn update_one(
     learning_rate: f32,
     weight_decay: f32,
     average_coefficient: f32,
+    schedule_beta: f32,
     index: u32,
-) -> f32 {
+) -> UpdateAmax {
     if index >= len {
-        return 0.0;
+        return UpdateAmax {
+            master: 0.0,
+            schedule: 0.0,
+        };
     }
 
     let row = index / cols;
@@ -35,6 +45,9 @@ pub(super) fn update_one(
         let next_x = *x + average_coefficient * (next_z - *x);
         *z = next_z;
         *x = next_x;
-        abs_f32(next_x)
+        UpdateAmax {
+            master: abs_f32(next_x),
+            schedule: abs_f32(next_z + schedule_beta * (next_x - next_z)),
+        }
     }
 }

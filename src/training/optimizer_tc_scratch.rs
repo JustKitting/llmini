@@ -44,7 +44,7 @@ impl MuonScratchBuffers {
             polar_x: DeviceBuffer::zeroed(stream, grouped(max_matrix_len()))?,
             polar_gram: DeviceBuffer::zeroed(stream, grouped(max_matrix_dim() * max_matrix_dim()))?,
             polar_ax: DeviceBuffer::zeroed(stream, grouped(max_matrix_len()))?,
-            polar_chunks: DeviceBuffer::zeroed(stream, grouped(MUON_COOPERATIVE_BLOCKS))?,
+            polar_chunks: DeviceBuffer::zeroed(stream, grouped(2 * MUON_COOPERATIVE_BLOCKS))?,
             tma: MuonTmaScratch::new(stream)?,
         })
     }

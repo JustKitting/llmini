@@ -12,6 +12,7 @@ pub struct Slots {
     pub momentums: Vec<DeviceBuffer<f32>>,
     pub z_masters: Vec<DeviceBuffer<f32>>,
     pub x_masters: Vec<DeviceBuffer<f32>>,
+    pub schedule_amaxes: Vec<DeviceBuffer<f32>>,
     pub bytes: Vec<DeviceBuffer<u8>>,
     pub scales: Vec<DeviceBuffer<u8>>,
     pub global_scales: Vec<DeviceBuffer<f32>>,
@@ -34,6 +35,7 @@ impl Slots {
             momentums: zero_slot_buffers::<f32>(stream, len)?,
             z_masters: fill_slot_buffers(stream, 1.0, len)?,
             x_masters: fill_slot_buffers(stream, 1.0, len)?,
+            schedule_amaxes: zero_slot_buffers::<f32>(stream, 1)?,
             bytes: zero_slot_buffers::<u8>(stream, len / 2)?,
             scales: zero_slot_buffers::<u8>(stream, len / 16)?,
             global_scales: zero_slot_buffers::<f32>(stream, 1)?,
@@ -57,7 +59,7 @@ impl Scratch {
             polar_x: DeviceBuffer::<f32>::zeroed(stream, len)?,
             polar_gram: DeviceBuffer::<f32>::zeroed(stream, gram_dim * gram_dim)?,
             polar_ax: DeviceBuffer::<f32>::zeroed(stream, len)?,
-            polar_chunks: DeviceBuffer::<f32>::zeroed(stream, MUON_COOPERATIVE_BLOCKS)?,
+            polar_chunks: DeviceBuffer::<f32>::zeroed(stream, 2 * MUON_COOPERATIVE_BLOCKS)?,
         })
     }
 }
@@ -69,6 +71,7 @@ pub fn descriptors(slots: &Slots, rows: usize, cols: usize) -> Vec<MuonSlotDescr
             momentum: slots.momentums[slot].cu_deviceptr(),
             z_master: slots.z_masters[slot].cu_deviceptr(),
             x_master: slots.x_masters[slot].cu_deviceptr(),
+            schedule_amax: slots.schedule_amaxes[slot].cu_deviceptr(),
             bytes: slots.bytes[slot].cu_deviceptr(),
             scales: slots.scales[slot].cu_deviceptr(),
             global_scale: slots.global_scales[slot].cu_deviceptr(),

@@ -2,7 +2,7 @@ use crate::amax::max4_f32;
 use crate::f16_tc_matmul::cta_tile::CTA_THREADS;
 use crate::float_ptx::max_f32;
 
-use super::one::update_one;
+use super::one::{UpdateAmax, update_one};
 
 struct UpdateChunk {
     u: *const f32,
@@ -17,12 +17,13 @@ struct UpdateChunk {
     learning_rate: f32,
     weight_decay: f32,
     average_coefficient: f32,
+    schedule_beta: f32,
     base: u32,
     tid: u32,
 }
 
 impl UpdateChunk {
-    fn at(&self, mul: u32) -> f32 {
+    fn at(&self, mul: u32) -> UpdateAmax {
         update_one(
             self.u,
             self.z_master,
@@ -36,6 +37,7 @@ impl UpdateChunk {
             self.learning_rate,
             self.weight_decay,
             self.average_coefficient,
+            self.schedule_beta,
             self.base + self.tid + CTA_THREADS * mul,
         )
     }
@@ -55,9 +57,10 @@ pub(super) fn update_eight_amax(
     learning_rate: f32,
     weight_decay: f32,
     average_coefficient: f32,
+    schedule_beta: f32,
     base: u32,
     tid: u32,
-) -> f32 {
+) -> UpdateAmax {
     let chunk = UpdateChunk {
         u,
         z_master,
@@ -71,11 +74,26 @@ pub(super) fn update_eight_amax(
         learning_rate,
         weight_decay,
         average_coefficient,
+        schedule_beta,
         base,
         tid,
     };
-    max_f32(
-        max4_f32(chunk.at(0), chunk.at(1), chunk.at(2), chunk.at(3)),
-        max4_f32(chunk.at(4), chunk.at(5), chunk.at(6), chunk.at(7)),
-    )
+    let v0 = chunk.at(0);
+    let v1 = chunk.at(1);
+    let v2 = chunk.at(2);
+    let v3 = chunk.at(3);
+    let v4 = chunk.at(4);
+    let v5 = chunk.at(5);
+    let v6 = chunk.at(6);
+    let v7 = chunk.at(7);
+    UpdateAmax {
+        master: max_f32(
+            max4_f32(v0.master, v1.master, v2.master, v3.master),
+            max4_f32(v4.master, v5.master, v6.master, v7.master),
+        ),
+        schedule: max_f32(
+            max4_f32(v0.schedule, v1.schedule, v2.schedule, v3.schedule),
+            max4_f32(v4.schedule, v5.schedule, v6.schedule, v7.schedule),
+        ),
+    }
 }

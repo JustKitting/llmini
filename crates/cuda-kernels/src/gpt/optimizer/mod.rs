@@ -25,7 +25,7 @@ mod work_grid;
 pub use args::{
     AdamWUpdateArgs, EmbeddingLookupGradArgs, GradientClipArgs, KdaMuonClipArgs,
     MuonMegaUpdateArgs, MuonSlotDescriptor, MuonTmaFinishArgs, MuonTmaPrepareArgs,
-    ScheduleFreeMaterializeArgs,
+    ScheduleFreeMaterializeArgs, ScheduleFreeMaterializePrecomputedArgs,
 };
 pub use grad_clip::GRAD_CLIP_VALUES_PER_CHUNK;
 pub use launcher::OptimizerModule;

@@ -10,7 +10,9 @@ use crate::device_ptr::read_f32;
 
 pub(super) fn reduce_global_scale(
     block_amax: *const f32,
+    schedule_block_amax: *const f32,
     out_global_scale: *mut f32,
+    out_schedule_amax: *mut f32,
     warp_sums: &mut SharedArray<f32, { WARPS_PER_BLOCK as usize }>,
     work: WorkGrid,
 ) {
@@ -23,7 +25,9 @@ pub(super) fn reduce_global_scale(
             lane,
             warp_in_block,
             block_amax,
+            schedule_block_amax,
             out_global_scale,
+            out_schedule_amax,
             warp_sums,
             work,
         );
@@ -36,7 +40,9 @@ fn reduce_blocks_to_global_scale(
     lane: u32,
     warp_in_block: u32,
     block_amax: *const f32,
+    schedule_block_amax: *const f32,
     out_global_scale: *mut f32,
+    out_schedule_amax: *mut f32,
     warp_sums: &mut SharedArray<f32, { WARPS_PER_BLOCK as usize }>,
     work: WorkGrid,
 ) {
@@ -48,9 +54,22 @@ fn reduce_blocks_to_global_scale(
     }
     let tensor_amax =
         crate::block_reduce::block_max_shared_f32(warp_sums, local_amax, lane, warp_in_block);
+    let mut block = tid;
+    let mut local_schedule_amax = 0.0;
+    while block < work.blocks() {
+        local_schedule_amax = max_f32(local_schedule_amax, read_f32(schedule_block_amax, block));
+        block += CTA_THREADS;
+    }
+    let schedule_amax = crate::block_reduce::block_max_shared_f32(
+        warp_sums,
+        local_schedule_amax,
+        lane,
+        warp_in_block,
+    );
     if tid == 0 {
         unsafe {
             *out_global_scale = four_six_global_scale(tensor_amax, 1.0);
+            *out_schedule_amax = schedule_amax;
         }
     }
 }

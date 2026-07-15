@@ -77,6 +77,7 @@ pub(crate) mod module {
         learning_rate: f32,
         weight_decay: f32,
         average_coefficient: f32,
+        schedule_beta: f32,
         apply_polar_sqrt_bound: u32,
     ) {
         static mut WARP_SUMS: SharedArray<f32, { WARPS_PER_BLOCK as usize }> = SharedArray::UNINIT;
@@ -117,6 +118,7 @@ pub(crate) mod module {
                 scalars.learning_rate,
                 scalars.weight_decay,
                 scalars.average_coefficient,
+                schedule_beta,
                 &mut WARP_SUMS,
                 work,
             );
@@ -127,6 +129,7 @@ pub(crate) mod module {
             quantize_updated_master(
                 ptr_const(desc.x_master),
                 polar_chunks.as_mut_ptr(),
+                ptr_mut(desc.schedule_amax),
                 ptr_mut(desc.bytes),
                 ptr_mut(desc.scales),
                 ptr_mut(desc.global_scale),

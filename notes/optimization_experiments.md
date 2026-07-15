@@ -45,6 +45,108 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-15
 commit: accepted local jj commit after full gate
+experiment: Reuse next-step schedule-free amax from the Muon finish pass.
+status: accepted_900s
+change:
+  The start of every training step recomputed amax for all schedule-free
+  z + beta * (x - z) matrix weights, even though Muon had just visited the
+  freshly updated z/x pair. Muon finish now retains one exact next-step amax
+  scalar per matrix while updating the masters. Start-of-step materialization
+  reuses it for the 51 matrices not subsequently changed by KDA Q/K clipping;
+  the 16 QKV matrices keep the former full recomputation. The first step also
+  keeps the full path because no prior optimizer update exists yet.
+  Muon's per-block master and schedule maxima are now accumulated per thread
+  across all assigned chunks and reduced once at the end, instead of executing
+  a block reduction after every 2048-value chunk. Muon still requantizes x at
+  the end of each update, so intermediate/final held-out evaluation keeps the
+  exact previous model semantics. Only the next training-step amax is reused.
+numerics:
+  The retained scalar is max(abs(z + beta * (x - z))) using the same FP32
+  expression and updated master values as the removed start-of-step pass.
+  Max reduction grouping changes, but finite maxima are exact under regrouping.
+  QKV is deliberately excluded because KDA clipping can change z/x after Muon
+  finish. A focused TMA-finish GPU test compares the retained result with the
+  host expression, and the fixed-wall gates validate the complete trajectory.
+memory:
+  Persistent state increases by 268 bytes: one FP32 amax for each of 67 real
+  Muon matrices. Muon polar chunk scratch grows by 2500 bytes so five active
+  matrix slots can hold both master and schedule block maxima. This is not a
+  material capacity change.
+minimum_impact_gate:
+  The promoted baseline averaged 900.344 / 1399 = 643.562545ms per step, so the
+  required saving was 3.217813ms per step. The 51 reusable non-QKV schedule
+  amax kernels cost 33.460673ms over 10 steps, or 3.346067ms per step, before
+  counting the avoidable per-chunk reductions in Muon finish. The candidate
+  therefore cleared the pre-edit mathematical screen.
+focused_profile:
+  Parent:
+    target/nsys/20260715_grad_clip_direct_chunk4096_candidate.nsys-rep
+    target/nsys/20260715_grad_clip_direct_chunk4096_candidate_cuda_gpu_kern_sum.csv
+    target/nsys/20260715_grad_clip_direct_chunk4096_candidate_cuda_gpu_mem_time_sum.csv
+  Candidate:
+    target/nsys/20260715_muon_schedule_amax_candidate.nsys-rep
+    target/nsys/20260715_muon_schedule_amax_candidate_cuda_gpu_kern_sum.csv
+    target/nsys/20260715_muon_schedule_amax_candidate_cuda_gpu_mem_time_sum.csv
+  Across the same 10 training steps plus endpoint validation:
+    total GPU kernels: 6359.482454 -> 6324.725731ms.
+    memory operations: 94.740716 -> 94.449974ms.
+    net GPU kernel-plus-memory saving: 35.047465ms, or 3.504747ms per
+      training step, 0.545% of the promoted whole step and above the
+      3.217813ms implementation floor.
+    Muon finish: 379.810123 -> 364.034374ms, saving 1.577575ms per step.
+    The 10-step sample retains the full amax path on step one, so non-QKV
+      schedule-amax launches fall from 510 to 51 and their time falls from
+      33.460673 to 3.357263ms. The paired global-reduction launches also fall
+      by 459, for 918 fewer launches in total.
+    held-out val_loss: 8.663224 -> 8.659158 (-0.047%).
+verification:
+  cargo fmt --all --check: pass.
+  cargo check --workspace: pass.
+  Fresh cargo oxide build --arch sm_120a: pass.
+  cargo test --workspace --release --lib --bins: pass, including 45 sweep tests
+    and 4 rust-kernels tests.
+  Full optimizer GPU suite after the fresh PTX build: pass, 15 tests.
+  Focused active TMA-finish retained-amax GPU test: pass.
+  ptxas for muon_tma_finish_update_kernel: 47 registers, 32 bytes shared
+    memory, one barrier, and zero spills.
+  Three-step launch/reuse diagnostic only:
+    target/runs/20260715_153806Z_fineweb_60s
+    completed_steps=3, train_elapsed_s=1.830, val_loss=10.349322.
+  Focused 10-step run:
+    target/runs/20260715_153818Z_fineweb_60s
+    completed_steps=10, train_elapsed_s=6.292, val_loss=8.659158.
+  Required 30-second screen with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260715_153907Z_fineweb_30s
+    completed_steps=49, train_elapsed_s=30.358, val_loss=6.809889.
+  Required 900-second gate with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260715_154007Z_fineweb_900s
+    stdout: target/muon_schedule_amax_900_20260715.log
+    completed_steps=1406, train_elapsed_s=900.207, val_loss=4.911748.
+    All 29 high-fidelity samples were finite and nonzero, with zero skipped
+    updates, loss-spike skips, grad-norm-spike skips, or nonfinite skips. Grad
+    norm ranged from 1.198901653 to 18.969266891. Every sample retained batch 4
+    and sequence 2048.
+measured_effect:
+  Against the matched 30-second baseline:
+    completed_steps: 49 -> 49.
+    average step time: 623.653061 -> 619.551020ms
+      (-4.102041ms, -0.658%).
+    held-out val_loss: 6.812499 -> 6.809889 (-0.002610, -0.038%).
+  Against the matched 900-second baseline:
+    completed_steps: 1399 -> 1406 (+7, +0.500%).
+    average step time: 643.562545 -> 640.261024ms
+      (-3.301520ms, -0.513%).
+    training tokens: 11460608 -> 11517952 (+57344, +0.500%).
+    held-out val_loss: 4.920418 -> 4.911748 (-0.008670, -0.176%).
+decision:
+  Keep and promote. The focused profile and both fixed-wall gates show a real
+  speed win, held-out loss improves, and the high-fidelity run is stable. The
+  next 0.5% threshold is (900.207 / 1406) * 0.005 = 3.201305ms per step.
+```
+
+```text
+date: 2026-07-15
+commit: accepted local jj commit after full gate
 experiment: Precompute direct gradient chunks and widen global-norm reductions.
 status: accepted_900s
 change:

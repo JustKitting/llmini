@@ -33,6 +33,7 @@ pub(in crate::training) struct MuonTmaArgs<'a> {
 pub(in crate::training) fn apply_muon_tma(args: MuonTmaArgs<'_>) -> Result<(), DriverError> {
     let stream = args.runtime.stream.as_ref();
     let learning_rate = muon_learning_rate(args.step);
+    let schedule_beta = super::super::learning_rate::schedule_free_beta(args.step + 1);
     let trace = TmaTraceConfig::from_env();
     for slot_index in 0..args.slot_count {
         let desc = args.table.host_slots[slot_index];
@@ -89,6 +90,7 @@ pub(in crate::training) fn apply_muon_tma(args: MuonTmaArgs<'_>) -> Result<(), D
                     learning_rate,
                     weight_decay: MUON_WEIGHT_DECAY,
                     average_coefficient: args.average_coefficient,
+                    schedule_beta,
                     apply_polar_sqrt_bound: defer_bounds as u32,
                 })?;
         } else {
@@ -104,6 +106,7 @@ pub(in crate::training) fn apply_muon_tma(args: MuonTmaArgs<'_>) -> Result<(), D
                     learning_rate,
                     weight_decay: MUON_WEIGHT_DECAY,
                     average_coefficient: args.average_coefficient,
+                    schedule_beta,
                     apply_polar_sqrt_bound: defer_bounds as u32,
                 })?;
         }

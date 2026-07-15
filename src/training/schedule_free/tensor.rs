@@ -1,5 +1,7 @@
 use cuda_core::{CudaStream, DeviceBuffer, DriverError};
-use rust_kernels_cuda::optimizer::{OptimizerModule, ScheduleFreeMaterializeArgs};
+use rust_kernels_cuda::optimizer::{
+    OptimizerModule, ScheduleFreeMaterializeArgs, ScheduleFreeMaterializePrecomputedArgs,
+};
 
 use crate::upload::UploadedNvfp4;
 
@@ -42,6 +44,26 @@ impl<'a> Materializer<'a> {
         state: &MuonState,
     ) -> Result<(), DriverError> {
         self.tensor(tensor, &state.z_master, &state.x_master)
+    }
+
+    pub(super) fn muon_precomputed(
+        &mut self,
+        tensor: &mut UploadedNvfp4,
+        state: &MuonState,
+    ) -> Result<(), DriverError> {
+        self.optimizer.materialize_schedule_free_precomputed(
+            ScheduleFreeMaterializePrecomputedArgs {
+                stream: self.stream,
+                bytes: &mut tensor.bytes,
+                scales: &mut tensor.scales,
+                global_scale: &mut tensor.global_scale,
+                z_master: &state.z_master,
+                x_master: &state.x_master,
+                amax: &state.schedule_amax,
+                len: tensor.len as u32,
+                beta: self.beta,
+            },
+        )
     }
 
     fn tensor(

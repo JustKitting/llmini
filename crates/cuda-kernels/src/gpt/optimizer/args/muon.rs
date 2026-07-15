@@ -7,6 +7,7 @@ pub struct MuonSlotDescriptor {
     pub momentum: u64,
     pub z_master: u64,
     pub x_master: u64,
+    pub schedule_amax: u64,
     pub bytes: u64,
     pub scales: u64,
     pub global_scale: u64,
@@ -59,5 +60,6 @@ pub struct MuonTmaFinishArgs<'a> {
     pub learning_rate: f32,
     pub weight_decay: f32,
     pub average_coefficient: f32,
+    pub schedule_beta: f32,
     pub apply_polar_sqrt_bound: u32,
 }

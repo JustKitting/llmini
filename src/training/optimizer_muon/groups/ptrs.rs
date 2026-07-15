@@ -63,6 +63,7 @@ fn linear(weight: &UploadedNvfp4, grad: &DeviceBuffer<f32>, state: &MuonState) -
         momentum: state.momentum.cu_deviceptr(),
         z_master: state.z_master.cu_deviceptr(),
         x_master: state.x_master.cu_deviceptr(),
+        schedule_amax: state.schedule_amax.cu_deviceptr(),
         bytes: weight.bytes.cu_deviceptr(),
         scales: weight.scales.cu_deviceptr(),
         global_scale: weight.global_scale.cu_deviceptr(),

@@ -25,6 +25,7 @@ pub(super) fn update_master_chunks(
     learning_rate: f32,
     weight_decay: f32,
     average_coefficient: f32,
+    schedule_beta: f32,
     warp_sums: &mut SharedArray<f32, { WARPS_PER_BLOCK as usize }>,
     work: WorkGrid,
 ) {
@@ -33,7 +34,8 @@ pub(super) fn update_master_chunks(
     let warp_in_block = tid / WARP_SIZE;
     let mut chunk = work.block();
     let chunk_count = len.div_ceil(UPDATE_VALUES_PER_CHUNK);
-    let mut local_block_amax = 0.0;
+    let mut local_master_amax = 0.0;
+    let mut local_schedule_amax = 0.0;
     let scale = 0.2 * sqrt_f32(max_f32(rows as f32, cols as f32));
 
     while chunk < chunk_count {
@@ -51,17 +53,30 @@ pub(super) fn update_master_chunks(
             learning_rate,
             weight_decay,
             average_coefficient,
+            schedule_beta,
             base,
             tid,
         );
-        let block_amax =
-            crate::block_reduce::block_max_shared_f32(warp_sums, local_amax, lane, warp_in_block);
-        local_block_amax = max_f32(local_block_amax, block_amax);
+        local_master_amax = max_f32(local_master_amax, local_amax.master);
+        local_schedule_amax = max_f32(local_schedule_amax, local_amax.schedule);
         chunk += work.blocks();
     }
+    let master_amax = crate::block_reduce::block_max_shared_f32(
+        warp_sums,
+        local_master_amax,
+        lane,
+        warp_in_block,
+    );
+    let schedule_amax = crate::block_reduce::block_max_shared_f32(
+        warp_sums,
+        local_schedule_amax,
+        lane,
+        warp_in_block,
+    );
     if tid == 0 {
         unsafe {
-            *block_amax.add(work.block() as usize) = local_block_amax;
+            *block_amax.add(work.block() as usize) = master_amax;
+            *block_amax.add((work.blocks() + work.block()) as usize) = schedule_amax;
         }
     }
 }

@@ -8,6 +8,7 @@ pub(super) struct MuonMatrixState {
     pub momentum: *mut f32,
     pub z_master: *mut f32,
     pub x_master: *mut f32,
+    pub schedule_amax: *mut f32,
     pub out_fp4: *mut u8,
     pub out_scales: *mut u8,
     pub out_global_scale: *mut f32,

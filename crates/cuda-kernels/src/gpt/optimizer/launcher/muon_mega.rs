@@ -54,6 +54,7 @@ impl OptimizerModule {
 
     pub fn muon_tma_finish_update(&self, args: MuonTmaFinishArgs<'_>) -> Result<(), DriverError> {
         assert!(args.slot_index < args.slots.len() as u32);
+        assert!(args.polar_chunks.len() >= 2 * MUON_COOPERATIVE_BLOCKS);
         self.apply.muon.tma_split.muon_tma_finish_update_kernel(
             args.stream,
             launch_config((MUON_COOPERATIVE_BLOCKS as u32, 1, 1), CTA_THREADS),
@@ -65,6 +66,7 @@ impl OptimizerModule {
             args.learning_rate,
             args.weight_decay,
             args.average_coefficient,
+            args.schedule_beta,
             args.apply_polar_sqrt_bound,
         )
     }
@@ -80,5 +82,5 @@ fn assert_mega_args(args: &MuonMegaUpdateArgs<'_>) {
     assert!(args.polar_x.len() >= args.max_len as usize * matrix_count);
     assert!(args.polar_ax.len() >= args.max_ax_len as usize * matrix_count);
     assert!(args.polar_gram.len() >= args.max_dim as usize * args.max_dim as usize * matrix_count);
-    assert!(args.polar_chunks.len() >= MUON_COOPERATIVE_BLOCKS * matrix_count);
+    assert!(args.polar_chunks.len() >= 2 * MUON_COOPERATIVE_BLOCKS * matrix_count);
 }

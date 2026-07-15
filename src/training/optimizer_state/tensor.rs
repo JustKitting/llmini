@@ -39,6 +39,7 @@ pub(in crate::training) struct MuonState {
     pub(in crate::training) z_master: DeviceBuffer<f32>,
     pub(in crate::training) x_master: DeviceBuffer<f32>,
     pub(in crate::training) momentum: DeviceBuffer<f32>,
+    pub(in crate::training) schedule_amax: DeviceBuffer<f32>,
 }
 
 impl MuonState {
@@ -48,6 +49,7 @@ impl MuonState {
             z_master: clone_device(init.stream, &master)?,
             x_master: master,
             momentum: zero(init.stream, tensor.len)?,
+            schedule_amax: zero(init.stream, 1)?,
         })
     }
 }

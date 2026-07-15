@@ -10,6 +10,7 @@ mod reduce_scale;
 pub(super) fn quantize_updated_master(
     x: *const f32,
     block_amax: *mut f32,
+    out_schedule_amax: *mut f32,
     out_fp4: *mut u8,
     out_scales: *mut u8,
     out_global_scale: *mut f32,
@@ -17,6 +18,14 @@ pub(super) fn quantize_updated_master(
     warp_sums: &mut SharedArray<f32, { WARPS_PER_BLOCK as usize }>,
     work: WorkGrid,
 ) {
-    reduce_scale::reduce_global_scale(block_amax, out_global_scale, warp_sums, work);
+    let schedule_block_amax = unsafe { block_amax.add(work.blocks() as usize) };
+    reduce_scale::reduce_global_scale(
+        block_amax,
+        schedule_block_amax,
+        out_global_scale,
+        out_schedule_amax,
+        warp_sums,
+        work,
+    );
     encode::encode_four_six(x, out_fp4, out_scales, out_global_scale, len, work);
 }

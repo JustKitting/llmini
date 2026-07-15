@@ -18,6 +18,7 @@ pub(in crate::training) fn materialize_training_weights(
     state: &OptimizerStateBuffers,
 ) -> Result<(), DriverError> {
     let beta = schedule_free_beta(state.next_step());
+    let reuse_muon_amax = state.next_step() > 1;
     let mut materializer = Materializer::new(stream, &runtime.optimizer, scratch, beta);
 
     materializer.adam(&mut uploaded.token_embedding, &state.token_embedding)?;
@@ -26,10 +27,11 @@ pub(in crate::training) fn materialize_training_weights(
         &mut materializer,
         &mut uploaded.next_latent,
         &state.next_latent,
+        reuse_muon_amax,
     )?;
 
     for (block, state) in uploaded.blocks.iter_mut().zip(state.blocks.iter()) {
-        materialize_block(&mut materializer, block, state)?;
+        materialize_block(&mut materializer, block, state, reuse_muon_amax)?;
     }
 
     Ok(())
@@ -39,18 +41,26 @@ fn materialize_next_latent(
     materializer: &mut Materializer<'_>,
     next_latent: &mut UploadedNextLat,
     state: &NextLatState,
+    reuse_muon_amax: bool,
 ) -> Result<(), DriverError> {
     materialize_layer_norm(materializer, &mut next_latent.norm, &state.norm)?;
     materialize_linear(
         materializer,
         &mut next_latent.input_projection,
         &state.input_projection,
+        reuse_muon_amax,
     )?;
-    materialize_linear(materializer, &mut next_latent.transition, &state.transition)?;
+    materialize_linear(
+        materializer,
+        &mut next_latent.transition,
+        &state.transition,
+        reuse_muon_amax,
+    )?;
     materialize_linear(
         materializer,
         &mut next_latent.output_projection,
         &state.output_projection,
+        reuse_muon_amax,
     )
 }
 
@@ -58,13 +68,29 @@ fn materialize_block(
     materializer: &mut Materializer<'_>,
     block: &mut crate::upload::UploadedBlock,
     state: &BlockState,
+    reuse_muon_amax: bool,
 ) -> Result<(), DriverError> {
     materialize_layer_norm(materializer, &mut block.ln_1, &state.ln_1)?;
-    materialize_linear(materializer, &mut block.attn_qkv, &state.attn_qkv)?;
-    materialize_linear(materializer, &mut block.attn_c_proj, &state.attn_c_proj)?;
+    materialize_linear(materializer, &mut block.attn_qkv, &state.attn_qkv, false)?;
+    materialize_linear(
+        materializer,
+        &mut block.attn_c_proj,
+        &state.attn_c_proj,
+        reuse_muon_amax,
+    )?;
     materialize_layer_norm(materializer, &mut block.ln_2, &state.ln_2)?;
-    materialize_linear(materializer, &mut block.mlp_up, &state.mlp_up)?;
-    materialize_linear(materializer, &mut block.mlp_down, &state.mlp_down)
+    materialize_linear(
+        materializer,
+        &mut block.mlp_up,
+        &state.mlp_up,
+        reuse_muon_amax,
+    )?;
+    materialize_linear(
+        materializer,
+        &mut block.mlp_down,
+        &state.mlp_down,
+        reuse_muon_amax,
+    )
 }
 
 fn materialize_layer_norm(
@@ -80,7 +106,12 @@ fn materialize_linear(
     materializer: &mut Materializer<'_>,
     linear: &mut UploadedLinear,
     state: &LinearState,
+    reuse_muon_amax: bool,
 ) -> Result<(), DriverError> {
-    materializer.muon(&mut linear.weight, &state.weight_muon)?;
+    if reuse_muon_amax {
+        materializer.muon_precomputed(&mut linear.weight, &state.weight_muon)?;
+    } else {
+        materializer.muon(&mut linear.weight, &state.weight_muon)?;
+    }
     materializer.adam(&mut linear.bias, &state.bias)
 }
