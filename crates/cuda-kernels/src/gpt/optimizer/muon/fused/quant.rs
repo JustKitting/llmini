@@ -18,6 +18,7 @@ pub(super) fn quantize_updated_master(
     out_global_scale: *mut f32,
     len: u32,
     warp_sums: &mut SharedArray<f32, { WARPS_PER_BLOCK as usize }>,
+    warp_max_pairs: &mut SharedArray<f32, { WARPS_PER_BLOCK as usize }>,
     work: WorkGrid,
 ) {
     let schedule_block_amax = unsafe { block_amax.add(work.blocks() as usize) };
@@ -27,6 +28,7 @@ pub(super) fn quantize_updated_master(
         out_global_scale,
         out_schedule_amax,
         warp_sums,
+        warp_max_pairs,
         work,
     );
     encode::encode_four_six(x, out_fp4, out_scales, out_global_scale, len, work);

@@ -6,7 +6,7 @@ use crate::AttentionDims;
 
 pub fn causal_attention_backward(
     args: AttentionCoreBackwardArgs<'_, '_, '_>,
-) -> Result<(), DriverError> {
+) -> Result<Option<u32>, DriverError> {
     assert!(
         !args.use_full_attention || args.reuse_forward_probs,
         "the GPT-2 full-attention backward scratch requires saved forward probabilities"
@@ -28,6 +28,7 @@ pub fn causal_attention_backward(
         softmax_d: args.scratch.softmax_d,
         qk_norm_max: args.scratch.qk_norm_max,
         d_qkv: args.d_qkv,
+        d_qkv_chunk_amax: args.d_qkv_chunk_amax,
         scratch: args.scratch.tc,
         row_count: args.saved.row_count,
         seq_len: args.saved.seq_len,
@@ -39,8 +40,9 @@ pub fn causal_attention_backward(
         qk_norm_offset: (args.block_index as u32) * 2 * dims.head_count,
     };
     if args.use_full_attention {
-        args.module.causal_attention_backward_tc(tc_args)
+        args.module.causal_attention_backward_tc(tc_args)?;
+        Ok(None)
     } else {
-        args.module.kda_attention_backward_tc(tc_args)
+        args.module.kda_attention_backward_tc(tc_args).map(Some)
     }
 }

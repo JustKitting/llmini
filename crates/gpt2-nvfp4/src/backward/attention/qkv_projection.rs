@@ -17,6 +17,7 @@ pub fn qkv_projection_backward(
         d_ln_1_normalized,
         d_attn_qkv_weight,
         d_attn_qkv_bias,
+        precomputed_d_qkv_amax_chunks,
         scratch,
         seeds,
     } = args;
@@ -39,6 +40,7 @@ pub fn qkv_projection_backward(
             output_dim: dims.qkv_dim,
             sign_seed: seeds.sign,
             scale_seed: seeds.scale,
+            precomputed_e_amax_chunks: precomputed_d_qkv_amax_chunks,
         },
     )
 }

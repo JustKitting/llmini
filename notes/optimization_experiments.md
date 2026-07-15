@@ -45,6 +45,97 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-15
 commit: accepted local jj commit after full gate
+experiment: Reuse backward-producer maxima and batch compatible max reductions.
+status: accepted_900s
+change:
+  ReLU2 backward and KDA finish now reduce the absolute values they have just
+  written into the existing chunk-amax scratch, so the following rowwise
+  linear backward consumes those producer maxima instead of launching a full
+  tensor scan. This removes 28 launches per training step. Compatible max
+  reductions in KDA, Muon, softmax, loss, and quantization share block
+  synchronization or use ordered finite FP32 keys with SM120
+  redux.sync.max.u32. KDA initialization also writes its already-zero initial
+  snapshot while clearing state instead of launching a separate snapshot pass.
+numerics:
+  Producer maxima are calculated from the exact FP32 values written to the
+  gradient buffers, and focused tests compare both those buffers and their
+  resulting maxima. Unsigned FP32 keys preserve numerical ordering for every
+  finite value, including signed softmax and loss inputs. Paired reductions
+  change only reduction plumbing and retain the same maximum operation. NaN
+  selection is not claimed equivalent to the former max.f32 tree; every
+  sustained-run sample remained finite and no update was skipped.
+memory:
+  Existing linear-backward chunk-amax scratch is reused. No allocation, peak
+  VRAM, scratch size, or buffer lifetime changed, so this is not a capacity
+  win.
+minimum_impact_gate:
+  The promoted baseline averaged 900.214 / 1535 = 586.458632ms per step and
+  required 2.932293ms per step. Producer-side amax reuse removes 28 complete
+  tensor-amax scans per step; matched profiles also showed repeatable savings
+  from the compatible hardware and paired reductions. Their combined credible
+  ceiling exceeded the aggregate threshold even though several individual
+  reductions were deliberately retained as known-real sub-threshold wins.
+focused_profile:
+  Committed baseline samples:
+    target/nsys/20260715_ms_eden_payload_redux_max_batch_candidate.nsys-rep
+    target/nsys/20260715_ms_eden_payload_redux_max_batch_candidate_reciprocal.nsys-rep
+    train elapsed: 5.746 and 5.751 seconds.
+    held-out val_loss: 8.662500 and 8.665192.
+  Candidate samples:
+    target/nsys/20260715_backward_producer_redux_batch_candidate.nsys-rep
+    target/nsys/20260715_backward_producer_redux_batch_candidate_reciprocal.nsys-rep
+    train elapsed: 5.691 and 5.705 seconds.
+    held-out val_loss: 8.665930 and 8.665089.
+  Across the same 10 training steps plus endpoint validation:
+    all GPU kernels:
+      5850.036621 -> 5795.352623ms and
+      5855.131026 -> 5809.654954ms,
+      saving 5.468400 / 4.547607ms per step (0.935% / 0.777%).
+    mean saving: 5.008003ms per step (0.856%).
+    kernel launches: 92061 -> 91781 in both matched samples, removing
+      280 launches over 10 steps, or 28 launches per step.
+verification:
+  cargo fmt --all, git diff --check, fresh
+  cargo oxide build --arch sm_120a, and
+  cargo test --workspace --release --lib --bins: pass (50 host tests).
+  ReLU2 producer amax, GPT2 causal backward, QKV projection backward, direct
+  causal backward, linear backward, loss, attention softmax, NVFP4, MS-EDEN,
+  and Muon TMA focused GPU suites pass: 23 focused comparisons total.
+  Required clean 30-second screen with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260715_210054Z_fineweb_30s
+    stdout: target/gates/20260715_backward_producer_redux_batch_30s.log
+    completed_steps=54, train_elapsed_s=30.463, val_loss=6.736594.
+  Required 900-second gate with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260715_210147Z_fineweb_900s
+    stdout: target/gates/20260715_backward_producer_redux_batch_900s.log
+    completed_steps=1548, train_elapsed_s=900.149, val_loss=4.880241.
+    All 31 high-fidelity samples were finite and nonzero, with zero skipped
+    updates, loss-spike skips, grad-norm-spike skips, or nonfinite skips. Grad
+    norm ranged from 1.187757969 to 18.956151962. Every sample retained batch
+    4, sequence 2048, and 8192 tokens per step.
+measured_effect:
+  Against the matched 30-second baseline:
+    completed_steps: 53 -> 54 (+1, +1.887%).
+    average step time: 569.207547 -> 564.129630ms
+      (-5.077918ms, -0.892%).
+    training tokens: 434176 -> 442368 (+8192, +1.887%).
+    held-out val_loss: 6.748165 -> 6.736594 (-0.011571, -0.171%).
+  Against the matched 900-second baseline:
+    completed_steps: 1535 -> 1548 (+13, +0.847%).
+    average step time: 586.458632 -> 581.491602ms
+      (-4.967030ms, -0.847%).
+    training tokens: 12574720 -> 12681216 (+106496, +0.847%).
+    held-out val_loss: 4.890575 -> 4.880241 (-0.010334, -0.211%).
+decision:
+  Keep and promote. Both reciprocal profiles clear the aggregate 0.5% floor,
+  both fixed-wall gates preserve the speed signal, held-out loss improves, and
+  the full run is stable. The next 0.5% threshold is
+  (900.149 / 1548) * 0.005 = 2.907458ms per step.
+```
+
+```text
+date: 2026-07-15
+commit: accepted local jj commit after full gate
 experiment: Reuse MS-EDEN payloads and batch nonnegative warp maxima onto hardware redux.
 status: accepted_900s
 change:

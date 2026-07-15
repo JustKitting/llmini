@@ -67,6 +67,7 @@ pub(super) fn muon_matrix_update_body(
         scalars.average_coefficient,
         1.0,
         tiles.warp_sums,
+        tiles.warp_max_pairs,
         work,
     );
     grid::sync();
@@ -80,6 +81,7 @@ pub(super) fn muon_matrix_update_body(
         state.out_global_scale,
         len,
         tiles.warp_sums,
+        tiles.warp_max_pairs,
         work,
     );
 }

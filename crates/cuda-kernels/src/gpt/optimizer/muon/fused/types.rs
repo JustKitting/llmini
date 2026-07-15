@@ -28,6 +28,7 @@ pub(super) struct MuonMatrixTiles<'a> {
     pub a_tile: &'a mut SharedArray<u16, CTA_A_ELEMS>,
     pub b_tile: &'a mut SharedArray<u16, CTA_B_ELEMS>,
     pub warp_sums: &'a mut SharedArray<f32, { WARPS_PER_BLOCK as usize }>,
+    pub warp_max_pairs: &'a mut SharedArray<f32, { WARPS_PER_BLOCK as usize }>,
 }
 
 #[derive(Clone, Copy)]

@@ -75,6 +75,7 @@ fn qkv_projection_backward_runs_linear_ms_eden_path() -> TestResult {
         d_ln_1_normalized: &mut d_ln_1_normalized,
         d_attn_qkv_weight: &mut d_attn_qkv_weight,
         d_attn_qkv_bias: &mut d_attn_qkv_bias,
+        precomputed_d_qkv_amax_chunks: None,
         scratch: scratch.qkv(),
         seeds: data::seeds(),
     })?;

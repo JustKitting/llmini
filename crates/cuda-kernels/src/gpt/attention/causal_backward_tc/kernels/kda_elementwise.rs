@@ -1,16 +1,18 @@
 use cuda_device::{DisjointSlice, SharedArray, cuda_module, kernel, thread};
 
+use super::super::gather::TC_BACKWARD_THREADS_PER_BLOCK;
 use super::super::kda::{
     FinishKdaGrads, add_kda_compact_body, chunk_cumsum_g_body, finish_kda_backward_body,
     gather_kda_dout_body, make_kda_kneg_from_kg_body, make_kda_kpos_from_kg_body,
     make_kda_strict_neg_matrix_body, prepare_kda_backward_inputs_body,
 };
 use crate::attention::CausalAttentionParams;
-use crate::block_reduce::block_max_shared_f32;
+use crate::block_reduce::{block_max_pair_leader_f32, block_max_store_f32};
 use crate::warp_reduce::thread_lane_warp;
 
 const NORM_REDUCE_THREADS_PER_BLOCK: u32 = 256;
 const NORM_REDUCE_WARPS_PER_BLOCK: usize = (NORM_REDUCE_THREADS_PER_BLOCK / 32) as usize;
+const FINISH_WARPS_PER_BLOCK: usize = (TC_BACKWARD_THREADS_PER_BLOCK / 32) as usize;
 
 #[cuda_module]
 pub(super) mod module {
@@ -96,9 +98,12 @@ pub(super) mod module {
         q_norms: DisjointSlice<f32>,
         k_norms: DisjointSlice<f32>,
         d_qkv: DisjointSlice<f32>,
+        mut d_qkv_chunk_amax: DisjointSlice<f32>,
         params: CausalAttentionParams,
     ) {
-        finish_kda_backward_body(
+        static mut FINISH_AMAX: SharedArray<f32, FINISH_WARPS_PER_BLOCK> = SharedArray::UNINIT;
+
+        let local_amax = finish_kda_backward_body(
             qkv,
             FinishKdaGrads {
                 q: d_q,
@@ -111,6 +116,14 @@ pub(super) mod module {
             k_norms,
             d_qkv,
             params,
+        );
+        let (_, lane, warp_in_block) = thread_lane_warp();
+        block_max_store_f32!(
+            FINISH_AMAX,
+            d_qkv_chunk_amax[thread::blockIdx_x()],
+            local_amax,
+            lane,
+            warp_in_block
         );
     }
 
@@ -129,6 +142,7 @@ pub(super) mod module {
         }
 
         static mut REDUCE: SharedArray<f32, NORM_REDUCE_WARPS_PER_BLOCK> = SharedArray::UNINIT;
+        static mut REDUCE_PAIR: SharedArray<f32, NORM_REDUCE_WARPS_PER_BLOCK> = SharedArray::UNINIT;
         let (tid, lane, warp_id) = thread_lane_warp();
         let mut q_max = 0.0;
         let mut k_max = 0.0;
@@ -142,9 +156,9 @@ pub(super) mod module {
             row += NORM_REDUCE_THREADS_PER_BLOCK;
         }
 
-        let q_max = unsafe { block_max_shared_f32(&mut REDUCE, q_max, lane, warp_id) };
-        let k_max = unsafe { block_max_shared_f32(&mut REDUCE, k_max, lane, warp_id) };
-        if tid == 0 {
+        if let Some((q_max, k_max)) = unsafe {
+            block_max_pair_leader_f32(&mut REDUCE, &mut REDUCE_PAIR, q_max, k_max, lane, warp_id)
+        } {
             unsafe {
                 *qk_norm_max.get_unchecked_mut((norm_offset + head) as usize) = q_max;
                 *qk_norm_max.get_unchecked_mut((norm_offset + head_count + head) as usize) = k_max;

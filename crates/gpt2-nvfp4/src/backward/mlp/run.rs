@@ -21,6 +21,7 @@ pub fn backward(args: MlpBackwardArgs<'_, '_, '_>) -> Result<(), DriverError> {
         up_linear,
         ..
     } = scratch;
+    let up_linear = up_linear;
     let MlpBackwardGrads {
         d_mlp_relu2,
         d_mlp_up,
@@ -48,14 +49,16 @@ pub fn backward(args: MlpBackwardArgs<'_, '_, '_>) -> Result<(), DriverError> {
             output_dim: GPT2_EMBEDDING_DIM,
             sign_seed: seeds.down_sign,
             scale_seed: seeds.down_scale,
+            precomputed_e_amax_chunks: None,
         },
     )?;
 
-    modules.mlp.relu2_backward_f16(Relu2BackwardF16Args {
+    let d_mlp_up_amax_chunks = modules.mlp.relu2_backward_f16(Relu2BackwardF16Args {
         stream,
         pre_activation: saved.mlp_up,
         d_out: d_mlp_relu2,
         d_pre_activation: d_mlp_up,
+        d_pre_activation_chunk_amax: &mut *up_linear.e_h.chunk_amax,
         len: saved.row_count * GPT2_MLP_DIM,
     })?;
 
@@ -76,6 +79,7 @@ pub fn backward(args: MlpBackwardArgs<'_, '_, '_>) -> Result<(), DriverError> {
             output_dim: GPT2_MLP_DIM,
             sign_seed: seeds.up_sign,
             scale_seed: seeds.up_scale,
+            precomputed_e_amax_chunks: Some(d_mlp_up_amax_chunks),
         },
     )
 }

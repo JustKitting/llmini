@@ -30,8 +30,19 @@ pub fn warp_max_f32(mut value: f32) -> f32 {
 }
 
 #[inline(always)]
+pub fn warp_max_finite_f32(value: f32) -> f32 {
+    let bits = value.to_bits();
+    let sign_fill = ((bits as i32) >> 31) as u32;
+    let ordered = bits ^ (sign_fill | 0x8000_0000);
+    let ordered = redux_max_u32(ordered, FULL_WARP_MASK);
+    let ordered_sign_fill = ((ordered as i32) >> 31) as u32;
+    let bits = ordered ^ ((!ordered_sign_fill) | 0x8000_0000);
+    f32::from_bits(bits)
+}
+
+#[inline(always)]
 pub fn warp_max_nonnegative_f32(value: f32) -> f32 {
-    redux_max_u32(value.to_bits(), FULL_WARP_MASK)
+    f32::from_bits(redux_max_u32(value.to_bits(), FULL_WARP_MASK))
 }
 
 #[inline(always)]
@@ -52,11 +63,11 @@ pub fn half_warp_max_f32(mut value: f32, mask: u32) -> f32 {
 
 #[inline(always)]
 pub fn half_warp_max_nonnegative_f32(value: f32, mask: u32) -> f32 {
-    redux_max_u32(value.to_bits(), mask)
+    f32::from_bits(redux_max_u32(value.to_bits(), mask))
 }
 
 #[inline(always)]
-fn redux_max_u32(value: u32, mask: u32) -> f32 {
+fn redux_max_u32(value: u32, mask: u32) -> u32 {
     let result: u32;
     unsafe {
         ptx_asm!(
@@ -67,5 +78,5 @@ fn redux_max_u32(value: u32, mask: u32) -> f32 {
             options(register_only),
         );
     }
-    f32::from_bits(result)
+    result
 }

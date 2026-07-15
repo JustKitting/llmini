@@ -78,8 +78,8 @@ threshold from the active baseline whenever that baseline changes:
 minimum_step_saving = (TRAIN_ELAPSED_S / COMPLETED_STEPS) * 0.005
 ```
 
-For the current baseline, `900.214 / 1535 = 0.586458632` seconds per step, so a
-candidate batch must credibly be able to save at least `2.932293 ms/step`
+For the current baseline, `900.149 / 1548 = 0.581491602` seconds per step, so a
+candidate batch must credibly be able to save at least `2.907458 ms/step`
 before a rebuild, GPU test, or training screen. Multiply a per-launch saving by
 the launch count per step and compare that aggregate saving with the threshold.
 

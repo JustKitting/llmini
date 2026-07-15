@@ -12,7 +12,7 @@ impl AttentionModule {
     pub fn kda_attention_backward_tc(
         &self,
         args: CausalAttentionBackwardTcArgs<'_, '_, '_>,
-    ) -> Result<(), DriverError> {
+    ) -> Result<u32, DriverError> {
         assert_eq!(
             args.head_dim, KDA_HEAD_DIM,
             "KDA path currently expects head_dim=64"
@@ -34,6 +34,7 @@ impl AttentionModule {
             softmax_d: beta,
             qk_norm_max,
             d_qkv,
+            d_qkv_chunk_amax,
             scratch,
             row_count: _,
             seq_len,
@@ -83,6 +84,9 @@ impl AttentionModule {
         let batch_cfg = grid_x_config(dims.batch_head, threads);
         let chunk_cfg = kda_launch::chunk_dim_config(dims.batch_head, dims.chunks, threads);
         let matrix_cfg = grid_x_config(dims.chunk_batch, threads);
+        let finish_element_count = dims.batch_head * seq_len * 32;
+        let finish_chunk_count = finish_element_count.div_ceil(threads);
+        assert!(d_qkv_chunk_amax.len() >= finish_chunk_count as usize);
         macro_rules! launch {
             ($target:ident.$kernel:ident($config:expr; $($arg:expr),* $(,)?)) => {
                 $target.$kernel(stream, $config, $($arg,)* params)?;
@@ -204,7 +208,7 @@ impl AttentionModule {
         // After chunk_intra_kda_backward_kernel these reused buffers hold final compact gradients.
         // qg and kg are dead after the final gradient pass, so reuse their leading
         // batch-head rows for the post-SiLU norms already computed by that pass.
-        launch!(bwd_elementwise.finish_kda_backward_kernel(linear_config(dims.batch_head * seq_len * 32, threads); qkv, w_du_dq, chunk_matrix, kneg_vnew_dqg_dv, dka_dg, d_beta, qg, kg, d_qkv));
+        launch!(bwd_elementwise.finish_kda_backward_kernel(grid_x_config(finish_chunk_count, threads); qkv, w_du_dq, chunk_matrix, kneg_vnew_dqg_dv, dka_dg, d_beta, qg, kg, d_qkv, d_qkv_chunk_amax));
         bwd_elementwise.reduce_kda_qk_norm_max_kernel(
             stream,
             grid_x_config(head_count, KDA_NORM_REDUCE_THREADS_PER_BLOCK),
@@ -215,6 +219,6 @@ impl AttentionModule {
             params.row_count,
             head_count,
         )?;
-        Ok(())
+        Ok(finish_chunk_count)
     }
 }

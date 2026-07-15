@@ -35,6 +35,7 @@ pub fn c_proj_backward(args: AttentionCProjBackwardArgs<'_, '_, '_>) -> Result<(
             sign_seed: seeds.sign,
             scale_seed: seeds.scale,
             e: d_residual_after_attention,
+            precomputed_e_amax_chunks: None,
         },
     )
 }

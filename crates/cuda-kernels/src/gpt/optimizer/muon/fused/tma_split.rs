@@ -162,6 +162,8 @@ pub(crate) mod module {
         apply_polar_sqrt_bound: u32,
     ) {
         static mut WARP_SUMS: SharedArray<f32, { WARPS_PER_BLOCK as usize }> = SharedArray::UNINIT;
+        static mut WARP_MAX_PAIRS: SharedArray<f32, { WARPS_PER_BLOCK as usize }> =
+            SharedArray::UNINIT;
 
         let desc = slots[slot_index as usize];
         let shape = MuonMatrixShape {
@@ -201,6 +203,7 @@ pub(crate) mod module {
                 scalars.average_coefficient,
                 schedule_beta,
                 &mut WARP_SUMS,
+                &mut WARP_MAX_PAIRS,
                 work,
             );
         }
@@ -216,6 +219,7 @@ pub(crate) mod module {
                 ptr_mut(desc.global_scale),
                 len,
                 &mut WARP_SUMS,
+                &mut WARP_MAX_PAIRS,
                 work,
             );
         }
@@ -235,6 +239,8 @@ pub(crate) mod module {
         apply_polar_sqrt_bound: u32,
     ) {
         static mut WARP_SUMS: SharedArray<f32, { WARPS_PER_BLOCK as usize }> = SharedArray::UNINIT;
+        static mut WARP_MAX_PAIRS: SharedArray<f32, { WARPS_PER_BLOCK as usize }> =
+            SharedArray::UNINIT;
 
         let desc = slots[slot_index as usize];
         let shape = MuonMatrixShape {
@@ -264,6 +270,7 @@ pub(crate) mod module {
                 average_coefficient,
                 schedule_beta,
                 &mut WARP_SUMS,
+                &mut WARP_MAX_PAIRS,
                 WorkGrid::x_axis(),
             );
         }
@@ -277,6 +284,8 @@ pub(crate) mod module {
         chunk_count: u32,
     ) {
         static mut WARP_SUMS: SharedArray<f32, { WARPS_PER_BLOCK as usize }> = SharedArray::UNINIT;
+        static mut WARP_MAX_PAIRS: SharedArray<f32, { WARPS_PER_BLOCK as usize }> =
+            SharedArray::UNINIT;
 
         let tid = thread::threadIdx_x();
         let lane = tid & (WARP_SIZE - 1);
@@ -291,23 +300,16 @@ pub(crate) mod module {
             local_schedule_amax = max_f32(local_schedule_amax, read_f32(schedule_chunks, chunk));
             chunk += thread::blockDim_x();
         }
-        let master_amax = unsafe {
-            crate::block_reduce::block_max_shared_f32(
+        if let Some((master_amax, schedule_amax)) = unsafe {
+            crate::block_reduce::block_max_pair_leader_f32(
                 &mut WARP_SUMS,
+                &mut WARP_MAX_PAIRS,
                 local_master_amax,
-                lane,
-                warp_in_block,
-            )
-        };
-        let schedule_amax = unsafe {
-            crate::block_reduce::block_max_shared_f32(
-                &mut WARP_SUMS,
                 local_schedule_amax,
                 lane,
                 warp_in_block,
             )
-        };
-        if tid == 0 {
+        } {
             let desc = slots[slot_index as usize];
             unsafe {
                 *ptr_mut::<f32>(desc.global_scale) = four_six_global_scale(master_amax, 1.0);

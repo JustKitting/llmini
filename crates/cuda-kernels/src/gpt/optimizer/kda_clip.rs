@@ -2,7 +2,7 @@ use cuda_device::{DisjointSlice, SharedArray, cuda_module, kernel, thread};
 
 mod score;
 
-use crate::block_reduce::block_max_shared_f32;
+use crate::block_reduce::block_max_pair_shared_f32;
 use crate::float_ptx::sqrt_f32;
 use crate::warp_reduce::thread_lane_warp;
 use score::{ClipParams, clip_factor, qk_norms};
@@ -38,6 +38,8 @@ pub(super) mod module {
         }
 
         static mut REDUCE: SharedArray<f32, { WARPS_PER_BLOCK as usize }> = SharedArray::UNINIT;
+        static mut REDUCE_PAIR: SharedArray<f32, { WARPS_PER_BLOCK as usize }> =
+            SharedArray::UNINIT;
         let (tid, lane, warp_id) = thread_lane_warp();
         let params = ClipParams {
             qkv_dim,
@@ -59,10 +61,16 @@ pub(super) mod module {
                 k_max = if k_norm > k_max { k_norm } else { k_max };
                 row += MATRIX_THREADS_PER_BLOCK;
             }
-            (
-                unsafe { block_max_shared_f32(&mut REDUCE, q_max, lane, warp_id) },
-                unsafe { block_max_shared_f32(&mut REDUCE, k_max, lane, warp_id) },
-            )
+            unsafe {
+                block_max_pair_shared_f32(
+                    &mut REDUCE,
+                    &mut REDUCE_PAIR,
+                    q_max,
+                    k_max,
+                    lane,
+                    warp_id,
+                )
+            }
         };
         let score = q_max * k_max / sqrt_f32(head_dim as f32);
         let factor = clip_factor(score, tau);

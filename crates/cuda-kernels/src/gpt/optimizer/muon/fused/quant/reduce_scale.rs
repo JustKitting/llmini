@@ -14,6 +14,7 @@ pub(super) fn reduce_global_scale(
     out_global_scale: *mut f32,
     out_schedule_amax: *mut f32,
     warp_sums: &mut SharedArray<f32, { WARPS_PER_BLOCK as usize }>,
+    warp_max_pairs: &mut SharedArray<f32, { WARPS_PER_BLOCK as usize }>,
     work: WorkGrid,
 ) {
     if work.block() == 0 {
@@ -29,6 +30,7 @@ pub(super) fn reduce_global_scale(
             out_global_scale,
             out_schedule_amax,
             warp_sums,
+            warp_max_pairs,
             work,
         );
     }
@@ -44,29 +46,25 @@ fn reduce_blocks_to_global_scale(
     out_global_scale: *mut f32,
     out_schedule_amax: *mut f32,
     warp_sums: &mut SharedArray<f32, { WARPS_PER_BLOCK as usize }>,
+    warp_max_pairs: &mut SharedArray<f32, { WARPS_PER_BLOCK as usize }>,
     work: WorkGrid,
 ) {
     let mut block = tid;
     let mut local_amax = 0.0;
-    while block < work.blocks() {
-        local_amax = max_f32(local_amax, read_f32(block_amax, block));
-        block += CTA_THREADS;
-    }
-    let tensor_amax =
-        crate::block_reduce::block_max_shared_f32(warp_sums, local_amax, lane, warp_in_block);
-    let mut block = tid;
     let mut local_schedule_amax = 0.0;
     while block < work.blocks() {
+        local_amax = max_f32(local_amax, read_f32(block_amax, block));
         local_schedule_amax = max_f32(local_schedule_amax, read_f32(schedule_block_amax, block));
         block += CTA_THREADS;
     }
-    let schedule_amax = crate::block_reduce::block_max_shared_f32(
+    if let Some((tensor_amax, schedule_amax)) = crate::block_reduce::block_max_pair_leader_f32(
         warp_sums,
+        warp_max_pairs,
+        local_amax,
         local_schedule_amax,
         lane,
         warp_in_block,
-    );
-    if tid == 0 {
+    ) {
         unsafe {
             *out_global_scale = four_six_global_scale(tensor_amax, 1.0);
             *out_schedule_amax = schedule_amax;

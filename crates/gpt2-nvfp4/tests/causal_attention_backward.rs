@@ -45,10 +45,14 @@ fn causal_attention_backward_wrapper_matches_direct_kernel() -> Result<(), Box<d
     });
     let mut wrapper_d_qkv = DeviceBuffer::<f32>::zeroed(&stream, QkvActivation::LEN)?;
     let mut direct_d_qkv = DeviceBuffer::<f32>::zeroed(&stream, QkvActivation::LEN)?;
+    let mut wrapper_d_qkv_chunk_amax =
+        DeviceBuffer::<f32>::zeroed(&stream, QkvActivation::LEN.div_ceil(32))?;
+    let mut direct_d_qkv_chunk_amax =
+        DeviceBuffer::<f32>::zeroed(&stream, QkvActivation::LEN.div_ceil(32))?;
     let mut wrapper_scratch = AttentionCoreScratchBuffers::new(&stream)?;
     let mut direct_scratch = AttentionCoreScratchBuffers::new(&stream)?;
 
-    gpt2_causal_attention_backward(AttentionCoreBackwardArgs {
+    let wrapper_chunk_count = gpt2_causal_attention_backward(AttentionCoreBackwardArgs {
         block_index: 0,
         use_full_attention: false,
         reuse_forward_probs: false,
@@ -58,11 +62,13 @@ fn causal_attention_backward_wrapper_matches_direct_kernel() -> Result<(), Box<d
         saved,
         d_attention_out: &d_out,
         d_qkv: &mut wrapper_d_qkv,
+        d_qkv_chunk_amax: &mut wrapper_d_qkv_chunk_amax,
         scratch: wrapper_scratch.args(),
-    })?;
+    })?
+    .expect("KDA backward must return producer amax chunks");
 
     let direct_core = direct_scratch.args();
-    module.causal_attention_backward_tc(CausalAttentionBackwardTcArgs {
+    let direct_chunk_count = module.kda_attention_backward_tc(CausalAttentionBackwardTcArgs {
         reuse_forward_probs: false,
         forward_probs_f16: None,
         stream: &stream,
@@ -78,6 +84,7 @@ fn causal_attention_backward_wrapper_matches_direct_kernel() -> Result<(), Box<d
         softmax_d: direct_core.softmax_d,
         qk_norm_max: direct_core.qk_norm_max,
         d_qkv: &mut direct_d_qkv,
+        d_qkv_chunk_amax: &mut direct_d_qkv_chunk_amax,
         scratch: direct_core.tc,
         row_count: GPT2_TOKEN_ROWS as u32,
         seq_len: GPT2_SEQ_LEN as u32,
@@ -91,8 +98,21 @@ fn causal_attention_backward_wrapper_matches_direct_kernel() -> Result<(), Box<d
 
     let wrapper = wrapper_d_qkv.to_host_vec(&stream)?;
     let direct = direct_d_qkv.to_host_vec(&stream)?;
+    let wrapper_chunks = wrapper_d_qkv_chunk_amax.to_host_vec(&stream)?;
+    let direct_chunks = direct_d_qkv_chunk_amax.to_host_vec(&stream)?;
     assert_nonzero_finite(&wrapper);
     assert_eq!(float_bits(&wrapper), float_bits(&direct));
+    assert_eq!(wrapper_chunk_count, direct_chunk_count);
+    assert_eq!(
+        float_bits(&wrapper_chunks[..wrapper_chunk_count as usize]),
+        float_bits(&direct_chunks[..direct_chunk_count as usize])
+    );
+    let output_amax = wrapper.iter().copied().map(f32::abs).fold(0.0, f32::max);
+    let chunk_amax = wrapper_chunks[..wrapper_chunk_count as usize]
+        .iter()
+        .copied()
+        .fold(0.0, f32::max);
+    assert_eq!(output_amax.to_bits(), chunk_amax.to_bits());
 
     Ok(())
 }

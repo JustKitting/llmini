@@ -37,14 +37,21 @@ pub(in super::super) fn chunk_kda_state_save_body(
     let head = bh - batch * params.head_count;
 
     let state_elems = state_elems(&params);
+    let chunks = chunk_count(&params);
+    if chunks == 0 {
+        return;
+    }
+    let first_state_base = (bh * chunks * state_elems) as usize;
     let mut linear = tid;
     while linear < state_elems {
         state[linear as usize] = 0.0;
+        unsafe {
+            *chunk_states.get_unchecked_mut(first_state_base + linear as usize) = 0;
+        }
         linear += TC_FORWARD_THREADS_PER_BLOCK;
     }
     thread::sync_threads();
 
-    let chunks = chunk_count(&params);
     let tile = CtaTile::from_tile(tid, 0, 0, 0);
     let mut chunk = 0;
     while chunk < chunks {
@@ -52,16 +59,18 @@ pub(in super::super) fn chunk_kda_state_save_body(
         let end = params.seq_len.min(start + params.chunk_size);
         let ctx = CompactTileCtx::new(tile, (batch, head), (start, end), &params);
 
-        linear = tid;
-        while linear < state_elems {
-            let base = ((bh * chunks + chunk) * state_elems) as usize;
-            unsafe {
-                *chunk_states.get_unchecked_mut(base + linear as usize) =
-                    cvt_rn_f16_f32(state[linear as usize]);
+        if chunk != 0 {
+            linear = tid;
+            while linear < state_elems {
+                let base = ((bh * chunks + chunk) * state_elems) as usize;
+                unsafe {
+                    *chunk_states.get_unchecked_mut(base + linear as usize) =
+                        cvt_rn_f16_f32(state[linear as usize]);
+                }
+                linear += TC_FORWARD_THREADS_PER_BLOCK;
             }
-            linear += TC_FORWARD_THREADS_PER_BLOCK;
+            thread::sync_threads();
         }
-        thread::sync_threads();
 
         compute_ws_to_vnew(inputs.w, inputs.u, &mut v_new, state, a_tile, b_tile, ctx);
         thread::sync_threads();

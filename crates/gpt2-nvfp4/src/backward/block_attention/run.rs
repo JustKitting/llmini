@@ -37,6 +37,7 @@ pub fn attention_side_backward(
         d_attn_c_proj_bias,
         ..
     } = grads;
+    let scratch = scratch;
     attention_c_proj_backward(AttentionCProjBackwardArgs {
         stream,
         modules: modules.linear,
@@ -49,7 +50,7 @@ pub fn attention_side_backward(
         scratch: scratch.c_proj,
         seeds: seeds.c_proj,
     })?;
-    causal_attention_backward(AttentionCoreBackwardArgs {
+    let d_qkv_amax_chunks = causal_attention_backward(AttentionCoreBackwardArgs {
         block_index,
         use_full_attention,
         reuse_forward_probs,
@@ -59,6 +60,7 @@ pub fn attention_side_backward(
         saved,
         d_attention_out: &*d_attention_out,
         d_qkv,
+        d_qkv_chunk_amax: &mut *scratch.qkv.linear.e_h.chunk_amax,
         scratch: scratch.core,
     })?;
     qkv_projection_backward(AttentionQkvBackwardArgs {
@@ -71,6 +73,7 @@ pub fn attention_side_backward(
         d_ln_1_normalized: &mut *ln_1_grads.d_normalized,
         d_attn_qkv_weight,
         d_attn_qkv_bias,
+        precomputed_d_qkv_amax_chunks: d_qkv_amax_chunks,
         scratch: scratch.qkv,
         seeds: seeds.qkv,
     })?;

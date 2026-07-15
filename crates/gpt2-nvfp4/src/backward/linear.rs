@@ -39,6 +39,7 @@ pub(super) struct RowwiseLinearBackwardPass<'a, 'scratch, 'out> {
     pub output_dim: u32,
     pub sign_seed: u32,
     pub scale_seed: u32,
+    pub precomputed_e_amax_chunks: Option<u32>,
 }
 
 pub(super) fn nvfp4_weight_t(
@@ -73,7 +74,7 @@ pub(super) fn run_rowwise_linear_backward(
         output_dim: pass.output_dim,
         sign_seed: pass.sign_seed,
         scale_seed: pass.scale_seed,
-        precomputed_e_amax_chunks: None,
+        precomputed_e_amax_chunks: pass.precomputed_e_amax_chunks,
     })
 }
 

@@ -2,7 +2,7 @@ use cuda_device::{DisjointSlice, SharedArray, cuda_module, kernel, thread};
 
 use super::{CROSS_ENTROPY_THREADS_PER_BLOCK, CROSS_ENTROPY_WARPS_PER_BLOCK, CrossEntropyParams};
 use crate::block_reduce::{
-    block_max_shared_f32, block_max_shared_f32_for_warps, block_sum_shared_f32,
+    block_max_leader_f32, block_max_shared_f32_for_warps, block_sum_shared_f32,
 };
 use crate::float_ptx::{abs_f32, exp_f32, ln_f32, max_f32, safe_positive_denom};
 use crate::warp_reduce::thread_lane_warp;
@@ -78,10 +78,9 @@ mod module {
                 col += CROSS_ENTROPY_THREADS_PER_BLOCK;
             }
 
-            let row_dlogits_amax = unsafe {
-                block_max_shared_f32(&mut REDUCE, local_dlogits_amax, lane, warp_in_block)
-            };
-            if thread == 0 {
+            if let Some(row_dlogits_amax) = unsafe {
+                block_max_leader_f32(&mut REDUCE, local_dlogits_amax, lane, warp_in_block)
+            } {
                 unsafe {
                     *dlogits_row_amax.get_unchecked_mut(row as usize) = row_dlogits_amax;
                 }

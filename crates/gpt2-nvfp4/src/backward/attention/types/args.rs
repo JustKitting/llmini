@@ -31,6 +31,7 @@ pub struct AttentionCoreBackwardArgs<'a, 'scratch, 'out> {
     pub saved: BlockForwardSaved<'a>,
     pub d_attention_out: &'a DeviceBuffer<f32>,
     pub d_qkv: &'out mut DeviceBuffer<f32>,
+    pub d_qkv_chunk_amax: &'out mut DeviceBuffer<f32>,
     pub scratch: AttentionCoreScratch<'scratch>,
 }
 
@@ -44,6 +45,7 @@ pub struct AttentionQkvBackwardArgs<'a, 'scratch, 'out> {
     pub d_ln_1_normalized: &'out mut DeviceBuffer<f32>,
     pub d_attn_qkv_weight: &'out mut DeviceBuffer<f32>,
     pub d_attn_qkv_bias: &'out mut DeviceBuffer<f32>,
+    pub precomputed_d_qkv_amax_chunks: Option<u32>,
     pub scratch: AttentionQkvScratch<'scratch>,
     pub seeds: AttentionBackwardSeeds,
 }

@@ -31,6 +31,7 @@ impl AttentionModule {
             softmax_d,
             qk_norm_max: _,
             d_qkv,
+            d_qkv_chunk_amax: _,
             scratch,
             row_count: _,
             seq_len,

@@ -69,11 +69,27 @@ impl MlpModule {
         Relu2BackwardArgs<'_, '_>,
         relu2_backward_kernel
     );
-    relu2_backward_launcher!(
-        relu2_backward_f16,
-        Relu2BackwardF16Args<'_, '_>,
-        relu2_backward_f16_kernel
-    );
+    pub fn relu2_backward_f16(
+        &self,
+        args: Relu2BackwardF16Args<'_, '_>,
+    ) -> Result<u32, DriverError> {
+        let chunk_count = relu2_backward_amax_chunks(args.len);
+        assert!(args.d_pre_activation_chunk_amax.len() >= chunk_count as usize);
+        self.module.relu2_backward_f16_kernel(
+            args.stream,
+            launch_config((chunk_count, 1, 1), kernels::RELU2_THREADS_PER_BLOCK),
+            args.pre_activation,
+            args.d_out,
+            args.d_pre_activation,
+            args.d_pre_activation_chunk_amax,
+            args.len,
+        )?;
+        Ok(chunk_count)
+    }
+}
+
+pub const fn relu2_backward_amax_chunks(len: u32) -> u32 {
+    len.div_ceil(kernels::RELU2_VALUES_PER_BLOCK)
 }
 
 fn projection_config(token_count: u32, input_dim: u32, output_dim: u32) -> cuda_core::LaunchConfig {

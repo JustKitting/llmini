@@ -1,9 +1,10 @@
 use cuda_device::DisjointSlice;
 
 use super::super::gather::TC_BACKWARD_THREADS_PER_BLOCK;
+use crate::amax::max4_f32;
 use crate::attention::CausalAttentionParams;
 use crate::f16_tc_matmul::convert::cvt_f32_f16;
-use crate::float_ptx::fma_f32;
+use crate::float_ptx::{abs_f32, fma_f32, max_f32};
 use crate::kda_common::{
     beta_compact_index, beta_index, compact_index, g_offset, k_offset, q_offset, qkv_index,
     safe_denom, sigmoid, silu_grad, v_offset,
@@ -71,10 +72,10 @@ pub(crate) fn finish_kda_backward_body(
     mut k_norms: DisjointSlice<f32>,
     mut d_qkv: DisjointSlice<f32>,
     params: CausalAttentionParams,
-) {
+) -> f32 {
     let ctx = kda_warp_ctx(TC_BACKWARD_THREADS_PER_BLOCK, &params);
     if !ctx.valid {
-        return;
+        return 0.0;
     }
 
     let mut acc = FinishNormAcc::zero();
@@ -84,8 +85,9 @@ pub(crate) fn finish_kda_backward_body(
     let qk1 = read_finish_dim(qkv, grads, ctx, dim1, &params, &mut acc);
     let stats = acc.stats();
 
+    let mut local_amax = 0.0;
     if dim0 < params.head_dim {
-        finish_dim(
+        local_amax = finish_dim(
             qkv,
             grads,
             &mut d_qkv,
@@ -99,17 +101,20 @@ pub(crate) fn finish_kda_backward_body(
         );
     }
     if dim1 < params.head_dim {
-        finish_dim(
-            qkv,
-            grads,
-            &mut d_qkv,
-            FinishDimPoint {
-                ctx,
-                dim: dim1,
-                qk: qk1,
-            },
-            stats,
-            &params,
+        local_amax = max_f32(
+            local_amax,
+            finish_dim(
+                qkv,
+                grads,
+                &mut d_qkv,
+                FinishDimPoint {
+                    ctx,
+                    dim: dim1,
+                    qk: qk1,
+                },
+                stats,
+                &params,
+            ),
         );
     }
     if ctx.lane == 0 {
@@ -124,7 +129,9 @@ pub(crate) fn finish_kda_backward_body(
             *k_norms.get_unchecked_mut(norm_index) = stats.k_norm;
             *d_qkv.get_unchecked_mut(beta_index(ctx.row, ctx.head, &params)) = grad;
         }
+        local_amax = max_f32(local_amax, abs_f32(grad));
     }
+    local_amax
 }
 
 #[inline(always)]
@@ -155,7 +162,7 @@ fn finish_dim(
     point: FinishDimPoint,
     stats: FinishNormStats,
     params: &CausalAttentionParams,
-) {
+) -> f32 {
     let FinishDimPoint { ctx, dim, qk } = point;
     let compact = compact_index(ctx.batch, ctx.token, ctx.head, dim, params);
     let q_denom = safe_denom(stats.q_norm);
@@ -167,14 +174,15 @@ fn finish_dim(
     let dk_norm = grads.k[compact] / k_denom - qk.k_act * stats.k_dot / k_cubic_denom;
     let raw_v = cvt_f32_f16(qkv[qkv_index(ctx.row, ctx.head, dim, v_offset(params), params)]);
     let raw_g = cvt_f32_f16(qkv[qkv_index(ctx.row, ctx.head, dim, g_offset(params), params)]);
+    let dq = dq_norm * silu_grad(qk.raw_q);
+    let dk = dk_norm * silu_grad(qk.raw_k);
+    let dv = grads.v[compact] * silu_grad(raw_v);
+    let dg = -params.decay_scale * grads.g[compact] * sigmoid(raw_g);
     unsafe {
-        *d_qkv.get_unchecked_mut(qkv_index(ctx.row, ctx.head, dim, q_offset(params), params)) =
-            dq_norm * silu_grad(qk.raw_q);
-        *d_qkv.get_unchecked_mut(qkv_index(ctx.row, ctx.head, dim, k_offset(params), params)) =
-            dk_norm * silu_grad(qk.raw_k);
-        *d_qkv.get_unchecked_mut(qkv_index(ctx.row, ctx.head, dim, v_offset(params), params)) =
-            grads.v[compact] * silu_grad(raw_v);
-        *d_qkv.get_unchecked_mut(qkv_index(ctx.row, ctx.head, dim, g_offset(params), params)) =
-            -params.decay_scale * grads.g[compact] * sigmoid(raw_g);
+        *d_qkv.get_unchecked_mut(qkv_index(ctx.row, ctx.head, dim, q_offset(params), params)) = dq;
+        *d_qkv.get_unchecked_mut(qkv_index(ctx.row, ctx.head, dim, k_offset(params), params)) = dk;
+        *d_qkv.get_unchecked_mut(qkv_index(ctx.row, ctx.head, dim, v_offset(params), params)) = dv;
+        *d_qkv.get_unchecked_mut(qkv_index(ctx.row, ctx.head, dim, g_offset(params), params)) = dg;
     }
+    max4_f32(abs_f32(dq), abs_f32(dk), abs_f32(dv), abs_f32(dg))
 }

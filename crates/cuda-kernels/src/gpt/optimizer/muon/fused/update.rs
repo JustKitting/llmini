@@ -27,6 +27,7 @@ pub(super) fn update_master_chunks(
     average_coefficient: f32,
     schedule_beta: f32,
     warp_sums: &mut SharedArray<f32, { WARPS_PER_BLOCK as usize }>,
+    warp_max_pairs: &mut SharedArray<f32, { WARPS_PER_BLOCK as usize }>,
     work: WorkGrid,
 ) {
     let tid = thread::threadIdx_x();
@@ -61,19 +62,14 @@ pub(super) fn update_master_chunks(
         local_schedule_amax = max_f32(local_schedule_amax, local_amax.schedule);
         chunk += work.blocks();
     }
-    let master_amax = crate::block_reduce::block_max_shared_f32(
+    if let Some((master_amax, schedule_amax)) = crate::block_reduce::block_max_pair_leader_f32(
         warp_sums,
+        warp_max_pairs,
         local_master_amax,
-        lane,
-        warp_in_block,
-    );
-    let schedule_amax = crate::block_reduce::block_max_shared_f32(
-        warp_sums,
         local_schedule_amax,
         lane,
         warp_in_block,
-    );
-    if tid == 0 {
+    ) {
         unsafe {
             *block_amax.add(work.block() as usize) = master_amax;
             *block_amax.add((work.blocks() + work.block()) as usize) = schedule_amax;

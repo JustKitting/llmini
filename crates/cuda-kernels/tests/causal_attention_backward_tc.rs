@@ -41,6 +41,7 @@ fn materialized_tc_backward_matches_reference() -> Result<(), Box<dyn Error>> {
     let mut tc_softmax_d = DeviceBuffer::<f32>::zeroed(&stream, shape::TOKEN_COUNT * shape::HEADS)?;
     let mut tc_qk_norm_max = DeviceBuffer::<f32>::zeroed(&stream, 2 * shape::HEADS)?;
     let mut tc_grad = DeviceBuffer::<f32>::zeroed(&stream, shape::TOKEN_COUNT * shape::QKV_DIM)?;
+    let mut tc_grad_chunk_amax = DeviceBuffer::<f32>::zeroed(&stream, 1)?;
     let mut scratch = TcScratchBuffers::new(&stream)?;
     attention.causal_attention_backward_tc(CausalAttentionBackwardTcArgs {
         reuse_forward_probs: false,
@@ -58,6 +59,7 @@ fn materialized_tc_backward_matches_reference() -> Result<(), Box<dyn Error>> {
         softmax_d: &mut tc_softmax_d,
         qk_norm_max: &mut tc_qk_norm_max,
         d_qkv: &mut tc_grad,
+        d_qkv_chunk_amax: &mut tc_grad_chunk_amax,
         scratch: scratch.args(),
         row_count: shape::TOKEN_COUNT as u32,
         seq_len: shape::TOKEN_COUNT as u32,
@@ -83,6 +85,7 @@ fn materialized_tc_backward_matches_reference() -> Result<(), Box<dyn Error>> {
         DeviceBuffer::<f32>::zeroed(&stream, shape::TOKEN_COUNT * shape::HEADS)?;
     let mut reuse_qk_norm_max = DeviceBuffer::<f32>::zeroed(&stream, 2 * shape::HEADS)?;
     let mut reuse_grad = DeviceBuffer::<f32>::zeroed(&stream, shape::TOKEN_COUNT * shape::QKV_DIM)?;
+    let mut reuse_grad_chunk_amax = DeviceBuffer::<f32>::zeroed(&stream, 1)?;
     let mut reuse_scratch = TcScratchBuffers::new(&stream)?;
     let saved_probs = DeviceBuffer::from_host(&stream, &saved_probs)?;
     attention.causal_attention_backward_tc(CausalAttentionBackwardTcArgs {
@@ -101,6 +104,7 @@ fn materialized_tc_backward_matches_reference() -> Result<(), Box<dyn Error>> {
         softmax_d: &mut reuse_softmax_d,
         qk_norm_max: &mut reuse_qk_norm_max,
         d_qkv: &mut reuse_grad,
+        d_qkv_chunk_amax: &mut reuse_grad_chunk_amax,
         scratch: reuse_scratch.args(),
         row_count: shape::TOKEN_COUNT as u32,
         seq_len: shape::TOKEN_COUNT as u32,

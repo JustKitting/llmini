@@ -39,6 +39,8 @@ pub(crate) mod module {
         static mut A_TILE: SharedArray<u16, CTA_A_ELEMS> = SharedArray::UNINIT;
         static mut B_TILE: SharedArray<u16, CTA_B_ELEMS> = SharedArray::UNINIT;
         static mut WARP_SUMS: SharedArray<f32, { WARPS_PER_BLOCK as usize }> = SharedArray::UNINIT;
+        static mut WARP_MAX_PAIRS: SharedArray<f32, { WARPS_PER_BLOCK as usize }> =
+            SharedArray::UNINIT;
 
         let scratch = MuonMatrixScratch {
             oriented: oriented.as_mut_ptr(),
@@ -78,6 +80,7 @@ pub(crate) mod module {
                             a_tile: &mut A_TILE,
                             b_tile: &mut B_TILE,
                             warp_sums: &mut WARP_SUMS,
+                            warp_max_pairs: &mut WARP_MAX_PAIRS,
                         },
                         scalars,
                     );
