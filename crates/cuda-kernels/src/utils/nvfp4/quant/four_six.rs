@@ -67,6 +67,26 @@ impl Nvfp4QuantModule {
         )
     }
 
+    pub fn fp32_to_nvfp4_four_six_exact_bounded_amax(
+        &self,
+        args: Nvfp4QuantPaddedArgs<'_, '_>,
+    ) -> Result<(), DriverError> {
+        assert_eq!(args.rows, args.padded_rows);
+        assert_eq!(args.cols, args.padded_cols);
+        let elements = args.rows * args.cols;
+        assert!(elements.is_multiple_of(16));
+        self.four_six
+            .fp32_to_nvfp4_four_six_exact_bounded_amax_kernel(
+                args.stream,
+                four_six_grid_config(elements / 16),
+                args.x,
+                args.amax,
+                args.out_fp4,
+                args.out_scales,
+                args.out_global_scale,
+            )
+    }
+
     pub fn fp32_transpose_to_nvfp4_four_six_padded(
         &self,
         args: Nvfp4QuantTransposePaddedArgs<'_, '_>,

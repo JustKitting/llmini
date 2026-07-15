@@ -178,6 +178,40 @@ pub(crate) mod module {
     }
 
     #[kernel]
+    pub fn fp32_to_nvfp4_four_six_exact_bounded_amax_kernel(
+        x: &[f32],
+        original_amax: &[f32],
+        out_fp4: DisjointSlice<u8>,
+        out_scales: DisjointSlice<u8>,
+        out_global_scale: DisjointSlice<f32>,
+    ) {
+        let group_ctx = four_six_group_ctx();
+
+        if group_ctx.group < out_scales.len() {
+            let bound = original_amax[0];
+            let bounded_amax = if bound > 1.0 {
+                bound * (1.0 / bound)
+            } else {
+                bound
+            };
+            let out = FourSixOutputs {
+                fp4: out_fp4,
+                scales: out_scales,
+                global_scale: out_global_scale,
+            };
+            pack_four_six_group_values(
+                bounded_amax,
+                out,
+                group_ctx,
+                0,
+                group_ctx.group == 0,
+                1.0,
+                x[group_ctx.base + group_ctx.lane],
+            );
+        }
+    }
+
+    #[kernel]
     pub fn fp32_transpose_to_nvfp4_four_six_padded_kernel(
         x: &[f32],
         amax: &[f32],

@@ -34,6 +34,62 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-15
 commit: accepted local jj commit after full gate
+experiment: Reuse the known bounded Gram amax for exact Aurora quantization.
+status: accepted_900s
+change:
+  The Aurora polar loop already computes Gram's tensor amax, then scales Gram
+  by min(1, 1/amax). Exact Gram quantization nevertheless rescanned the entire
+  scaled matrix. Added a dedicated exact four-six quantizer that derives the
+  real post-scale maximum as amax * min(1, 1/amax), preserving the same GPU
+  multiply rounding as the bound kernel. It removes 335 redundant full-matrix
+  scan/reduce pairs. Non-exact/padded shapes retain the rescan path.
+minimum_impact_gate:
+  The accepted baseline was 900.070s / 1073 = 0.838835042s per step, making the
+  0.5% threshold 4.194175ms. The 335 immediately repeated Gram amax scans and
+  reductions measured 5.181536ms/step (0.618%), so this elimination passed the
+  pre-edit mathematical ceiling gate.
+verification:
+  cargo fmt --all: pass.
+  cargo fmt --all --check: pass.
+  cargo check -q: pass.
+  cargo oxide build --arch sm_120a: pass; fresh device and host rebuild.
+  Added bounded_amax_four_six_matches_rescanned_input, which GPU-scales a
+    matrix, rescans it, and compares FP4 bytes, FP8 scales, and global scale
+    bit-for-bit against the derived-amax path.
+  CUDA_DEVICE_INDEX=0 cargo test -q -p rust-kernels-cuda --test nvfp4_quant
+    -- --ignored --nocapture --test-threads=1: pass, 4 tests.
+  Focused Nsight Compute duration profile:
+    target/ncu/20260715_1b_b2_bounded_gram_amax.ncu-rep
+    target/ncu/20260715_1b_b2_bounded_gram_amax.csv
+  Exact 1B FineWeb one-step NCU diagnostic:
+    target/runs/20260715_045004Z_fineweb_60s
+    val_loss=10.409149, completed_steps=1. This is diagnostic evidence only.
+  Required 1B FineWeb 30-second screen:
+    target/runs/20260715_045229Z_fineweb_30s
+    val_loss=7.053387, train_elapsed_s=30.177, completed_steps=37.
+  Required 1B FineWeb 900-second gate with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260715_045315Z_fineweb_900s
+    val_loss=5.078630, train_elapsed_s=900.640, completed_steps=1075.
+    All 22 metric samples had Finite=1 and Nonzero=1, with zero skipped
+    updates, loss-spike skips, grad-norm-spike skips, or nonfinite skips.
+measured_effect:
+  The affected scan/reduce/exact-quantize family moved from 97.465088ms to
+  92.620768ms per step, saving 4.844320ms (0.577%). This cleared the focused
+  4.194175ms gate before training screens.
+  Against target/runs/20260715_042602Z_fineweb_900s:
+    completed_steps: 1073 -> 1075 (+2, +0.186%).
+    average step time: 0.838835042s -> 0.837804651s (-1.030391ms, -0.123%).
+    held-out val_loss: 5.080935 -> 5.078630 (-0.0454%).
+decision:
+  Keep and promote. The focused kernel elimination clears the 0.5% work gate;
+  the full fixed-wall run completes more steps with slightly better validation
+  loss and clean stability. notes/sweep_baseline.env now points to this run.
+  The new baseline-relative 0.5% threshold is 4.189023ms per step.
+```
+
+```text
+date: 2026-07-15
+commit: accepted local jj commit after full gate
 experiment: Fuse the MLP-up bias and ReLU2 post-op into a specialized TMA GEMM store.
 status: accepted_900s
 change:

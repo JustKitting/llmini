@@ -1,9 +1,10 @@
 use std::error::Error;
 
 use cuda_core::DeviceBuffer;
+use rust_kernels_cuda::f32_matrix_ops::{F32MatrixOpsModule, F32ScaleInPlaceByAmaxArgs};
 use rust_kernels_cuda::nvfp4_quant::{
     MsEdenQuantArgs, Nvfp4QuantArgs, Nvfp4QuantModule, Nvfp4QuantPaddedArgs,
-    Nvfp4QuantTransposePaddedArgs,
+    Nvfp4QuantTransposePaddedArgs, TensorAmaxArgs, nvfp4_tensor_amax_chunks,
 };
 use rust_kernels_cuda::quartet::QUARTET_MS_EDEN_SCALE_OVERRIDE;
 
@@ -42,6 +43,85 @@ fn fp32_to_nvfp4_four_six_writes_quantized_outputs() -> Result<(), Box<dyn Error
 
     common::assert_nvfp4_buffers_nonzero(&fp4, &scales);
     assert!((global_scale[0] - 8.0 / (256.0 * 6.0)).abs() <= 1.0e-8);
+    Ok(())
+}
+
+#[ignore = "requires generated sm_120a PTX"]
+#[test]
+fn bounded_amax_four_six_matches_rescanned_input() -> Result<(), Box<dyn Error>> {
+    const ROWS: usize = 64;
+    const COLS: usize = 64;
+    let x = (0..ROWS * COLS)
+        .map(|index| ((index % 257) as f32 - 128.0) * 0.137)
+        .collect::<Vec<_>>();
+    let original_amax = [x.iter().fold(0.0f32, |max, value| max.max(value.abs()))];
+
+    let (_, stream, ptx) = common::cuda_test_context()?;
+    let quant = Nvfp4QuantModule::from_module(ptx.clone())?;
+    let f32_ops = F32MatrixOpsModule::from_module(ptx)?;
+    let mut bounded = DeviceBuffer::from_host(&stream, &x)?;
+    let original_amax_dev = DeviceBuffer::from_host(&stream, &original_amax)?;
+    f32_ops.scale_in_place_by_amax_bound(F32ScaleInPlaceByAmaxArgs {
+        stream: &stream,
+        x: &mut bounded,
+        amax: &original_amax_dev,
+        len: x.len() as u32,
+    })?;
+
+    let mut chunk_amax = DeviceBuffer::<f32>::zeroed(&stream, nvfp4_tensor_amax_chunks(x.len()))?;
+    let mut rescanned_amax = DeviceBuffer::<f32>::zeroed(&stream, 1)?;
+    quant.tensor_amax_f32(TensorAmaxArgs {
+        stream: &stream,
+        x: &bounded,
+        chunk_amax: &mut chunk_amax,
+        out: &mut rescanned_amax,
+        element_count: x.len() as u32,
+    })?;
+
+    let mut reference_fp4 = DeviceBuffer::<u8>::zeroed(&stream, x.len() / 2)?;
+    let mut reference_scales = DeviceBuffer::<u8>::zeroed(&stream, x.len() / 16)?;
+    let mut reference_global = DeviceBuffer::<f32>::zeroed(&stream, 1)?;
+    let mut bounded_fp4 = DeviceBuffer::<u8>::zeroed(&stream, x.len() / 2)?;
+    let mut bounded_scales = DeviceBuffer::<u8>::zeroed(&stream, x.len() / 16)?;
+    let mut bounded_global = DeviceBuffer::<f32>::zeroed(&stream, 1)?;
+
+    quant.fp32_to_nvfp4_four_six_padded(Nvfp4QuantPaddedArgs {
+        stream: &stream,
+        x: &bounded,
+        amax: &rescanned_amax,
+        out_fp4: &mut reference_fp4,
+        out_scales: &mut reference_scales,
+        out_global_scale: &mut reference_global,
+        rows: ROWS as u32,
+        cols: COLS as u32,
+        padded_rows: ROWS as u32,
+        padded_cols: COLS as u32,
+    })?;
+    quant.fp32_to_nvfp4_four_six_exact_bounded_amax(Nvfp4QuantPaddedArgs {
+        stream: &stream,
+        x: &bounded,
+        amax: &original_amax_dev,
+        out_fp4: &mut bounded_fp4,
+        out_scales: &mut bounded_scales,
+        out_global_scale: &mut bounded_global,
+        rows: ROWS as u32,
+        cols: COLS as u32,
+        padded_rows: ROWS as u32,
+        padded_cols: COLS as u32,
+    })?;
+
+    assert_eq!(
+        bounded_fp4.to_host_vec(&stream)?,
+        reference_fp4.to_host_vec(&stream)?
+    );
+    assert_eq!(
+        bounded_scales.to_host_vec(&stream)?,
+        reference_scales.to_host_vec(&stream)?
+    );
+    assert_eq!(
+        bounded_global.to_host_vec(&stream)?,
+        reference_global.to_host_vec(&stream)?
+    );
     Ok(())
 }
 

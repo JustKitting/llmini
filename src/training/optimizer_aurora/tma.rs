@@ -390,13 +390,37 @@ fn prepare_tma_a_padded(
     rows: u32,
     cols: u32,
 ) -> Result<(), DriverError> {
-    quantize_operand_padded(
+    if rows != dims.m || cols != dims.k {
+        return quantize_operand_padded(
+            stream,
+            runtime,
+            input,
+            tma.a.reborrow(),
+            rows,
+            cols,
+            dims.m,
+            dims.k,
+        );
+    }
+
+    runtime
+        .quant
+        .fp32_to_nvfp4_four_six_exact_bounded_amax(Nvfp4QuantPaddedArgs {
+            stream,
+            x: input,
+            amax: &*tma.a.amax,
+            out_fp4: tma.a.bytes,
+            out_scales: tma.a.scales,
+            out_global_scale: tma.a.global_scale,
+            rows,
+            cols,
+            padded_rows: dims.m,
+            padded_cols: dims.k,
+        })?;
+    runtime.optimizer.tma_scale_pack().pack(
         stream,
-        runtime,
-        input,
-        tma.a.reborrow(),
-        rows,
-        cols,
+        &*tma.a.scales,
+        tma.a.scale_packed,
         dims.m,
         dims.k,
     )
