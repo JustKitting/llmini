@@ -148,6 +148,64 @@ decision:
 ```text
 date: 2026-07-15
 commit: rejected uncommitted candidate, code reverted
+experiment: Fuse the nonfinal Muon linear3 recurrence into a dedicated TMA epilogue.
+status: rejected_profile_gate
+change:
+  A separate TMA GEMM kernel variant fused the four nonfinal Polar-iteration
+  recurrence updates into the product store. It preserved the existing product
+  multiply, then evaluated bc = fma(b, ax, c * product) and
+  fma(a, source * bound_scale, bc), matching the former follow-up linear3
+  kernel's operation order. The ordinary TMA kernel and TRAIN_TRACE fallback
+  were unchanged.
+numerics:
+  The focused projection-TMA GPU comparison was bit-for-bit identical after a
+  fresh device and host rebuild. The corrected 10-step profile ended at
+  val_loss 8.661506 versus 8.664306 and 8.660353 in the two accepted-code
+  samples.
+memory:
+  No allocations changed. The specialized epilogue reused the existing source,
+  AX, product, and destination buffers, so peak VRAM and batch-capacity
+  headroom were unchanged.
+minimum_impact_gate:
+  The active baseline is 900.402 / 1424 = 632.304775ms per step, requiring
+  3.161524ms per step. The removable nonfinal linear3 kernel occupied
+  224.595ms over 10 steps, or 22.4595ms per step, so the candidate had a
+  credible pre-edit ceiling well above the floor.
+focused_profile:
+  Accepted-code samples:
+    target/nsys/20260715_tma_descriptor_cache_candidate.nsys-rep
+    target/nsys/20260715_tma_descriptor_cache_candidate_reciprocal.nsys-rep
+    train elapsed: 6.218 and 6.197 seconds, average 6.2075 seconds.
+  Corrected specialized-epilogue sample:
+    target/nsys/20260715_muon_tma_linear3_epilogue_corrected_candidate.nsys-rep
+    train elapsed: 6.200 seconds.
+  In the accepted reciprocal profile, the 2680 replaced ordinary TMA launches
+  account for 166.879361ms and the separate linear3 launches account for
+  224.595ms, totaling 391.474361ms. The corrected candidate's 2680 dedicated
+  epilogue launches occupied 397.217880ms, a 5.743519ms regression over 10
+  steps in the directly affected work. Total kernel time was 6309.254449ms
+  versus 6304.457126ms in the accepted reciprocal profile. The candidate's
+  superficially favorable 6.200-second wall sample is therefore noise rather
+  than a valid speed signal.
+  The first diagnostic profile accidentally launched both the specialized
+  epilogue and the old unbounded linear3 path. It exposed and led to correction
+  of that control-flow bug, but it is not performance evidence.
+verification:
+  Fresh cargo oxide build --arch sm_120a: pass.
+  Focused projection-TMA GPU comparison: pass bit-for-bit.
+  The specialized kernel used 161 registers and 92240 bytes of shared memory,
+  with no spills, matching the ordinary TMA kernel.
+decision:
+  Reject before reciprocal profiling or the 30-second and 900-second gates.
+  Reading source and AX inside the occupancy-limited TMA CTA made the fused
+  epilogue slower than the ordinary TMA product plus the separate bandwidth
+  recurrence pass. All candidate source and test changes were reverted; only
+  this factual rejection record is committed.
+```
+
+```text
+date: 2026-07-15
+commit: rejected uncommitted candidate, code reverted
 experiment: Emit SM120 packed scale planes directly from exact Muon quantizers.
 status: rejected_profile_gate
 change:
