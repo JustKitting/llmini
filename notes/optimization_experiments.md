@@ -148,6 +148,78 @@ decision:
 ```text
 date: 2026-07-15
 commit: rejected uncommitted candidate, code reverted
+experiment: Emit SM120 packed scale planes directly from exact Muon quantizers.
+status: rejected_profile_gate
+change:
+  Four exact Muon NVFP4 producers wrote their scale bytes directly into the
+  block-major SM120 TMA layout and skipped the following scale-pack kernel.
+  The non-transposed producers used a two-dimensional row/K-group launch to
+  avoid runtime quotient/remainder mapping. The square-root-bounded transpose
+  producer used its known tile and K-group coordinates to form the packed
+  offset without reconstructing a linear group index. Exact shapes whose MN
+  extent was not a multiple of 128 retained the old quantize-plus-pack path.
+numerics:
+  FP4 payload and global-scale calculations were unchanged. Focused GPU tests
+  compared the direct plain, bounded, lazy-bounded, transposed, and
+  square-root-bounded outputs bit-for-bit against the old quantizer followed
+  by pack_sm120_scale_plane_compact. All comparisons passed after each fresh
+  PTX/host rebuild.
+memory:
+  No allocation changes. The direct producers targeted the already allocated
+  packed-scale buffers, while the existing unpacked scratch remained present
+  for fallback shapes, so peak VRAM and batch-capacity headroom were unchanged.
+minimum_impact_gate:
+  The active baseline is 900.402 / 1424 = 632.304775ms per step, requiring
+  3.161524ms per step. The accepted profile launched the four removable pack
+  paths 13400 times over 10 steps. Those launches used 30.205639ms of GPU time,
+  or 3.020564ms per step, before counting 1340 launch submissions per step;
+  the aggregate therefore had a credible pre-edit ceiling above the floor.
+focused_profile:
+  Accepted-code samples:
+    target/nsys/20260715_tma_descriptor_cache_candidate.nsys-rep
+    target/nsys/20260715_tma_descriptor_cache_candidate_reciprocal.nsys-rep
+    train elapsed: 6.218 and 6.197 seconds, average 6.2075 seconds.
+  Initial direct-output sample:
+    target/nsys/20260715_muon_direct_packed_scales_candidate.nsys-rep
+    train elapsed: 6.253 seconds. Pack launches fell from 17550 to 4150 and
+    total kernels from 88711 to 75311, but runtime division in the direct
+    scale mapping raised the four producer families from 697.29861 to
+    803.26117ms over 10 steps.
+  Two-dimensional mapping sample:
+    target/nsys/20260715_muon_direct_packed_scales_2d_candidate.nsys-rep
+    train elapsed: 6.235 seconds; total kernel time remained 6350.906711ms
+    versus 6304.457126ms in the accepted reciprocal profile.
+  Best specialized-index samples:
+    target/nsys/20260715_muon_direct_packed_scales_tiled_index_candidate.nsys-rep
+    target/nsys/20260715_muon_direct_packed_scales_tiled_index_candidate_reciprocal.nsys-rep
+    train elapsed: 6.173 and 6.182 seconds, average 6.1775 seconds.
+    Against the accepted-code average, this saves 30.0ms over 10 steps, or
+    3.000ms per step / 0.483%, below the required 3.161524ms / 0.5% floor.
+    Held-out val_loss was 8.661704 and 8.665648 versus 8.664306 and 8.660353
+    in the accepted-code samples; the difference is immaterial because the
+    implementation failed the speed gate.
+  A paired 16-bit scale-store variant measured 6.178 seconds and made the
+  non-transposed producers slower. The final mixed-index samples measured
+  6.175 and 6.190 seconds, averaging only 2.500ms per step faster than the
+  accepted-code average. Neither refinement cleared the floor.
+verification:
+  cargo fmt --all --check: pass.
+  cargo check --workspace: pass.
+  Fresh cargo oxide build --arch sm_120a: pass after every measured variant.
+  cargo test --workspace --release --lib --bins after restoring the accepted
+  sources: pass, including 45 sweep tests and 4 rust-kernels tests.
+  All six nvfp4_quant ignored GPU tests: pass, including the added bitwise
+  direct-packed comparisons.
+decision:
+  Reject before the 30-second and 900-second gates. Even the best reciprocal
+  average saved only 0.483% whole-step time, below the active 0.5% threshold.
+  All direct-packed source and test changes were reverted; only this factual
+  rejection record is committed.
+```
+
+```text
+date: 2026-07-15
+commit: rejected uncommitted candidate, code reverted
 experiment: Produce backward-error maxima in the ReLU2 and KDA gradient producers.
 status: rejected_profile_gate
 change:
