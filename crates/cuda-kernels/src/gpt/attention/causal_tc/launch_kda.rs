@@ -43,12 +43,6 @@ impl AttentionModule {
                 mm.f32_input(&*scratch.$a, &*scratch.$b, &mut *scratch.$out, $shape)?;
             };
         }
-        macro_rules! mm_rhs_scratch {
-            ($a:ident, $b:ident, $out:ident, $shape:expr) => {
-                mm.f32_rhs(&*scratch.$a, &*scratch.$b, &mut *scratch.$out, $shape)?;
-            };
-        }
-
         if let Some(qkv_f16) = args.qkv_f16 {
             args.tc_module.fp32_to_f16(F16ConvertArgs {
                 stream,
@@ -63,11 +57,27 @@ impl AttentionModule {
         kda_kernel!(make_kda_qg_kneg_kernel(linear(dims.compact_elems); &mut *scratch.q, &*scratch.k, &*scratch.scores, &mut *scratch.compact_out));
         kda_kernel!(make_kda_kg_kpos_vbeta_kernel(linear(dims.compact_elems); &mut *scratch.k, &mut *scratch.v, &*scratch.scores, &*args.log_sum_exp, &mut *scratch.probs));
         kda_kernel!(store_kda_chunk_g_last_kernel(linear(dims.batch_head * dims.chunks * args.head_dim); &*scratch.scores, &mut *args.log_sum_exp));
-        mm_in_scratch!(probs, compact_out, scores, dims.cch());
-        kda_kernel!(mask_kda_akk_kernel(matrix_cfg; &mut *scratch.scores));
-        kda_kernel!(solve_kda_akk_inv_kernel(matrix_cfg; &mut *scratch.scores));
-        mm_rhs_scratch!(scores, probs, compact_out, dims.chc());
-        mm_rhs_scratch!(scores, v, probs, dims.chc());
+        {
+            let akk_inv = match args.kda_akk_inv {
+                Some(akk_inv) => akk_inv,
+                None => &mut *scratch.scores,
+            };
+            mm.f32_input(
+                &*scratch.probs,
+                &*scratch.compact_out,
+                &mut *akk_inv,
+                dims.cch(),
+            )?;
+            kda_kernel!(mask_kda_akk_kernel(matrix_cfg; &mut *akk_inv));
+            kda_kernel!(solve_kda_akk_inv_kernel(matrix_cfg; &mut *akk_inv));
+            mm.f32_rhs(
+                &*akk_inv,
+                &*scratch.probs,
+                &mut *scratch.compact_out,
+                dims.chc(),
+            )?;
+            mm.f32_rhs(&*akk_inv, &*scratch.v, &mut *scratch.probs, dims.chc())?;
+        }
         kda_kernel!(make_kda_kneg_from_kg_kernel(linear(dims.compact_elems); &*scratch.k, &*args.log_sum_exp, &mut *scratch.v));
         mm_in_scratch!(q, v, scores, dims.cch());
         kda_kernel!(mask_kda_aqk_kernel(linear(dims.chunk_matrix_elems); &mut *scratch.scores));

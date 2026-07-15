@@ -22,6 +22,7 @@ impl AttentionModule {
             qkv,
             attention_out: chunk_states,
             kda_v_new,
+            kda_akk_inv,
             d_out,
             log_sum_exp: _log_sum_exp,
             softmax_d: beta,
@@ -89,16 +90,21 @@ impl AttentionModule {
         launch!(bwd_elementwise.chunk_cumsum_kda_backward_g_kernel(chunk_cfg; g));
         launch!(fwd.make_kda_qg_kneg_kernel(linear_config(dims.compact_elems, threads); qg, kg, g, kneg_vnew_dqg_dv));
         launch!(fwd.make_kda_kg_kpos_vbeta_kernel(linear_config(dims.compact_elems, threads); kg, vbeta, g, beta, kpos_u_dw));
-        mm!(f32_input(
-            kpos_u_dw,
-            kneg_vnew_dqg_dv,
-            chunk_matrix,
-            dims.cch()
-        ));
-        launch!(fwd.mask_kda_akk_kernel(matrix_cfg; chunk_matrix));
-        launch!(fwd.solve_kda_akk_inv_kernel(matrix_cfg; chunk_matrix));
-        mm!(f32_rhs(chunk_matrix, kpos_u_dw, w_du_dq, dims.chc()));
-        mm!(f32_rhs(chunk_matrix, vbeta, kpos_u_dw, dims.chc()));
+        if kda_akk_inv.is_none() {
+            mm!(f32_input(
+                kpos_u_dw,
+                kneg_vnew_dqg_dv,
+                chunk_matrix,
+                dims.cch()
+            ));
+            launch!(fwd.mask_kda_akk_kernel(matrix_cfg; chunk_matrix));
+            launch!(fwd.solve_kda_akk_inv_kernel(matrix_cfg; chunk_matrix));
+        }
+        {
+            let akk_inv = kda_akk_inv.unwrap_or(&*chunk_matrix);
+            mm!(f32_rhs(akk_inv, kpos_u_dw, w_du_dq, dims.chc()));
+            mm!(f32_rhs(akk_inv, vbeta, kpos_u_dw, dims.chc()));
+        }
         mm!(f32_input(qg, kneg_vnew_dqg_dv, aqk_or_dm, dims.cch()));
         launch!(fwd.mask_kda_aqk_kernel(linear_config(dims.chunk_matrix_elems, threads); aqk_or_dm));
         if kda_v_new.is_none() {
@@ -132,26 +138,32 @@ impl AttentionModule {
         ));
         launch!(bwd_elementwise.add_kda_compact_kernel(linear_config(dims.compact_elems, threads); kneg_vnew_dqg_dv, dout_daqk_dvbeta));
         mm!(f32_a_transposed_rhs(local_grad, qg, dka_dg, dims.chc()));
-        mm!(f32_a_transposed_rhs(
-            chunk_matrix,
-            w_du_dq,
-            dh_states_or_kneg,
-            dims.chc()
-        ));
-        mm!(f32_a_transposed_rhs(
-            chunk_matrix,
-            kpos_u_dw,
-            dout_daqk_dvbeta,
-            dims.chc()
-        ));
+        {
+            let akk_inv = kda_akk_inv.unwrap_or(&*chunk_matrix);
+            mm!(f32_a_transposed_rhs(
+                akk_inv,
+                w_du_dq,
+                dh_states_or_kneg,
+                dims.chc()
+            ));
+            mm!(f32_a_transposed_rhs(
+                akk_inv,
+                kpos_u_dw,
+                dout_daqk_dvbeta,
+                dims.chc()
+            ));
+        }
         launch!(bwd_tc.chunk_intra_kda_dm_kernel(chunk_cfg; kg, vbeta, g, beta, kpos_u_dw, w_du_dq, aqk_or_dm));
-        mm!(f32_input(aqk_or_dm, chunk_matrix, local_grad, dims.ccc()));
-        mm!(f32_a_transposed_rhs(
-            chunk_matrix,
-            local_grad,
-            aqk_or_dm,
-            dims.ccc()
-        ));
+        {
+            let akk_inv = kda_akk_inv.unwrap_or(&*chunk_matrix);
+            mm!(f32_input(aqk_or_dm, akk_inv, local_grad, dims.ccc()));
+            mm!(f32_a_transposed_rhs(
+                akk_inv,
+                local_grad,
+                aqk_or_dm,
+                dims.ccc()
+            ));
+        }
         launch!(bwd_elementwise.make_kda_strict_neg_matrix_kernel(linear_config(dims.chunk_matrix_elems, threads); aqk_or_dm, chunk_matrix));
         launch!(bwd_elementwise.make_kda_backward_kneg_from_kg_kernel(linear_config(dims.compact_elems, threads); kg, g, kpos_u_dw));
         mm!(f32_rhs(
