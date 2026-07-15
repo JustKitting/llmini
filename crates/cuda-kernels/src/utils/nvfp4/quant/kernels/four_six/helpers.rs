@@ -4,7 +4,8 @@ use crate::float_ptx::abs_f32;
 use crate::warp_reduce::{half_warp_max_f32, half_warp_sum_f32};
 
 use super::super::convert::{
-    candidate_error, local_scale_bits, nonzero_global_scale, nvfp4_inv_scale, scale_value,
+    candidate_error_with_inv_scale, local_scale_bits, nonzero_global_scale, nvfp4_inv_scale,
+    scale_value,
 };
 
 pub(crate) const GROUP_SIZE: usize = 16;
@@ -52,25 +53,36 @@ pub(crate) fn four_six_group_scale(
     let mut scale_bits_four = 0u16;
     let mut scale_six = 0.0;
     let mut scale_four = 0.0;
+    let mut inv_scale_six = 0.0;
+    let mut inv_scale_four = 0.0;
 
     if lane_in_group == 0 {
         scale_bits_six = local_scale_bits(group_amax, global_scale, scale_override, 6.0);
         scale_bits_four = local_scale_bits(group_amax, global_scale, scale_override, 4.0);
         scale_six = scale_value(scale_bits_six);
         scale_four = scale_value(scale_bits_four);
+        inv_scale_six = nvfp4_inv_scale(scale_six, global_scale);
+        inv_scale_four = nvfp4_inv_scale(scale_four, global_scale);
     }
 
     scale_bits_six = warp::shuffle_sync(group_mask, scale_bits_six as u32, group_leader) as u16;
     scale_bits_four = warp::shuffle_sync(group_mask, scale_bits_four as u32, group_leader) as u16;
     scale_six = warp::shuffle_f32_sync(group_mask, scale_six, group_leader);
     scale_four = warp::shuffle_f32_sync(group_mask, scale_four, group_leader);
+    inv_scale_six = warp::shuffle_f32_sync(group_mask, inv_scale_six, group_leader);
+    inv_scale_four = warp::shuffle_f32_sync(group_mask, inv_scale_four, group_leader);
 
-    let err_six = half_warp_sum_f32(candidate_error(value, scale_six, global_scale), group_mask);
-    let err_four = half_warp_sum_f32(candidate_error(value, scale_four, global_scale), group_mask);
-    let (scale_bits, scale) = if err_six <= err_four {
-        (scale_bits_six, scale_six)
+    let err_six = half_warp_sum_f32(
+        candidate_error_with_inv_scale(value, scale_six, global_scale, inv_scale_six),
+        group_mask,
+    );
+    let err_four = half_warp_sum_f32(
+        candidate_error_with_inv_scale(value, scale_four, global_scale, inv_scale_four),
+        group_mask,
+    );
+    if err_six <= err_four {
+        (scale_bits_six as u8, inv_scale_six)
     } else {
-        (scale_bits_four, scale_four)
-    };
-    (scale_bits as u8, nvfp4_inv_scale(scale, global_scale))
+        (scale_bits_four as u8, inv_scale_four)
+    }
 }

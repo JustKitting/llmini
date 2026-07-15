@@ -44,6 +44,102 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 
 ```text
 date: 2026-07-15
+commit: accepted local jj commit after full gate
+experiment: Broadcast four-six candidate reciprocals from each half-warp leader.
+status: accepted_900s
+change:
+  Four-six scale selection evaluates scale grids with maxima 6 and 4 for each
+  16-value group. Every lane formerly recomputed both identical candidate
+  reciprocals and then recomputed the selected reciprocal, for 48 FP32 divides
+  per group. The group leader now computes the two candidate reciprocals once
+  and broadcasts their exact FP32 values with half-warp shuffles. Candidate
+  errors and final payload encoding reuse the matching broadcast reciprocal,
+  reducing the group to two divides. The shared helper accelerates ordinary,
+  rowwise, exact, bounded, and transposed four-six quantizers, schedule-free
+  encoding, and Muon master encoding.
+numerics:
+  Scale-bit construction, scale decoding, candidate-error expressions,
+  half-warp error reductions, six-versus-four selection, and FP4 stores are
+  unchanged. Before the change every lane evaluated the reciprocal from the
+  same shuffled scale and common global scale; the leader now evaluates that
+  identical expression once and shuffles the resulting FP32 bits. Each lane
+  therefore multiplies by the same reciprocal value as before, and the chosen
+  reciprocal is one of the same two candidates rather than a third recompute.
+memory:
+  No allocation, scratch size, or buffer lifetime changed. The candidate only
+  trades two extra register shuffles for repeated arithmetic inside existing
+  kernels, so persistent and peak VRAM are unchanged and this is not a direct
+  batch-capacity win.
+minimum_impact_gate:
+  The active baseline averaged 900.306 / 1486 = 605.858681ms per step, so the
+  required saving was 3.029293ms per step. Kernels using the shared four-six
+  selector occupied 941.764062ms over 10 steps, or 94.176406ms per step. A
+  3.217% family improvement would clear the whole-step floor; removing 46 of
+  48 divides per group established a credible ceiling well above that before
+  implementation.
+focused_profile:
+  Matched active baseline:
+    target/nsys/20260715_muon_prepare_noncooperative_split_candidate_reciprocal.nsys-rep
+    train elapsed: 5.936 seconds; held-out val_loss=8.660399.
+  Candidate samples:
+    target/nsys/20260715_four_six_group_reciprocal_hoist_candidate.nsys-rep
+    target/nsys/20260715_four_six_group_reciprocal_hoist_candidate_reciprocal.nsys-rep
+    train elapsed: 5.866 and 5.879 seconds.
+    held-out val_loss: 8.662814 and 8.661613.
+  Across the same 10 training steps plus endpoint validation:
+    affected selector kernels: 941.764062 -> 893.574124 / 895.862864ms,
+      saving 4.818994 / 4.590120ms per step.
+    all GPU kernels: 6042.665359 -> 5971.654922 / 5984.189230ms,
+      saving 7.101044 / 5.847613ms per step.
+    GPU memcpy plus memset: 72.830360 -> 72.684587 / 73.213565ms,
+      effectively flat.
+    kernel launch counts remain exactly 92061 in all three profiles.
+verification:
+  cargo fmt --all and git diff --check: pass.
+  cargo check --workspace: pass.
+  Fresh cargo oxide build --arch sm_120a: pass.
+  cargo test --workspace --release --lib --bins: pass, including 45 sweep tests
+    and 4 rust-kernels tests.
+  All six focused NVFP4 quantization GPU tests, the schedule-free Adam GPU test,
+  and all three focused Muon TMA GPU tests pass after the fresh rebuild.
+  PTXAS reports zero stack and spills for all affected kernels. Representative
+  register changes are exact non-transposed 27 -> 30, tiled transpose 40 -> 40,
+  sqrt-bounded tiled transpose 44 -> 40, schedule-free 27 -> 31, and Muon
+  encode 38 -> 39; shared-memory and barrier counts are unchanged.
+  Required clean 30-second screen with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260715_190222Z_fineweb_30s
+    stdout: target/four_six_group_reciprocal_hoist_30_20260715.log
+    completed_steps=52, train_elapsed_s=30.248, val_loss=6.766351.
+    Both high-fidelity samples were finite and nonzero, retained batch 4,
+    sequence 2048, and 8192 tokens per step, with zero skip flags.
+  Required 900-second gate with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260715_190303Z_fineweb_900s
+    stdout: target/four_six_group_reciprocal_hoist_900_20260715.log
+    completed_steps=1501, train_elapsed_s=900.302, val_loss=4.903946.
+    All 31 high-fidelity samples were finite and nonzero, with zero skipped
+    updates, loss-spike skips, grad-norm-spike skips, or nonfinite skips. Grad
+    norm ranged from 1.161728621 to 18.969266891. Every sample retained batch 4,
+    sequence 2048, and 8192 tokens per step.
+measured_effect:
+  Against the matched 30-second baseline:
+    completed_steps: 52 -> 52.
+    average step time: 587.807692 -> 581.692308ms
+      (-6.115385ms, -1.040%).
+    held-out val_loss: 6.761991 -> 6.766351 (+0.004360, +0.064%).
+  Against the matched 900-second baseline:
+    completed_steps: 1486 -> 1501 (+15, +1.009%).
+    average step time: 605.858681 -> 599.801466ms
+      (-6.057215ms, -1.000%).
+    training tokens: 12173312 -> 12296192 (+122880, +1.009%).
+    held-out val_loss: 4.907964 -> 4.903946 (-0.004018, -0.082%).
+decision:
+  Keep and promote. Both fixed-wall gates preserve the speed signal, the full
+  run improves held-out loss, and every stability signal remains clean. The
+  next 0.5% threshold is (900.302 / 1501) * 0.005 = 2.999007ms per step.
+```
+
+```text
+date: 2026-07-15
 commit: rejected build-time candidate, default binary restored
 experiment: Reduce the shared NVFP4 TMA GEMM tile from 128x128 to 64x128.
 status: rejected_profile_gate
