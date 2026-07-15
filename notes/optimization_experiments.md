@@ -44,6 +44,79 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 
 ```text
 date: 2026-07-15
+commit: rejected uncommitted candidate, code reverted
+experiment: Produce backward-error maxima in the ReLU2 and KDA gradient producers.
+status: rejected_profile_gate
+change:
+  ReLU2 backward was widened from one to eight FP32 outputs per thread and
+  wrote one maximum per 2048 produced gradients into the existing MLP-up
+  linear scratch. KDA finish accumulated the exact q, k, v, g, and beta
+  gradients it stored and wrote one maximum per finish CTA into the existing
+  QKV linear scratch. Both following MS-EDEN pair quantizers consumed those
+  producer maxima instead of launching full-output tensor scans. Full
+  attention retained its existing scan path. The candidate removed 280 scan
+  launches over 10 training steps: 160 after ReLU2 and 120 after KDA finish.
+numerics:
+  Both producers accumulated abs maxima from the exact FP32 values passed to
+  their unchanged output stores. The KDA buffer's 96 padded tail columns are
+  zero-initialized and are not written by either KDA or full-attention
+  backward, so omitting them from producer chunks preserves the tensor max.
+  The ReLU2 GPU test matched every output and every 2048-value chunk maximum
+  to a host reference bit-for-bit. The KDA wrapper/direct GPU test matched
+  output, producer chunks, and the final tensor maximum bit-for-bit.
+memory:
+  No allocation changes. Both producers reused the downstream linear
+  scratch's existing chunk-amax buffer; peak VRAM and batch-capacity headroom
+  were unchanged.
+minimum_impact_gate:
+  The active baseline averages 900.331 / 1418 = 634.930183ms per step, so the
+  required implementation saving is 3.174651ms per step. In the parent
+  profile, the ReLU2 and KDA output scans cost 42.426913ms over 10 steps, or
+  4.242691ms per step, so the candidate cleared the pre-edit mathematical
+  screen.
+focused_profile:
+  Matched parent:
+    target/nsys/20260715_backward_output_amax_parent_matched.nsys-rep
+    target/nsys/20260715_backward_output_amax_parent_matched_cuda_gpu_kern_sum.csv
+    target/nsys/20260715_backward_output_amax_parent_matched_cuda_gpu_mem_time_sum.csv
+  Reciprocal candidate:
+    target/nsys/20260715_backward_output_amax_candidate_matched.nsys-rep
+    target/nsys/20260715_backward_output_amax_candidate_matched_cuda_gpu_kern_sum.csv
+    target/nsys/20260715_backward_output_amax_candidate_matched_cuda_gpu_mem_time_sum.csv
+  Across the same 10 training steps plus endpoint validation:
+    total GPU kernels: 6272.326028 -> 6248.671690ms.
+    memory operations: 93.491212 -> 93.438079ms.
+    net GPU kernel-plus-memory saving: 23.707471ms, or 2.370747ms per
+      training step, below the required 3.174651ms implementation floor.
+    tensor-chunk amax launches: 5540 -> 5260, exactly 280 fewer; time fell
+      from 87.917235 -> 45.522029ms.
+    ReLU2 producer time: 67.372542 -> 68.478841ms.
+    KDA finish producer time: 50.325601 -> 51.085956ms.
+    global-scale reduction time: 6.604175 -> 8.206580ms because the producer
+      partitions supplied more chunks to the existing scalar reduction.
+    train elapsed: 6.236 -> 6.213 seconds; held-out val_loss moved from
+      8.658685 -> 8.663515 (+0.056%).
+  Two earlier candidate samples measured 6236.316722 and 6242.560876ms of
+  kernels. Averaging all three candidate samples against the matched parent,
+  including memory operations, yields 2.981626ms saved per step, still below
+  the 3.174651ms floor. One ordering cleared the floor, but the reciprocal and
+  aggregate comparison did not.
+verification:
+  cargo fmt --all --check: pass.
+  cargo check --workspace: pass.
+  Fresh cargo oxide build --arch sm_120a: pass.
+  cargo test --workspace --release --lib --bins: pass, including 45 sweep tests
+    and 4 rust-kernels tests.
+  Focused ReLU2, KDA wrapper/direct, full block-attention backward, QKV
+    projection backward, and full-attention TC backward GPU tests: pass.
+decision:
+  Reject before the 30-second and 900-second gates. The candidate's whole-step
+  profile does not meet the active 0.5% implementation threshold, so no
+  training gate or JJ commit is justified.
+```
+
+```text
+date: 2026-07-15
 commit: accepted local jj commit after full gate
 experiment: Produce Muon operand maxima in the TMA GEMM epilogue.
 status: accepted_900s
