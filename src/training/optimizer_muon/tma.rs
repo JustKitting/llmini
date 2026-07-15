@@ -1,6 +1,7 @@
 use cuda_core::{CudaStream, DeviceBuffer, DriverError};
 use rust_kernels_cuda::f32_matrix_ops::{
-    F32Linear3Args, F32Linear3SqrtBoundArgs, F32ScaleInPlaceByAmaxArgs,
+    F32Linear3Args, F32Linear3SqrtBoundArgs, F32Linear3SqrtBoundRowSumsqArgs,
+    F32ScaleInPlaceByAmaxArgs,
 };
 use rust_kernels_cuda::nvfp4_quant::{
     Nvfp4QuantPaddedArgs, Nvfp4QuantTransposePaddedArgs, TensorAmaxArgs,
@@ -292,7 +293,32 @@ fn run_tma_polar_iteration(
         Some(iter),
         desc,
     )?;
-    if defer_bounds {
+    let final_iteration = iter + 1 == POLAR_ITERATIONS;
+    if defer_bounds && final_iteration {
+        runtime
+            .f32_ops
+            .linear3_sqrt_bound_a_row_sumsq(F32Linear3SqrtBoundRowSumsqArgs {
+                stream,
+                a: source,
+                b: ax,
+                c_out: target,
+                bound_amax: &*tma.bound_amax,
+                row_sumsq: tma.b.chunk_amax,
+                rows: polar_rows,
+                cols: polar_cols,
+                a_scale: coeffs.a,
+                b_scale: coeffs.b,
+                c_scale: coeffs.c,
+            })?;
+        // For a Gram matrix XX^T, every off-diagonal magnitude is bounded by
+        // the largest diagonal, so its tensor amax is the maximum row sumsq.
+        runtime.quant.tensor_amax_from_chunks_f32(
+            stream,
+            &*tma.b.chunk_amax,
+            tma.bound_amax,
+            polar_rows,
+        )?;
+    } else if defer_bounds {
         runtime
             .f32_ops
             .linear3_sqrt_bound_a(F32Linear3SqrtBoundArgs {
@@ -328,7 +354,7 @@ fn run_tma_polar_iteration(
         Some(iter),
         desc,
     )?;
-    if iter + 1 == POLAR_ITERATIONS {
+    if final_iteration && !defer_bounds {
         tma_matmul_self_transpose(
             stream,
             runtime,
@@ -356,17 +382,24 @@ fn run_tma_polar_iteration(
             tma.reborrow(),
             polar_rows,
             polar_cols,
-            defer_bounds,
+            false,
         )?;
         trace_buffer(
             stream,
             trace,
             slot_index,
-            if defer_bounds {
-                "final_next_bound_deferred"
-            } else {
-                "final_next_bounded"
-            },
+            "final_next_bounded",
+            target,
+            polar_rows * polar_cols,
+            Some(iter),
+            desc,
+        )?;
+    } else if final_iteration {
+        trace_buffer(
+            stream,
+            trace,
+            slot_index,
+            "final_next_bound_deferred",
             target,
             polar_rows * polar_cols,
             Some(iter),

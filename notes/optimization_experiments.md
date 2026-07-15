@@ -45,6 +45,95 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-15
 commit: accepted local jj commit after full gate
+experiment: Replace the final Muon Gram construction with fused FP32 row norms.
+status: accepted_900s
+change:
+  The final Polar iteration constructed one extra NVFP4-quantized Gram matrix
+  solely to derive its magnitude bound; no matrix consumer used that Gram. For
+  any Gram XX^T, Cauchy-Schwarz makes every off-diagonal magnitude no larger
+  than the largest diagonal, so max(abs(XX^T)) equals the maximum row squared
+  norm. On exact active shapes, the final linear3 kernel now accumulates that
+  FP32 row sumsq while writing its already-required output, and the existing
+  one-block tensor-max kernel reduces those row values. Non-exact fallback
+  shapes retain the former final Gram construction.
+numerics:
+  The identity is exact for the intended FP32 Gram. The former path measured a
+  Gram after NVFP4 operand quantization, whereas the new bound uses the actual
+  FP32 recurrence output, so this is not claimed to be bitwise identical bound
+  arithmetic. It removes quantization error from the numerical protection; the
+  matched 30-second and 900-second held-out gates below validate the resulting
+  training trajectory.
+memory:
+  Row sums reuse the existing TMA B chunk-amax scratch, whose capacity exceeds
+  the active polar row count. No persistent or peak logical buffer was added.
+minimum_impact_gate:
+  The active baseline averaged 900.603 / 1351 = 666.619541ms per step, requiring
+  3.333098ms per step. Sequence attribution in its existing Nsys database
+  measured the final-Gram-only kernels at 92.024691ms over 10 steps, or
+  9.202469ms per step. This established a credible 2.761x pre-edit ceiling.
+focused_profile:
+  Parent:
+    target/nsys/20260715_muon_lazy_bounds_candidate.nsys-rep
+    target/nsys/20260715_muon_lazy_bounds_candidate_cuda_gpu_kern_sum.csv
+  Candidate:
+    target/nsys/20260715_muon_final_row_norm_candidate.nsys-rep
+    target/nsys/20260715_muon_final_row_norm_candidate_cuda_gpu_kern_sum.csv
+  Across the same 10 training steps plus endpoint validation, the exact sequence
+  from final linear3 through the pre-finish bound was:
+    parent final linear3 + final Gram family = 147.578681ms.
+    candidate fused final linear3/row-sumsq + row max = 57.214103ms.
+  Net saving was 90.364578ms / 10 = 9.036458ms per step, or 1.356% of the active
+  whole-step baseline and 2.711x the required post-implementation gate. Total
+  GPU kernel time improved from 658.037895ms to 649.594602ms per step.
+verification:
+  cargo fmt --all --check: pass.
+  cargo check -p rust-kernels-cuda -p rust-kernels: pass.
+  cargo test --workspace --lib --bins: pass, including 45 sweep tests and 4
+    rust-kernels tests.
+  Fresh cargo oxide build --arch sm_120a: pass.
+  The fused final linear3 output is bitwise equal to the elementwise kernel and
+  its row sums match a host reference: pass, 1 GPU test after the fresh build.
+  Muon GPU recurrence suite after the fresh PTX build: pass, 4 tests.
+  One-step launch diagnostic only:
+    target/runs/20260715_134957Z_fineweb_60s
+    completed_steps=1, train_elapsed_s=0.618, val_loss=10.417880.
+  Focused 10-step run:
+    target/runs/20260715_135004Z_fineweb_60s
+    completed_steps=10, train_elapsed_s=6.462, val_loss=8.659902 versus the
+    matched parent profile's 8.666348.
+  Required 30-second screen with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260715_135041Z_fineweb_30s
+    completed_steps=48, train_elapsed_s=30.585, val_loss=6.828311.
+  Required 900-second gate with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260715_135120Z_fineweb_900s
+    stdout: target/muon_final_row_norm_900_20260715.log
+    completed_steps=1374, train_elapsed_s=900.368, val_loss=4.922318.
+    All 28 high-fidelity samples were finite and nonzero, with zero skipped
+    updates, loss-spike skips, grad-norm-spike skips, or nonfinite skips. Grad
+    norm ranged from 1.178718686 to 18.969253540. Every sample retained batch
+    4 and sequence 2048.
+measured_effect:
+  Against the matched 30-second baseline:
+    completed_steps: 47 -> 48 (+1, +2.128%).
+    average step time: 646.191489ms -> 637.187500ms
+      (-9.003989ms, -1.393%).
+    held-out val_loss: 6.842956 -> 6.828311 (-0.014645, -0.214%).
+  Against the matched 900-second baseline:
+    completed_steps: 1351 -> 1374 (+23, +1.702%).
+    average step time: 666.619541ms -> 655.289665ms
+      (-11.329876ms, -1.700%).
+    training tokens: 11067392 -> 11255808 (+188416, +1.702%).
+    held-out val_loss: 4.935461 -> 4.922318 (-0.013143, -0.266%).
+decision:
+  Keep and promote. The profile and both fixed-window gates improve speed, the
+  more direct FP32 bound improves held-out loss, and the full run has no
+  numerical or skip instability. The next 0.5% threshold is
+  (900.368 / 1374) * 0.005 = 3.276448ms per step.
+```
+
+```text
+date: 2026-07-15
+commit: accepted local jj commit after full gate
 experiment: Defer Muon Polar magnitude-bound scaling to existing consumers.
 status: accepted_900s
 change:

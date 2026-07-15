@@ -1,7 +1,10 @@
 use std::error::Error;
 
 use cuda_core::DeviceBuffer;
-use rust_kernels_cuda::f32_matrix_ops::{F32MatrixOpsModule, F32ScaleInPlaceByAmaxArgs};
+use rust_kernels_cuda::f32_matrix_ops::{
+    F32Linear3SqrtBoundArgs, F32Linear3SqrtBoundRowSumsqArgs, F32MatrixOpsModule,
+    F32ScaleInPlaceByAmaxArgs,
+};
 use rust_kernels_cuda::nvfp4_quant::{
     MsEdenQuantArgs, Nvfp4QuantArgs, Nvfp4QuantModule, Nvfp4QuantPaddedArgs,
     Nvfp4QuantTransposePaddedArgs, TensorAmaxArgs, nvfp4_tensor_amax_chunks,
@@ -150,6 +153,75 @@ fn bounded_amax_four_six_matches_rescanned_input() -> Result<(), Box<dyn Error>>
         lazy_global.to_host_vec(&stream)?,
         reference_global.to_host_vec(&stream)?
     );
+    Ok(())
+}
+
+#[ignore = "requires generated sm_120a PTX"]
+#[test]
+fn linear3_sqrt_bound_row_sumsq_matches_elementwise_kernel() -> Result<(), Box<dyn Error>> {
+    const ROWS: usize = 8;
+    const COLS: usize = 512;
+    let a = (0..ROWS * COLS)
+        .map(|index| ((index % 211) as f32 - 105.0) * 0.0037)
+        .collect::<Vec<_>>();
+    let b = (0..ROWS * COLS)
+        .map(|index| ((index % 157) as f32 - 78.0) * 0.0029)
+        .collect::<Vec<_>>();
+    let c = (0..ROWS * COLS)
+        .map(|index| ((index % 97) as f32 - 48.0) * 0.0041)
+        .collect::<Vec<_>>();
+    let bound = [3.7_f32];
+
+    let (_, stream, ptx) = common::cuda_test_context()?;
+    let f32_ops = F32MatrixOpsModule::from_module(ptx)?;
+    let a_dev = DeviceBuffer::from_host(&stream, &a)?;
+    let b_dev = DeviceBuffer::from_host(&stream, &b)?;
+    let bound_dev = DeviceBuffer::from_host(&stream, &bound)?;
+    let mut reference = DeviceBuffer::from_host(&stream, &c)?;
+    let mut fused = DeviceBuffer::from_host(&stream, &c)?;
+    let mut row_sumsq = DeviceBuffer::<f32>::zeroed(&stream, ROWS)?;
+
+    f32_ops.linear3_sqrt_bound_a(F32Linear3SqrtBoundArgs {
+        stream: &stream,
+        a: &a_dev,
+        b: &b_dev,
+        c_out: &mut reference,
+        bound_amax: &bound_dev,
+        len: (ROWS * COLS) as u32,
+        a_scale: 2.3,
+        b_scale: -1.7,
+        c_scale: 0.41,
+    })?;
+    f32_ops.linear3_sqrt_bound_a_row_sumsq(F32Linear3SqrtBoundRowSumsqArgs {
+        stream: &stream,
+        a: &a_dev,
+        b: &b_dev,
+        c_out: &mut fused,
+        bound_amax: &bound_dev,
+        row_sumsq: &mut row_sumsq,
+        rows: ROWS as u32,
+        cols: COLS as u32,
+        a_scale: 2.3,
+        b_scale: -1.7,
+        c_scale: 0.41,
+    })?;
+
+    let reference = reference.to_host_vec(&stream)?;
+    let fused = fused.to_host_vec(&stream)?;
+    let row_sumsq = row_sumsq.to_host_vec(&stream)?;
+    assert_eq!(fused, reference);
+    for row in 0..ROWS {
+        let expected = fused[row * COLS..(row + 1) * COLS]
+            .iter()
+            .map(|value| value * value)
+            .sum::<f32>();
+        let error = (row_sumsq[row] - expected).abs();
+        assert!(
+            error <= expected.abs().max(1.0) * 2.0e-6,
+            "row {row}: got {}, expected {expected}, error {error}",
+            row_sumsq[row]
+        );
+    }
     Ok(())
 }
 

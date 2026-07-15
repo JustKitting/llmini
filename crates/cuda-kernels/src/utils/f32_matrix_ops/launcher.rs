@@ -4,10 +4,10 @@ use cuda_core::{CudaModule, DriverError};
 
 use super::args::{
     F32AddScaledIdentityArgs, F32Linear2Args, F32Linear3Args, F32Linear3SqrtBoundArgs,
-    F32ScaleInPlaceByAmaxArgs,
+    F32Linear3SqrtBoundRowSumsqArgs, F32ScaleInPlaceByAmaxArgs,
 };
 use super::kernels;
-use crate::launch::linear_config;
+use crate::launch::{grid_x_config, linear_config};
 
 const F32_OPS_THREADS_PER_BLOCK: u32 = 256;
 
@@ -78,6 +78,34 @@ impl F32MatrixOpsModule {
             args.b_scale,
             args.c_scale,
         )
+    }
+
+    pub fn linear3_sqrt_bound_a_row_sumsq(
+        &self,
+        args: F32Linear3SqrtBoundRowSumsqArgs<'_, '_>,
+    ) -> Result<(), DriverError> {
+        let len = args.rows as usize * args.cols as usize;
+        assert!(args.a.len() >= len);
+        assert!(args.b.len() >= len);
+        assert!(args.c_out.len() >= len);
+        assert!(!args.bound_amax.is_empty());
+        assert!(args.row_sumsq.len() >= args.rows as usize);
+
+        self.module
+            .f32_linear3_sqrt_bound_a_row_sumsq_in_place_kernel(
+                args.stream,
+                grid_x_config(args.rows, F32_OPS_THREADS_PER_BLOCK),
+                args.a,
+                args.b,
+                args.c_out,
+                args.bound_amax,
+                args.row_sumsq,
+                args.rows,
+                args.cols,
+                args.a_scale,
+                args.b_scale,
+                args.c_scale,
+            )
     }
 
     pub fn add_scaled_identity(

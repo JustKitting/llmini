@@ -1,6 +1,10 @@
-use cuda_device::{DisjointSlice, cuda_module, kernel, thread};
+use cuda_device::{DisjointSlice, SharedArray, cuda_module, kernel, thread};
 
+use crate::block_reduce::block_sum_shared_f32;
 use crate::float_ptx::{fma_f32, sqrt_f32};
+use crate::warp_reduce::thread_lane_warp;
+
+const F32_OPS_WARPS_PER_BLOCK: usize = 8;
 
 #[cuda_module]
 pub(super) mod module {
@@ -78,6 +82,55 @@ pub(super) mod module {
                 *c_ptr.add(i) = fma_f32(a_scale, a[i] * bound_scale, bc);
             }
             index += stride;
+        }
+    }
+
+    #[kernel]
+    pub fn f32_linear3_sqrt_bound_a_row_sumsq_in_place_kernel(
+        a: &[f32],
+        b: &[f32],
+        mut c_out: DisjointSlice<f32>,
+        bound_amax: &[f32],
+        mut row_sumsq: DisjointSlice<f32>,
+        rows: u32,
+        cols: u32,
+        a_scale: f32,
+        b_scale: f32,
+        c_scale: f32,
+    ) {
+        static mut ROW_SUMS: SharedArray<f32, F32_OPS_WARPS_PER_BLOCK> = SharedArray::UNINIT;
+
+        let row = thread::blockIdx_x();
+        if row >= rows {
+            return;
+        }
+        let bound = bound_amax[0];
+        let bound_scale = if bound > 1.0 {
+            1.0 / sqrt_f32(bound)
+        } else {
+            1.0
+        };
+        let (thread, lane, warp) = thread_lane_warp();
+        let row_base = row as usize * cols as usize;
+        let c_ptr = c_out.as_mut_ptr();
+        let mut local_sumsq = 0.0;
+        let mut col = thread;
+        while col < cols {
+            let i = row_base + col as usize;
+            unsafe {
+                let current = *c_ptr.add(i);
+                let bc = fma_f32(b_scale, b[i], c_scale * current);
+                let value = fma_f32(a_scale, a[i] * bound_scale, bc);
+                *c_ptr.add(i) = value;
+                local_sumsq = fma_f32(value, value, local_sumsq);
+            }
+            col += thread::blockDim_x();
+        }
+        let sumsq = unsafe { block_sum_shared_f32(&mut ROW_SUMS, local_sumsq, lane, warp) };
+        if thread == 0 {
+            unsafe {
+                *row_sumsq.get_unchecked_mut(row as usize) = sumsq;
+            }
         }
     }
 
