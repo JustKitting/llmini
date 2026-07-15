@@ -2,10 +2,11 @@ use cuda_core::{CudaStream, DeviceBuffer, DriverError};
 use rust_kernels_cuda::attention::{CausalAttentionBackwardTcScratch, CausalAttentionTcScratch};
 
 use super::scratch::AttentionCoreScratch;
-use crate::{GPT2_BATCH_SIZE, GPT2_N_EMBD, GPT2_N_HEAD, GPT2_SEQ_LEN};
+use crate::{GPT2_BATCH_SIZE, GPT2_N_EMBD, GPT2_N_HEAD, GPT2_N_LAYER, GPT2_SEQ_LEN};
 
 pub struct AttentionCoreScratchBuffers {
     softmax_d: DeviceBuffer<f32>,
+    qk_norm_max: DeviceBuffer<f32>,
     q: DeviceBuffer<f32>,
     k: DeviceBuffer<f32>,
     v: DeviceBuffer<f32>,
@@ -37,6 +38,7 @@ impl AttentionCoreScratchBuffers {
         let batch_head_rows = GPT2_BATCH_SIZE * GPT2_N_HEAD * GPT2_SEQ_LEN;
         Ok(Self {
             softmax_d: DeviceBuffer::zeroed(stream, batch_head_rows)?,
+            qk_norm_max: DeviceBuffer::zeroed(stream, 2 * GPT2_N_LAYER * GPT2_N_HEAD)?,
             q: DeviceBuffer::zeroed(stream, compact)?,
             k: DeviceBuffer::zeroed(stream, compact)?,
             v: DeviceBuffer::zeroed(stream, compact)?,
@@ -65,6 +67,7 @@ impl AttentionCoreScratchBuffers {
     pub fn args(&mut self) -> AttentionCoreScratch<'_> {
         AttentionCoreScratch {
             softmax_d: &mut self.softmax_d,
+            qk_norm_max: &mut self.qk_norm_max,
             tc: CausalAttentionBackwardTcScratch {
                 q_f32: &mut self.q,
                 k_f32: &mut self.k,
@@ -90,6 +93,10 @@ impl AttentionCoreScratchBuffers {
                 kda_d_beta: &mut self.kda_d_beta,
             },
         }
+    }
+
+    pub fn qk_norm_max(&self) -> &DeviceBuffer<f32> {
+        &self.qk_norm_max
     }
 
     pub fn forward_tc(&mut self) -> CausalAttentionTcScratch<'_> {

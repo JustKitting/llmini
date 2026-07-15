@@ -42,6 +42,7 @@ pub struct CausalAttentionBackwardTcArgs<'a, 'scratch, 'out> {
     pub d_out: &'a DeviceBuffer<f32>,
     pub log_sum_exp: &'a DeviceBuffer<f32>,
     pub softmax_d: &'scratch mut DeviceBuffer<f32>,
+    pub qk_norm_max: &'scratch mut DeviceBuffer<f32>,
     pub d_qkv: &'out mut DeviceBuffer<f32>,
     pub scratch: CausalAttentionBackwardTcScratch<'scratch>,
     pub row_count: u32,
@@ -51,6 +52,7 @@ pub struct CausalAttentionBackwardTcArgs<'a, 'scratch, 'out> {
     pub qkv_dim: u32,
     pub head_count: u32,
     pub head_dim: u32,
+    pub qk_norm_offset: u32,
 }
 
 impl CausalAttentionBackwardTcArgs<'_, '_, '_> {

@@ -45,6 +45,95 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-15
 commit: accepted local jj commit after full gate
+experiment: Reuse KDA backward Q/K norms for the Muon magnitude bound.
+status: accepted_900s
+change:
+  KDA backward already computes the post-SiLU Q and K norm for every
+  row/head while producing dQKV. Write those two values into the leading rows
+  of the now-dead qg/kg scratch, reduce them to one Q and K maximum per head,
+  and retain only those maxima for the optimizer. KDA blocks now consume the
+  saved maxima instead of rereading QKV and repeating 64 half conversions,
+  SiLU evaluations, FMAs, and square roots per row/head. Full-attention blocks
+  retain the existing raw-QKV scan, and state scaling plus unconditional NVFP4
+  requantization are unchanged.
+memory:
+  The per-row norms reuse existing attention scratch. The only persistent
+  allocation is 2 * 16 layers * 32 heads FP32 maxima = 4096 bytes.
+minimum_impact_gate:
+  The active 900-second baseline averaged 900.143 / 1312 = 686.084604ms per
+  step, so the required 0.5% saving was 3.430423ms per step. In the fresh
+  10-step baseline profile, the 12 KDA-block clip scans alone consumed
+  7.156988ms per step, establishing a credible pre-edit ceiling above the
+  threshold.
+focused_profile:
+  Parent:
+    target/nsys/20260715_1b_b4_s2048_muon_baseline.nsys-rep
+    target/nsys/20260715_1b_b4_s2048_muon_baseline_cuda_gpu_kern_sum.csv
+  Candidate:
+    target/nsys/20260715_kda_reuse_norms_candidate.nsys-rep
+    target/nsys/20260715_kda_reuse_norms_candidate_cuda_gpu_kern_sum.csv
+  Across the same 10 training steps plus endpoint validation:
+    parent kda_muon_qk_clip_kernel = 88.126895ms / 160 launches.
+    parent finish_kda_backward_kernel = 50.111697ms / 120 launches.
+    parent affected family = 138.238592ms.
+    candidate kda_muon_qk_clip_kernel = 16.637204ms / 160 launches.
+    candidate finish_kda_backward_kernel = 50.261570ms / 120 launches.
+    candidate reduce_kda_qk_norm_max_kernel = 0.730170ms / 120 launches.
+    candidate affected family = 67.628944ms.
+  Net saving was 70.609648ms / 10 = 7.060965ms per step, or 1.029% of
+  the active whole-step baseline. This clears the post-implementation profile
+  gate by 2.059x. The Burn KDA_clip metric measures host enqueue time and is
+  not the GPU timing used for this comparison.
+verification:
+  cargo fmt --all --check: pass.
+  cargo check --workspace --lib --bins: pass.
+  Targeted no-run builds for causal_attention_backward,
+    block_attention_backward, and causal_attention_backward_tc: pass.
+  cargo test --workspace --lib --bins: pass, including 45 sweep tests and 4
+    rust-kernels tests.
+  Fresh cargo oxide build --arch sm_120a: pass.
+  Muon GPU recurrence suite after the fresh PTX build: pass, 4 tests.
+  Full-attention GPU reference test after the fresh PTX build: pass, 1 test.
+  The large KDA wrapper test is not usable at the active shape: it reaches an
+    existing f16 matmul output-size assertion before the modified finish
+    kernel. The exact rebuilt training path below exercises all 12 KDA blocks.
+  One-step launch diagnostic only:
+    target/runs/20260715_125523Z_fineweb_60s
+    completed_steps=1, train_elapsed_s=0.641, val_loss=10.419855, exactly the
+    active baseline's one-step loss.
+  Required 30-second screen with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260715_125641Z_fineweb_30s
+    completed_steps=46, train_elapsed_s=30.380, val_loss=6.856266.
+  Required 900-second gate with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260715_125736Z_fineweb_900s
+    TRAIN_MAX_SECONDS=900, completed_steps=1322, val_loss=4.937674.
+    All 27 high-fidelity samples were finite and nonzero, with zero skipped
+    updates, loss-spike skips, grad-norm-spike skips, or nonfinite skips. Grad
+    norm ranged from 1.176354647 to 18.969253540. Every sample retained batch
+    4 and sequence 2048. The exact post-step wall-clock overshoot line was not
+    retained by low-volume terminal polling, so the baseline file records the
+    nominal 900.000000-second fixed budget rather than inventing an overshoot.
+measured_effect:
+  Against the matched 30-second baseline:
+    completed_steps: 46 -> 46 (unchanged).
+    average step time: 664.739130ms -> 660.434783ms
+      (-4.304348ms, -0.648%).
+    held-out val_loss: 6.856266 -> 6.856266 (exactly unchanged).
+  Against the matched 900-second baseline:
+    completed_steps: 1312 -> 1322 (+10, +0.762%).
+    training tokens: 10747904 -> 10829824 (+81920, +0.762%).
+    held-out val_loss: 4.940953 -> 4.937674 (-0.003279, -0.066%).
+decision:
+  Keep and promote. The focused GPU profile exceeds the 0.5% minimum, both
+  fixed-window gates preserve or improve held-out loss, the full gate completes
+  10 additional steps without instability, and the added persistent storage is
+  only 4 KiB. Using the nominal fixed budget, the next 0.5% threshold is
+  (900 / 1322) * 0.005 = 3.403933ms per step.
+```
+
+```text
+date: 2026-07-15
+commit: accepted local jj commit after full gate
 experiment: Name the active optimizer Muon and use B4/S2048 for pretraining.
 status: accepted_900s_architecture_baseline
 change:

@@ -53,6 +53,7 @@ impl BlockAttentionBackwardSeeds {
 }
 
 pub struct BlockAttentionBackwardArgs<'a, 'scratch, 'out> {
+    pub block_index: usize,
     pub use_full_attention: bool,
     pub reuse_forward_probs: bool,
     pub stream: &'a CudaStream,

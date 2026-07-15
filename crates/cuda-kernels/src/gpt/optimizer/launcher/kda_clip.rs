@@ -10,6 +10,7 @@ impl OptimizerModule {
         let len = args.input_dim * args.qkv_dim;
         assert_eq!(len as usize % 16, 0);
         assert!(args.qkv.len() >= args.row_count as usize * args.qkv_dim as usize);
+        assert!(args.qk_norm_max.len() >= (args.norm_offset + 2 * args.head_count) as usize);
         assert!(args.z_master.len() >= len as usize);
         assert!(args.x_master.len() >= len as usize);
         assert!(args.momentum.len() >= len as usize);
@@ -21,6 +22,7 @@ impl OptimizerModule {
             args.stream,
             grid_x_config(args.head_count, KDA_CLIP_THREADS_PER_BLOCK),
             args.qkv,
+            args.qk_norm_max,
             args.z_master,
             args.x_master,
             args.momentum,
@@ -33,6 +35,8 @@ impl OptimizerModule {
             args.head_dim,
             args.tau,
             args.silu_qk,
+            args.norm_offset,
+            args.precomputed_qk_norms,
         )?;
 
         self.requantize(

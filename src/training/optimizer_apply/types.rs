@@ -1,4 +1,4 @@
-use cuda_core::CudaStream;
+use cuda_core::{CudaStream, DeviceBuffer};
 
 use super::super::{
     OptimizerTrace, TokenBatch, diagnostics::TrainingDiagnostics, grad_clip::GradientClipBuffers,
@@ -21,6 +21,7 @@ pub struct WeightUpdateArgs<'a> {
     pub muon: &'a mut MuonScratchBuffers,
     pub muon_tables: &'a MuonPointerTables,
     pub tape: &'a ForwardTapeBuffers,
+    pub qk_norm_max: &'a DeviceBuffer<f32>,
     pub grad_clip: &'a mut GradientClipBuffers,
 }
 

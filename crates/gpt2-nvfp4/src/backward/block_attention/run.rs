@@ -13,6 +13,7 @@ pub fn attention_side_backward(
     args: BlockAttentionBackwardArgs<'_, '_, '_>,
 ) -> Result<(), DriverError> {
     let BlockAttentionBackwardArgs {
+        block_index,
         use_full_attention,
         reuse_forward_probs,
         stream,
@@ -49,6 +50,7 @@ pub fn attention_side_backward(
         seeds: seeds.c_proj,
     })?;
     causal_attention_backward(AttentionCoreBackwardArgs {
+        block_index,
         use_full_attention,
         reuse_forward_probs,
         stream,

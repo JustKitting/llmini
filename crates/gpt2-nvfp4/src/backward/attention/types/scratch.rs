@@ -13,6 +13,7 @@ pub type AttentionQkvScratch<'scratch> = AttentionLinearScratch<'scratch>;
 
 pub struct AttentionCoreScratch<'scratch> {
     pub softmax_d: &'scratch mut DeviceBuffer<f32>,
+    pub qk_norm_max: &'scratch mut DeviceBuffer<f32>,
     pub tc: CausalAttentionBackwardTcScratch<'scratch>,
 }
 
@@ -28,6 +29,7 @@ impl<'scratch> AttentionCoreScratch<'scratch> {
     pub fn reborrow(&mut self) -> AttentionCoreScratch<'_> {
         AttentionCoreScratch {
             softmax_d: &mut *self.softmax_d,
+            qk_norm_max: &mut *self.qk_norm_max,
             tc: self.tc.reborrow(),
         }
     }

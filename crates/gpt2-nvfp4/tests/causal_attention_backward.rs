@@ -49,6 +49,7 @@ fn causal_attention_backward_wrapper_matches_direct_kernel() -> Result<(), Box<d
     let mut direct_scratch = AttentionCoreScratchBuffers::new(&stream)?;
 
     gpt2_causal_attention_backward(AttentionCoreBackwardArgs {
+        block_index: 0,
         use_full_attention: false,
         reuse_forward_probs: false,
         stream: &stream,
@@ -75,6 +76,7 @@ fn causal_attention_backward_wrapper_matches_direct_kernel() -> Result<(), Box<d
         d_out: &d_out,
         log_sum_exp: &log_sum_exp,
         softmax_d: direct_core.softmax_d,
+        qk_norm_max: direct_core.qk_norm_max,
         d_qkv: &mut direct_d_qkv,
         scratch: direct_core.tc,
         row_count: GPT2_TOKEN_ROWS as u32,
@@ -84,6 +86,7 @@ fn causal_attention_backward_wrapper_matches_direct_kernel() -> Result<(), Box<d
         qkv_dim: GPT2_QKV as u32,
         head_count: GPT2_N_HEAD as u32,
         head_dim: (GPT2_N_EMBD / GPT2_N_HEAD) as u32,
+        qk_norm_offset: 0,
     })?;
 
     let wrapper = wrapper_d_qkv.to_host_vec(&stream)?;

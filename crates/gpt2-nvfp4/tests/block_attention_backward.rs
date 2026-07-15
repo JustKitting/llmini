@@ -33,6 +33,7 @@ fn block_attention_side_backward_runs_full_chain() -> TestResult {
     let mut rng = Gpt2Rng::new(0x4154_544e);
 
     attention_side_backward(BlockAttentionBackwardArgs {
+        block_index: 0,
         use_full_attention: false,
         reuse_forward_probs: false,
         stream: &stream,

@@ -29,6 +29,7 @@ impl AttentionModule {
             d_out,
             log_sum_exp,
             softmax_d,
+            qk_norm_max: _,
             d_qkv,
             scratch,
             row_count: _,
@@ -38,6 +39,7 @@ impl AttentionModule {
             qkv_dim: _,
             head_count,
             head_dim,
+            qk_norm_offset: _,
         } = args;
         let batch_head = batch_size * head_count;
         let tc_ctx = AttentionTcMatmulContext {

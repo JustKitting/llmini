@@ -72,6 +72,7 @@ fn run_block<'a, 'scratch, 'out>(
         seeds: seeds.mlp[block_index],
     })?;
     attention_side_backward(BlockAttentionBackwardArgs {
+        block_index,
         use_full_attention,
         reuse_forward_probs: use_full_attention,
         stream,

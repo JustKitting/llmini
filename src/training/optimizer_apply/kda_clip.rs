@@ -1,4 +1,4 @@
-use cuda_core::{CudaStream, DriverError};
+use cuda_core::{CudaStream, DeviceBuffer, DriverError};
 use gpt2_nvfp4::{AttentionDims, GPT2_TOKEN_ROWS_U32, uses_full_attention};
 use rust_kernels_cuda::optimizer::KdaMuonClipArgs;
 
@@ -18,6 +18,7 @@ pub(super) fn apply_kda_muon_clip(
     runtime: &Runtime,
     uploaded: &mut UploadedModel,
     tape: &ForwardTapeBuffers,
+    qk_norm_max: &DeviceBuffer<f32>,
     scratch: &mut OptimizerScratch,
     state: &mut OptimizerStateBuffers,
     trace: &mut OptimizerTrace,
@@ -31,6 +32,7 @@ pub(super) fn apply_kda_muon_clip(
             runtime.optimizer.apply_kda_muon_clip(KdaMuonClipArgs {
                 stream,
                 qkv: tape.block_qkv(block_index),
+                qk_norm_max,
                 bytes: &mut block.attn_qkv.weight.bytes,
                 scales: &mut block.attn_qkv.weight.scales,
                 global_scale: &mut block.attn_qkv.weight.global_scale,
@@ -48,6 +50,8 @@ pub(super) fn apply_kda_muon_clip(
                 head_dim: dims.head_dim,
                 tau: KDA_QK_CLIP_TAU,
                 silu_qk: (!full_attention) as u32,
+                norm_offset: (block_index as u32) * 2 * dims.head_count,
+                precomputed_qk_norms: (!full_attention) as u32,
             })?;
         }
         Ok(())

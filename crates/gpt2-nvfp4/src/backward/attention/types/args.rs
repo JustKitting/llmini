@@ -22,6 +22,7 @@ pub struct AttentionCProjBackwardArgs<'a, 'scratch, 'out> {
 }
 
 pub struct AttentionCoreBackwardArgs<'a, 'scratch, 'out> {
+    pub block_index: usize,
     pub use_full_attention: bool,
     pub reuse_forward_probs: bool,
     pub stream: &'a CudaStream,

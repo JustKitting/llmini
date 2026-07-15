@@ -44,6 +44,7 @@ impl Trainer {
             muon: &mut self.buffers.muon,
             muon_tables: &self.buffers.muon_tables,
             tape: &self.buffers.tape,
+            qk_norm_max: self.buffers.scratch.attention_core.qk_norm_max(),
             grad_clip: &mut self.buffers.grad_clip,
         })?;
         stats.optimizer = updates.trace;

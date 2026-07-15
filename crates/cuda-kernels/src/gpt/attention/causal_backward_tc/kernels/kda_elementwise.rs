@@ -1,4 +1,4 @@
-use cuda_device::{DisjointSlice, cuda_module, kernel};
+use cuda_device::{DisjointSlice, SharedArray, cuda_module, kernel, thread};
 
 use super::super::kda::{
     FinishKdaGrads, add_kda_compact_body, chunk_cumsum_g_body, finish_kda_backward_body,
@@ -6,6 +6,11 @@ use super::super::kda::{
     make_kda_strict_neg_matrix_body, prepare_kda_backward_inputs_body,
 };
 use crate::attention::CausalAttentionParams;
+use crate::block_reduce::block_max_shared_f32;
+use crate::warp_reduce::thread_lane_warp;
+
+const NORM_REDUCE_THREADS_PER_BLOCK: u32 = 256;
+const NORM_REDUCE_WARPS_PER_BLOCK: usize = (NORM_REDUCE_THREADS_PER_BLOCK / 32) as usize;
 
 #[cuda_module]
 pub(super) mod module {
@@ -88,6 +93,8 @@ pub(super) mod module {
         d_v: &[f32],
         d_g: &[f32],
         d_beta: &[f32],
+        q_norms: DisjointSlice<f32>,
+        k_norms: DisjointSlice<f32>,
         d_qkv: DisjointSlice<f32>,
         params: CausalAttentionParams,
     ) {
@@ -100,10 +107,51 @@ pub(super) mod module {
                 g: d_g,
                 beta: d_beta,
             },
+            q_norms,
+            k_norms,
             d_qkv,
             params,
         );
     }
+
+    #[kernel]
+    pub fn reduce_kda_qk_norm_max_kernel(
+        q_norms: &[f32],
+        k_norms: &[f32],
+        mut qk_norm_max: DisjointSlice<f32>,
+        norm_offset: u32,
+        row_count: u32,
+        head_count: u32,
+    ) {
+        let head = thread::blockIdx_x();
+        if head >= head_count {
+            return;
+        }
+
+        static mut REDUCE: SharedArray<f32, NORM_REDUCE_WARPS_PER_BLOCK> = SharedArray::UNINIT;
+        let (tid, lane, warp_id) = thread_lane_warp();
+        let mut q_max = 0.0;
+        let mut k_max = 0.0;
+        let mut row = tid;
+        while row < row_count {
+            let index = (head * row_count + row) as usize;
+            let q_norm = q_norms[index];
+            let k_norm = k_norms[index];
+            q_max = if q_norm > q_max { q_norm } else { q_max };
+            k_max = if k_norm > k_max { k_norm } else { k_max };
+            row += NORM_REDUCE_THREADS_PER_BLOCK;
+        }
+
+        let q_max = unsafe { block_max_shared_f32(&mut REDUCE, q_max, lane, warp_id) };
+        let k_max = unsafe { block_max_shared_f32(&mut REDUCE, k_max, lane, warp_id) };
+        if tid == 0 {
+            unsafe {
+                *qk_norm_max.get_unchecked_mut((norm_offset + head) as usize) = q_max;
+                *qk_norm_max.get_unchecked_mut((norm_offset + head_count + head) as usize) = k_max;
+            }
+        }
+    }
 }
 
 pub(super) use module::{LoadedModule, from_module};
+pub(crate) const KDA_NORM_REDUCE_THREADS_PER_BLOCK: u32 = NORM_REDUCE_THREADS_PER_BLOCK;

@@ -6,6 +6,8 @@ use crate::attention::AttentionModule;
 use crate::kda_launch::{self, KDA_HEAD_DIM};
 use crate::launch::{grid_x_config, linear_config};
 
+use super::kernels::KDA_NORM_REDUCE_THREADS_PER_BLOCK;
+
 impl AttentionModule {
     pub fn kda_attention_backward_tc(
         &self,
@@ -30,6 +32,7 @@ impl AttentionModule {
             d_out,
             log_sum_exp: _log_sum_exp,
             softmax_d: beta,
+            qk_norm_max,
             d_qkv,
             scratch,
             row_count: _,
@@ -39,6 +42,7 @@ impl AttentionModule {
             qkv_dim: _,
             head_count,
             head_dim,
+            qk_norm_offset,
         } = args;
         let dims = kda_launch::LaunchDims::new(
             batch_size,
@@ -198,7 +202,19 @@ impl AttentionModule {
         ));
         launch!(bwd_tc.chunk_intra_kda_backward_kernel(chunk_cfg; qg, kg, vbeta, g, beta, kneg_vnew_dqg_dv, dkg_from_state, dka_dg, dh_states_or_kneg, dout_daqk_dvbeta, d_kneg_from_inverse, local_grad, w_du_dq, chunk_matrix, d_beta));
         // After chunk_intra_kda_backward_kernel these reused buffers hold final compact gradients.
-        launch!(bwd_elementwise.finish_kda_backward_kernel(linear_config(dims.batch_head * seq_len * 32, threads); qkv, w_du_dq, chunk_matrix, kneg_vnew_dqg_dv, dka_dg, d_beta, d_qkv));
+        // qg and kg are dead after the final gradient pass, so reuse their leading
+        // batch-head rows for the post-SiLU norms already computed by that pass.
+        launch!(bwd_elementwise.finish_kda_backward_kernel(linear_config(dims.batch_head * seq_len * 32, threads); qkv, w_du_dq, chunk_matrix, kneg_vnew_dqg_dv, dka_dg, d_beta, qg, kg, d_qkv));
+        bwd_elementwise.reduce_kda_qk_norm_max_kernel(
+            stream,
+            grid_x_config(head_count, KDA_NORM_REDUCE_THREADS_PER_BLOCK),
+            &*qg,
+            &*kg,
+            qk_norm_max,
+            qk_norm_offset,
+            params.row_count,
+            head_count,
+        )?;
         Ok(())
     }
 }

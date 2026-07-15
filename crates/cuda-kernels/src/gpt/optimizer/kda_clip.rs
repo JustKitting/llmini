@@ -16,6 +16,7 @@ pub(super) mod module {
     #[kernel]
     pub fn kda_muon_qk_clip_kernel(
         qkv: &[u16],
+        qk_norm_max: &[f32],
         mut z_master: DisjointSlice<f32>,
         mut x_master: DisjointSlice<f32>,
         mut momentum: DisjointSlice<f32>,
@@ -28,6 +29,8 @@ pub(super) mod module {
         head_dim: u32,
         tau: f32,
         silu_qk: u32,
+        norm_offset: u32,
+        precomputed_qk_norms: u32,
     ) {
         let head = thread::blockIdx_x();
         if head >= head_count {
@@ -36,24 +39,31 @@ pub(super) mod module {
 
         static mut REDUCE: SharedArray<f32, { WARPS_PER_BLOCK as usize }> = SharedArray::UNINIT;
         let (tid, lane, warp_id) = thread_lane_warp();
-        let mut q_max = 0.0;
-        let mut k_max = 0.0;
         let params = ClipParams {
             qkv_dim,
             embedding_dim,
             head_dim,
         };
-
-        let mut row = tid;
-        while row < row_count {
-            let (q_norm, k_norm) = qk_norms(qkv, row, head, params, silu_qk);
-            q_max = if q_norm > q_max { q_norm } else { q_max };
-            k_max = if k_norm > k_max { k_norm } else { k_max };
-            row += MATRIX_THREADS_PER_BLOCK;
-        }
-
-        let q_max = unsafe { block_max_shared_f32(&mut REDUCE, q_max, lane, warp_id) };
-        let k_max = unsafe { block_max_shared_f32(&mut REDUCE, k_max, lane, warp_id) };
+        let (q_max, k_max) = if precomputed_qk_norms != 0 {
+            (
+                qk_norm_max[(norm_offset + head) as usize],
+                qk_norm_max[(norm_offset + head_count + head) as usize],
+            )
+        } else {
+            let mut q_max = 0.0;
+            let mut k_max = 0.0;
+            let mut row = tid;
+            while row < row_count {
+                let (q_norm, k_norm) = qk_norms(qkv, row, head, params, silu_qk);
+                q_max = if q_norm > q_max { q_norm } else { q_max };
+                k_max = if k_norm > k_max { k_norm } else { k_max };
+                row += MATRIX_THREADS_PER_BLOCK;
+            }
+            (
+                unsafe { block_max_shared_f32(&mut REDUCE, q_max, lane, warp_id) },
+                unsafe { block_max_shared_f32(&mut REDUCE, k_max, lane, warp_id) },
+            )
+        };
         let score = q_max * k_max / sqrt_f32(head_dim as f32);
         let factor = clip_factor(score, tau);
         if tid == 0 {

@@ -6,6 +6,8 @@ mod base;
 mod kda_elementwise;
 mod kda_tc;
 
+pub(super) use kda_elementwise::KDA_NORM_REDUCE_THREADS_PER_BLOCK;
+
 pub(crate) struct LoadedModule {
     pub(super) base: base::LoadedModule,
     pub(super) kda_elementwise: kda_elementwise::LoadedModule,

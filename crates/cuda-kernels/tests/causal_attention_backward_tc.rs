@@ -39,6 +39,7 @@ fn materialized_tc_backward_matches_reference() -> Result<(), Box<dyn Error>> {
         &case.log_sum_exp,
     );
     let mut tc_softmax_d = DeviceBuffer::<f32>::zeroed(&stream, shape::TOKEN_COUNT * shape::HEADS)?;
+    let mut tc_qk_norm_max = DeviceBuffer::<f32>::zeroed(&stream, 2 * shape::HEADS)?;
     let mut tc_grad = DeviceBuffer::<f32>::zeroed(&stream, shape::TOKEN_COUNT * shape::QKV_DIM)?;
     let mut scratch = TcScratchBuffers::new(&stream)?;
     attention.causal_attention_backward_tc(CausalAttentionBackwardTcArgs {
@@ -55,6 +56,7 @@ fn materialized_tc_backward_matches_reference() -> Result<(), Box<dyn Error>> {
         d_out: &d_out,
         log_sum_exp: &log_sum_exp,
         softmax_d: &mut tc_softmax_d,
+        qk_norm_max: &mut tc_qk_norm_max,
         d_qkv: &mut tc_grad,
         scratch: scratch.args(),
         row_count: shape::TOKEN_COUNT as u32,
@@ -64,6 +66,7 @@ fn materialized_tc_backward_matches_reference() -> Result<(), Box<dyn Error>> {
         qkv_dim: shape::QKV_DIM as u32,
         head_count: shape::HEADS as u32,
         head_dim: shape::HEAD_DIM as u32,
+        qk_norm_offset: 0,
     })?;
 
     let recomputed = tc_grad.to_host_vec(&stream)?;
@@ -78,6 +81,7 @@ fn materialized_tc_backward_matches_reference() -> Result<(), Box<dyn Error>> {
     }
     let mut reuse_softmax_d =
         DeviceBuffer::<f32>::zeroed(&stream, shape::TOKEN_COUNT * shape::HEADS)?;
+    let mut reuse_qk_norm_max = DeviceBuffer::<f32>::zeroed(&stream, 2 * shape::HEADS)?;
     let mut reuse_grad = DeviceBuffer::<f32>::zeroed(&stream, shape::TOKEN_COUNT * shape::QKV_DIM)?;
     let mut reuse_scratch = TcScratchBuffers::new(&stream)?;
     let saved_probs = DeviceBuffer::from_host(&stream, &saved_probs)?;
@@ -95,6 +99,7 @@ fn materialized_tc_backward_matches_reference() -> Result<(), Box<dyn Error>> {
         d_out: &d_out,
         log_sum_exp: &log_sum_exp,
         softmax_d: &mut reuse_softmax_d,
+        qk_norm_max: &mut reuse_qk_norm_max,
         d_qkv: &mut reuse_grad,
         scratch: reuse_scratch.args(),
         row_count: shape::TOKEN_COUNT as u32,
@@ -104,6 +109,7 @@ fn materialized_tc_backward_matches_reference() -> Result<(), Box<dyn Error>> {
         qkv_dim: shape::QKV_DIM as u32,
         head_count: shape::HEADS as u32,
         head_dim: shape::HEAD_DIM as u32,
+        qk_norm_offset: 0,
     })?;
     common::assert_slice_close(&reuse_grad.to_host_vec(&stream)?, &recomputed, 1.0e-6);
     Ok(())

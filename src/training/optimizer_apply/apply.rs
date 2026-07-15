@@ -26,6 +26,7 @@ pub fn apply_weight_updates(args: WeightUpdateArgs<'_>) -> AppResult<WeightUpdat
         muon,
         muon_tables,
         tape,
+        qk_norm_max,
         grad_clip,
     } = args;
     let optimizer = &runtime.optimizer;
@@ -109,7 +110,16 @@ pub fn apply_weight_updates(args: WeightUpdateArgs<'_>) -> AppResult<WeightUpdat
         grad_clip.scale,
         &mut trace,
     )?;
-    apply_kda_muon_clip(stream, runtime, uploaded, tape, scratch, state, &mut trace)?;
+    apply_kda_muon_clip(
+        stream,
+        runtime,
+        uploaded,
+        tape,
+        qk_norm_max,
+        scratch,
+        state,
+        &mut trace,
+    )?;
 
     let diagnostics = diagnostics
         .map(|pending| pending.finish(stream, uploaded))

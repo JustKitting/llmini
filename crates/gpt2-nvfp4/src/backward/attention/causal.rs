@@ -26,6 +26,7 @@ pub fn causal_attention_backward(
         d_out: args.d_attention_out,
         log_sum_exp: args.saved.attention_log_sum_exp,
         softmax_d: args.scratch.softmax_d,
+        qk_norm_max: args.scratch.qk_norm_max,
         d_qkv: args.d_qkv,
         scratch: args.scratch.tc,
         row_count: args.saved.row_count,
@@ -35,6 +36,7 @@ pub fn causal_attention_backward(
         qkv_dim: dims.qkv_dim,
         head_count: dims.head_count,
         head_dim: dims.head_dim,
+        qk_norm_offset: (args.block_index as u32) * 2 * dims.head_count,
     };
     if args.use_full_attention {
         args.module.causal_attention_backward_tc(tc_args)

@@ -67,6 +67,8 @@ impl FinishNormAcc {
 pub(crate) fn finish_kda_backward_body(
     qkv: &[u16],
     grads: FinishKdaGrads<'_>,
+    mut q_norms: DisjointSlice<f32>,
+    mut k_norms: DisjointSlice<f32>,
     mut d_qkv: DisjointSlice<f32>,
     params: CausalAttentionParams,
 ) {
@@ -111,12 +113,15 @@ pub(crate) fn finish_kda_backward_body(
         );
     }
     if ctx.lane == 0 {
+        let norm_index = (ctx.head * params.row_count + ctx.row) as usize;
         let raw_beta = cvt_f32_f16(qkv[beta_index(ctx.row, ctx.head, &params)]);
         let beta_value = sigmoid(raw_beta);
         let grad = grads.beta[beta_compact_index(ctx.batch, ctx.token, ctx.head, &params)]
             * beta_value
             * (1.0 - beta_value);
         unsafe {
+            *q_norms.get_unchecked_mut(norm_index) = stats.q_norm;
+            *k_norms.get_unchecked_mut(norm_index) = stats.k_norm;
             *d_qkv.get_unchecked_mut(beta_index(ctx.row, ctx.head, &params)) = grad;
         }
     }

@@ -3,6 +3,7 @@ use cuda_core::{CudaStream, DeviceBuffer};
 pub struct KdaMuonClipArgs<'a> {
     pub stream: &'a CudaStream,
     pub qkv: &'a DeviceBuffer<u16>,
+    pub qk_norm_max: &'a DeviceBuffer<f32>,
     pub bytes: &'a mut DeviceBuffer<u8>,
     pub scales: &'a mut DeviceBuffer<u8>,
     pub global_scale: &'a mut DeviceBuffer<f32>,
@@ -20,4 +21,6 @@ pub struct KdaMuonClipArgs<'a> {
     pub head_dim: u32,
     pub tau: f32,
     pub silu_qk: u32,
+    pub norm_offset: u32,
+    pub precomputed_qk_norms: u32,
 }
