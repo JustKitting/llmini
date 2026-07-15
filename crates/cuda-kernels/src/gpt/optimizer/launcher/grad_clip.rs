@@ -7,9 +7,8 @@ use crate::launch::grid_x_config;
 
 impl OptimizerModule {
     pub fn clip_gradients(&self, args: GradientClipArgs<'_>) -> Result<(), DriverError> {
-        assert!(args.ptrs.len() >= args.slot_count as usize);
-        assert!(args.lens.len() >= args.slot_count as usize);
-        assert!(args.chunk_offsets.len() >= args.slot_count as usize);
+        assert!(args.chunk_ptrs.len() >= args.chunk_count as usize);
+        assert!(args.chunk_lens.len() >= args.chunk_count as usize);
         assert!(args.chunk_sums.len() >= args.chunk_count as usize);
         assert!(!args.scale.is_empty());
         assert!(!args.norm.is_empty());
@@ -17,11 +16,9 @@ impl OptimizerModule {
         self.apply.grad_clip.grad_clip_sumsq_chunks_kernel(
             args.stream,
             grid_x_config(args.chunk_count, GRAD_CLIP_THREADS_PER_BLOCK),
-            args.ptrs,
-            args.lens,
-            args.chunk_offsets,
+            args.chunk_ptrs,
+            args.chunk_lens,
             args.chunk_sums,
-            args.slot_count,
             args.chunk_count,
         )?;
 
@@ -39,11 +36,9 @@ impl OptimizerModule {
             self.apply.grad_clip.grad_clip_apply_kernel(
                 args.stream,
                 grid_x_config(args.chunk_count, GRAD_CLIP_THREADS_PER_BLOCK),
-                args.ptrs,
-                args.lens,
-                args.chunk_offsets,
+                args.chunk_ptrs,
+                args.chunk_lens,
                 args.scale,
-                args.slot_count,
                 args.chunk_count,
             )?;
         }

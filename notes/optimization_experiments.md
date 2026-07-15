@@ -45,6 +45,100 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-15
 commit: accepted local jj commit after full gate
+experiment: Precompute direct gradient chunks and widen global-norm reductions.
+status: accepted_900s
+change:
+  The global gradient-norm kernel launched one CTA per 1024 values. Each of its
+  961510 CTAs linearly searched the complete parameter-slot offset table to
+  find the gradient buffer owning that chunk. The host now constructs direct
+  per-chunk pointers and valid lengths once, and chunks contain 4096 values.
+  The active grid falls to 240439 CTAs, the final scale kernel reduces one
+  quarter as many partial sums, and both the sumsq and standalone apply paths
+  use the same direct map. Global clipping remains one norm and one scale over
+  the identical FP32 parameter-gradient set.
+numerics:
+  Widening chunks changes the FP32 sum-of-squares reduction tree. The one-step
+  global norm moved only from 18.969253540 to 18.969266891, but bitwise
+  equivalence is not claimed. The direct-map clipping GPU test and both matched
+  fixed-wall gates validate the resulting optimizer trajectory.
+memory:
+  This is not a material capacity change. The former FP32 chunk-sum workspace
+  alone used 3846040 bytes. The new direct pointers, valid lengths, and chunk
+  sums use 3847024 bytes in total, replacing the old per-slot pointer, length,
+  and offset tables rather than adding another large workspace.
+minimum_impact_gate:
+  The promoted baseline averaged 900.524 / 1393 = 646.463747ms per step, so the
+  required saving was 3.232319ms per step. Its sumsq and final-scale kernels
+  cost 55.413420ms over 10 steps, or 5.541342ms per step, providing a credible
+  1.714x pre-edit ceiling.
+focused_profile:
+  Parent:
+    target/nsys/20260715_layer_norm_params_partitioned8_candidate.nsys-rep
+    target/nsys/20260715_layer_norm_params_partitioned8_candidate_cuda_gpu_kern_sum.csv
+    target/nsys/20260715_layer_norm_params_partitioned8_candidate_cuda_gpu_mem_time_sum.csv
+  Candidate:
+    target/nsys/20260715_grad_clip_direct_chunk4096_candidate.nsys-rep
+    target/nsys/20260715_grad_clip_direct_chunk4096_candidate_cuda_gpu_kern_sum.csv
+    target/nsys/20260715_grad_clip_direct_chunk4096_candidate_cuda_gpu_mem_time_sum.csv
+  Across the same 10 training steps plus endpoint validation:
+    grad-clip sumsq plus scale: 55.413420 -> 24.974651ms,
+      saving 3.043877ms per step.
+    total GPU kernels: 639.291572 -> 635.948245ms per step.
+    memory-operation overhead increased by 0.027959ms per step.
+    net GPU kernel-plus-memory saving: 3.315367ms per step, 0.513% of the
+      promoted whole step and above the 3.232319ms implementation floor.
+    held-out val_loss: 8.668301 -> 8.663224 (-0.059%).
+verification:
+  cargo fmt --all --check: pass.
+  cargo check --workspace: pass.
+  Fresh cargo oxide build --arch sm_120a: pass.
+  cargo test --workspace --release --lib --bins: pass, including 45 sweep tests
+    and 4 rust-kernels tests.
+  Global clipping GPU test with two disjoint gradient buffers: pass after the
+    fresh PTX build.
+  ptxas for sumsq: 22 registers, 32 bytes shared memory, one barrier, and zero
+    spills. Final scale uses 19 registers and also has zero spills.
+  One-step launch diagnostic only:
+    target/runs/20260715_150850Z_fineweb_60s
+    completed_steps=1, train_elapsed_s=0.604, val_loss=10.421806.
+  Focused 10-step run:
+    target/runs/20260715_150906Z_fineweb_60s
+    completed_steps=10, train_elapsed_s=6.326, val_loss=8.663224.
+  Required 30-second screen with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260715_150943Z_fineweb_30s
+    completed_steps=49, train_elapsed_s=30.559, val_loss=6.812499.
+  Required 900-second gate with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260715_151026Z_fineweb_900s
+    stdout: target/grad_clip_direct_chunk4096_900_20260715.log
+    completed_steps=1399, train_elapsed_s=900.344, val_loss=4.920418.
+    All 28 high-fidelity samples were finite and nonzero, with zero skipped
+    updates, loss-spike skips, grad-norm-spike skips, or nonfinite skips. Grad
+    norm ranged from 1.171525598 to 18.969266891. Every sample retained batch 4
+    and sequence 2048.
+measured_effect:
+  Against the matched 30-second baseline:
+    completed_steps: 48 -> 49 (+1, +2.083%).
+    average step time: 627.250000ms -> 623.653061ms
+      (-3.596939ms, -0.573%).
+    held-out val_loss: 6.829417 -> 6.812499 (-0.016918, -0.248%).
+  Against the matched 900-second baseline:
+    completed_steps: 1393 -> 1399 (+6, +0.431%).
+    average step time: 646.463747ms -> 643.562545ms
+      (-2.901203ms, -0.449%).
+    training tokens: 11411456 -> 11460608 (+49152, +0.431%).
+    held-out val_loss: 4.934438 -> 4.920418 (-0.014020, -0.284%).
+decision:
+  Keep and promote. The focused profile clears the 0.5% implementation floor,
+  the full gate retains a clear speed win, held-out loss improves, and the run
+  has no numerical or skip instability. The full-wall speed magnitude is
+  0.449%, but the active rule explicitly accepts a real speed increase when
+  held-out loss stays within roughly 1%. The next 0.5% threshold is
+  (900.344 / 1399) * 0.005 = 3.217813ms per step.
+```
+
+```text
+date: 2026-07-15
+commit: accepted local jj commit after full gate
 experiment: Partition and coalesce f16 layer-norm parameter gradients.
 status: accepted_900s
 change:

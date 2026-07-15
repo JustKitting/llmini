@@ -1,5 +1,4 @@
 mod apply;
-mod layout;
 mod scale;
 mod sumsq;
 
@@ -8,7 +7,7 @@ use cuda_device::cuda_module;
 pub(super) const THREADS_PER_BLOCK: u32 = 256;
 const WARPS_PER_BLOCK: u32 = 8;
 pub(super) const WARP_SUM_SLOTS: usize = WARPS_PER_BLOCK as usize;
-pub(super) const VALUES_PER_CHUNK: u32 = 1024;
+pub(super) const VALUES_PER_CHUNK: u32 = 4096;
 pub(super) const APPLY_UNROLL: u32 = 4;
 
 #[cuda_module]
@@ -21,21 +20,12 @@ pub(super) mod module {
 
     #[kernel]
     pub fn grad_clip_sumsq_chunks_kernel(
-        ptrs: &[u64],
-        lens: &[u32],
-        chunk_offsets: &[u32],
+        chunk_ptrs: &[u64],
+        chunk_lens: &[u32],
         mut chunk_sums: DisjointSlice<f32>,
-        slot_count: u32,
         chunk_count: u32,
     ) {
-        grad_clip_sumsq_chunks_body(
-            ptrs,
-            lens,
-            chunk_offsets,
-            &mut chunk_sums,
-            slot_count,
-            chunk_count,
-        );
+        grad_clip_sumsq_chunks_body(chunk_ptrs, chunk_lens, &mut chunk_sums, chunk_count);
     }
 
     #[kernel]
@@ -51,14 +41,12 @@ pub(super) mod module {
 
     #[kernel]
     pub fn grad_clip_apply_kernel(
-        ptrs: &[u64],
-        lens: &[u32],
-        chunk_offsets: &[u32],
+        chunk_ptrs: &[u64],
+        chunk_lens: &[u32],
         scale: &[f32],
-        slot_count: u32,
         chunk_count: u32,
     ) {
-        grad_clip_apply_body(ptrs, lens, chunk_offsets, scale, slot_count, chunk_count);
+        grad_clip_apply_body(chunk_ptrs, chunk_lens, scale, chunk_count);
     }
 }
 

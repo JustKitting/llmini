@@ -14,7 +14,12 @@ use views::parameter_gradient_views;
 pub(super) struct HostGradPtr {
     pub(super) ptr: u64,
     pub(super) len: u32,
-    pub(super) chunk_offset: u32,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct HostGradChunk {
+    pub(super) ptr: u64,
+    pub(super) len: u32,
 }
 
 pub(super) fn parameter_gradients(
@@ -29,21 +34,24 @@ pub(super) fn parameter_gradients(
     rows
 }
 
-pub(super) fn gradient_chunk_count(rows: &[HostGradPtr]) -> u32 {
-    rows.last()
-        .map(|row| row.chunk_offset + chunks(row.len))
-        .unwrap_or(0)
+pub(super) fn gradient_chunks(rows: &[HostGradPtr]) -> Vec<HostGradChunk> {
+    let mut out = Vec::new();
+    for row in rows {
+        let mut base = 0u32;
+        while base < row.len {
+            out.push(HostGradChunk {
+                ptr: row.ptr + base as u64 * size_of::<f32>() as u64,
+                len: (row.len - base).min(GRAD_CLIP_VALUES_PER_CHUNK as u32),
+            });
+            base += GRAD_CLIP_VALUES_PER_CHUNK as u32;
+        }
+    }
+    out
 }
 
 fn push(rows: &mut Vec<HostGradPtr>, buffer: &DeviceBuffer<f32>, len: usize) {
-    let chunk_offset = gradient_chunk_count(rows);
     rows.push(HostGradPtr {
         ptr: buffer.cu_deviceptr(),
         len: len as u32,
-        chunk_offset,
     });
-}
-
-fn chunks(len: u32) -> u32 {
-    len.div_ceil(GRAD_CLIP_VALUES_PER_CHUNK as u32)
 }

@@ -7,18 +7,16 @@ use super::next_latent::NextLatGradBuffers;
 mod layout;
 
 pub(super) use layout::first_non_finite_gradient;
-use layout::{HostGradPtr, gradient_chunk_count, parameter_gradients};
+use layout::{HostGradChunk, gradient_chunks, parameter_gradients};
 
 const GLOBAL_GRAD_CLIP_NORM: f32 = 1.0;
 
 pub(super) struct GradientClipBuffers {
-    ptrs: DeviceBuffer<u64>,
-    lens: DeviceBuffer<u32>,
-    chunk_offsets: DeviceBuffer<u32>,
+    chunk_ptrs: DeviceBuffer<u64>,
+    chunk_lens: DeviceBuffer<u32>,
     chunk_sums: DeviceBuffer<f32>,
     scale: DeviceBuffer<f32>,
     norm: DeviceBuffer<f32>,
-    slot_count: u32,
     chunk_count: u32,
 }
 
@@ -34,16 +32,15 @@ impl GradientClipBuffers {
         next_latent: &NextLatGradBuffers,
     ) -> Result<Self, DriverError> {
         let rows = parameter_gradients(grads, next_latent);
-        let chunk_count = gradient_chunk_count(&rows);
+        let chunks = gradient_chunks(&rows);
+        let chunk_count = chunks.len() as u32;
 
         Ok(Self {
-            ptrs: upload(stream, &rows, |row| row.ptr)?,
-            lens: upload(stream, &rows, |row| row.len)?,
-            chunk_offsets: upload(stream, &rows, |row| row.chunk_offset)?,
+            chunk_ptrs: upload(stream, &chunks, |chunk| chunk.ptr)?,
+            chunk_lens: upload(stream, &chunks, |chunk| chunk.len)?,
             chunk_sums: DeviceBuffer::zeroed(stream, chunk_count as usize)?,
             scale: DeviceBuffer::zeroed(stream, 1)?,
             norm: DeviceBuffer::zeroed(stream, 1)?,
-            slot_count: rows.len() as u32,
             chunk_count,
         })
     }
@@ -55,13 +52,11 @@ impl GradientClipBuffers {
     ) -> Result<GradientClipResult, DriverError> {
         optimizer.clip_gradients(GradientClipArgs {
             stream,
-            ptrs: &self.ptrs,
-            lens: &self.lens,
-            chunk_offsets: &self.chunk_offsets,
+            chunk_ptrs: &self.chunk_ptrs,
+            chunk_lens: &self.chunk_lens,
             chunk_sums: &mut self.chunk_sums,
             scale: &mut self.scale,
             norm: &mut self.norm,
-            slot_count: self.slot_count,
             chunk_count: self.chunk_count,
             max_norm: GLOBAL_GRAD_CLIP_NORM,
             apply: false,
@@ -74,13 +69,13 @@ impl GradientClipBuffers {
 
 fn upload<T, F>(
     stream: &CudaStream,
-    rows: &[HostGradPtr],
+    chunks: &[HostGradChunk],
     f: F,
 ) -> Result<DeviceBuffer<T>, DriverError>
 where
     T: DeviceCopy,
-    F: Fn(HostGradPtr) -> T,
+    F: Fn(HostGradChunk) -> T,
 {
-    let values: Vec<T> = rows.iter().copied().map(f).collect();
+    let values: Vec<T> = chunks.iter().copied().map(f).collect();
     DeviceBuffer::from_host(stream, &values)
 }
