@@ -33,6 +33,7 @@ pub struct CausalAttentionBackwardTcArgs<'a, 'scratch, 'out> {
     pub tc_module: &'a F16TcMatmulModule,
     pub qkv: &'a DeviceBuffer<u16>,
     pub attention_out: &'a DeviceBuffer<u16>,
+    pub kda_v_new: Option<&'a DeviceBuffer<f32>>,
     pub d_out: &'a DeviceBuffer<f32>,
     pub log_sum_exp: &'a DeviceBuffer<f32>,
     pub softmax_d: &'scratch mut DeviceBuffer<f32>,

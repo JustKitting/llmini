@@ -34,6 +34,88 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-15
 commit: accepted local jj commit after full gate
+experiment: Tape forward KDA v_new in FP32 and skip reconstructing it from FP16 state during backward.
+status: accepted_900s_speed_memory_trade
+change:
+  Added an optional FP32 KDA v_new tape only for the 12 KDA layers. Forward
+  directs the existing chunk_kda_state_save output into that per-layer buffer,
+  so there is no new forward copy, conversion, launch, or arithmetic. Backward
+  consumes the original forward v_new for dOut@v_new and dK-from-state and
+  skips chunk_kda_vnew_from_state_kernel. Callers without a tape retain the old
+  reconstruction fallback. Full-attention layers allocate no v_new tape, and
+  the fixed 16-layer model and optimizer settings are unchanged.
+minimum_impact_gate:
+  The parent baseline was 900.401s / 1104 = 0.815580616s per step, making the
+  0.5% threshold 4.077903ms. The baseline profile measured the 12
+  chunk_kda_vnew_from_state_kernel launches at 6.278560ms per step, a credible
+  0.770% whole-step ceiling with no added forward work.
+focused_profile:
+  Matched Nsight Compute reports:
+    parent target/ncu/20260715_1b_b2_attention_prob_f16.ncu-rep
+    candidate target/ncu/20260715_1b_b2_kda_vnew_tape.ncu-rep
+  Including the removed reconstruction, the consuming f32-lower matmul, the
+  dK-from-v_new kernel, and one-forward shares of state-save and output, the
+  affected family moved from 98.092512ms to 91.817952ms per training step.
+  The exact net focused saving is 6.274560ms per step, about 0.769% of the
+  parent whole-step time, so it cleared the profile gate.
+memory_trade:
+  Matched one-step allocation probes reported:
+    parent target/runs/20260715_065828Z_fineweb_900s:
+      used_bytes=68137713664.
+    candidate target/runs/20260715_073102Z_fineweb_900s:
+      used_bytes=68943020032.
+  The exact increase is 805306368 bytes, exactly 768 MiB: 12 KDA layers times
+  one 8192x2048 FP32 tape. The candidate still uses 3355443200 fewer bytes,
+  exactly 3200 MiB (3.125 GiB), than the pre-attention-FP16 baseline at
+  72298463232 bytes.
+verification:
+  cargo fmt --all: pass.
+  cargo fmt --all --check: pass.
+  cargo check -q: pass.
+  cargo oxide build --arch sm_120a: pass; fresh device and host rebuild.
+  CUDA_DEVICE_INDEX=0 cargo test -q -p rust-kernels-cuda
+    --test causal_attention_backward_tc
+    -- --ignored --nocapture --test-threads=1: pass, 1 materialized
+    full-attention reference test.
+  The older gpt2-nvfp4 causal_attention_backward_wrapper_matches_direct_kernel
+    test is not a valid taped-KDA comparison: its wrapper selects KDA while its
+    direct side calls causal_attention_backward_tc. It still reports a large
+    bit-vector mismatch and was not changed or counted as passing evidence.
+  Exact 1B FineWeb one-step allocation/correctness diagnostic:
+    target/runs/20260715_073102Z_fineweb_900s
+    val_loss=10.408842, train_elapsed_s=0.762, completed_steps=1.
+    The -0.003% movement from 10.409149 is expected because backward now uses
+    original FP32 v_new rather than an FP16-state reconstruction. This is
+    diagnostic evidence only.
+  Required 1B FineWeb 30-second screen:
+    target/runs/20260715_073324Z_fineweb_30s
+    val_loss=7.034451, train_elapsed_s=30.012, completed_steps=38.
+  Required 1B FineWeb 900-second gate with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260715_073410Z_fineweb_900s
+    val_loss=5.062126, train_elapsed_s=900.313, completed_steps=1112.
+    All 23 metric samples had Finite=1 and Nonzero=1, with zero skipped
+    updates, loss-spike skips, grad-norm-spike skips, or nonfinite skips.
+measured_effect:
+  Against the parent 30-second screen target/runs/20260715_070242Z_fineweb_30s:
+    completed_steps: 38 -> 38.
+    average step time: 0.792184211s -> 0.789789474s
+      (-2.394737ms, -0.302%).
+    held-out val_loss: 7.032433 -> 7.034451 (+0.0287%).
+  Against the parent 900-second gate target/runs/20260715_070323Z_fineweb_900s:
+    completed_steps: 1104 -> 1112 (+8, +0.725%).
+    average step time: 0.815580616s -> 0.809633993s
+      (-5.946623ms, -0.729%).
+    held-out val_loss: 5.063667 -> 5.062126 (-0.0304%).
+decision:
+  Keep and promote. The full gate reproduces the focused speed signal, improves
+  held-out loss, remains stable, and retains 3200 MiB of the preceding memory
+  win. notes/sweep_baseline.env now points to this live-code run. The new
+  nominal 0.5% threshold is 4.048170ms per step.
+```
+
+```text
+date: 2026-07-15
+commit: accepted local jj commit after full gate
 experiment: Store full-attention probabilities and dS as FP16 and consume them directly with tensor-core matmuls.
 status: accepted_900s_memory_capacity
 change:

@@ -92,10 +92,14 @@ pub(super) fn forward<'a, 'scratch>(
         })?;
     }
 
-    let (qkv_f16, attention_out_f16) = match tape.as_mut() {
-        Some(tape) if args.use_full_attention => (None, Some(&mut *tape.attention_out_f16)),
-        Some(tape) => (Some(&mut *tape.qkv_f16), Some(&mut *tape.attention_out_f16)),
-        None => (None, None),
+    let (qkv_f16, attention_out_f16, kda_v_new) = match tape.as_mut() {
+        Some(tape) if args.use_full_attention => (None, Some(&mut *tape.attention_out_f16), None),
+        Some(tape) => (
+            Some(&mut *tape.qkv_f16),
+            Some(&mut *tape.attention_out_f16),
+            tape.kda_v_new.as_mut().map(|buffer| &mut **buffer),
+        ),
+        None => (None, None, None),
     };
 
     let attention_args = CausalAttentionTcArgs {
@@ -105,6 +109,7 @@ pub(super) fn forward<'a, 'scratch>(
         out: &mut *hidden.normalized,
         qkv_f16,
         attention_out_f16,
+        kda_v_new,
         log_sum_exp: args.attention_log_sum_exp,
         scratch: args.tc_scratch,
         row_count: hidden.row_count,

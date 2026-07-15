@@ -14,7 +14,7 @@ pub struct ForwardTapeBuffers {
 impl ForwardTapeBuffers {
     pub fn new(stream: &CudaStream) -> Result<Self, DriverError> {
         Ok(Self {
-            blocks: block_array(|_| BlockTapeBuffers::new(stream))?,
+            blocks: block_array(|index| BlockTapeBuffers::new(stream, index))?,
             final_norm: LayerNormTapeBuffers::new(stream)?,
             lm_head_input: RowwiseTapeBuffers::gpt2_rows(stream, HiddenState::LEN)?,
         })

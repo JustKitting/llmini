@@ -65,6 +65,7 @@ fn causal_attention_backward_wrapper_matches_direct_kernel() -> Result<(), Box<d
         tc_module: &tc_module,
         qkv: &qkv,
         attention_out: &attention_out,
+        kda_v_new: None,
         d_out: &d_out,
         log_sum_exp: &log_sum_exp,
         softmax_d: direct_core.softmax_d,

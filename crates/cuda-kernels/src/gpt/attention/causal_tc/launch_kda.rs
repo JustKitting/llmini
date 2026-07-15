@@ -72,10 +72,14 @@ impl AttentionModule {
         mm_in_scratch!(q, v, scores, dims.cch());
         kda_kernel!(mask_kda_aqk_kernel(linear(dims.chunk_matrix_elems); &mut *scratch.scores));
 
+        let v_new = match args.kda_v_new {
+            Some(v_new) => v_new,
+            None => &mut *scratch.v,
+        };
         macro_rules! kda_output {
             ($chunk_states:expr) => {{
-                kda_kernel!(chunk_kda_state_save_kernel(batch_cfg; &*scratch.k, &mut *scratch.v, &*scratch.compact_out, &*scratch.probs, &*args.log_sum_exp, &mut *$chunk_states));
-                kda_kernel!(chunk_kda_output_from_state_kernel(chunk_cfg; &*scratch.q, &*scratch.v, &*scratch.scores, args.out, &*$chunk_states));
+                kda_kernel!(chunk_kda_state_save_kernel(batch_cfg; &*scratch.k, &mut *v_new, &*scratch.compact_out, &*scratch.probs, &*args.log_sum_exp, &mut *$chunk_states));
+                kda_kernel!(chunk_kda_output_from_state_kernel(chunk_cfg; &*scratch.q, &*v_new, &*scratch.scores, args.out, &*$chunk_states));
             }};
         }
         if let Some(chunk_states) = args.attention_out_f16 {

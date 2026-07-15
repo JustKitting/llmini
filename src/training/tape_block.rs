@@ -1,7 +1,7 @@
 use cuda_core::{CudaStream, DeviceBuffer, DriverError};
 use gpt2_nvfp4::{
     AttentionLogSumExp, BlockForwardSaved, BlockForwardTape, HiddenState, MlpActivation,
-    QkvActivation,
+    QkvActivation, uses_full_attention,
 };
 
 use super::device_buffer::zero;
@@ -12,6 +12,7 @@ pub struct BlockTapeBuffers {
     qkv_input: RowwiseTapeBuffers,
     qkv: DeviceBuffer<u16>,
     attention_out: DeviceBuffer<u16>,
+    kda_v_new: Option<DeviceBuffer<f32>>,
     attention_log_sum_exp: DeviceBuffer<f32>,
     c_proj_input: RowwiseTapeBuffers,
     ln_2: LayerNormTapeBuffers,
@@ -21,12 +22,17 @@ pub struct BlockTapeBuffers {
 }
 
 impl BlockTapeBuffers {
-    pub fn new(stream: &CudaStream) -> Result<Self, DriverError> {
+    pub fn new(stream: &CudaStream, block_index: usize) -> Result<Self, DriverError> {
         Ok(Self {
             ln_1: LayerNormTapeBuffers::new(stream)?,
             qkv_input: RowwiseTapeBuffers::gpt2_rows(stream, HiddenState::LEN)?,
             qkv: zero(stream, QkvActivation::LEN)?,
             attention_out: zero(stream, HiddenState::LEN)?,
+            kda_v_new: if uses_full_attention(block_index) {
+                None
+            } else {
+                Some(zero(stream, HiddenState::LEN)?)
+            },
             attention_log_sum_exp: zero(stream, AttentionLogSumExp::LEN)?,
             c_proj_input: RowwiseTapeBuffers::gpt2_rows(stream, HiddenState::LEN)?,
             ln_2: LayerNormTapeBuffers::new(stream)?,
@@ -42,6 +48,7 @@ impl BlockTapeBuffers {
             qkv_input_nvfp4: self.qkv_input.tape(),
             qkv: &mut self.qkv,
             attention_out: &mut self.attention_out,
+            kda_v_new: self.kda_v_new.as_mut(),
             attention_log_sum_exp: &mut self.attention_log_sum_exp,
             c_proj_input_nvfp4: self.c_proj_input.tape(),
             ln_2: self.ln_2.tape(),
@@ -60,6 +67,7 @@ impl BlockTapeBuffers {
             qkv_input_nvfp4: self.qkv_input.saved(),
             qkv: &self.qkv,
             attention_out: &self.attention_out,
+            kda_v_new: self.kda_v_new.as_ref(),
             attention_log_sum_exp: &self.attention_log_sum_exp,
             c_proj_input_nvfp4: self.c_proj_input.saved(),
             ln_2: self.ln_2.saved(row_count),
