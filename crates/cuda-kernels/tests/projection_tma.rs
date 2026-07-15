@@ -14,7 +14,7 @@ use rust_kernels_cuda::nvfp4_tma_matmul::{
     tma::TmaNvfp4DeviceScaleDescriptors,
 };
 use rust_kernels_cuda::projection_postop::{
-    ProjectionBiasArgs, ProjectionPostOpModule, ProjectionRelu2Args, ProjectionResidualArgs,
+    ProjectionBiasArgs, ProjectionPostOpModule, ProjectionResidualArgs,
 };
 
 mod common;
@@ -339,15 +339,58 @@ impl Fixture {
         pre_activation: &mut DeviceBuffer<f32>,
         out: &mut DeviceBuffer<f32>,
     ) -> Result<(), Box<dyn Error>> {
-        self.tma_raw(pre_activation)?;
-        self.postop.relu2_inplace(ProjectionRelu2Args {
-            stream: &self.stream,
+        let padded_n = sm120_scale_padded_mn_extent(self.n);
+        assert_eq!(padded_n, self.n, "fused ReLU2 requires exact output tiles");
+        let mut input_scale_packed = DeviceBuffer::zeroed(
+            &self.stream,
+            sm120_scale_packed_len(sm120_scale_padded_mn_extent(self.rows), self.k),
+        )?;
+        let mut weight_scale_packed =
+            DeviceBuffer::zeroed(&self.stream, sm120_scale_packed_len(padded_n, self.k))?;
+        let mut descriptors = TmaNvfp4DeviceScaleDescriptors {
+            a: DeviceBuffer::zeroed(&self.stream, 1)?,
+            b: DeviceBuffer::zeroed(&self.stream, 1)?,
+            a_scales: DeviceBuffer::zeroed(&self.stream, 1)?,
+            b_scales: DeviceBuffer::zeroed(&self.stream, 1)?,
+        };
+
+        self.scale_pack.pack(
+            &self.stream,
+            &self.input_scales,
+            &mut input_scale_packed,
+            self.rows as u32,
+            self.k as u32,
+        )?;
+        self.scale_pack.pack(
+            &self.stream,
+            &self.weight_scales,
+            &mut weight_scale_packed,
+            self.n as u32,
+            self.k as u32,
+        )?;
+        self.tma.prepare_tma_nvfp4_device_scales_into(
+            &self.stream,
+            &self.input_bytes,
+            &input_scale_packed,
+            &self.weight_bytes,
+            &weight_scale_packed,
+            self.rows as u32,
+            self.k as u32,
+            padded_n as u32,
+            &mut descriptors,
+        )?;
+        self.tma.gemm_tma_nvfp4_rowwise_a_scale_relu2(
+            &self.stream,
+            &descriptors,
             pre_activation,
             out,
-            bias: self.bias_device(),
-            rows: self.rows as u32,
-            cols: self.n as u32,
-        })?;
+            self.bias_device(),
+            self.rows as u32,
+            self.k as u32,
+            self.n as u32,
+            &self.input_globals,
+            &self.weight_global,
+        )?;
         Ok(())
     }
 }

@@ -33,6 +33,62 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 
 ```text
 date: 2026-07-15
+commit: accepted local jj commit after full gate
+experiment: Fuse the MLP-up bias and ReLU2 post-op into a specialized TMA GEMM store.
+status: accepted_900s
+change:
+  Added a separate nvfp4_gemm_tma_relu2_kernel for the MLP-up projection. Its
+  compile-time-specialized store writes the bias-adjusted pre-activation and
+  squared-ReLU activation directly from the TMA accumulators, removing the raw
+  intermediate write/read and projection_relu2_inplace_kernel launch. The
+  generic TMA kernel has no runtime epilogue branch. Explicit mul.rn.f32 then
+  add.rn.f32 preserves the old round-to-FP32 raw-store boundary before bias.
+minimum_impact_gate:
+  The accepted baseline was 900.596s / 1067 = 0.844044986s per step, making the
+  new 0.5% threshold 4.220225ms per step. The baseline NCU report contains one
+  training forward and two held-out forward passes. Its 48 standalone ReLU2
+  launches took 23.832288ms total, or 7.944096ms per training step (0.941%),
+  so the candidate passed the pre-edit mathematical ceiling gate.
+verification:
+  cargo fmt --all: pass.
+  cargo fmt --all --check: pass.
+  cargo check -q: pass.
+  cargo oxide build --arch sm_120a: pass; fresh device and host rebuild.
+  CUDA_DEVICE_INDEX=0 cargo test -q -p rust-kernels-cuda --test projection_tma
+    -- --ignored --nocapture --test-threads=1: pass, 5 tests.
+  Focused Nsight Compute duration profile:
+    target/ncu/20260715_1b_b2_tma_relu2_fused.ncu-rep
+    target/ncu/20260715_1b_b2_tma_relu2_fused.csv
+  Exact 1B FineWeb one-step NCU diagnostic:
+    target/runs/20260715_042229Z_fineweb_60s
+    val_loss=10.409149, completed_steps=1. This is diagnostic evidence only.
+  Required 1B FineWeb 30-second screen:
+    target/runs/20260715_042445Z_fineweb_30s
+    val_loss=7.052975, train_elapsed_s=30.230, completed_steps=37.
+  Required 1B FineWeb 900-second gate with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260715_042602Z_fineweb_900s
+    val_loss=5.080935, train_elapsed_s=900.070, completed_steps=1073.
+    All 22 metric samples had Finite=1 and Nonzero=1, with zero skipped
+    updates, loss-spike skips, grad-norm-spike skips, or nonfinite skips.
+measured_effect:
+  The matched baseline TMA-plus-ReLU2 pairs took 37.641312ms across the same
+  three forward passes; the 48 specialized fused launches took 17.757920ms.
+  This saves 6.627797ms per training step. Conservatively including the entire
+  generic TMA family gives a 6.620704ms/step saving (0.784%), which clears the
+  required 4.220225ms focused-profile threshold.
+  Against target/runs/20260715_032606Z_fineweb_900s:
+    completed_steps: 1067 -> 1073 (+6, +0.562%).
+    average step time: 0.844044986s -> 0.838835042s (-5.209944ms, -0.617%).
+    held-out val_loss: 5.083047 -> 5.080935 (-0.0416%).
+decision:
+  Keep and promote. The full fixed-wall gate confirms an end-to-end speed win,
+  slightly better validation loss, and clean high-fidelity stability metrics.
+  notes/sweep_baseline.env now points to this run. The new baseline-relative
+  0.5% pre-edit/profile threshold is 4.194175ms per step.
+```
+
+```text
+date: 2026-07-15
 commit: rejected uncommitted candidate after full gate, code reverted
 experiment: Remove supported-shape bounds predicates from KDA output matrix staging.
 status: rejected_900s_runtime

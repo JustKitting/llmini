@@ -8,6 +8,9 @@ use cuda_device::{
     tma::TmaDescriptor,
 };
 
+use crate::float_ptx::max_f32;
+use crate::nvfp4::nvfp4_value;
+
 use super::cute::{
     KMajorU4, Sm120KMajorSwizzle, Sm120Nvfp4MmaAtom, Sm120Nvfp4WarpMma, Sm120ScaleLayout,
 };
@@ -567,6 +570,77 @@ fn store_acc_scaled(
     );
 }
 
+#[inline(always)]
+fn affine_from_stored_product(acc: f32, scale: f32, bias: f32) -> f32 {
+    let value: f32;
+    unsafe {
+        ptx_asm!(
+            "{ .reg .f32 raw; mul.rn.f32 raw, %1, %2; add.rn.f32 %0, raw, %3; }",
+            out("=f") value,
+            in("f") acc,
+            in("f") scale,
+            in("f") bias,
+            options(register_only),
+        );
+    }
+    value
+}
+
+#[inline(always)]
+fn store_acc_relu2_scaled(
+    acc: [f32; 4],
+    tile: CtaTile,
+    m_repeat: u32,
+    n_repeat: u32,
+    params: Nvfp4GemmParams,
+    scale0: f32,
+    scale1: f32,
+    pre_activation: &mut DisjointSlice<f32>,
+    out: &mut DisjointSlice<f32>,
+    bias_bytes: &[u8],
+    bias_scales: &[u8],
+    bias_global_scale: f32,
+) {
+    let row0 = tile.mma_row_base(m_repeat) + tile.group;
+    let row1 = row0 + 8;
+    let col0 = tile.mma_col_base(n_repeat) + tile.thread_in_group * 2;
+    let output_dim = params.output_dim;
+    if col0 + 1 >= output_dim {
+        return;
+    }
+
+    let bias0 = nvfp4_value(bias_bytes, bias_scales, bias_global_scale, col0 as usize);
+    let bias1 = nvfp4_value(
+        bias_bytes,
+        bias_scales,
+        bias_global_scale,
+        (col0 + 1) as usize,
+    );
+    let pre00 = affine_from_stored_product(acc[0], scale0, bias0);
+    let pre01 = affine_from_stored_product(acc[1], scale0, bias1);
+    let pre10 = affine_from_stored_product(acc[2], scale1, bias0);
+    let pre11 = affine_from_stored_product(acc[3], scale1, bias1);
+    let relu00 = max_f32(pre00, 0.0);
+    let relu01 = max_f32(pre01, 0.0);
+    let relu10 = max_f32(pre10, 0.0);
+    let relu11 = max_f32(pre11, 0.0);
+
+    store_f32x2_global(pre_activation, row0 * output_dim + col0, pre00, pre01);
+    store_f32x2_global(pre_activation, row1 * output_dim + col0, pre10, pre11);
+    store_f32x2_global(
+        out,
+        row0 * output_dim + col0,
+        relu00 * relu00,
+        relu01 * relu01,
+    );
+    store_f32x2_global(
+        out,
+        row1 * output_dim + col0,
+        relu10 * relu10,
+        relu11 * relu11,
+    );
+}
+
 macro_rules! store_accumulator_rows {
     ([], $tile:expr, $params:expr, $output_scale:expr, $out:expr) => {};
     (
@@ -592,6 +666,50 @@ macro_rules! store_accumulator_rows {
             );
         )+
         store_accumulator_rows!([$($rest),*], $tile, $params, $output_scale, $out);
+    }};
+}
+
+macro_rules! store_accumulator_plain_rows {
+    ($shape:tt, $tile:expr, $params:expr, $output_scale:expr, ($out:expr)) => {{
+        store_accumulator_rows!($shape, $tile, $params, $output_scale, $out);
+    }};
+}
+
+macro_rules! store_accumulator_relu2_rows {
+    ([], $tile:expr, $params:expr, $output_scale:expr, $args:tt) => {};
+    (
+        [($m_repeat:tt, [$(($n_repeat:tt, $acc:ident)),+ $(,)?]) $(, $rest:tt)* $(,)?],
+        $tile:expr,
+        $params:expr,
+        $output_scale:expr,
+        ($pre_activation:expr, $out:expr, $bias_bytes:expr, $bias_scales:expr, $bias_global_scale:expr)
+    ) => {{
+        let row0 = $tile.mma_row_base($m_repeat) + $tile.group;
+        let scale0 = $output_scale.row(row0);
+        let scale1 = $output_scale.row(row0 + 8);
+        $(
+            store_acc_relu2_scaled(
+                $acc,
+                $tile,
+                $m_repeat,
+                $n_repeat,
+                $params,
+                scale0,
+                scale1,
+                $pre_activation,
+                $out,
+                $bias_bytes,
+                $bias_scales,
+                $bias_global_scale,
+            );
+        )+
+        store_accumulator_relu2_rows!(
+            [$($rest),*],
+            $tile,
+            $params,
+            $output_scale,
+            ($pre_activation, $out, $bias_bytes, $bias_scales, $bias_global_scale)
+        );
     }};
 }
 
@@ -1147,7 +1265,7 @@ macro_rules! build_accumulator_cols {
     };
 }
 
-macro_rules! run_tma_nvfp4_full_tile_shape {
+macro_rules! run_tma_nvfp4_full_tile_shape_body {
     (
         [$($m_axis:tt),+],
         [$($n_axis:tt),+],
@@ -1164,7 +1282,8 @@ macro_rules! run_tma_nvfp4_full_tile_shape {
         $b_scales_base:expr,
         $tma_bars:expr,
         $empty_bars:expr,
-        $out:expr $(,)?
+        $store:ident,
+        $store_args:tt $(,)?
     ) => {{
         let a_tma = $a_tma;
         let b_tma = $b_tma;
@@ -1178,7 +1297,6 @@ macro_rules! run_tma_nvfp4_full_tile_shape {
         let b_scales_base = $b_scales_base;
         let tma_bars = $tma_bars;
         let empty_bars = $empty_bars;
-        let out = $out;
 
         if thread::threadIdx_x() >= MMA_THREADS_PER_BLOCK {
             let mut k_base = 0;
@@ -1279,20 +1397,118 @@ macro_rules! run_tma_nvfp4_full_tile_shape {
                 k_tile += 1;
             }
 
-            store_accumulator_rows!(
+            $store!(
                 [$(($m_repeat, [$(($n_repeat, $acc)),+])),+],
                 tile,
                 params,
                 OutputScale::new(params),
-                out
+                $store_args
             );
         }
+    }};
+}
+
+macro_rules! run_tma_nvfp4_full_tile_shape {
+    (
+        [$($m_axis:tt),+],
+        [$($n_axis:tt),+],
+        [$(($m_repeat:tt, [$(($n_repeat:tt, $acc:ident)),+ $(,)?])),+ $(,)?],
+        $a_tma:expr,
+        $b_tma:expr,
+        $a_scale_tma:expr,
+        $b_scale_tma:expr,
+        $tile:expr,
+        $params:expr,
+        $a_packs_base:expr,
+        $b_packs_base:expr,
+        $a_scales_base:expr,
+        $b_scales_base:expr,
+        $tma_bars:expr,
+        $empty_bars:expr,
+        $out:expr $(,)?
+    ) => {{
+        run_tma_nvfp4_full_tile_shape_body!(
+            [$($m_axis),+],
+            [$($n_axis),+],
+            [$(($m_repeat, [$(($n_repeat, $acc)),+])),+],
+            $a_tma,
+            $b_tma,
+            $a_scale_tma,
+            $b_scale_tma,
+            $tile,
+            $params,
+            $a_packs_base,
+            $b_packs_base,
+            $a_scales_base,
+            $b_scales_base,
+            $tma_bars,
+            $empty_bars,
+            store_accumulator_plain_rows,
+            ($out),
+        );
+    }};
+}
+
+macro_rules! run_tma_nvfp4_full_tile_relu2_shape {
+    (
+        [$($m_axis:tt),+],
+        [$($n_axis:tt),+],
+        [$(($m_repeat:tt, [$(($n_repeat:tt, $acc:ident)),+ $(,)?])),+ $(,)?],
+        $a_tma:expr,
+        $b_tma:expr,
+        $a_scale_tma:expr,
+        $b_scale_tma:expr,
+        $tile:expr,
+        $params:expr,
+        $a_packs_base:expr,
+        $b_packs_base:expr,
+        $a_scales_base:expr,
+        $b_scales_base:expr,
+        $tma_bars:expr,
+        $empty_bars:expr,
+        $pre_activation:expr,
+        $out:expr,
+        $bias_bytes:expr,
+        $bias_scales:expr,
+        $bias_global_scale:expr $(,)?
+    ) => {{
+        run_tma_nvfp4_full_tile_shape_body!(
+            [$($m_axis),+],
+            [$($n_axis),+],
+            [$(($m_repeat, [$(($n_repeat, $acc)),+])),+],
+            $a_tma,
+            $b_tma,
+            $a_scale_tma,
+            $b_scale_tma,
+            $tile,
+            $params,
+            $a_packs_base,
+            $b_packs_base,
+            $a_scales_base,
+            $b_scales_base,
+            $tma_bars,
+            $empty_bars,
+            store_accumulator_relu2_rows,
+            (
+                $pre_activation,
+                $out,
+                $bias_bytes,
+                $bias_scales,
+                $bias_global_scale
+            ),
+        );
     }};
 }
 
 macro_rules! run_tma_nvfp4_full_tile {
     ($($arg:expr),+ $(,)?) => {{
         dispatch_accumulator_shape!(run_tma_nvfp4_full_tile_shape, $($arg),+);
+    }};
+}
+
+macro_rules! run_tma_nvfp4_full_tile_relu2 {
+    ($($arg:expr),+ $(,)?) => {{
+        dispatch_accumulator_shape!(run_tma_nvfp4_full_tile_relu2_shape, $($arg),+);
     }};
 }
 
@@ -1368,6 +1584,84 @@ pub mod module {
             tma_bars,
             empty_bars,
             &mut out,
+        );
+    }
+
+    #[kernel]
+    #[cfg_attr(nvfp4_launch_bounds_64, launch_bounds(64, 1))]
+    #[cfg_attr(nvfp4_launch_bounds_96, launch_bounds(96, 1))]
+    #[cfg_attr(nvfp4_launch_bounds_128, launch_bounds(128, 1))]
+    #[cfg_attr(nvfp4_launch_bounds_160, launch_bounds(160, 1))]
+    #[cfg_attr(nvfp4_launch_bounds_192, launch_bounds(192, 1))]
+    #[cfg_attr(nvfp4_launch_bounds_224, launch_bounds(224, 1))]
+    #[cfg_attr(nvfp4_launch_bounds_256, launch_bounds(256, 1))]
+    #[cfg_attr(nvfp4_launch_bounds_288, launch_bounds(288, 1))]
+    #[cfg_attr(nvfp4_launch_bounds_384, launch_bounds(384, 1))]
+    #[allow(unused_variables)]
+    pub fn nvfp4_gemm_tma_relu2_kernel(
+        a_tma: *const TmaDescriptor,
+        b_tma: *const TmaDescriptor,
+        a_scale_tma: *const TmaDescriptor,
+        b_scale_tma: *const TmaDescriptor,
+        mut pre_activation: DisjointSlice<f32>,
+        mut out: DisjointSlice<f32>,
+        bias_bytes: &[u8],
+        bias_scales: &[u8],
+        bias_global_scale: &[f32],
+        params: Nvfp4GemmParams,
+    ) {
+        let thread_id = thread::threadIdx_x();
+
+        static mut TMA_BARS: BarrierSmemStages = SharedArray::UNINIT;
+        static mut EMPTY_BARS: BarrierSmemStages = SharedArray::UNINIT;
+        static mut A_SCALES_SM: AScalesSmemStages = SharedArray::UNINIT;
+        static mut B_SCALES_SM: BScalesSmemStages = SharedArray::UNINIT;
+        static mut A_PACKS_SM: APacksSmemStages = SharedArray::UNINIT;
+        static mut B_PACKS_SM: BPacksSmemStages = SharedArray::UNINIT;
+
+        let tile = CtaTile::new(thread_id);
+        let tma_bars = unsafe { (&mut *(&raw mut TMA_BARS)).as_mut_ptr() };
+        let empty_bars = unsafe { (&mut *(&raw mut EMPTY_BARS)).as_mut_ptr() };
+        let a_scales_base = unsafe { (&mut *(&raw mut A_SCALES_SM)).as_mut_ptr() };
+        let b_scales_base = unsafe { (&mut *(&raw mut B_SCALES_SM)).as_mut_ptr() };
+        let a_packs_base = unsafe { (&mut *(&raw mut A_PACKS_SM)).as_mut_ptr() };
+        let b_packs_base = unsafe { (&mut *(&raw mut B_PACKS_SM)).as_mut_ptr() };
+
+        if thread_id == 0 {
+            prefetch_tma_descriptor(a_tma);
+            prefetch_tma_descriptor(b_tma);
+            prefetch_tma_descriptor(a_scale_tma);
+            prefetch_tma_descriptor(b_scale_tma);
+            unsafe {
+                let mut stage = 0;
+                while stage < TMA_PIPELINE_STAGES {
+                    mbarrier_init(stage_barrier(tma_bars, stage), 1);
+                    mbarrier_init(stage_barrier(empty_bars, stage), MMA_THREADS_PER_BLOCK);
+                    stage += 1;
+                }
+                fence_proxy_async_shared_cta();
+            }
+        }
+        thread::sync_threads();
+
+        run_tma_nvfp4_full_tile_relu2!(
+            a_tma,
+            b_tma,
+            a_scale_tma,
+            b_scale_tma,
+            tile,
+            params,
+            a_packs_base,
+            b_packs_base,
+            a_scales_base,
+            b_scales_base,
+            tma_bars,
+            empty_bars,
+            &mut pre_activation,
+            &mut out,
+            bias_bytes,
+            bias_scales,
+            bias_global_scale[0],
         );
     }
 }

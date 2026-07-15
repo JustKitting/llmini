@@ -1,5 +1,5 @@
 use cuda_core::DriverError;
-use rust_kernels_cuda::projection_postop::{ProjectionRelu2Args, ProjectionResidualArgs};
+use rust_kernels_cuda::projection_postop::ProjectionResidualArgs;
 
 use super::tensors::MlpForwardArgs;
 use crate::types::HiddenStateDevice;
@@ -46,25 +46,18 @@ pub(super) fn forward<'a, 'scratch>(
         crate::GPT2_MLP_DIM,
         args.scratch.tma_descriptors,
     )?;
-    args.tma_module
-        .gemm_tma_nvfp4_rowwise_a_scale_and_global_scale_buffer(
-            hidden.stream,
-            args.scratch.tma_descriptors,
-            args.scratch.pre_activation,
-            hidden.row_count,
-            crate::GPT2_EMBEDDING_DIM,
-            crate::GPT2_MLP_DIM,
-            input.global_scales,
-            args.projections.up.weight_device.global_scale,
-        )?;
-    args.projection_postop.relu2_inplace(ProjectionRelu2Args {
-        stream: hidden.stream,
-        bias: args.projections.up.bias,
-        pre_activation: args.scratch.pre_activation,
-        out: args.scratch.activation,
-        rows: hidden.row_count,
-        cols: crate::GPT2_MLP_DIM,
-    })?;
+    args.tma_module.gemm_tma_nvfp4_rowwise_a_scale_relu2(
+        hidden.stream,
+        args.scratch.tma_descriptors,
+        args.scratch.pre_activation,
+        args.scratch.activation,
+        args.projections.up.bias,
+        hidden.row_count,
+        crate::GPT2_EMBEDDING_DIM,
+        crate::GPT2_MLP_DIM,
+        input.global_scales,
+        args.projections.up.weight_device.global_scale,
+    )?;
 
     activation_nvfp4.quantize_row_amax(
         args.quant_module,
