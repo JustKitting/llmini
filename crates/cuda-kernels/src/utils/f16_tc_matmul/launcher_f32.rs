@@ -44,6 +44,22 @@ impl F16TcMatmulModule {
         a(m, k),
         rhs(n, k)
     );
+    f32_matmul_launcher!(
+        batched_matmul_f32_input_causal,
+        F16TcMatmulF32Args<'_, '_>,
+        b_t,
+        f16_cta_tc_matmul_f32_causal_kernel,
+        a(m, k),
+        rhs(n, k)
+    );
+    f32_matmul_launcher!(
+        batched_matmul_f32_input_strict_causal,
+        F16TcMatmulF32Args<'_, '_>,
+        b_t,
+        f16_cta_tc_matmul_f32_strict_causal_kernel,
+        a(m, k),
+        rhs(n, k)
+    );
 
     pub fn batched_matmul_f32_input_lower(
         &self,
@@ -109,6 +125,14 @@ impl F16TcMatmulModule {
         F16TcMatmulF32ATransposedRhsArgs<'_, '_>,
         rhs,
         f16_cta_tc_matmul_f32_a_transposed_rhs_kernel,
+        a(k, m),
+        rhs(k, n)
+    );
+    f32_matmul_launcher!(
+        batched_matmul_f32_a_transposed_rhs_strict_neg,
+        F16TcMatmulF32ATransposedRhsArgs<'_, '_>,
+        rhs,
+        f16_cta_tc_matmul_f32_a_transposed_rhs_strict_neg_kernel,
         a(k, m),
         rhs(k, n)
     );

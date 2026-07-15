@@ -37,11 +37,6 @@ impl AttentionModule {
                 kda.$kernel(stream, $config, $($arg,)* params)?;
             };
         }
-        macro_rules! mm_in_scratch {
-            ($a:ident, $b:ident, $out:ident, $shape:expr) => {
-                mm.f32_input(&*scratch.$a, &*scratch.$b, &mut *scratch.$out, $shape)?;
-            };
-        }
         if let Some(qkv_f16) = args.qkv_f16 {
             assert!(qkv_f16.len() >= (args.row_count * args.qkv_dim) as usize);
             kda_kernel!(prepare_kda_forward_save_f16_kernel(linear(dims.batch_head * args.seq_len * 32); args.qkv, qkv_f16, &mut *scratch.q, &mut *scratch.k, &mut *scratch.v, &mut *scratch.scores, &mut *args.log_sum_exp));
@@ -51,18 +46,18 @@ impl AttentionModule {
         kda_kernel!(chunk_cumsum_kda_g_kernel(chunk_cfg; &mut *scratch.scores));
         kda_kernel!(make_kda_qg_kneg_kg_kpos_vbeta_kernel(linear(dims.compact_elems); &mut *scratch.q, &mut *scratch.k, &mut *scratch.v, &*scratch.scores, &*args.log_sum_exp, &mut *scratch.compact_out, &mut *scratch.probs));
         kda_kernel!(store_kda_chunk_g_last_kernel(linear(dims.batch_head * dims.chunks * args.head_dim); &*scratch.scores, &mut *args.log_sum_exp));
+        let reuses_initial_kneg = args.kda_w.is_some();
         let w = {
             let akk_inv = match args.kda_akk_inv {
                 Some(akk_inv) => akk_inv,
                 None => &mut *scratch.scores,
             };
-            mm.f32_input(
+            mm.f32_input_strict_causal(
                 &*scratch.probs,
                 &*scratch.compact_out,
                 &mut *akk_inv,
                 dims.cch(),
             )?;
-            kda_kernel!(mask_kda_akk_kernel(matrix_cfg; &mut *akk_inv));
             kda_kernel!(solve_kda_akk_inv_kernel(matrix_cfg; &mut *akk_inv));
             let w = match args.kda_w {
                 Some(w) => {
@@ -82,16 +77,19 @@ impl AttentionModule {
             mm.f32_rhs(&*akk_inv, &*scratch.v, &mut *scratch.probs, dims.chc())?;
             w
         };
-        kda_kernel!(make_kda_kneg_from_kg_kernel(linear(dims.compact_elems); &*scratch.k, &*args.log_sum_exp, &mut *scratch.v));
+        let kneg = if reuses_initial_kneg {
+            &*scratch.compact_out
+        } else {
+            kda_kernel!(make_kda_kneg_from_kg_kernel(linear(dims.compact_elems); &*scratch.k, &*args.log_sum_exp, &mut *scratch.v));
+            &*scratch.v
+        };
         let aqk = match args.kda_aqk {
             Some(aqk) => {
-                mm.f32_input(&*scratch.q, &*scratch.v, &mut *aqk, dims.cch())?;
-                kda_kernel!(mask_kda_aqk_kernel(linear(dims.chunk_matrix_elems); &mut *aqk));
+                mm.f32_input_causal(&*scratch.q, kneg, &mut *aqk, dims.cch())?;
                 &*aqk
             }
             None => {
-                mm_in_scratch!(q, v, scores, dims.cch());
-                kda_kernel!(mask_kda_aqk_kernel(linear(dims.chunk_matrix_elems); &mut *scratch.scores));
+                mm.f32_input_causal(&*scratch.q, kneg, &mut *scratch.scores, dims.cch())?;
                 &*scratch.scores
             }
         };

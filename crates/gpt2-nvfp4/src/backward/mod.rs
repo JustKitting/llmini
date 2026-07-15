@@ -7,7 +7,6 @@ mod linear;
 mod linear_scratch;
 mod mlp;
 mod model;
-mod residual;
 mod scratch_reborrow;
 
 pub use attention::{
@@ -27,8 +26,9 @@ pub use final_head::{
     FinalHeadBackwardSeeds, backward as final_head_backward,
 };
 pub use layer_norm::{
-    Gpt2LayerNormBackwardArgs, Gpt2LayerNormBackwardInputArgs, Gpt2LayerNormBackwardParamArgs,
-    layer_norm_backward, layer_norm_backward_input, layer_norm_backward_params,
+    Gpt2LayerNormBackwardAddArgs, Gpt2LayerNormBackwardArgs, Gpt2LayerNormBackwardInputArgs,
+    Gpt2LayerNormBackwardParamArgs, layer_norm_backward, layer_norm_backward_add,
+    layer_norm_backward_input, layer_norm_backward_params,
 };
 pub use linear_scratch::LinearScratch;
 pub use mlp::{

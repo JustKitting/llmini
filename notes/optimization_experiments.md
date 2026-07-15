@@ -45,6 +45,113 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-15
 commit: accepted local jj commit after full gate
+experiment: Reuse KDA intermediates, emit causal matmul outputs, and fuse residual joins.
+status: accepted_900s
+change:
+  The taped forward KDA path now reuses the original K-neg buffer for AQK
+  instead of recomputing the identical value after W; the W tape prevents that
+  buffer from being overwritten. Dedicated tensor-core epilogues write
+  inclusive-causal AQK, strict-causal Akk, and strict-negative late-backward
+  matrices directly, removing the following mask/transform passes. The strict
+  negative path writes its only live destination instead of first
+  materializing a dead unmasked matrix. Separately, both per-block layer-norm
+  input-gradient kernels now add the direct residual gradient while writing
+  the final block destination, removing 32 full residual-add launches per
+  training step. Reconstruction and non-taped KDA fallbacks retain their
+  original buffers and standalone transforms.
+numerics:
+  Reused K-neg is the exact output of the same forward transform and remains
+  live on the production taped path. Causal epilogues preserve each MMA
+  accumulator at row >= col, use zero above it, and use row > col for strict
+  matrices; the late variant stores the same negated accumulator selected by
+  the removed transform. The fused layer-norm epilogue evaluates direct + dx
+  in the same FP32 operand order as residual_grad_add. Focused direct, wrapper,
+  block, layer-norm, and residual comparisons pass, and both fixed-wall gates
+  preserve the trajectory.
+memory:
+  Existing output and scratch allocations are reused. This change does not yet
+  remove the now-dead per-block layer-norm residual scratch allocations, so no
+  peak-VRAM saving is claimed in this batch.
+minimum_impact_gate:
+  The promoted baseline averaged 900.365 / 1570 = 573.480892ms per step and
+  required 2.867404ms per step. Directly affected KDA and layer-norm/residual
+  work saved 5.286200 and 5.267484ms per step in reciprocal profiles, while
+  whole-profile savings of 4.920238 and 4.215263ms per step both cleared the
+  aggregate floor before either fixed-wall gate was run.
+focused_profile:
+  Promoted baseline samples:
+    target/nsys/20260715_kda_transform_accumulate_batch_candidate.nsys-rep
+    target/nsys/20260715_kda_transform_accumulate_batch_candidate_reciprocal.nsys-rep
+    total GPU kernels: 5704.663117 and 5704.055651ms.
+    kernel launches: 90981 in both samples.
+    train elapsed: 5.605 and 5.605 seconds.
+    held-out val_loss: 8.667749 and 8.664646.
+  Candidate samples:
+    target/nsys/20260715_kda_causal_ln_residual_batch_candidate.nsys-rep
+    target/nsys/20260715_kda_causal_ln_residual_batch_candidate_reciprocal.nsys-rep
+    total GPU kernels: 5655.460741 and 5661.903018ms.
+    kernel launches: 90025 in both samples.
+    train elapsed: 5.558 and 5.564 seconds.
+    held-out val_loss: 8.664057 and 8.659940.
+  Across the same 10 training steps plus endpoint validation:
+    all GPU kernels saved 4.920238 and 4.215263ms per step,
+      or 0.862494% and 0.738994%.
+    directly affected work saved 5.286200 and 5.267484ms per step.
+    launches fell by 956: 92 per training step plus 36 forward-only launches
+      in endpoint evaluation.
+  An initial attempt also gathered KDA d_out while unpacking backward QKV. It
+  was screened out and reverted before the final profiles. In
+    target/nsys/20260715_kda_reuse_causal_epilogue_batch_candidate.nsys-rep,
+  prepare-plus-gather changed from 43.291503 to 44.787675ms; the fused producer
+  regressed 0.149617ms per step and the incomplete batch saved only
+  2.443008ms per step, below the active floor.
+verification:
+  cargo fmt --all, git diff --check, fresh
+  cargo oxide build --arch sm_120a, and
+  cargo test --workspace --release --lib --bins: pass (50 host tests).
+  Layer-norm backward, residual backward, direct causal-attention backward,
+  the GPT2 causal-backward wrapper, and full block-attention backward GPU
+  comparisons pass after the final rebuild: 5 focused comparisons.
+  ptxas reports zero spills. All three causal/strict tensor-core variants use
+  40 registers/thread and 4096 bytes shared memory; the fused layer-norm input
+  kernel uses 32 registers/thread and 32 bytes shared memory.
+  Required clean 30-second screen with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260715_230345Z_fineweb_30s
+    stdout: target/gates/20260715_kda_causal_ln_residual_batch_30s.log
+    completed_steps=55, train_elapsed_s=30.322, val_loss=6.720118.
+  Required 900-second gate with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260715_230429Z_fineweb_900s
+    stdout: target/gates/20260715_kda_causal_ln_residual_batch_900s.log
+    completed_steps=1584, train_elapsed_s=900.029, val_loss=4.858758.
+    All 32 high-fidelity samples were finite and nonzero, with zero skipped
+    updates, loss-spike skips, grad-norm-spike skips, or nonfinite skips. Grad
+    norm ranged from 1.126041412 to 18.929119110. Every sample retained batch
+    4, sequence 2048, and 8192 tokens per step.
+measured_effect:
+  Against the matched 30-second baseline:
+    completed_steps: 55 -> 55.
+    average step time: 555.218182 -> 551.309091ms
+      (-3.909091ms, -0.704%).
+    training tokens: 450560 -> 450560.
+    held-out val_loss: 6.723579 -> 6.720118
+      (-0.003461, -0.051%).
+  Against the matched 900-second baseline:
+    completed_steps: 1570 -> 1584 (+14, +0.892%).
+    average step time: 573.480892 -> 568.200126ms
+      (-5.280765ms, -0.921%).
+    training tokens: 12861440 -> 12976128 (+114688, +0.892%).
+    held-out val_loss: 4.878554 -> 4.858758
+      (-0.019796, -0.406%).
+decision:
+  Keep and promote. Reciprocal profiles clear the aggregate floor, both
+  fixed-wall gates preserve the speed signal, held-out loss improves, and the
+  sustained run is stable. The next 0.5% threshold is
+  (900.029 / 1584) * 0.005 = 2.841001ms per step.
+```
+
+```text
+date: 2026-07-15
+commit: accepted local jj commit after full gate
 experiment: Batch four compatible KDA transform and gradient-accumulation fusions.
 status: accepted_900s
 change:

@@ -1,11 +1,10 @@
 use cuda_core::DriverError;
 
 use super::types::BlockAttentionBackwardArgs;
-use crate::backward::residual::residual_grad_add;
 use crate::backward::{
     AttentionCProjBackwardArgs, AttentionCoreBackwardArgs, AttentionQkvBackwardArgs,
-    Gpt2LayerNormBackwardArgs, attention_c_proj_backward, causal_attention_backward,
-    layer_norm_backward, qkv_projection_backward,
+    Gpt2LayerNormBackwardAddArgs, attention_c_proj_backward, causal_attention_backward,
+    layer_norm_backward_add, qkv_projection_backward,
 };
 use crate::types::BlockBackwardGrads;
 
@@ -77,20 +76,13 @@ pub fn attention_side_backward(
         scratch: scratch.qkv,
         seeds: seeds.qkv,
     })?;
-    layer_norm_backward(Gpt2LayerNormBackwardArgs {
+    layer_norm_backward_add(Gpt2LayerNormBackwardAddArgs {
         stream,
         module: modules.layer_norm,
         weights: ln_1,
         saved: saved.ln_1,
         grads: ln_1_grads.reborrow(),
-    })?;
-
-    residual_grad_add(
-        modules.residual,
-        stream,
-        &*d_residual_after_attention,
-        &*ln_1_grads.d_residual,
-        d_residual_in,
-        saved.row_count,
-    )
+        direct: &*d_residual_after_attention,
+        d_residual: d_residual_in,
+    })
 }

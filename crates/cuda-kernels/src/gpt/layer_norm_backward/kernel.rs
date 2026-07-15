@@ -21,7 +21,8 @@ pub(super) mod kernels {
             $residual_column:path;
             $residual:ident $d_normalized:ident $mean:ident $inv_std:ident;
             $weight_bytes:ident $weight_scales:ident $weight_global_scale:ident;
-            $d_residual:ident $row_count:ident $embedding_dim:ident
+            $d_residual:ident $row_count:ident $embedding_dim:ident;
+            $direct:expr
         ) => {{
             static mut WARP_SUMS: SharedArray<f32, { WARPS_PER_BLOCK as usize }> =
                 SharedArray::UNINIT;
@@ -73,6 +74,19 @@ pub(super) mod kernels {
                     (value - dxhat_sum * inv_dim - xhat[index] * xhat_dxhat_sum * inv_dim)
                         * row_inv_std
                 });
+                let direct: *const f32 = $direct;
+                let dx = if direct.is_null() {
+                    dx
+                } else {
+                    layer_norm_map3_indexed!(dx, |index, value| {
+                        let col = cols[index];
+                        if col < $embedding_dim {
+                            unsafe { *direct.add(row_base + col as usize) + value }
+                        } else {
+                            value
+                        }
+                    })
+                };
 
                 layer_norm_store3!(&mut $d_residual, row_base, cols, $embedding_dim, dx);
             }
@@ -96,7 +110,31 @@ pub(super) mod kernels {
             f16_column;
             residual d_normalized mean inv_std;
             weight_bytes weight_scales weight_global_scale;
-            d_residual row_count embedding_dim
+            d_residual row_count embedding_dim;
+            core::ptr::null()
+        );
+    }
+
+    #[kernel]
+    pub fn layer_norm_backward_input_add_kernel(
+        residual: &[u16],
+        d_normalized: &[f32],
+        mean: &[f32],
+        inv_std: &[f32],
+        weight_bytes: &[u8],
+        weight_scales: &[u8],
+        weight_global_scale: &[f32],
+        direct: &[f32],
+        mut d_residual: DisjointSlice<f32>,
+        row_count: u32,
+        embedding_dim: u32,
+    ) {
+        layer_norm_backward_input_body!(
+            f16_column;
+            residual d_normalized mean inv_std;
+            weight_bytes weight_scales weight_global_scale;
+            d_residual row_count embedding_dim;
+            direct.as_ptr()
         );
     }
 
@@ -117,7 +155,8 @@ pub(super) mod kernels {
             f32_column;
             residual d_normalized mean inv_std;
             weight_bytes weight_scales weight_global_scale;
-            d_residual row_count embedding_dim
+            d_residual row_count embedding_dim;
+            core::ptr::null()
         );
     }
 }

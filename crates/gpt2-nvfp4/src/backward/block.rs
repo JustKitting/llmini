@@ -2,12 +2,11 @@ use cuda_core::{CudaStream, DriverError};
 use rust_kernels_cuda::layer_norm_backward::LayerNormBackwardModule;
 use rust_kernels_cuda::residual::ResidualBackwardModule;
 
-use super::layer_norm::{Gpt2LayerNormBackwardArgs, layer_norm_backward};
+use super::layer_norm::{Gpt2LayerNormBackwardAddArgs, layer_norm_backward_add};
 use super::mlp::{
     MlpBackwardArgs, MlpBackwardGrads, MlpBackwardModules, MlpBackwardScratch, MlpBackwardSeeds,
     backward as mlp_backward,
 };
-use super::residual::residual_grad_add;
 use crate::types::{BlockBackwardGrads, BlockForwardSaved};
 use crate::{LayerNormTensors, MlpProjectionTensors};
 
@@ -71,20 +70,13 @@ pub fn mlp_side_backward(args: BlockMlpBackwardArgs<'_, '_, '_>) -> Result<(), D
         seeds,
     })?;
 
-    layer_norm_backward(Gpt2LayerNormBackwardArgs {
+    layer_norm_backward_add(Gpt2LayerNormBackwardAddArgs {
         stream,
         module: modules.layer_norm,
         weights: ln_2,
         saved: saved.ln_2,
         grads: ln_2_grads.reborrow(),
-    })?;
-
-    residual_grad_add(
-        modules.residual,
-        stream,
-        &*d_residual_out,
-        &*ln_2_grads.d_residual,
-        d_residual_after_attention,
-        saved.row_count,
-    )
+        direct: &*d_residual_out,
+        d_residual: d_residual_after_attention,
+    })
 }

@@ -10,6 +10,10 @@ use super::cta_f32_a_transposed_half_rhs::{
 };
 use super::cta_f32_a_transposed_rhs::cta_matmul_f32_a_transposed_rhs_body;
 use super::cta_f32_accumulate::cta_matmul_f32_accumulate_body;
+use super::cta_f32_causal::{
+    cta_matmul_f32_a_transposed_rhs_strict_neg_body, cta_matmul_f32_causal_body,
+    cta_matmul_f32_strict_causal_body,
+};
 use super::cta_f32_half_rhs::{cta_matmul_f32_half_rhs_body, cta_matmul_f32_half_rhs_lower_a_body};
 use super::cta_f32_rhs::cta_matmul_f32_rhs_body;
 use super::cta_half_rhs::{
@@ -150,6 +154,32 @@ pub(super) mod module {
     }
 
     #[kernel]
+    pub fn f16_cta_tc_matmul_f32_causal_kernel(
+        a: &[f32],
+        b_t: &[f32],
+        out: DisjointSlice<f32>,
+        batch_count: u32,
+        m: u32,
+        n: u32,
+        k: u32,
+    ) {
+        call_with_tiles!(cta_matmul_f32_causal_body; a, b_t, out; batch_count, m, n, k);
+    }
+
+    #[kernel]
+    pub fn f16_cta_tc_matmul_f32_strict_causal_kernel(
+        a: &[f32],
+        b_t: &[f32],
+        out: DisjointSlice<f32>,
+        batch_count: u32,
+        m: u32,
+        n: u32,
+        k: u32,
+    ) {
+        call_with_tiles!(cta_matmul_f32_strict_causal_body; a, b_t, out; batch_count, m, n, k);
+    }
+
+    #[kernel]
     pub fn f16_cta_tc_matmul_f32_lower_kernel(
         a: &[f32],
         b_t: &[f32],
@@ -212,6 +242,19 @@ pub(super) mod module {
         k: u32,
     ) {
         call_with_tiles!(cta_matmul_f32_a_transposed_rhs_body; a, rhs, out; batch_count, m, n, k);
+    }
+
+    #[kernel]
+    pub fn f16_cta_tc_matmul_f32_a_transposed_rhs_strict_neg_kernel(
+        a: &[f32],
+        rhs: &[f32],
+        out: DisjointSlice<f32>,
+        batch_count: u32,
+        m: u32,
+        n: u32,
+        k: u32,
+    ) {
+        call_with_tiles!(cta_matmul_f32_a_transposed_rhs_strict_neg_body; a, rhs, out; batch_count, m, n, k);
     }
 
     #[kernel]

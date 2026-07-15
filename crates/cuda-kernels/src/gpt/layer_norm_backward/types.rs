@@ -11,8 +11,8 @@ use super::param::{
 use crate::launch::grid_x_config;
 
 pub use args::{
-    LayerNormBackwardInputArgs, LayerNormBackwardInputF32Args, LayerNormBackwardParamArgs,
-    LayerNormBackwardParamF32Args,
+    LayerNormBackwardInputAddArgs, LayerNormBackwardInputArgs, LayerNormBackwardInputF32Args,
+    LayerNormBackwardParamArgs, LayerNormBackwardParamF32Args,
 };
 
 pub struct LayerNormBackwardModule {
@@ -78,6 +78,26 @@ impl LayerNormBackwardModule {
         LayerNormBackwardInputF32Args<'_, '_>,
         layer_norm_backward_input_f32_kernel
     );
+    pub fn backward_input_add(
+        &self,
+        args: LayerNormBackwardInputAddArgs<'_, '_>,
+    ) -> Result<(), DriverError> {
+        self.module.layer_norm_backward_input_add_kernel(
+            args.stream,
+            grid_x_config(args.row_count, THREADS_PER_BLOCK),
+            args.residual,
+            args.d_normalized,
+            args.mean,
+            args.inv_std,
+            args.weight.bytes,
+            args.weight.scales,
+            args.weight.global_scale,
+            args.direct,
+            args.d_residual,
+            args.row_count,
+            args.embedding_dim,
+        )
+    }
     pub fn backward_params(
         &self,
         args: LayerNormBackwardParamArgs<'_, '_>,

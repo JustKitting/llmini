@@ -56,10 +56,28 @@ impl<'a> MatmulRunner<'a> {
         F16TcMatmulF32Args,
         b_t
     );
+    matmul_method!(
+        f32_input_causal,
+        batched_matmul_f32_input_causal,
+        F16TcMatmulF32Args,
+        b_t
+    );
+    matmul_method!(
+        f32_input_strict_causal,
+        batched_matmul_f32_input_strict_causal,
+        F16TcMatmulF32Args,
+        b_t
+    );
     matmul_method!(f32_rhs, batched_matmul_f32_rhs, F16TcMatmulF32RhsArgs, rhs);
     matmul_method!(
         f32_a_transposed_rhs,
         batched_matmul_f32_a_transposed_rhs,
+        F16TcMatmulF32ATransposedRhsArgs,
+        rhs
+    );
+    matmul_method!(
+        f32_a_transposed_rhs_strict_neg,
+        batched_matmul_f32_a_transposed_rhs_strict_neg,
         F16TcMatmulF32ATransposedRhsArgs,
         rhs
     );
