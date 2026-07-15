@@ -38,3 +38,9 @@ fn muon_mega_update_matches_nonconstant_wide_recurrence() -> Result<(), Box<dyn 
 fn muon_tma_finish_retains_next_schedule_amax() -> Result<(), Box<dyn Error>> {
     tma_finish::run_schedule_amax_case()
 }
+
+#[ignore = "requires generated sm_120a PTX"]
+#[test]
+fn muon_tma_split_finish_matches_cooperative_reference() -> Result<(), Box<dyn Error>> {
+    tma_finish::run_split_matches_reference_case()
+}

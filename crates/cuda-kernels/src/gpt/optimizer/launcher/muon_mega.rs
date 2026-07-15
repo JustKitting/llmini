@@ -1,11 +1,14 @@
 use cuda_core::DriverError;
 
 use crate::f16_tc_matmul::cta_tile::CTA_THREADS;
-use crate::launch::launch_config;
+use crate::launch::{grid_x_config, launch_config};
+use crate::nvfp4_quant::NVFP4_TENSOR_AMAX_VALUES_PER_BLOCK;
 
 use super::super::args::{MuonMegaUpdateArgs, MuonTmaFinishArgs, MuonTmaPrepareArgs};
 use super::super::{MUON_COOPERATIVE_BLOCKS, MUON_MATRIX_PHASES};
 use super::OptimizerModule;
+
+const MUON_NVFP4_GROUP_SIZE: u32 = 16;
 
 impl OptimizerModule {
     pub fn muon_mega_update(&self, args: MuonMegaUpdateArgs<'_>) -> Result<(), DriverError> {
@@ -54,6 +57,62 @@ impl OptimizerModule {
 
     pub fn muon_tma_finish_update(&self, args: MuonTmaFinishArgs<'_>) -> Result<(), DriverError> {
         assert!(args.slot_index < args.slots.len() as u32);
+        assert!(args.matrix_len > 0);
+        assert_eq!(args.matrix_len % MUON_NVFP4_GROUP_SIZE, 0);
+        let chunk_count = args
+            .matrix_len
+            .div_ceil(NVFP4_TENSOR_AMAX_VALUES_PER_BLOCK as u32);
+        assert!(args.polar_chunks.len() >= 2 * chunk_count as usize);
+
+        self.apply
+            .muon
+            .tma_split
+            .muon_tma_update_master_chunks_kernel(
+                args.stream,
+                grid_x_config(chunk_count, CTA_THREADS),
+                args.slots,
+                args.polar_update,
+                args.polar_bound_amax,
+                &mut *args.polar_chunks,
+                args.slot_index,
+                args.learning_rate,
+                args.weight_decay,
+                args.average_coefficient,
+                args.schedule_beta,
+                args.apply_polar_sqrt_bound,
+            )?;
+
+        self.apply
+            .muon
+            .tma_split
+            .muon_tma_reduce_update_amax_kernel(
+                args.stream,
+                grid_x_config(1, CTA_THREADS),
+                args.slots,
+                &*args.polar_chunks,
+                args.slot_index,
+                chunk_count,
+            )?;
+
+        let groups_per_block = CTA_THREADS / MUON_NVFP4_GROUP_SIZE;
+        let group_count = args.matrix_len / MUON_NVFP4_GROUP_SIZE;
+        self.apply
+            .muon
+            .tma_split
+            .muon_tma_encode_updated_master_kernel(
+                args.stream,
+                grid_x_config(group_count.div_ceil(groups_per_block), CTA_THREADS),
+                args.slots,
+                args.slot_index,
+            )
+    }
+
+    pub fn muon_tma_finish_update_cooperative_reference(
+        &self,
+        args: MuonTmaFinishArgs<'_>,
+    ) -> Result<(), DriverError> {
+        assert!(args.slot_index < args.slots.len() as u32);
+        assert!(args.matrix_len > 0);
         assert!(args.polar_chunks.len() >= 2 * MUON_COOPERATIVE_BLOCKS);
         self.apply.muon.tma_split.muon_tma_finish_update_kernel(
             args.stream,

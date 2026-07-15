@@ -45,6 +45,110 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-15
 commit: accepted local jj commit after full gate
+experiment: Split Muon finish into shape-sized noncooperative kernels.
+status: accepted_900s
+change:
+  The post-Polar Muon finish formerly updated FP32 schedule-free masters,
+  reduced master and schedule maxima, and encoded the updated master to NVFP4
+  inside one 125-CTA cooperative launch. The update now launches one ordinary
+  CTA per 2048-value chunk, a one-CTA kernel reduces the two exact chunk-max
+  planes, and an ordinary encode grid launches one CTA per 256 values. Active
+  update grids range from 2048 to 8320 CTAs and encode grids from 16384 to
+  66560 CTAs, allowing the 188-SM GPU to fill multiple resident waves. Stream
+  ordering preserves the former update -> scale -> encode dependencies.
+numerics:
+  Per-element master update expressions and their operation order are
+  unchanged. Each 2048-value chunk uses the former update_eight_amax body.
+  Regrouping finite maximum operations is exact, and the four-six encoder is
+  the former encoder body with a shape-sized grid. A focused GPU test compares
+  z_master, x_master, schedule amax, FP4 bytes, FP8 scales, and global scale
+  against the retained cooperative reference bit-for-bit; every output passes.
+memory:
+  Muon polar-chunk scratch grows from 1250 FP32 values / 5000 bytes to 16640
+  values / 66560 bytes so the largest 8320-chunk update can retain both master
+  and schedule maxima. The 61560-byte / 60.117-KiB increase is negligible but
+  is not a memory-capacity win and does not unlock a larger batch.
+minimum_impact_gate:
+  The active baseline averaged 900.402 / 1424 = 632.304775ms per step, so the
+  required saving was 3.161524ms per step. The accepted finish kernel occupied
+  363.544741ms over 10 steps, or 36.354474ms per step. Its fixed 125-CTA grid
+  could cover only 125 of 188 SMs in a wave; recovering only 8.70% of that
+  family would clear the whole-step floor, establishing a credible pre-edit
+  ceiling before implementation.
+focused_profile:
+  Accepted-code samples:
+    target/nsys/20260715_tma_descriptor_cache_candidate.nsys-rep
+    target/nsys/20260715_tma_descriptor_cache_candidate_reciprocal.nsys-rep
+    train elapsed: 6.218 and 6.197 seconds, average 6.2075 seconds.
+  Matched candidate sample:
+    target/nsys/20260715_muon_finish_noncooperative_split_candidate_reciprocal.nsys-rep
+    train elapsed: 6.056 seconds.
+  Across the same 10 training steps plus endpoint validation:
+    cooperative finish: 363.544741ms.
+    split update: 99.036274ms.
+    split maximum reduction: 4.711284ms.
+    split encode: 44.963639ms.
+    affected total: 363.544741 -> 148.711197ms, saving 21.483354ms
+      per step / 3.398% of the accepted whole step.
+    all GPU kernels: 6304.457126 -> 6163.577254ms, saving 14.087987ms
+      per step / 2.228%.
+    GPU memcpy plus memset: 72.607555 -> 72.715077ms, effectively flat.
+    total kernel launches: 88711 -> 90051 because each old finish launch is
+      replaced by three kernels. The occupancy gain outweighs 1340 extra
+      launches over the profile.
+    held-out val_loss: 8.664306 / 8.660353 accepted samples versus 8.661832
+      candidate, confirming the matched trajectory.
+  A separate accidental 60-second profile completed 99 finite steps and
+  measured 14.877ms/step for the same split family, consistent with the
+  matched 10-step result. It is diagnostic evidence, not a validation gate:
+    target/nsys/20260715_muon_finish_noncooperative_split_candidate.nsys-rep
+verification:
+  cargo fmt --all --check: pass.
+  cargo check --workspace: pass.
+  Fresh cargo oxide build --arch sm_120a: pass.
+  cargo test --workspace --release --lib --bins: pass, including 45 sweep tests
+    and 4 rust-kernels tests.
+  Both focused Muon TMA finish GPU tests: pass after the fresh rebuild,
+    including the new bitwise split-versus-cooperative comparison.
+  PTXAS reports zero stack and spills for every new kernel. Update uses 40
+    registers, one barrier, and 32 bytes shared memory; reduction uses 18
+    registers, one barrier, and 32 bytes shared memory; encode uses 38
+    registers and no barriers.
+  Required clean 30-second screen with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260715_181212Z_fineweb_30s
+    stdout: target/muon_finish_split_30_20260715.log
+    completed_steps=51, train_elapsed_s=30.358, val_loss=6.781981.
+    Both high-fidelity samples were finite and nonzero, retained batch 4 and
+    sequence 2048, and reported zero skip or instability flags.
+  Required 900-second gate with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260715_181316Z_fineweb_900s
+    stdout: target/muon_finish_split_900_20260715.log
+    completed_steps=1469, train_elapsed_s=900.486, val_loss=4.902749.
+    All 30 high-fidelity samples were finite and nonzero, with zero skipped
+    updates, loss-spike skips, grad-norm-spike skips, or nonfinite skips. Grad
+    norm ranged from 1.168381453 to 18.969266891. Every sample retained batch 4
+    and sequence 2048.
+measured_effect:
+  Against the matched 30-second baseline:
+    completed_steps: 49 -> 51 (+2, +4.082%).
+    average step time: 612.836735 -> 595.254902ms
+      (-17.581833ms, -2.869%).
+    held-out val_loss: 6.813850 -> 6.781981 (-0.031869, -0.468%).
+  Against the matched 900-second baseline:
+    completed_steps: 1424 -> 1469 (+45, +3.160%).
+    average step time: 632.304775 -> 612.992512ms
+      (-19.312263ms, -3.054%).
+    training tokens: 11665408 -> 12034048 (+368640, +3.160%).
+    held-out val_loss: 4.925005 -> 4.902749 (-0.022256, -0.452%).
+decision:
+  Keep and promote. The full fixed-wall run completes 45 more steps, improves
+  held-out loss, and remains stable throughout. The next 0.5% threshold is
+  (900.486 / 1469) * 0.005 = 3.064963ms per step.
+```
+
+```text
+date: 2026-07-15
+commit: accepted local jj commit after full gate
 experiment: Cache stable packed TMA descriptor bundles.
 status: accepted_900s
 change:

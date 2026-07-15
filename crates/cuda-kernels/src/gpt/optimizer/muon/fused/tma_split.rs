@@ -1,13 +1,17 @@
-use cuda_device::{DisjointSlice, SharedArray, cooperative_launch, cuda_module, grid, kernel};
+use cuda_device::{
+    DisjointSlice, SharedArray, cooperative_launch, cuda_module, grid, kernel, thread,
+};
 
-use crate::float_ptx::sqrt_f32;
+use crate::device_ptr::read_f32;
+use crate::float_ptx::{max_f32, sqrt_f32};
+use crate::nvfp4_quant::kernels::four_six::helpers::four_six_global_scale;
 use crate::optimizer::MuonSlotDescriptor;
 
-use super::super::super::threads::WARPS_PER_BLOCK;
+use super::super::super::threads::{WARP_SIZE, WARPS_PER_BLOCK};
 use super::super::super::work_grid::WorkGrid;
 use super::super::polar::fused::normalize_source_to_x;
 use super::momentum::momentum_orient;
-use super::quant::quantize_updated_master;
+use super::quant::{encode_four_six, quantize_updated_master};
 use super::types::{MuonMatrixShape, MuonUpdateScalars};
 use super::update::update_master_chunks;
 
@@ -138,6 +142,118 @@ pub(crate) mod module {
                 work,
             );
         }
+    }
+
+    #[kernel]
+    pub fn muon_tma_update_master_chunks_kernel(
+        slots: &[MuonSlotDescriptor],
+        polar_update: &[f32],
+        polar_bound_amax: &[f32],
+        mut polar_chunks: DisjointSlice<f32>,
+        slot_index: u32,
+        learning_rate: f32,
+        weight_decay: f32,
+        average_coefficient: f32,
+        schedule_beta: f32,
+        apply_polar_sqrt_bound: u32,
+    ) {
+        static mut WARP_SUMS: SharedArray<f32, { WARPS_PER_BLOCK as usize }> = SharedArray::UNINIT;
+
+        let desc = slots[slot_index as usize];
+        let shape = MuonMatrixShape {
+            rows: desc.rows,
+            cols: desc.cols,
+        };
+        let bound = polar_bound_amax[0];
+        let polar_update_scale = if apply_polar_sqrt_bound != 0 && bound > 1.0 {
+            1.0 / sqrt_f32(bound)
+        } else {
+            1.0
+        };
+
+        unsafe {
+            update_master_chunks(
+                polar_update.as_ptr(),
+                ptr_mut(desc.z_master),
+                ptr_mut(desc.x_master),
+                polar_chunks.as_mut_ptr(),
+                shape.rows,
+                shape.cols,
+                shape.len(),
+                shape.master_transposed(),
+                polar_update_scale,
+                learning_rate * desc.learning_rate_multiplier,
+                weight_decay,
+                average_coefficient,
+                schedule_beta,
+                &mut WARP_SUMS,
+                WorkGrid::x_axis(),
+            );
+        }
+    }
+
+    #[kernel]
+    pub fn muon_tma_reduce_update_amax_kernel(
+        slots: &[MuonSlotDescriptor],
+        polar_chunks: &[f32],
+        slot_index: u32,
+        chunk_count: u32,
+    ) {
+        static mut WARP_SUMS: SharedArray<f32, { WARPS_PER_BLOCK as usize }> = SharedArray::UNINIT;
+
+        let tid = thread::threadIdx_x();
+        let lane = tid & (WARP_SIZE - 1);
+        let warp_in_block = tid / WARP_SIZE;
+        let chunks = polar_chunks.as_ptr();
+        let schedule_chunks = unsafe { chunks.add(chunk_count as usize) };
+        let mut chunk = tid;
+        let mut local_master_amax = 0.0;
+        let mut local_schedule_amax = 0.0;
+        while chunk < chunk_count {
+            local_master_amax = max_f32(local_master_amax, read_f32(chunks, chunk));
+            local_schedule_amax = max_f32(local_schedule_amax, read_f32(schedule_chunks, chunk));
+            chunk += thread::blockDim_x();
+        }
+        let master_amax = unsafe {
+            crate::block_reduce::block_max_shared_f32(
+                &mut WARP_SUMS,
+                local_master_amax,
+                lane,
+                warp_in_block,
+            )
+        };
+        let schedule_amax = unsafe {
+            crate::block_reduce::block_max_shared_f32(
+                &mut WARP_SUMS,
+                local_schedule_amax,
+                lane,
+                warp_in_block,
+            )
+        };
+        if tid == 0 {
+            let desc = slots[slot_index as usize];
+            unsafe {
+                *ptr_mut::<f32>(desc.global_scale) = four_six_global_scale(master_amax, 1.0);
+                *ptr_mut::<f32>(desc.schedule_amax) = schedule_amax;
+            }
+        }
+    }
+
+    #[kernel]
+    pub fn muon_tma_encode_updated_master_kernel(slots: &[MuonSlotDescriptor], slot_index: u32) {
+        let desc = slots[slot_index as usize];
+        let shape = MuonMatrixShape {
+            rows: desc.rows,
+            cols: desc.cols,
+        };
+        encode_four_six(
+            ptr_const(desc.x_master),
+            ptr_mut(desc.bytes),
+            ptr_mut(desc.scales),
+            ptr_mut(desc.global_scale),
+            shape.len(),
+            WorkGrid::x_axis(),
+        );
     }
 }
 

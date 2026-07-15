@@ -11,7 +11,7 @@ use super::super::super::super::work_grid::WorkGrid;
 
 const SCALE_OVERRIDE: f32 = 1.0;
 
-pub(super) fn encode_four_six(
+pub(crate) fn encode_four_six(
     x: *const f32,
     out_fp4: *mut u8,
     out_scales: *mut u8,

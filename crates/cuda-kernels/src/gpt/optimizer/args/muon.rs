@@ -57,6 +57,7 @@ pub struct MuonTmaFinishArgs<'a> {
     pub polar_bound_amax: &'a DeviceBuffer<f32>,
     pub polar_chunks: &'a mut DeviceBuffer<f32>,
     pub slot_index: u32,
+    pub matrix_len: u32,
     pub learning_rate: f32,
     pub weight_decay: f32,
     pub average_coefficient: f32,
