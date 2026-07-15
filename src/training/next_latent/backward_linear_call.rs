@@ -28,7 +28,7 @@ pub(super) struct LinearCall<'a, 'scratch, 'out> {
 }
 
 pub(super) fn run_linear(call: LinearCall<'_, '_, '_>) -> Result<(), DriverError> {
-    let (_, _, _, scratch) = call.scratch.parts();
+    let scratch = call.scratch.parts();
     call.linear.backward_ms_eden(LinearBackwardMsEdenArgs {
         stream: call.stream,
         quant_module: call.quant,

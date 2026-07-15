@@ -18,9 +18,6 @@ pub struct FinalHeadBackwardModules<'a> {
 }
 
 pub struct FinalHeadBackwardScratch<'scratch> {
-    pub dlogits_t: &'scratch mut DeviceBuffer<f32>,
-    pub lm_head_weight_t: &'scratch mut DeviceBuffer<f32>,
-    pub final_normalized_t: &'scratch mut DeviceBuffer<f32>,
     pub linear: LinearBackwardMsEdenScratch<'scratch>,
 }
 

@@ -19,12 +19,6 @@ pub struct MlpBackwardModules<'a> {
 }
 
 pub struct MlpBackwardScratch<'scratch> {
-    pub down_error_t: &'scratch mut DeviceBuffer<f32>,
-    pub down_weight_t: &'scratch mut DeviceBuffer<f32>,
-    pub down_input_t: &'scratch mut DeviceBuffer<f32>,
-    pub up_error_t: &'scratch mut DeviceBuffer<f32>,
-    pub up_weight_t: &'scratch mut DeviceBuffer<f32>,
-    pub up_input_t: &'scratch mut DeviceBuffer<f32>,
     pub down_linear: LinearBackwardMsEdenScratch<'scratch>,
     pub up_linear: LinearBackwardMsEdenScratch<'scratch>,
 }
@@ -32,12 +26,6 @@ pub struct MlpBackwardScratch<'scratch> {
 impl<'scratch> MlpBackwardScratch<'scratch> {
     pub fn reborrow(&mut self) -> MlpBackwardScratch<'_> {
         MlpBackwardScratch {
-            down_error_t: &mut *self.down_error_t,
-            down_weight_t: &mut *self.down_weight_t,
-            down_input_t: &mut *self.down_input_t,
-            up_error_t: &mut *self.up_error_t,
-            up_weight_t: &mut *self.up_weight_t,
-            up_input_t: &mut *self.up_input_t,
             down_linear: reborrow_ms_eden(&mut self.down_linear),
             up_linear: reborrow_ms_eden(&mut self.up_linear),
         }

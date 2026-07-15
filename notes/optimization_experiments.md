@@ -34,6 +34,91 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-15
 commit: accepted local jj commit after full gate
+experiment: Remove unused FP32 transpose allocations from all linear-backward scratch arenas.
+status: accepted_900s_memory_capacity
+change:
+  LinearScratch still allocated error_t, weight_t, and input_t FP32 transpose
+  buffers from an older backward path, but the active MS-EDEN implementation
+  consumes only LinearBackwardMsEdenScratchBuffers. Removed those dead buffers
+  and their wrapper fields from the five GPT backward arenas and three NextLat
+  arenas. No kernel launch, kernel argument, live tensor, model shape, or math
+  operation changed. Updated stale test tensor fixtures with the device-weight
+  views required by the already-accepted TMA forward structs so focused
+  backward tests compile and run again.
+memory_capacity_gate:
+  Matched allocation probes on the parent and candidate reported:
+    parent target/runs/20260715_060740Z_fineweb_900s:
+      used_bytes=75947507712.
+    candidate target/runs/20260715_063227Z_fineweb_900s:
+      used_bytes=72298463232.
+  The exact measured reduction is 3649044480 bytes, exactly 3480 MiB
+  (3.3984375 GiB). The removed payloads sum to 3479 MiB; CUDA allocation
+  granularity accounts for the additional measured 1 MiB. This materially
+  expands batch/token headroom, but a larger-batch tokens/s gain remains a
+  separate configuration experiment and is not claimed here.
+verification:
+  cargo fmt --all: pass.
+  cargo fmt --all --check: pass.
+  cargo check -q: pass.
+  cargo oxide build --arch sm_120a: pass; fresh device and host rebuild.
+  CUDA_DEVICE_INDEX=0 cargo test -q -p gpt2-nvfp4
+    --test qkv_projection_backward -- --ignored --nocapture --test-threads=1:
+    pass, 1 test.
+  CUDA_DEVICE_INDEX=0 cargo test -q -p gpt2-nvfp4
+    --test block_attention_backward -- --ignored --nocapture --test-threads=1:
+    pass, 1 test.
+  Exact 1B FineWeb one-step allocation diagnostic:
+    target/runs/20260715_063227Z_fineweb_900s
+    val_loss=10.409149, train_elapsed_s=0.783, completed_steps=1.
+    This is diagnostic evidence only.
+  Required 1B FineWeb 30-second screen:
+    target/runs/20260715_063245Z_fineweb_30s
+    val_loss=7.032433, train_elapsed_s=30.734, completed_steps=38.
+  Required 1B FineWeb 900-second gate with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260715_063325Z_fineweb_900s
+    val_loss=5.075435, train_elapsed_s=900.298, completed_steps=1084.
+    All 22 metric samples had Finite=1 and Nonzero=1, with zero skipped
+    updates, loss-spike skips, grad-norm-spike skips, or nonfinite skips.
+measured_effect:
+  Against the parent 30-second screen target/runs/20260715_061111Z_fineweb_30s:
+    completed_steps: 38 -> 38.
+    train_elapsed_s: 30.722 -> 30.734 (+0.039%).
+    held-out val_loss: 7.032866 -> 7.032433 (-0.006%).
+  Against the parent 900-second gate target/runs/20260715_061153Z_fineweb_900s:
+    completed_steps: 1083 -> 1084 (+1, +0.092%).
+    average step time: 0.831647276s -> 0.830533210s
+      (-1.114066ms, -0.134%).
+    held-out val_loss: 5.076629 -> 5.075435 (-0.0235%).
+decision:
+  Keep and promote. This is a large exact capacity win with no runtime, loss,
+  or stability cost; the full gate is slightly better on both progress and
+  held-out loss. notes/sweep_baseline.env now points to this live-code run.
+  The new nominal 0.5% threshold is 4.152666ms per step.
+```
+
+```text
+date: 2026-07-15
+commit: no code candidate; rejected before edit
+experiment: Collapse forward KDA preparation and its two post-cumsum transforms.
+status: rejected_pre_edit_impact_gate
+analysis:
+  In target/ncu/20260715_1b_b2_tma_residual.csv, the forward-only call-order
+  split is 11.362336ms for 36 prepare_kda_forward_kernel launches, 5.844192ms
+  for 36 forward make_kda_qg_kneg_kernel launches, and 7.608864ms for 36
+  forward make_kda_kg_kpos_vbeta_kernel launches. That is 24.815392ms across
+  three forwards, or 8.271797ms per recurring training forward.
+decision:
+  Do not implement. The q/k normalization work in prepare is unavoidable and
+  already costs 3.787445ms per forward, leaving an absolute zero-cost-transform
+  ceiling of only 4.484352ms against the active 4.158236ms threshold. The
+  required decay exponentials, cumulative-g reads, and extra result stores
+  cannot credibly fit inside the 0.326116ms margin, so this fails the new
+  mathematical-impact rule before a code edit or rebuild.
+```
+
+```text
+date: 2026-07-15
+commit: accepted local jj commit after full gate
 experiment: Fuse c-proj and MLP-down residual addition into the TMA GEMM store and remove the FP32 projection scratch.
 status: accepted_900s_memory_capacity
 change:

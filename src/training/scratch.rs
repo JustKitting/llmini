@@ -26,8 +26,8 @@ impl BackwardScratchBuffers {
     }
 
     pub fn scratch(&mut self) -> Gpt2BackwardScratch<'_> {
-        let (down_error_t, down_weight_t, down_input_t, down_linear) = self.mlp_down.parts();
-        let (up_error_t, up_weight_t, up_input_t, up_linear) = self.mlp_up.parts();
+        let down_linear = self.mlp_down.parts();
+        let up_linear = self.mlp_up.parts();
         Gpt2BackwardScratch {
             final_head: self.final_head.final_head(),
             attention: BlockAttentionBackwardScratch {
@@ -36,12 +36,6 @@ impl BackwardScratchBuffers {
                 qkv: self.attention_qkv.qkv(),
             },
             mlp: MlpBackwardScratch {
-                down_error_t,
-                down_weight_t,
-                down_input_t,
-                up_error_t,
-                up_weight_t,
-                up_input_t,
                 down_linear,
                 up_linear,
             },

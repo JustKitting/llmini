@@ -5,9 +5,6 @@ use rust_kernels_cuda::linear_backward::LinearBackwardMsEdenScratch;
 use crate::backward::scratch_reborrow::reborrow_ms_eden;
 
 pub struct AttentionLinearScratch<'scratch> {
-    pub error_t: &'scratch mut DeviceBuffer<f32>,
-    pub weight_t: &'scratch mut DeviceBuffer<f32>,
-    pub input_t: &'scratch mut DeviceBuffer<f32>,
     pub linear: LinearBackwardMsEdenScratch<'scratch>,
 }
 
@@ -22,9 +19,6 @@ pub struct AttentionCoreScratch<'scratch> {
 impl<'scratch> AttentionLinearScratch<'scratch> {
     pub fn reborrow(&mut self) -> AttentionLinearScratch<'_> {
         AttentionLinearScratch {
-            error_t: &mut *self.error_t,
-            weight_t: &mut *self.weight_t,
-            input_t: &mut *self.input_t,
             linear: reborrow_ms_eden(&mut self.linear),
         }
     }

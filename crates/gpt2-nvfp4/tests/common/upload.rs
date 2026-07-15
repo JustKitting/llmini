@@ -38,8 +38,10 @@ pub fn attention_projection_tensors<'a>(
 ) -> AttentionProjectionTensors<'a> {
     AttentionProjectionTensors {
         qkv_weight: qkv_weight.mma(),
+        qkv_weight_device: qkv_weight.device(),
         qkv_bias: qkv_bias.device(),
         c_proj_weight: c_proj_weight.mma(),
+        c_proj_weight_device: c_proj_weight.device(),
         c_proj_bias: c_proj_bias.device(),
     }
 }
@@ -53,10 +55,12 @@ pub fn mlp_projection_tensors<'a>(
     MlpProjectionTensors {
         up: MlpUpTensors {
             weight: up_weight.mma(),
+            weight_device: up_weight.device(),
             bias: up_bias.device(),
         },
         down: MlpDownTensors {
             weight: down_weight.mma(),
+            weight_device: down_weight.device(),
             bias: down_bias.device(),
         },
     }
