@@ -44,6 +44,60 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 
 ```text
 date: 2026-07-15
+commit: rejected uncommitted candidate, code reverted
+experiment: Move MS-EDEN group-scalar scale correction into the half-warp leader.
+status: rejected_profile_gate
+change:
+  The shared MS-EDEN payload helper moved its two identical scale reciprocals,
+  initial E4M3 scale conversion, correction divide, and stochastic corrected-
+  scale rounding from all 16 group lanes into the group leader. The initial
+  reciprocal was broadcast to payload lanes. This removed 30 of 32 initial
+  reciprocal divides and 15 of 16 correction/rounding evaluations per group
+  while retaining the former payload and stored-scale arithmetic.
+numerics:
+  The leader executed the same operation sequence as before, and every lane
+  consumed the exact broadcast reciprocal bits. All focused pair, transpose,
+  fused-dbias, decoded-matmul, full linear-backward, and QKV-backward GPU
+  comparisons passed. Matched held-out val_loss was 8.661784 versus 8.661613
+  for accepted code (+0.002%).
+memory:
+  No allocation or buffer lifetime changed. PTXAS reported zero stack and
+  spills, identical resources for the main pair/transpose kernels, and one
+  extra register (28 -> 29) only in the rowwise transpose kernel.
+minimum_impact_gate:
+  The promoted baseline averages 900.302 / 1501 = 599.801466ms per step and
+  requires 2.999007ms per step. Kernels using the shared MS-EDEN payload path
+  occupied 655.660821ms over 10 steps, or 65.566082ms per step. Eliminating
+  nearly all repeated divides and leader-only scale correction established a
+  credible pre-edit ceiling far above the whole-step floor.
+focused_profile:
+  Accepted reciprocal:
+    target/nsys/20260715_four_six_group_reciprocal_hoist_candidate_reciprocal.nsys-rep
+    train elapsed: 5.879 seconds; held-out val_loss=8.661613.
+  Candidate:
+    target/nsys/20260715_ms_eden_group_scalar_hoist_candidate.nsys-rep
+    train elapsed: 5.880 seconds; held-out val_loss=8.661784.
+  Across the same 10 training steps plus endpoint validation:
+    affected MS-EDEN payload kernels: 655.660821 -> 661.773114ms,
+      regressing 0.611229ms per step / 0.932%.
+    all GPU kernels: 5984.189230 -> 5985.334473ms,
+      regressing 0.114524ms per step.
+    GPU memcpy plus memset: 73.213565 -> 72.922754ms, effectively flat.
+verification:
+  cargo fmt --all, git diff --check, and targeted cargo check: pass.
+  Fresh candidate cargo oxide build --arch sm_120a: pass.
+  Nine focused MS-EDEN/linear GPU tests across five binaries: pass.
+  Fresh accepted-source cargo oxide rebuild after rejection: pass.
+  All five MS-EDEN transpose/pair GPU comparisons pass after restoration.
+decision:
+  Reject before reciprocal profiling or the 30-second and 900-second gates.
+  Lane-local arithmetic was better hidden than the leader branch and shuffle
+  dependency; the candidate has no speed signal. The accepted source, PTX, and
+  host binary are restored, and only this factual rejection record is committed.
+```
+
+```text
+date: 2026-07-15
 commit: accepted local jj commit after full gate
 experiment: Broadcast four-six candidate reciprocals from each half-warp leader.
 status: accepted_900s
