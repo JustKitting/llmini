@@ -15,7 +15,7 @@ fn main() {
         .unwrap_or(4);
     let n_layer = env_usize("GPT2_N_LAYER")
         .or_else(|| baseline.usize("GPT2_N_LAYER"))
-        .unwrap_or(8);
+        .unwrap_or(16);
     let n_head = env_usize("GPT2_N_HEAD")
         .or_else(|| baseline.usize("GPT2_N_HEAD"))
         .unwrap_or(32);
@@ -25,8 +25,15 @@ fn main() {
 
     assert!(seq_len > 0, "GPT2_SEQ_LEN must be > 0");
     assert!(batch_size > 0, "GPT2_BATCH_SIZE must be > 0");
-    assert!(n_layer >= 4, "GPT2_N_LAYER must be >= 4");
-    assert!(n_head > 0, "GPT2_N_HEAD must be > 0");
+    assert!(
+        n_layer >= 16,
+        "GPT2_N_LAYER must be >= 16 for the 1B target"
+    );
+    assert!(
+        n_embd >= 2048,
+        "GPT2_N_EMBD must be >= 2048 for the 1B target"
+    );
+    assert!(n_head >= 32, "GPT2_N_HEAD must be >= 32 for the 1B target");
     assert_eq!(
         n_embd % n_head,
         0,

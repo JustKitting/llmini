@@ -1,13 +1,14 @@
 use super::{
-    AMUSE_BETA1_RANGE, AMUSE_RHO_RANGE, AURORA_BLOCKS, BATCH_SIZE, FACTOR_COUNT, LR_SCALE_RANGE,
-    N_EMBD, N_LAYER, START_RATIO_RANGE, WARMUP_STEPS_RANGE, valid_aurora_phases,
+    AMUSE_BETA1_RANGE, AMUSE_RHO_RANGE, BATCH_SIZE, FACTOR_COUNT, LR_SCALE_RANGE, N_EMBD, N_LAYER,
+    START_RATIO_RANGE, WARMUP_STEPS_RANGE, valid_aurora_blocks, valid_aurora_phases,
 };
 use crate::sweep::candidate::Candidate;
 
 pub(in crate::sweep) fn from_unit(unit: [f64; FACTOR_COUNT]) -> Candidate {
     let (n_embd, n_head) = choose_unit(&N_EMBD, unit[2]);
     let n_layer = choose_unit(&N_LAYER, unit[1]);
-    let aurora_blocks = choose_unit(&AURORA_BLOCKS, unit[4]);
+    let blocks = valid_aurora_blocks(n_layer);
+    let aurora_blocks = choose_unit(&blocks, unit[4]);
     let phases = valid_aurora_phases(n_layer * 4, aurora_blocks);
     Candidate {
         batch_size: choose_unit(&BATCH_SIZE, unit[0]),
@@ -56,11 +57,13 @@ mod tests {
         let high = from_unit([1.0; FACTOR_COUNT]);
 
         assert_eq!(low.batch_size, 4);
-        assert_eq!(low.n_layer, 4);
-        assert_eq!(low.n_embd, 1024);
+        assert_eq!(low.n_layer, 16);
+        assert_eq!(low.n_embd, 2048);
+        assert_eq!(low.n_head, 32);
         assert_eq!(high.batch_size, 32);
-        assert_eq!(high.n_layer, 8);
+        assert_eq!(high.n_layer, 16);
         assert_eq!(high.n_embd, 2048);
+        assert_eq!(high.n_head, 32);
         assert!(
             valid_aurora_phases(low.n_layer * 4, low.aurora_blocks).contains(&low.aurora_phases)
         );

@@ -9,7 +9,10 @@ pub(super) fn set(candidate: &mut Candidate, name: &str, high: bool) {
             candidate.n_embd = n_embd;
             candidate.n_head = n_head;
         }
-        "aurora_blocks" => candidate.aurora_blocks = level(&space::AURORA_BLOCKS, high),
+        "aurora_blocks" => {
+            let blocks = space::valid_aurora_blocks(candidate.n_layer);
+            candidate.aurora_blocks = level(&blocks, high);
+        }
         "aurora_phases" => set_phase(candidate, high),
         "ln_lr_scale" => candidate.lr_scale = log_level(space::LR_SCALE_RANGE, high),
         "ln_adam_lr_scale" => candidate.adam_lr_scale = log_level(space::LR_SCALE_RANGE, high),
@@ -25,6 +28,10 @@ pub(super) fn set(candidate: &mut Candidate, name: &str, high: bool) {
 }
 
 pub(super) fn fix_phase(candidate: &mut Candidate, rng: &mut SweepRng) {
+    let blocks = space::valid_aurora_blocks(candidate.n_layer);
+    if !blocks.contains(&candidate.aurora_blocks) {
+        candidate.aurora_blocks = rng.choose(&blocks);
+    }
     let phases = space::valid_aurora_phases(candidate.n_layer * 4, candidate.aurora_blocks);
     if !phases.contains(&candidate.aurora_phases) && !phases.is_empty() {
         candidate.aurora_phases = rng.choose(&phases);

@@ -9,7 +9,8 @@ const AURORA_PHASES: [usize; 4] = [2, 4, 8, 16];
 pub(in crate::sweep) fn random(rng: &mut SweepRng) -> Candidate {
     let (n_embd, n_head) = rng.choose(&N_EMBD);
     let n_layer = rng.choose(&N_LAYER);
-    let aurora_blocks = rng.choose(&AURORA_BLOCKS);
+    let blocks = valid_aurora_blocks(n_layer);
+    let aurora_blocks = rng.choose(&blocks);
     let phases = valid_aurora_phases(n_layer * 4, aurora_blocks);
     Candidate {
         batch_size: rng.choose(&BATCH_SIZE),
@@ -26,6 +27,13 @@ pub(in crate::sweep) fn random(rng: &mut SweepRng) -> Candidate {
         amuse_beta1: random_f64_range(rng, AMUSE_BETA1_RANGE),
         amuse_rho: random_f64_range(rng, AMUSE_RHO_RANGE),
     }
+}
+
+pub(in crate::sweep) fn valid_aurora_blocks(n_layer: usize) -> Vec<usize> {
+    AURORA_BLOCKS
+        .into_iter()
+        .filter(|blocks| !valid_aurora_phases(n_layer * 4, *blocks).is_empty())
+        .collect()
 }
 
 pub(in crate::sweep) fn valid_aurora_phases(slots: usize, blocks: usize) -> Vec<usize> {

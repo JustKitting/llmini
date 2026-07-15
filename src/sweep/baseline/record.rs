@@ -1,9 +1,6 @@
 use std::path::PathBuf;
 
-use crate::sweep::{
-    candidate::{Candidate, MIN_N_LAYER},
-    history::Trial,
-};
+use crate::sweep::{candidate::Candidate, history::Trial};
 
 #[derive(Clone)]
 pub(super) struct Record {
@@ -35,7 +32,7 @@ impl Record {
     }
 
     pub(super) fn from_trial(trial: &Trial) -> Option<Self> {
-        if trial.status != "success" || trial.candidate.n_layer < MIN_N_LAYER {
+        if trial.status != "success" || !trial.candidate.meets_model_floor() {
             return None;
         }
         Some(Self {

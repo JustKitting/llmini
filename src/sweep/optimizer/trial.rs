@@ -1,10 +1,6 @@
 use std::collections::HashSet;
 
-use crate::sweep::{
-    candidate::{Candidate, MIN_N_LAYER},
-    config::SweepConfig,
-    history::Trial,
-};
+use crate::sweep::{candidate::Candidate, config::SweepConfig, history::Trial};
 
 const NAN_PENALTY_LOSS: f64 = 1.0e6;
 const FAILED_TRIAL_PENALTY_LOSS: f64 = 5.0e5;
@@ -18,13 +14,13 @@ fn best_screen_candidate(trials: &[Trial], config: &SweepConfig) -> Option<Candi
         .iter()
         .filter_map(|trial| {
             let loss = trial.screen_val_loss?;
-            if !loss.is_finite() || trial.candidate.n_layer < MIN_N_LAYER {
+            if !loss.is_finite() || !trial.candidate.meets_model_floor() {
                 return None;
             }
             if !time_budget_matches(trial.screen_elapsed_s, config.screen_max_seconds) {
                 return None;
             }
-            Some((loss, trial.candidate.with_min_layers()))
+            Some((loss, trial.candidate.with_model_floor()))
         })
         .min_by(|a, b| a.0.total_cmp(&b.0))
         .map(|(_, candidate)| candidate)
@@ -35,13 +31,13 @@ fn best_full_candidate(trials: &[Trial], config: &SweepConfig) -> Option<Candida
         .iter()
         .filter_map(|trial| {
             let loss = trial.val_loss?;
-            if !loss.is_finite() || trial.candidate.n_layer < MIN_N_LAYER {
+            if !loss.is_finite() || !trial.candidate.meets_model_floor() {
                 return None;
             }
             if !time_budget_matches(trial.elapsed_s, config.max_seconds) {
                 return None;
             }
-            Some((loss, trial.candidate.with_min_layers()))
+            Some((loss, trial.candidate.with_model_floor()))
         })
         .min_by(|a, b| a.0.total_cmp(&b.0))
         .map(|(_, candidate)| candidate)
@@ -55,7 +51,7 @@ fn time_budget_matches(elapsed_s: Option<f64>, target_s: f64) -> bool {
 }
 
 pub(super) fn observed_loss(trial: &Trial) -> Option<f64> {
-    if trial.candidate.n_layer < MIN_N_LAYER {
+    if !trial.candidate.meets_model_floor() {
         return None;
     }
     if trial.status == "dry_run" {

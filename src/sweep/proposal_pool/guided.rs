@@ -1,8 +1,8 @@
 use super::super::{
     candidate::{Candidate, valid_aurora_phases},
     candidate_space::{
-        self, AMUSE_BETA1_RANGE, AMUSE_RHO_RANGE, AURORA_BLOCKS, BATCH_SIZE, LR_SCALE_RANGE,
-        N_EMBD, N_LAYER, START_RATIO_RANGE, WARMUP_STEPS_RANGE,
+        self, AMUSE_BETA1_RANGE, AMUSE_RHO_RANGE, BATCH_SIZE, LR_SCALE_RANGE, N_EMBD, N_LAYER,
+        START_RATIO_RANGE, WARMUP_STEPS_RANGE,
     },
     rng::SweepRng,
 };
@@ -12,7 +12,8 @@ pub fn candidate(rng: &mut SweepRng, direction: &Direction, jitter: bool) -> Can
     let batch_size = pick(&BATCH_SIZE, direction.batch_size, rng, jitter);
     let n_layer = pick(&N_LAYER, direction.n_layer, rng, jitter);
     let (n_embd, n_head) = pick(&N_EMBD, direction.n_embd, rng, jitter);
-    let aurora_blocks = pick(&AURORA_BLOCKS, direction.aurora_blocks, rng, jitter);
+    let blocks = candidate_space::valid_aurora_blocks(n_layer);
+    let aurora_blocks = pick(&blocks, direction.aurora_blocks, rng, jitter);
     let phases = valid_aurora_phases(n_layer * 4, aurora_blocks);
     Candidate {
         batch_size,

@@ -18,6 +18,21 @@ Training loss, one-step runs, 100-step runs, tokens/s, and isolated profiler
 timings are diagnostics. They do not prove that an optimization should be
 promoted.
 
+## Model-Size Invariant
+
+The active target is the approximately 1B-parameter shape:
+
+```text
+GPT2_N_LAYER=16
+GPT2_N_EMBD=2048
+GPT2_N_HEAD=32
+```
+
+Kernel, runtime, optimizer, dataset, and tokenizer experiments must not reduce
+the model below 16 layers. A smaller shape may be used only for an explicitly
+labelled diagnostic; its timing or loss can never become the active baseline,
+promotion evidence, or a commit gate for the 1B target.
+
 ## Kernel/Runtime Acceptance Rule
 
 The current kernel/runtime acceptance rule is:
@@ -41,8 +56,9 @@ NextLat is part of the active model path. Do not protect or compare against
 pre-NextLat validation results when evaluating current NextLat work.
 
 `notes/sweep_baseline.env` is the mutable baseline for the active model lineage.
-For current work, that means the best accepted NextLat 900-second SYNTH result,
-not the best historical result from an older architecture.
+For current work, that means a 900-second result from the active 16-layer
+NextLat model, current dataset, and current tokenizer, not a result from an
+older or smaller architecture.
 
 ## Sweep Rule
 

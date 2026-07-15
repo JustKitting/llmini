@@ -17,7 +17,7 @@ fn guided_pool_uses_main_effect_direction() {
     assert_eq!(pool[0].source, "guided");
     assert!(pool[0].candidate.batch_size > center.batch_size);
     assert!(pool[0].candidate.batch_size < 32);
-    assert_eq!(pool[0].candidate.n_layer, 8);
+    assert_eq!(pool[0].candidate.n_layer, 16);
     assert!(pool.iter().any(|candidate| candidate.source == "factorial"));
     assert!(pool.iter().any(|candidate| candidate.source == "local"));
     assert!(pool.iter().any(|candidate| candidate.source == "variance"));

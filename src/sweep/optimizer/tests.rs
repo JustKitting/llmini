@@ -11,7 +11,7 @@ use crate::sweep::{
 #[test]
 fn marks_build_shape_infeasible_after_failed_run() {
     let config = config();
-    let candidate = candidate(32, 8, 2048, 16, 180, 1.0);
+    let candidate = candidate(32, 16, 2048, 16, 180, 1.0);
     let shapes = infeasible_build_shapes(
         &[trial_with_status(candidate.clone(), "failed_run")],
         &config,
@@ -24,7 +24,7 @@ fn marks_build_shape_infeasible_after_failed_run() {
 fn random_candidate_skips_known_infeasible_build_shape() {
     let mut rng = SweepRng::new(0x4750_5432);
     let mut infeasible = HashSet::new();
-    let bad = candidate(32, 8, 2048, 16, 180, 1.0);
+    let bad = candidate(32, 16, 2048, 16, 180, 1.0);
     infeasible.insert(bad.build_key());
 
     for _ in 0..64 {
@@ -36,17 +36,17 @@ fn random_candidate_skips_known_infeasible_build_shape() {
 #[test]
 fn local_center_uses_best_timed_screen_result() {
     let config = config();
-    let best = screen_trial(candidate(16, 4, 1024, 8, 180, 2.309_529), 6.340_408);
-    let b32 = screen_trial(candidate(32, 4, 2048, 16, 180, 2.013_4), 7.034_256);
+    let best = screen_trial(candidate(16, 16, 2048, 16, 180, 2.309_529), 6.340_408);
+    let b32 = screen_trial(candidate(32, 16, 2048, 16, 180, 2.013_4), 7.034_256);
     let stale_longer_b32 = Trial {
         screen_elapsed_s: Some(180.0),
         screen_val_loss: Some(5.129_354),
-        ..screen_trial(candidate(32, 4, 1024, 16, 180, 1.984_246), 5.129_354)
+        ..screen_trial(candidate(32, 16, 2048, 16, 180, 1.984_246), 5.129_354)
     };
     let incomplete = Trial {
         screen_elapsed_s: Some(8.0),
         screen_val_loss: Some(5.0),
-        ..screen_trial(candidate(8, 4, 1024, 8, 120, 1.5), 5.0)
+        ..screen_trial(candidate(8, 16, 2048, 16, 120, 1.5), 5.0)
     };
 
     let center =
@@ -68,6 +68,7 @@ fn candidate(
 ) -> Candidate {
     Candidate {
         n_embd,
+        n_head: if n_embd >= 2048 { 32 } else { 16 },
         aurora_phases,
         aurora_blocks,
         lr_scale,

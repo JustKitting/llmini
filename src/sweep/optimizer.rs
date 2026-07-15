@@ -25,7 +25,7 @@ pub fn propose(
 ) -> Proposal {
     let infeasible_builds = infeasible_build_shapes(trials, config);
     if let Some(candidate) = baseline {
-        let candidate = candidate.with_min_layers();
+        let candidate = candidate.with_model_floor();
         if !seen.contains(&candidate.key()) && !infeasible_builds.contains(&candidate.build_key()) {
             return Proposal::single("baseline", candidate, analysis, config);
         }
@@ -45,7 +45,7 @@ pub fn propose(
     }
 
     let center =
-        best_local_center(trials, config).or_else(|| baseline.map(Candidate::with_min_layers));
+        best_local_center(trials, config).or_else(|| baseline.map(Candidate::with_model_floor));
     let observed = trials
         .iter()
         .map(|trial| trial.candidate.clone())

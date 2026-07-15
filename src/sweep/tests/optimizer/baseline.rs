@@ -1,4 +1,7 @@
-use crate::sweep::{candidate::MIN_N_LAYER, chain};
+use crate::sweep::{
+    candidate::{MIN_N_EMBD, MIN_N_HEAD, MIN_N_LAYER},
+    chain,
+};
 
 use super::super::fixtures::{candidate, config, measured_candidate, trial};
 use super::{propose, propose_with_seen};
@@ -11,9 +14,9 @@ fn starts_fresh_sweep_from_best_measured_baseline() {
 
     assert_eq!(baseline.batch_size, 8);
     assert_eq!(baseline.n_layer, MIN_N_LAYER);
-    assert_eq!(baseline.n_embd, 1024);
-    assert_eq!(baseline.n_head, 16);
-    assert_eq!(baseline.aurora_phases, 4);
+    assert_eq!(baseline.n_embd, MIN_N_EMBD);
+    assert_eq!(baseline.n_head, MIN_N_HEAD);
+    assert_eq!(baseline.aurora_phases, 16);
     assert_eq!(baseline.aurora_blocks, 80);
     assert_eq!(baseline.lr_scale, 1.014_040);
     assert_eq!(baseline.adam_lr_scale, 1.980_467);
@@ -36,4 +39,6 @@ fn measured_baseline_is_not_rerun_as_next_candidate() {
 
     assert_ne!(proposal.candidate.key(), baseline_candidate.key());
     assert!(proposal.candidate.n_layer >= MIN_N_LAYER);
+    assert!(proposal.candidate.n_embd >= MIN_N_EMBD);
+    assert!(proposal.candidate.n_head >= MIN_N_HEAD);
 }

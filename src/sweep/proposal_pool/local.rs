@@ -24,7 +24,8 @@ pub fn candidates(
             candidate.batch_size = nearby_batch(center.batch_size, rng);
         }
         if attempts % 8 == 7 {
-            candidate.aurora_blocks = rng.choose(&space::AURORA_BLOCKS);
+            let blocks = space::valid_aurora_blocks(candidate.n_layer);
+            candidate.aurora_blocks = rng.choose(&blocks);
             candidate.aurora_phases = nearby_phase(&candidate, rng);
         }
         candidate.lr_scale = jitter_log(center.lr_scale, rng, 0.35);

@@ -2,9 +2,9 @@ use crate::sweep::candidate::Candidate;
 
 pub(in crate::sweep) fn candidate(batch_size: usize, n_layer: usize, lr_scale: f64) -> Candidate {
     Candidate {
-        n_embd: 1536,
-        n_head: 12,
-        aurora_phases: 8,
+        n_embd: 2048,
+        n_head: 32,
+        aurora_phases: 16,
         aurora_blocks: 180,
         lr_scale,
         warmup_steps: 5,

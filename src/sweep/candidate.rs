@@ -1,6 +1,8 @@
 use super::{candidate_space, fmt, rng::SweepRng};
 
-pub const MIN_N_LAYER: usize = 4;
+pub const MIN_N_LAYER: usize = 16;
+pub const MIN_N_EMBD: usize = 2048;
+pub const MIN_N_HEAD: usize = 32;
 pub(super) use candidate_space::valid_aurora_phases;
 
 #[derive(Clone, Debug)]
@@ -25,12 +27,18 @@ impl Candidate {
         candidate_space::random(rng)
     }
 
-    pub fn with_min_layers(&self) -> Self {
-        if self.n_layer >= MIN_N_LAYER {
+    pub fn meets_model_floor(&self) -> bool {
+        self.n_layer >= MIN_N_LAYER && self.n_embd >= MIN_N_EMBD && self.n_head >= MIN_N_HEAD
+    }
+
+    pub fn with_model_floor(&self) -> Self {
+        if self.meets_model_floor() {
             return self.clone();
         }
 
-        let n_layer = MIN_N_LAYER;
+        let n_layer = self.n_layer.max(MIN_N_LAYER);
+        let n_embd = self.n_embd.max(MIN_N_EMBD);
+        let n_head = self.n_head.max(MIN_N_HEAD);
         let phases = candidate_space::valid_aurora_phases(n_layer * 4, self.aurora_blocks);
         let aurora_phases = phases
             .iter()
@@ -40,6 +48,8 @@ impl Candidate {
             .unwrap_or(self.aurora_phases);
         Self {
             n_layer,
+            n_embd,
+            n_head,
             aurora_phases,
             ..self.clone()
         }

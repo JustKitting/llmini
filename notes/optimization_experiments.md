@@ -33,9 +33,75 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 
 ```text
 date: 2026-07-15
+commit: current working change after lsvnmzqy
+experiment: Restore the fixed 1B model invariant and establish the first FineWeb baseline at that size.
+status: accepted_1b_fineweb_baseline
+model_invariant:
+  The optimization target is fixed at GPT2_N_LAYER=16,
+  GPT2_N_EMBD=2048, and GPT2_N_HEAD=32. This is approximately 964376960
+  effective parameters and 984571904 allocated parameter slots. Kernel,
+  runtime, optimizer, dataset, and tokenizer experiments may not reduce the
+  model below 16 layers. Smaller shapes are diagnostic-only and cannot become
+  promotion evidence or an active baseline.
+correction:
+  The earlier FineWeb run target/runs/20260715_015056Z_fineweb_900s was an
+  accidental 8-layer build on the wrong branch lineage. Its 1291-step,
+  val_loss=4.709991 result remains historical diagnostic data only and is not
+  a valid baseline for the 1B goal.
+implementation:
+  Restored the build default and baseline shape to 16 layers. Raised the sweep
+  minimum to 16, restricted the layer search space to 16, filtered Aurora
+  cooperative block choices to shapes with a valid phase count, and added an
+  explicit model-size invariant to notes/optimization_rules.md.
+verification:
+  cargo fmt --all --check: pass.
+  cargo test -q --bin rust-kernels: pass, 4 tests.
+  cargo test -q --bin sweep: pass, 45 tests after replacing stale undersized
+    promotion fixtures with 16-layer fixtures.
+  Fresh cargo oxide build --arch sm_120a: pass.
+memory_fit:
+  The 16-layer B4/sequence-4096 FineWeb screen failed before step 0 with
+  DriverError(2, "out of memory"):
+    target/runs/20260715_022856Z_fineweb_30s
+  The model size and sequence length remained fixed. Rebuilding at B2 fit and
+  produced run metadata confirming 16 layers, d_model=2048, 32 heads, and
+  sequence length 4096.
+diagnostic:
+  One-step B2 launch only:
+    target/runs/20260715_022929Z_fineweb_60s
+    completed_steps=1, train_elapsed_s=0.806, val_loss=10.409149.
+screen:
+  CUDA_DEVICE_INDEX=0 TRAIN_DATASET=fineweb TRAIN_MAX_SECONDS=30
+    TRAIN_LOG_INTERVAL=50 ./target/release/rust-kernels
+  target/runs/20260715_022937Z_fineweb_30s
+  completed_steps=37, train_elapsed_s=30.394, val_loss=7.052975.
+full_gate:
+  CUDA_DEVICE_INDEX=0 TRAIN_DATASET=fineweb TRAIN_MAX_SECONDS=900
+    TRAIN_LOG_INTERVAL=50 ./target/release/rust-kernels
+  target/runs/20260715_023017Z_fineweb_900s
+  completed_steps=1065, train_elapsed_s=900.514, val_loss=5.087001.
+  All 22 high-fidelity samples reported Finite=1, Nonzero=1,
+  Update_skipped=0, Skip_non_finite=0, Skip_loss_spike=0, and
+  Skip_grad_norm_spike=0. The run processed 8724480 training tokens and
+  averaged 0.845553 seconds/step.
+tokenizer_next:
+  Use this exact 16-layer B2 FineWeb/Llama-2 result as the control for planned
+  tokenizer experiments. Tokenizer variants must retain the 16-layer model
+  floor and receive their own matched 30s/900s baseline. Compare wall-clock
+  loss within each tokenizer plus tokenizer-neutral bits-per-byte or
+  bits-per-character, token throughput, vocabulary/head cost, and downstream
+  evaluation; do not rank different tokenizers from raw per-token CE alone.
+decision:
+  Promote this run to notes/sweep_baseline.env as the active 1B FineWeb
+  baseline. Continue kernel work and later tokenizer trials from this shape;
+  never promote an undersized model.
+```
+
+```text
+date: 2026-07-15
 commit: lsvnmzqy (FineWeb baseline on accepted 7b426db8 kernel state)
 experiment: Add a tokenizer-namespaced FineWeb path and make it the short-term optimization baseline.
-status: accepted_dataset_baseline
+status: accepted_data_path_8_layer_measurement_invalid_for_1b_baseline
 purpose:
   Replace SYNTH with natural-language data while comparing training behavior
   with modded-NanoGPT. Keep the existing Llama-2 tokenizer and 32000-wide tied
@@ -81,21 +147,25 @@ curve:
   significant SYNTH-distribution contribution to the earlier tail, without
   claiming that FineWeb optimization is fully solved.
 nanogpt_context:
-  This model has approximately 535939264 effective parameters and 546036736
-  allocated parameter slots. At 21151744 tokens, the run exposed only 0.0395
-  tokens per effective parameter. The historical modded-NanoGPT optimizer run
-  used 2673868800 tokens for a nominal 124M-parameter model, or 21.56 tokens
-  per parameter: approximately 126.4 times more total tokens and 546 times
-  more token exposure per parameter. Our complete 900-second run therefore
-  corresponds to only about step 40 of its 524288-token steps; its first
-  post-start validation at step 125 had already seen 65536000 tokens, and its
-  schedule cooldown did not begin until roughly 1.91B tokens.
+  That accidental 8-layer build had approximately 535939264 effective
+  parameters and 546036736 allocated parameter slots. At 21151744 tokens, the
+  run exposed only 0.0395 tokens per effective parameter. These figures are
+  retained only to explain why the run was invalidated; they do not describe
+  the restored 1B baseline. The historical modded-NanoGPT optimizer run used
+  2673868800 tokens for a nominal 124M-parameter model, or 21.56 tokens per
+  parameter. The 8-layer run's complete 900 seconds corresponded to only about
+  step 40 of its 524288-token steps; its first post-start validation at step
+  125 had already seen 65536000 tokens, and its schedule cooldown did not begin
+  until roughly 1.91B tokens.
 decision:
-  Accept FineWeb as the active short-term baseline and point
-  notes/sweep_baseline.env at this gate. Do not compare its absolute validation
-  loss with the former SYNTH baseline; future speed candidates must compare
-  against this FineWeb run with the same Llama-2 tokenizer and high-fidelity
-  TRAIN_LOG_INTERVAL=50 metric sampling.
+  Accept the tokenizer-namespaced FineWeb data path, but do not use this
+  8-layer run as the active baseline for the intended 1B target. Restore and
+  rebuild the 16-layer, d_model=2048 model and establish a new FineWeb 30s/900s
+  baseline before promoting further work. Kernel-only candidates must keep the
+  dataset and tokenizer fixed against that matched baseline. Separately, the
+  requested tokenizer experiments remain an intended experiment family; each
+  tokenizer/model-head combination needs its own matched baseline and should
+  be compared with tokenizer-neutral metrics as well as held-out loss.
 ```
 
 ```text
