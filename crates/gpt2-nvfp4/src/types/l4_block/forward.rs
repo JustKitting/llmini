@@ -23,7 +23,6 @@ impl Gpt2BlockWeights {
         let tma_wide_input_scale_packed = args.tma_wide_input_scale_packed;
         let tma_weight_scale_packed = args.tma_weight_scale_packed;
         let tma_weight_bytes_padded = args.tma_weight_bytes_padded;
-        let tma_residual = args.tma_residual;
         let mut tape = args.tape;
 
         let ln_1 =
@@ -41,7 +40,6 @@ impl Gpt2BlockWeights {
             tma_module: args.tma_module,
             tma_scale_pack: args.tma_scale_pack,
             tma_pad: args.tma_pad,
-            projection_postop: args.projection_postop,
             quant_module: args.quant_module,
             input_nvfp4: hidden_nvfp4.reborrow(),
             tc_scratch: args.attention_tc_scratch,
@@ -49,7 +47,6 @@ impl Gpt2BlockWeights {
             tma_input_scale_packed: &mut *tma_input_scale_packed,
             tma_weight_scale_packed: &mut *tma_weight_scale_packed,
             tma_weight_bytes_padded: &mut *tma_weight_bytes_padded,
-            tma_residual: &mut *tma_residual,
             projections: args.projections,
             qkv: &mut *qkv,
             attention_log_sum_exp: &mut *attention_log_sum_exp,
@@ -72,7 +69,6 @@ impl Gpt2BlockWeights {
             module: args.mlp_module,
             tma_module: args.tma_module,
             tma_scale_pack: args.tma_scale_pack,
-            projection_postop: args.projection_postop,
             quant_module: args.quant_module,
             scratch: MlpScratch {
                 input_nvfp4: hidden_nvfp4.reborrow(),
@@ -83,7 +79,6 @@ impl Gpt2BlockWeights {
                 tma_input_scale_packed: &mut *tma_input_scale_packed,
                 tma_wide_input_scale_packed: &mut *tma_wide_input_scale_packed,
                 tma_weight_scale_packed: &mut *tma_weight_scale_packed,
-                tma_residual: &mut *tma_residual,
             },
             projections: args.mlp,
             hidden,

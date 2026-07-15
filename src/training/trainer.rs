@@ -1,3 +1,4 @@
+use cuda_core::sys;
 use gpt2_nvfp4::{GPT2_SEQ_LEN, Gpt2, Gpt2Rng};
 
 use super::{ReusableTokenBatch, TokenBatch, buffers, runtime::Runtime};
@@ -21,6 +22,20 @@ impl Trainer {
 
         let uploaded = UploadedModel::new(stream, weights)?;
         let buffers = buffers::TrainBuffers::new(stream, &runtime, &uploaded)?;
+
+        if std::env::var_os("TRAIN_REPORT_MEMORY").is_some() {
+            stream.synchronize()?;
+            let mut free_bytes = 0usize;
+            let mut total_bytes = 0usize;
+            let result = unsafe { sys::cuMemGetInfo_v2(&mut free_bytes, &mut total_bytes) };
+            if result != 0 {
+                return Err(cuda_core::DriverError(result).into());
+            }
+            println!(
+                "device_memory total_bytes={total_bytes} free_bytes={free_bytes} used_bytes={}",
+                total_bytes - free_bytes
+            );
+        }
 
         Ok(Self {
             uploaded,

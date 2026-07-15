@@ -1,5 +1,4 @@
 use cuda_core::DriverError;
-use rust_kernels_cuda::projection_postop::ProjectionResidualArgs;
 
 use super::tensors::MlpForwardArgs;
 use crate::types::HiddenStateDevice;
@@ -98,26 +97,17 @@ pub(super) fn forward<'a, 'scratch>(
         crate::GPT2_EMBEDDING_DIM,
         args.scratch.tma_descriptors,
     )?;
-    args.tma_module
-        .gemm_tma_nvfp4_rowwise_a_scale_and_global_scale_buffer(
-            hidden.stream,
-            args.scratch.tma_descriptors,
-            args.scratch.tma_residual,
-            hidden.row_count,
-            crate::GPT2_MLP_DIM,
-            crate::GPT2_EMBEDDING_DIM,
-            input.global_scales,
-            args.projections.down.weight_device.global_scale,
-        )?;
-    args.projection_postop
-        .residual_add(ProjectionResidualArgs {
-            stream: hidden.stream,
-            raw: &*args.scratch.tma_residual,
-            bias: args.projections.down.bias,
-            residual: &mut *hidden.residual,
-            rows: hidden.row_count,
-            cols: crate::GPT2_EMBEDDING_DIM,
-        })?;
+    args.tma_module.gemm_tma_nvfp4_rowwise_a_scale_residual(
+        hidden.stream,
+        args.scratch.tma_descriptors,
+        &mut *hidden.residual,
+        args.projections.down.bias,
+        hidden.row_count,
+        crate::GPT2_MLP_DIM,
+        crate::GPT2_EMBEDDING_DIM,
+        input.global_scales,
+        args.projections.down.weight_device.global_scale,
+    )?;
 
     Ok(hidden)
 }

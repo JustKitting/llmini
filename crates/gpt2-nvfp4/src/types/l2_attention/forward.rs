@@ -3,7 +3,6 @@ use rust_kernels_cuda::attention::{ApplyRopeArgs, CausalAttentionTcArgs};
 use rust_kernels_cuda::nvfp4_tma_matmul::{
     pad::U4RowPadArgs, scale_layout::sm120_scale_padded_mn_extent,
 };
-use rust_kernels_cuda::projection_postop::ProjectionResidualArgs;
 
 use super::tensors::AttentionForwardArgs;
 use crate::AttentionDims;
@@ -161,26 +160,17 @@ pub(super) fn forward<'a, 'scratch>(
         dims.embedding_dim,
         args.tma_descriptors,
     )?;
-    args.tma_module
-        .gemm_tma_nvfp4_rowwise_a_scale_and_global_scale_buffer(
-            hidden.stream,
-            args.tma_descriptors,
-            args.tma_residual,
-            hidden.row_count,
-            dims.embedding_dim,
-            dims.embedding_dim,
-            input.global_scales,
-            args.projections.c_proj_weight_device.global_scale,
-        )?;
-    args.projection_postop
-        .residual_add(ProjectionResidualArgs {
-            stream: hidden.stream,
-            raw: &*args.tma_residual,
-            bias: args.projections.c_proj_bias,
-            residual: &mut *hidden.residual,
-            rows: hidden.row_count,
-            cols: dims.embedding_dim,
-        })?;
+    args.tma_module.gemm_tma_nvfp4_rowwise_a_scale_residual(
+        hidden.stream,
+        args.tma_descriptors,
+        &mut *hidden.residual,
+        args.projections.c_proj_bias,
+        hidden.row_count,
+        dims.embedding_dim,
+        dims.embedding_dim,
+        input.global_scales,
+        args.projections.c_proj_weight_device.global_scale,
+    )?;
 
     Ok(hidden)
 }

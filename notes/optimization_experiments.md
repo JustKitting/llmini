@@ -34,6 +34,74 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-15
 commit: accepted local jj commit after full gate
+experiment: Fuse c-proj and MLP-down residual addition into the TMA GEMM store and remove the FP32 projection scratch.
+status: accepted_900s_memory_capacity
+change:
+  Added a dedicated nvfp4_gemm_tma_residual_kernel for attention c-proj and
+  MLP-down. Its store applies the NVFP4 bias and accumulates directly into the
+  live residual buffer, preserving the old explicit FP32 product rounding,
+  bias-add rounding, and residual FMA boundary. Removed the now-unused
+  HiddenState-sized FP32 residual_projection scratch and the production
+  ProjectionPostOpModule plumbing. Added opt-in TRAIN_REPORT_MEMORY reporting
+  after all training buffers are allocated so capacity candidates can be
+  compared in exact bytes without changing normal-run logging.
+memory_capacity_gate:
+  Matched one-step allocation probes after fresh builds reported:
+    baseline target/runs/20260715_060242Z_fineweb_900s:
+      used_bytes=76014616576.
+    candidate target/runs/20260715_060740Z_fineweb_900s:
+      used_bytes=75947507712.
+  The exact reduction is 67108864 bytes (64 MiB), equal to one full
+  8192x2048 FP32 HiddenState buffer. This adds capacity headroom, but does not
+  by itself establish that a larger batch fits or increases tokens/s.
+verification:
+  cargo fmt --all: pass.
+  cargo fmt --all --check: pass.
+  cargo check -q: pass.
+  cargo oxide build --arch sm_120a: pass; fresh device and host rebuild.
+  Updated the residual TMA equivalence test to exercise the fused kernel.
+  CUDA_DEVICE_INDEX=0 cargo test -q -p rust-kernels-cuda --test projection_tma
+    -- --ignored --nocapture --test-threads=1: pass, 5 tests.
+  Focused Nsight Compute duration profile:
+    target/ncu/20260715_1b_b2_tma_residual.ncu-rep
+    target/ncu/20260715_1b_b2_tma_residual.csv
+  Exact 1B FineWeb one-step NCU diagnostic:
+    target/runs/20260715_060812Z_fineweb_60s
+    val_loss=10.409149, completed_steps=1. This is diagnostic evidence only.
+  Required 1B FineWeb 30-second screen:
+    target/runs/20260715_061111Z_fineweb_30s
+    val_loss=7.032866, train_elapsed_s=30.722, completed_steps=38.
+  Required 1B FineWeb 900-second gate with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260715_061153Z_fineweb_900s
+    val_loss=5.076629, train_elapsed_s=900.674, completed_steps=1083.
+    All 22 metric samples had Finite=1 and Nonzero=1, with zero skipped
+    updates, loss-spike skips, grad-norm-spike skips, or nonfinite skips.
+measured_effect:
+  In the focused profile, the old generic TMA-plus-residual-postop family took
+  37.116320ms across three forwards; the fused family took 44.723296ms. The
+  7.606976ms aggregate regression is 2.535659ms per step, about 0.306% of the
+  active baseline and below the 0.5% meaningful-step threshold.
+  Against the 30-second baseline target/runs/20260715_054114Z_fineweb_30s:
+    completed_steps: 38 -> 38.
+    train_elapsed_s: 30.642 -> 30.722 (+0.261%).
+    held-out val_loss: 7.032433 -> 7.032866 (+0.006%).
+  Against the 900-second baseline target/runs/20260715_054157Z_fineweb_900s:
+    completed_steps: 1086 -> 1083 (-3, -0.276%).
+    nominal average step time: 0.828729282s -> 0.831647276s
+      (+2.917994ms, +0.352%).
+    held-out val_loss: 5.071823 -> 5.076629 (+0.0948%).
+decision:
+  Keep and promote under the explicit memory-capacity rule. The exact 64 MiB
+  reduction preserves fixed-1B math and clean stability; the full-gate runtime
+  regression remains below the 0.5% significance floor and validation loss is
+  well inside the roughly 1% tolerance. notes/sweep_baseline.env now points to
+  the accepted live-code run. The new nominal 0.5% threshold is 4.158236ms per
+  step.
+```
+
+```text
+date: 2026-07-15
+commit: accepted local jj commit after full gate
 experiment: Fuse QKV projection bias into a specialized padded-output TMA GEMM store.
 status: accepted_900s
 change:

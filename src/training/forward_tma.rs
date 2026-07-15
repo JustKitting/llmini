@@ -1,5 +1,5 @@
 use cuda_core::{CudaStream, DeviceBuffer, DriverError};
-use gpt2_nvfp4::{GPT2_MLP, GPT2_N_EMBD, GPT2_QKV, GPT2_TOKEN_ROWS, GPT2_VOCAB_SIZE, HiddenState};
+use gpt2_nvfp4::{GPT2_MLP, GPT2_N_EMBD, GPT2_QKV, GPT2_TOKEN_ROWS, GPT2_VOCAB_SIZE};
 use rust_kernels_cuda::nvfp4_tma_matmul::{
     scale_layout::{sm120_scale_packed_len, sm120_scale_padded_mn_extent},
     tma::TmaNvfp4DeviceScaleDescriptors,
@@ -10,7 +10,6 @@ pub(super) struct ForwardTmaBuffers {
     pub(super) wide_input_scales: DeviceBuffer<u8>,
     pub(super) weight_scales: DeviceBuffer<u8>,
     pub(super) weight_bytes_padded: DeviceBuffer<u8>,
-    pub(super) residual_projection: DeviceBuffer<f32>,
     pub(super) descriptors: TmaNvfp4DeviceScaleDescriptors,
 }
 
@@ -31,7 +30,6 @@ impl ForwardTmaBuffers {
                 stream,
                 sm120_scale_padded_mn_extent(GPT2_QKV) * GPT2_N_EMBD / 2,
             )?,
-            residual_projection: DeviceBuffer::zeroed(stream, HiddenState::LEN)?,
             descriptors: TmaNvfp4DeviceScaleDescriptors {
                 a: DeviceBuffer::zeroed(stream, 1)?,
                 b: DeviceBuffer::zeroed(stream, 1)?,

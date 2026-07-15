@@ -8,7 +8,7 @@ use cuda_device::{
     tma::TmaDescriptor,
 };
 
-use crate::float_ptx::max_f32;
+use crate::float_ptx::{fma_f32, max_f32};
 use crate::nvfp4::nvfp4_value;
 
 use super::cute::{
@@ -630,6 +630,59 @@ fn store_acc_affine_scaled(
 }
 
 #[inline(always)]
+fn store_acc_residual_scaled(
+    acc: [f32; 4],
+    tile: CtaTile,
+    m_repeat: u32,
+    n_repeat: u32,
+    params: Nvfp4GemmParams,
+    scale0: f32,
+    scale1: f32,
+    residual: &mut DisjointSlice<f32>,
+    bias_bytes: &[u8],
+    bias_scales: &[u8],
+    bias_global_scale: f32,
+) {
+    let row0 = tile.mma_row_base(m_repeat) + tile.group;
+    let row1 = row0 + 8;
+    let col0 = tile.mma_col_base(n_repeat) + tile.thread_in_group * 2;
+    let output_dim = params.output_dim;
+    if col0 + 1 >= output_dim {
+        return;
+    }
+
+    let index00 = row0 * output_dim + col0;
+    let index10 = row1 * output_dim + col0;
+    let bias0 = nvfp4_value(bias_bytes, bias_scales, bias_global_scale, col0 as usize);
+    let bias1 = nvfp4_value(
+        bias_bytes,
+        bias_scales,
+        bias_global_scale,
+        (col0 + 1) as usize,
+    );
+    let value00 = affine_from_stored_product(acc[0], scale0, bias0);
+    let value01 = affine_from_stored_product(acc[1], scale0, bias1);
+    let value10 = affine_from_stored_product(acc[2], scale1, bias0);
+    let value11 = affine_from_stored_product(acc[3], scale1, bias1);
+    let residual00 = unsafe { *residual.get_unchecked_mut(index00 as usize) };
+    let residual01 = unsafe { *residual.get_unchecked_mut((index00 + 1) as usize) };
+    let residual10 = unsafe { *residual.get_unchecked_mut(index10 as usize) };
+    let residual11 = unsafe { *residual.get_unchecked_mut((index10 + 1) as usize) };
+    store_f32x2_global(
+        residual,
+        index00,
+        fma_f32(1.0, value00, residual00),
+        fma_f32(1.0, value01, residual01),
+    );
+    store_f32x2_global(
+        residual,
+        index10,
+        fma_f32(1.0, value10, residual10),
+        fma_f32(1.0, value11, residual11),
+    );
+}
+
+#[inline(always)]
 fn store_acc_relu2_scaled(
     acc: [f32; 4],
     tile: CtaTile,
@@ -751,6 +804,43 @@ macro_rules! store_accumulator_affine_rows {
             $params,
             $output_scale,
             ($out, $bias_bytes, $bias_scales, $bias_global_scale)
+        );
+    }};
+}
+
+macro_rules! store_accumulator_residual_rows {
+    ([], $tile:expr, $params:expr, $output_scale:expr, $args:tt) => {};
+    (
+        [($m_repeat:tt, [$(($n_repeat:tt, $acc:ident)),+ $(,)?]) $(, $rest:tt)* $(,)?],
+        $tile:expr,
+        $params:expr,
+        $output_scale:expr,
+        ($residual:expr, $bias_bytes:expr, $bias_scales:expr, $bias_global_scale:expr)
+    ) => {{
+        let row0 = $tile.mma_row_base($m_repeat) + $tile.group;
+        let scale0 = $output_scale.row(row0);
+        let scale1 = $output_scale.row(row0 + 8);
+        $(
+            store_acc_residual_scaled(
+                $acc,
+                $tile,
+                $m_repeat,
+                $n_repeat,
+                $params,
+                scale0,
+                scale1,
+                $residual,
+                $bias_bytes,
+                $bias_scales,
+                $bias_global_scale,
+            );
+        )+
+        store_accumulator_residual_rows!(
+            [$($rest),*],
+            $tile,
+            $params,
+            $output_scale,
+            ($residual, $bias_bytes, $bias_scales, $bias_global_scale)
         );
     }};
 }
@@ -1573,6 +1663,50 @@ macro_rules! run_tma_nvfp4_full_tile_affine_shape {
     }};
 }
 
+macro_rules! run_tma_nvfp4_full_tile_residual_shape {
+    (
+        [$($m_axis:tt),+],
+        [$($n_axis:tt),+],
+        [$(($m_repeat:tt, [$(($n_repeat:tt, $acc:ident)),+ $(,)?])),+ $(,)?],
+        $a_tma:expr,
+        $b_tma:expr,
+        $a_scale_tma:expr,
+        $b_scale_tma:expr,
+        $tile:expr,
+        $params:expr,
+        $a_packs_base:expr,
+        $b_packs_base:expr,
+        $a_scales_base:expr,
+        $b_scales_base:expr,
+        $tma_bars:expr,
+        $empty_bars:expr,
+        $residual:expr,
+        $bias_bytes:expr,
+        $bias_scales:expr,
+        $bias_global_scale:expr $(,)?
+    ) => {{
+        run_tma_nvfp4_full_tile_shape_body!(
+            [$($m_axis),+],
+            [$($n_axis),+],
+            [$(($m_repeat, [$(($n_repeat, $acc)),+])),+],
+            $a_tma,
+            $b_tma,
+            $a_scale_tma,
+            $b_scale_tma,
+            $tile,
+            $params,
+            $a_packs_base,
+            $b_packs_base,
+            $a_scales_base,
+            $b_scales_base,
+            $tma_bars,
+            $empty_bars,
+            store_accumulator_residual_rows,
+            ($residual, $bias_bytes, $bias_scales, $bias_global_scale),
+        );
+    }};
+}
+
 macro_rules! run_tma_nvfp4_full_tile_relu2_shape {
     (
         [$($m_axis:tt),+],
@@ -1633,6 +1767,12 @@ macro_rules! run_tma_nvfp4_full_tile {
 macro_rules! run_tma_nvfp4_full_tile_affine {
     ($($arg:expr),+ $(,)?) => {{
         dispatch_accumulator_shape!(run_tma_nvfp4_full_tile_affine_shape, $($arg),+);
+    }};
+}
+
+macro_rules! run_tma_nvfp4_full_tile_residual {
+    ($($arg:expr),+ $(,)?) => {{
+        dispatch_accumulator_shape!(run_tma_nvfp4_full_tile_residual_shape, $($arg),+);
     }};
 }
 
@@ -1787,6 +1927,82 @@ pub mod module {
             tma_bars,
             empty_bars,
             &mut out,
+            bias_bytes,
+            bias_scales,
+            bias_global_scale[0],
+        );
+    }
+
+    #[kernel]
+    #[cfg_attr(nvfp4_launch_bounds_64, launch_bounds(64, 1))]
+    #[cfg_attr(nvfp4_launch_bounds_96, launch_bounds(96, 1))]
+    #[cfg_attr(nvfp4_launch_bounds_128, launch_bounds(128, 1))]
+    #[cfg_attr(nvfp4_launch_bounds_160, launch_bounds(160, 1))]
+    #[cfg_attr(nvfp4_launch_bounds_192, launch_bounds(192, 1))]
+    #[cfg_attr(nvfp4_launch_bounds_224, launch_bounds(224, 1))]
+    #[cfg_attr(nvfp4_launch_bounds_256, launch_bounds(256, 1))]
+    #[cfg_attr(nvfp4_launch_bounds_288, launch_bounds(288, 1))]
+    #[cfg_attr(nvfp4_launch_bounds_384, launch_bounds(384, 1))]
+    #[allow(unused_variables)]
+    pub fn nvfp4_gemm_tma_residual_kernel(
+        a_tma: *const TmaDescriptor,
+        b_tma: *const TmaDescriptor,
+        a_scale_tma: *const TmaDescriptor,
+        b_scale_tma: *const TmaDescriptor,
+        mut residual: DisjointSlice<f32>,
+        bias_bytes: &[u8],
+        bias_scales: &[u8],
+        bias_global_scale: &[f32],
+        params: Nvfp4GemmParams,
+    ) {
+        let thread_id = thread::threadIdx_x();
+
+        static mut TMA_BARS: BarrierSmemStages = SharedArray::UNINIT;
+        static mut EMPTY_BARS: BarrierSmemStages = SharedArray::UNINIT;
+        static mut A_SCALES_SM: AScalesSmemStages = SharedArray::UNINIT;
+        static mut B_SCALES_SM: BScalesSmemStages = SharedArray::UNINIT;
+        static mut A_PACKS_SM: APacksSmemStages = SharedArray::UNINIT;
+        static mut B_PACKS_SM: BPacksSmemStages = SharedArray::UNINIT;
+
+        let tile = CtaTile::new(thread_id);
+        let tma_bars = unsafe { (&mut *(&raw mut TMA_BARS)).as_mut_ptr() };
+        let empty_bars = unsafe { (&mut *(&raw mut EMPTY_BARS)).as_mut_ptr() };
+        let a_scales_base = unsafe { (&mut *(&raw mut A_SCALES_SM)).as_mut_ptr() };
+        let b_scales_base = unsafe { (&mut *(&raw mut B_SCALES_SM)).as_mut_ptr() };
+        let a_packs_base = unsafe { (&mut *(&raw mut A_PACKS_SM)).as_mut_ptr() };
+        let b_packs_base = unsafe { (&mut *(&raw mut B_PACKS_SM)).as_mut_ptr() };
+
+        if thread_id == 0 {
+            prefetch_tma_descriptor(a_tma);
+            prefetch_tma_descriptor(b_tma);
+            prefetch_tma_descriptor(a_scale_tma);
+            prefetch_tma_descriptor(b_scale_tma);
+            unsafe {
+                let mut stage = 0;
+                while stage < TMA_PIPELINE_STAGES {
+                    mbarrier_init(stage_barrier(tma_bars, stage), 1);
+                    mbarrier_init(stage_barrier(empty_bars, stage), MMA_THREADS_PER_BLOCK);
+                    stage += 1;
+                }
+                fence_proxy_async_shared_cta();
+            }
+        }
+        thread::sync_threads();
+
+        run_tma_nvfp4_full_tile_residual!(
+            a_tma,
+            b_tma,
+            a_scale_tma,
+            b_scale_tma,
+            tile,
+            params,
+            a_packs_base,
+            b_packs_base,
+            a_scales_base,
+            b_scales_base,
+            tma_bars,
+            empty_bars,
+            &mut residual,
             bias_bytes,
             bias_scales,
             bias_global_scale[0],

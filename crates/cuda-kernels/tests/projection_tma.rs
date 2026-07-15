@@ -13,7 +13,6 @@ use rust_kernels_cuda::nvfp4_tma_matmul::{
     scale_pack::Sm120ScalePackModule,
     tma::TmaNvfp4DeviceScaleDescriptors,
 };
-use rust_kernels_cuda::projection_postop::{ProjectionPostOpModule, ProjectionResidualArgs};
 
 mod common;
 
@@ -167,7 +166,6 @@ struct Fixture {
     tma: Nvfp4GemmModule,
     scale_pack: Sm120ScalePackModule,
     pad: TmaMatrixPadModule,
-    postop: ProjectionPostOpModule,
     rows: usize,
     k: usize,
     n: usize,
@@ -192,7 +190,6 @@ impl Fixture {
             tma: Nvfp4GemmModule::from_module(ptx.clone())?,
             scale_pack: Sm120ScalePackModule::from_module(ptx.clone())?,
             pad: TmaMatrixPadModule::from_module(ptx.clone())?,
-            postop: ProjectionPostOpModule::from_module(ptx)?,
             input_bytes: DeviceBuffer::from_host(&stream, &sparse_bytes(rows, k, 13, 7, 0))?,
             input_scales: DeviceBuffer::from_host(&stream, &pattern_scales(rows * k, 1))?,
             input_globals: DeviceBuffer::from_host(&stream, &row_globals(rows))?,
@@ -377,16 +374,55 @@ impl Fixture {
     }
 
     fn tma_residual(&self, residual: &mut DeviceBuffer<f32>) -> Result<(), Box<dyn Error>> {
-        let mut raw = DeviceBuffer::<f32>::zeroed(&self.stream, self.rows * self.n)?;
-        self.tma_raw(&mut raw)?;
-        self.postop.residual_add(ProjectionResidualArgs {
-            stream: &self.stream,
-            raw: &raw,
-            bias: self.bias_device(),
+        let mut input_scale_packed = DeviceBuffer::zeroed(
+            &self.stream,
+            sm120_scale_packed_len(sm120_scale_padded_mn_extent(self.rows), self.k),
+        )?;
+        let mut weight_scale_packed =
+            DeviceBuffer::zeroed(&self.stream, sm120_scale_packed_len(self.n, self.k))?;
+        let mut descriptors = TmaNvfp4DeviceScaleDescriptors {
+            a: DeviceBuffer::zeroed(&self.stream, 1)?,
+            b: DeviceBuffer::zeroed(&self.stream, 1)?,
+            a_scales: DeviceBuffer::zeroed(&self.stream, 1)?,
+            b_scales: DeviceBuffer::zeroed(&self.stream, 1)?,
+        };
+
+        self.scale_pack.pack(
+            &self.stream,
+            &self.input_scales,
+            &mut input_scale_packed,
+            self.rows as u32,
+            self.k as u32,
+        )?;
+        self.scale_pack.pack(
+            &self.stream,
+            &self.weight_scales,
+            &mut weight_scale_packed,
+            self.n as u32,
+            self.k as u32,
+        )?;
+        self.tma.prepare_tma_nvfp4_device_scales_into(
+            &self.stream,
+            &self.input_bytes,
+            &input_scale_packed,
+            &self.weight_bytes,
+            &weight_scale_packed,
+            self.rows as u32,
+            self.k as u32,
+            self.n as u32,
+            &mut descriptors,
+        )?;
+        self.tma.gemm_tma_nvfp4_rowwise_a_scale_residual(
+            &self.stream,
+            &descriptors,
             residual,
-            rows: self.rows as u32,
-            cols: self.n as u32,
-        })?;
+            self.bias_device(),
+            self.rows as u32,
+            self.k as u32,
+            self.n as u32,
+            &self.input_globals,
+            &self.weight_global,
+        )?;
         Ok(())
     }
 
