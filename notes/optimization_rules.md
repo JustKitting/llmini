@@ -60,8 +60,8 @@ threshold from the active baseline whenever that baseline changes:
 minimum_step_saving = (TRAIN_ELAPSED_S / COMPLETED_STEPS) * 0.005
 ```
 
-For the current baseline, `900.640 / 1075 = 0.837804651` seconds per step, so a
-candidate must credibly be able to save at least `4.189023 ms/step` before any
+For the current baseline, `900.224 / 1080 = 0.833540741` seconds per step, so a
+candidate must credibly be able to save at least `4.167704 ms/step` before any
 code edit, rebuild, GPU test, or training screen. Multiply a per-launch saving
 by the launch count per step and compare that aggregate saving with the
 threshold; do not pursue sub-threshold micro-optimizations.
@@ -70,6 +70,21 @@ After implementation, the focused profile must measure at least the same
 aggregate `0.5%` whole-step saving before proceeding to the 30-second screen or
 900-second validation gate. A larger fusion may qualify based on the aggregate
 time it removes even when each constituent operation would not qualify alone.
+
+### Memory-Capacity Wins
+
+Actively look for clear, measured reductions in peak GPU memory as a separate
+optimization path. The `0.5%` whole-step speed filter does not exclude a
+candidate whose primary benefit is lower peak VRAM. A memory-only candidate may
+be kept when it preserves the fixed 1B model math, held-out loss, and stability,
+and does not introduce a meaningful step-time regression.
+
+Report the exact matched-run peak-memory reduction and the concrete capacity it
+could unlock, such as a larger batch or more tokens per step. Validate any
+claimed throughput gain separately at the larger configuration; lower memory by
+itself is not evidence of higher tokens/s. Memory-only candidates still require
+the normal correctness checks plus the 30-second and 900-second gates before
+commit.
 
 ## Active Baseline
 

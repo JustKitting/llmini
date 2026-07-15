@@ -198,6 +198,90 @@ fn tiled_four_six_transpose_matches_explicit_transpose() -> Result<(), Box<dyn E
 
 #[ignore = "requires generated sm_120a PTX"]
 #[test]
+fn sqrt_bounded_amax_transpose_matches_rescanned_input() -> Result<(), Box<dyn Error>> {
+    const ROWS: usize = 16;
+    const COLS: usize = 64;
+    let x = (0..ROWS * COLS)
+        .map(|index| ((index % 173) as f32 - 86.0) * 0.119)
+        .collect::<Vec<_>>();
+    let original_amax = [x.iter().fold(0.0f32, |max, value| max.max(value.abs()))];
+    let sqrt_bound_amax = [3.7_f32];
+
+    let (_, stream, ptx) = common::cuda_test_context()?;
+    let quant = Nvfp4QuantModule::from_module(ptx.clone())?;
+    let f32_ops = F32MatrixOpsModule::from_module(ptx)?;
+    let mut bounded = DeviceBuffer::from_host(&stream, &x)?;
+    let original_amax_dev = DeviceBuffer::from_host(&stream, &original_amax)?;
+    let sqrt_bound_amax_dev = DeviceBuffer::from_host(&stream, &sqrt_bound_amax)?;
+    f32_ops.scale_in_place_by_sqrt_amax_bound(F32ScaleInPlaceByAmaxArgs {
+        stream: &stream,
+        x: &mut bounded,
+        amax: &sqrt_bound_amax_dev,
+        len: x.len() as u32,
+    })?;
+
+    let mut chunk_amax = DeviceBuffer::<f32>::zeroed(&stream, nvfp4_tensor_amax_chunks(x.len()))?;
+    let mut rescanned_amax = DeviceBuffer::<f32>::zeroed(&stream, 1)?;
+    quant.tensor_amax_f32(TensorAmaxArgs {
+        stream: &stream,
+        x: &bounded,
+        chunk_amax: &mut chunk_amax,
+        out: &mut rescanned_amax,
+        element_count: x.len() as u32,
+    })?;
+
+    let mut reference_fp4 = DeviceBuffer::<u8>::zeroed(&stream, x.len() / 2)?;
+    let mut reference_scales = DeviceBuffer::<u8>::zeroed(&stream, x.len() / 16)?;
+    let mut reference_global = DeviceBuffer::<f32>::zeroed(&stream, 1)?;
+    let mut bounded_fp4 = DeviceBuffer::<u8>::zeroed(&stream, x.len() / 2)?;
+    let mut bounded_scales = DeviceBuffer::<u8>::zeroed(&stream, x.len() / 16)?;
+    let mut bounded_global = DeviceBuffer::<f32>::zeroed(&stream, 1)?;
+
+    quant.fp32_transpose_to_nvfp4_four_six_padded(Nvfp4QuantTransposePaddedArgs {
+        stream: &stream,
+        x: &bounded,
+        amax: &rescanned_amax,
+        out_fp4: &mut reference_fp4,
+        out_scales: &mut reference_scales,
+        out_global_scale: &mut reference_global,
+        source_rows: ROWS as u32,
+        source_cols: COLS as u32,
+        padded_rows: COLS as u32,
+        padded_cols: ROWS as u32,
+    })?;
+    quant.fp32_transpose_to_nvfp4_four_six_exact_sqrt_bounded_amax(
+        Nvfp4QuantTransposePaddedArgs {
+            stream: &stream,
+            x: &bounded,
+            amax: &original_amax_dev,
+            out_fp4: &mut bounded_fp4,
+            out_scales: &mut bounded_scales,
+            out_global_scale: &mut bounded_global,
+            source_rows: ROWS as u32,
+            source_cols: COLS as u32,
+            padded_rows: COLS as u32,
+            padded_cols: ROWS as u32,
+        },
+        &sqrt_bound_amax_dev,
+    )?;
+
+    assert_eq!(
+        bounded_fp4.to_host_vec(&stream)?,
+        reference_fp4.to_host_vec(&stream)?
+    );
+    assert_eq!(
+        bounded_scales.to_host_vec(&stream)?,
+        reference_scales.to_host_vec(&stream)?
+    );
+    assert_eq!(
+        bounded_global.to_host_vec(&stream)?,
+        reference_global.to_host_vec(&stream)?
+    );
+    Ok(())
+}
+
+#[ignore = "requires generated sm_120a PTX"]
+#[test]
 fn fp32_to_nvfp4_ms_eden_writes_rotated_quantized_outputs() -> Result<(), Box<dyn Error>> {
     let x = (0..64)
         .map(|index| (index as f32 - 31.5) * 0.03125)

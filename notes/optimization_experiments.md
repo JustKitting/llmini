@@ -34,6 +34,65 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-15
 commit: accepted local jj commit after full gate
+experiment: Reuse the known Aurora source amax after its square-root Gram bound.
+status: accepted_900s
+change:
+  Each Aurora polar iteration already computes source amax while preparing the
+  source x source-transpose TMA GEMM, then bounds source by
+  min(1, 1/sqrt(Gram amax)). Exact transposed source quantization nevertheless
+  rescanned the bounded source. Preserved source amax in TMA A scratch, moved
+  Gram amax to TMA B scratch, and added a dedicated exact transpose quantizer
+  that derives the bounded source amax with the same GPU sqrt and multiply as
+  the bound kernel. This removes 335 redundant full-source scan/reduce pairs;
+  unsupported shapes retain the rescanning fallback.
+minimum_impact_gate:
+  The accepted baseline was 900.640s / 1075 = 0.837804651s per step, making the
+  0.5% threshold 4.189023ms. The 335 source scan/reduce pairs measured
+  12.959232ms/step (1.547%), so their removal passed the pre-edit mathematical
+  ceiling gate.
+verification:
+  cargo fmt --all: pass.
+  cargo fmt --all --check: pass.
+  cargo check -q: pass.
+  cargo oxide build --arch sm_120a: pass; fresh device and host rebuild.
+  Added sqrt_bounded_amax_transpose_matches_rescanned_input, which GPU-scales a
+    matrix and compares FP4 bytes, FP8 scales, and global scale bit-for-bit
+    against the rescanned exact transpose path.
+  CUDA_DEVICE_INDEX=0 cargo test -q -p rust-kernels-cuda --test nvfp4_quant
+    -- --ignored --nocapture --test-threads=1: pass, 5 tests.
+  Focused Nsight Compute duration profile:
+    target/ncu/20260715_1b_b2_bounded_source_amax.ncu-rep
+    target/ncu/20260715_1b_b2_bounded_source_amax.csv
+  Exact 1B FineWeb one-step NCU diagnostic:
+    target/runs/20260715_051337Z_fineweb_60s
+    val_loss=10.409149, completed_steps=1. This is diagnostic evidence only.
+  Required 1B FineWeb 30-second screen:
+    target/runs/20260715_051553Z_fineweb_30s
+    val_loss=7.052708, train_elapsed_s=30.030, completed_steps=37.
+  Required 1B FineWeb 900-second gate with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260715_051639Z_fineweb_900s
+    val_loss=5.079413, train_elapsed_s=900.224, completed_steps=1080.
+    All 22 metric samples had Finite=1 and Nonzero=1, with zero skipped
+    updates, loss-spike skips, grad-norm-spike skips, or nonfinite skips.
+measured_effect:
+  The affected source scan/reduce/transpose-quantize family moved from
+  103.181952ms to 90.283136ms per step, saving 12.898816ms (1.540%). This
+  cleared the focused 4.189023ms gate before training screens.
+  Against target/runs/20260715_045315Z_fineweb_900s:
+    completed_steps: 1075 -> 1080 (+5, +0.465%).
+    average step time: 0.837804651s -> 0.833540741s (-4.263910ms, -0.509%).
+    held-out val_loss: 5.078630 -> 5.079413 (+0.0154%).
+decision:
+  Keep and promote. The focused elimination clears the 0.5% work gate, and the
+  full fixed-wall run confirms a 0.509% average-step speedup with effectively
+  unchanged validation loss and clean stability. notes/sweep_baseline.env now
+  points to this run. The new baseline-relative 0.5% threshold is 4.167704ms
+  per step.
+```
+
+```text
+date: 2026-07-15
+commit: accepted local jj commit after full gate
 experiment: Reuse the known bounded Gram amax for exact Aurora quantization.
 status: accepted_900s
 change:

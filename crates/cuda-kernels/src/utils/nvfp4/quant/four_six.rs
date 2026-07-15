@@ -1,4 +1,4 @@
-use cuda_core::DriverError;
+use cuda_core::{DeviceBuffer, DriverError};
 
 use super::args::{
     Nvfp4QuantArgs, Nvfp4QuantPaddedArgs, Nvfp4QuantRowwiseArgs, Nvfp4QuantTransposePaddedArgs,
@@ -159,6 +159,31 @@ impl Nvfp4QuantModule {
                 args.source_cols,
                 args.padded_cols,
                 SCALE_OVERRIDE,
+            )
+    }
+
+    pub fn fp32_transpose_to_nvfp4_four_six_exact_sqrt_bounded_amax(
+        &self,
+        args: Nvfp4QuantTransposePaddedArgs<'_, '_>,
+        sqrt_bound_amax: &DeviceBuffer<f32>,
+    ) -> Result<(), DriverError> {
+        assert_eq!(args.source_cols, args.padded_rows);
+        assert_eq!(args.source_rows, args.padded_cols);
+        assert!(args.source_rows.is_power_of_two());
+        assert!(args.source_rows.is_multiple_of(16));
+        assert!(args.source_cols.is_multiple_of(64));
+        self.four_six
+            .fp32_transpose_to_nvfp4_four_six_exact_pow2_tiled_sqrt_bounded_amax_kernel(
+                args.stream,
+                four_six_transpose_tiled_config(args.source_rows, args.source_cols),
+                args.x,
+                args.amax,
+                sqrt_bound_amax,
+                args.out_fp4,
+                args.out_scales,
+                args.out_global_scale,
+                args.source_rows,
+                args.source_cols,
             )
     }
 

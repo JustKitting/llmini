@@ -220,7 +220,7 @@ fn run_tma_polar_iteration(
         polar_rows,
         polar_rows,
     )?;
-    prepare_tma_b_transposed(
+    prepare_tma_b_sqrt_bounded_transposed(
         stream,
         runtime,
         source,
@@ -336,8 +336,8 @@ fn bound_source_and_gram(
     runtime.quant.tensor_amax_f32(TensorAmaxArgs {
         stream,
         x: gram,
-        chunk_amax: tma.a.chunk_amax,
-        out: tma.a.amax,
+        chunk_amax: tma.b.chunk_amax,
+        out: tma.b.amax,
         element_count: polar_rows * polar_rows,
     })?;
     runtime
@@ -345,7 +345,7 @@ fn bound_source_and_gram(
         .scale_in_place_by_sqrt_amax_bound(F32ScaleInPlaceByAmaxArgs {
             stream,
             x: source,
-            amax: &*tma.a.amax,
+            amax: &*tma.b.amax,
             len: polar_rows * polar_cols,
         })?;
     runtime
@@ -353,7 +353,7 @@ fn bound_source_and_gram(
         .scale_in_place_by_amax_bound(F32ScaleInPlaceByAmaxArgs {
             stream,
             x: gram,
-            amax: &*tma.a.amax,
+            amax: &*tma.b.amax,
             len: polar_rows * polar_rows,
         })
 }
@@ -408,7 +408,7 @@ fn prepare_tma_a_padded(
         .fp32_to_nvfp4_four_six_exact_bounded_amax(Nvfp4QuantPaddedArgs {
             stream,
             x: input,
-            amax: &*tma.a.amax,
+            amax: &*tma.b.amax,
             out_fp4: tma.a.bytes,
             out_scales: tma.a.scales,
             out_global_scale: tma.a.global_scale,
@@ -442,6 +442,50 @@ fn prepare_tma_b_transposed(
         tma.b.reborrow(),
         rows,
         cols,
+        dims.n,
+        dims.k,
+    )
+}
+
+fn prepare_tma_b_sqrt_bounded_transposed(
+    stream: &CudaStream,
+    runtime: &Runtime,
+    input: &DeviceBuffer<f32>,
+    tma: &mut TmaScratchRefs<'_>,
+    dims: TmaDims,
+    rows: u32,
+    cols: u32,
+) -> Result<(), DriverError> {
+    if cols != dims.n
+        || rows != dims.k
+        || !rows.is_power_of_two()
+        || !rows.is_multiple_of(16)
+        || !cols.is_multiple_of(64)
+    {
+        return prepare_tma_b_transposed(stream, runtime, input, tma, dims, rows, cols);
+    }
+
+    runtime
+        .quant
+        .fp32_transpose_to_nvfp4_four_six_exact_sqrt_bounded_amax(
+            Nvfp4QuantTransposePaddedArgs {
+                stream,
+                x: input,
+                amax: &*tma.a.amax,
+                out_fp4: tma.b.bytes,
+                out_scales: tma.b.scales,
+                out_global_scale: tma.b.global_scale,
+                source_rows: rows,
+                source_cols: cols,
+                padded_rows: dims.n,
+                padded_cols: dims.k,
+            },
+            &*tma.b.amax,
+        )?;
+    runtime.optimizer.tma_scale_pack().pack(
+        stream,
+        &*tma.b.scales,
+        tma.b.scale_packed,
         dims.n,
         dims.k,
     )
