@@ -34,6 +34,62 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-15
 commit: accepted local jj commit after full gate
+experiment: Fuse QKV projection bias into a specialized padded-output TMA GEMM store.
+status: accepted_900s
+change:
+  Added a dedicated nvfp4_gemm_tma_affine_kernel for attention QKV projection.
+  Its store applies the NVFP4 bias while the scaled accumulator is live, which
+  removes all 48 standalone projection_bias_inplace_kernel launches from the
+  profiled training-plus-validation run. Explicit mul.rn.f32 then add.rn.f32
+  preserves the old FP32 product-store boundary before bias addition. The
+  generic TMA kernel remains unchanged for non-affine users, and padded output
+  tiles still reject columns beyond the real QKV width.
+minimum_impact_gate:
+  The accepted baseline was 900.224s / 1080 = 0.833540741s per step, making the
+  0.5% threshold 4.167704ms. The standalone QKV bias launches measured
+  14.451648ms across three forwards, or 4.817216ms per training step (0.578%),
+  so the fusion passed the pre-edit mathematical ceiling gate.
+verification:
+  cargo fmt --all: pass.
+  cargo fmt --all --check: pass.
+  cargo check -q: pass.
+  cargo oxide build --arch sm_120a: pass; fresh device and host rebuild.
+  Updated the padded affine TMA equivalence test to exercise the fused kernel.
+  CUDA_DEVICE_INDEX=0 cargo test -q -p rust-kernels-cuda --test projection_tma
+    -- --ignored --nocapture --test-threads=1: pass, 5 tests.
+  Focused Nsight Compute duration profile:
+    target/ncu/20260715_1b_b2_tma_affine.ncu-rep
+    target/ncu/20260715_1b_b2_tma_affine.csv
+  Exact 1B FineWeb one-step NCU diagnostic:
+    target/runs/20260715_053808Z_fineweb_60s
+    val_loss=10.409149, completed_steps=1. This is diagnostic evidence only.
+  Required 1B FineWeb 30-second screen:
+    target/runs/20260715_054114Z_fineweb_30s
+    val_loss=7.032433, train_elapsed_s=30.642, completed_steps=38.
+  Required 1B FineWeb 900-second gate with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260715_054157Z_fineweb_900s
+    val_loss=5.071823, completed_steps=1086 under max_seconds=900.
+    All 22 metric samples had Finite=1 and Nonzero=1, with zero skipped
+    updates, loss-spike skips, grad-norm-spike skips, or nonfinite skips.
+measured_effect:
+  The matched QKV GEMM-plus-bias family moved from 27.734048ms to 14.461632ms
+  across three forwards. This saves 4.424139ms per training step (0.531%),
+  clearing the focused 4.167704ms gate before training screens.
+  Against target/runs/20260715_051639Z_fineweb_900s at the same wall cap:
+    completed_steps: 1080 -> 1086 (+6, +0.556%).
+    held-out val_loss: 5.079413 -> 5.071823 (-0.1494%).
+decision:
+  Keep and promote. The full fixed-wall gate confirms higher throughput,
+  slightly better validation loss, and clean stability. The original terminal
+  call was detached by an interruption, so notes/sweep_baseline.env records the
+  exact 900-second cap rather than inventing a subsecond elapsed value not
+  present in the run artifacts. The new nominal baseline-relative 0.5%
+  threshold is 4.143646ms per step.
+```
+
+```text
+date: 2026-07-15
+commit: accepted local jj commit after full gate
 experiment: Reuse the known Aurora source amax after its square-root Gram bound.
 status: accepted_900s
 change:

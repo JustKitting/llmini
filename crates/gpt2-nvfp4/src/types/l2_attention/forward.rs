@@ -3,7 +3,7 @@ use rust_kernels_cuda::attention::{ApplyRopeArgs, CausalAttentionTcArgs};
 use rust_kernels_cuda::nvfp4_tma_matmul::{
     pad::U4RowPadArgs, scale_layout::sm120_scale_padded_mn_extent,
 };
-use rust_kernels_cuda::projection_postop::{ProjectionBiasArgs, ProjectionResidualArgs};
+use rust_kernels_cuda::projection_postop::ProjectionResidualArgs;
 
 use super::tensors::AttentionForwardArgs;
 use crate::AttentionDims;
@@ -65,10 +65,11 @@ pub(super) fn forward<'a, 'scratch>(
         args.tma_descriptors,
     )?;
     args.tma_module
-        .gemm_tma_nvfp4_rowwise_a_scale_padded_output(
+        .gemm_tma_nvfp4_rowwise_a_scale_affine_padded_output(
             hidden.stream,
             args.tma_descriptors,
             args.qkv,
+            args.projections.qkv_bias,
             hidden.row_count,
             dims.embedding_dim,
             dims.qkv_dim,
@@ -76,13 +77,6 @@ pub(super) fn forward<'a, 'scratch>(
             input.global_scales,
             args.projections.qkv_weight_device.global_scale,
         )?;
-    args.projection_postop.bias_inplace(ProjectionBiasArgs {
-        stream: hidden.stream,
-        raw: args.qkv,
-        bias: args.projections.qkv_bias,
-        rows: hidden.row_count,
-        cols: dims.qkv_dim,
-    })?;
 
     if args.use_full_attention {
         args.module.apply_rope(ApplyRopeArgs {

@@ -13,9 +13,7 @@ use rust_kernels_cuda::nvfp4_tma_matmul::{
     scale_pack::Sm120ScalePackModule,
     tma::TmaNvfp4DeviceScaleDescriptors,
 };
-use rust_kernels_cuda::projection_postop::{
-    ProjectionBiasArgs, ProjectionPostOpModule, ProjectionResidualArgs,
-};
+use rust_kernels_cuda::projection_postop::{ProjectionPostOpModule, ProjectionResidualArgs};
 
 mod common;
 
@@ -296,14 +294,72 @@ impl Fixture {
     }
 
     fn tma_affine(&self, out: &mut DeviceBuffer<f32>) -> Result<(), Box<dyn Error>> {
-        self.tma_raw(out)?;
-        self.postop.bias_inplace(ProjectionBiasArgs {
-            stream: &self.stream,
-            raw: out,
-            bias: self.bias_device(),
-            rows: self.rows as u32,
-            cols: self.n as u32,
-        })?;
+        let padded_n = sm120_scale_padded_mn_extent(self.n);
+        let mut input_scale_packed = DeviceBuffer::zeroed(
+            &self.stream,
+            sm120_scale_packed_len(sm120_scale_padded_mn_extent(self.rows), self.k),
+        )?;
+        let mut weight_scale_packed =
+            DeviceBuffer::zeroed(&self.stream, sm120_scale_packed_len(padded_n, self.k))?;
+        let mut weight_bytes_padded = DeviceBuffer::zeroed(&self.stream, padded_n * self.k / 2)?;
+        let weight_bytes = if padded_n == self.n {
+            &self.weight_bytes
+        } else {
+            self.pad.pad_u4_rows(U4RowPadArgs {
+                stream: &self.stream,
+                input: &self.weight_bytes,
+                output: &mut weight_bytes_padded,
+                rows: self.n as u32,
+                padded_rows: padded_n as u32,
+                cols_u4: self.k as u32,
+            })?;
+            &weight_bytes_padded
+        };
+        let mut descriptors = TmaNvfp4DeviceScaleDescriptors {
+            a: DeviceBuffer::zeroed(&self.stream, 1)?,
+            b: DeviceBuffer::zeroed(&self.stream, 1)?,
+            a_scales: DeviceBuffer::zeroed(&self.stream, 1)?,
+            b_scales: DeviceBuffer::zeroed(&self.stream, 1)?,
+        };
+
+        self.scale_pack.pack(
+            &self.stream,
+            &self.input_scales,
+            &mut input_scale_packed,
+            self.rows as u32,
+            self.k as u32,
+        )?;
+        self.scale_pack.pack(
+            &self.stream,
+            &self.weight_scales,
+            &mut weight_scale_packed,
+            self.n as u32,
+            self.k as u32,
+        )?;
+        self.tma.prepare_tma_nvfp4_device_scales_into(
+            &self.stream,
+            &self.input_bytes,
+            &input_scale_packed,
+            weight_bytes,
+            &weight_scale_packed,
+            self.rows as u32,
+            self.k as u32,
+            padded_n as u32,
+            &mut descriptors,
+        )?;
+        self.tma
+            .gemm_tma_nvfp4_rowwise_a_scale_affine_padded_output(
+                &self.stream,
+                &descriptors,
+                out,
+                self.bias_device(),
+                self.rows as u32,
+                self.k as u32,
+                self.n as u32,
+                padded_n as u32,
+                &self.input_globals,
+                &self.weight_global,
+            )?;
         Ok(())
     }
 
