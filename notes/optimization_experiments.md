@@ -33,6 +33,258 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 
 ```text
 date: 2026-07-15
+commit: accepted local jj commit after full gate
+experiment: Reuse Aurora four-six scale-pass values when packing NVFP4 bytes.
+status: accepted_900s
+change:
+  Changed the NVFP4 encode tail in aurora_tma_finish_update_kernel so each
+  half-warp loads its 16 FP32 master-weight values once. The existing 4/6 scale
+  selection still consumes those per-lane values, and the eight packing lanes
+  now obtain their two values with half-warp shuffles instead of issuing a
+  second set of 16 global loads. Quantization order, group/global scales, FP4
+  conversion, layouts, optimizer math, and launch geometry are unchanged.
+verification:
+  cargo fmt --all --check: pass.
+  cargo check -q: pass.
+  cargo oxide build --arch sm_120a: pass.
+  CUDA_DEVICE_INDEX=0 cargo test -q -p rust-kernels-cuda --test optimizer
+    -- --ignored --nocapture --test-threads=1: all 15 tests ran without a
+    reported failure.
+  Exact 1B FineWeb one-step diagnostic:
+    target/runs/20260715_032311Z_fineweb_60s
+    val_loss=10.409149, train_elapsed_s=0.806, completed_steps=1.
+    This is correctness-only evidence, not a promotion gate.
+  Focused Nsight Compute duration profile:
+    target/ncu/20260715_1b_b2_aurora_finish_shuffle_reuse.ncu-rep
+  Required 1B FineWeb 30-second screen:
+    target/runs/20260715_032426Z_fineweb_30s
+    val_loss=7.052975, completed_steps=37, all logged metrics finite/nonzero.
+  Required 1B FineWeb 900-second gate:
+    target/runs/20260715_032606Z_fineweb_900s
+    val_loss=5.083047, train_elapsed_s=900.596, completed_steps=1067.
+    All 22 high-fidelity metric samples were finite and nonzero, with zero
+    skipped updates, loss-spike skips, grad-norm-spike skips, or nonfinite
+    skips.
+measured_effect:
+  Across the same 67 aurora_tma_finish_update_kernel launches, aggregate time
+  fell from 38.889056ms to 38.575456ms (-0.806%). Mean launch time fell from
+  0.580434ms to 0.575753ms.
+  Against the fixed 1B FineWeb baseline target/runs/20260715_023017Z_fineweb_900s:
+    completed_steps: 1065 -> 1067 (+2, +0.188%).
+    average step time: 0.845553s -> 0.844045s (-0.178%).
+    held-out val_loss: 5.087001 -> 5.083047 (-0.003954, -0.078%).
+decision:
+  Accept as the new fixed-1B FineWeb kernel/runtime baseline. The focused
+  kernel speedup survives the full wall-clock gate as two additional steps,
+  and held-out loss improves rather than consuming the allowed roughly 1%
+  tolerance. Keep 16 layers, d_model 2048, and 32 heads fixed for subsequent
+  kernel and tokenizer comparisons.
+```
+
+```text
+date: 2026-07-15
+commit: rejected uncommitted candidate, code reverted
+experiment: Reduce the KDA triangular solve CTA from 256 to 64 threads.
+status: rejected_profile_gate
+change:
+  Launched solve_kda_akk_inv_kernel with 64 threads per CTA and changed its
+  cooperative load, row solve, and output-store strides to match. At the
+  active chunk_size=64 shape, only lanes 0 through 63 can contribute to any
+  solve row; this removed six nominally idle warps while preserving the same
+  shared-memory allocation, arithmetic, synchronization, and output layout.
+verification:
+  cargo fmt --all --check: pass.
+  cargo check -q: pass after removing the obsolete import.
+  cargo oxide build --arch sm_120a: pass.
+  Exact 1B FineWeb one-step diagnostic:
+    target/runs/20260715_031931Z_fineweb_60s
+    val_loss=10.409149, train_elapsed_s=0.808, completed_steps=1.
+    This is correctness-only evidence, not a promotion gate.
+  Focused Nsight Compute duration profile:
+    target/ncu/20260715_1b_b2_kda_solve_threads64.ncu-rep
+measured_effect:
+  Across the same 48 solve_kda_akk_inv_kernel launches, aggregate time
+  regressed from 25.573408ms to 28.466176ms (+11.312%). Mean launch time
+  regressed from 0.532779ms to 0.593045ms. Reducing inactive warps made the
+  barrier-heavy solve materially slower, likely because 256 threads provide
+  better cooperative load/store throughput and warp scheduling around each
+  row synchronization.
+decision:
+  Reject before the 30-second training screen and restore the 256-thread CTA.
+  Do not retry a smaller solve CTA without a different algorithm that removes
+  the per-row synchronization or otherwise changes the work decomposition.
+```
+
+```text
+date: 2026-07-15
+commit: rejected uncommitted candidate, code reverted
+experiment: Double only generic FP32 tensor-amax CTAs from 2048 to 4096 values.
+status: rejected_profile_gate
+change:
+  Kept the established 2048-value chunk contract for Aurora, schedule-free,
+  NVFP4-input, and optimizer kernels, but changed the generic FP32
+  tensor_chunk_amax_f32_kernel to scan two 2048-value halves per CTA. This
+  halved its launch grids while preserving every input read, the max result,
+  downstream chunk-count propagation, and all non-generic chunk contracts.
+verification:
+  cargo fmt --all --check: pass.
+  cargo check -q: pass.
+  cargo oxide build --arch sm_120a: pass.
+  CUDA_DEVICE_INDEX=0 cargo test -q -p rust-kernels-cuda --test nvfp4_quant
+    -- --ignored --nocapture --test-threads=1: pass, 3 tests.
+  Exact 1B FineWeb one-step diagnostic:
+    target/runs/20260715_031641Z_fineweb_60s
+    val_loss=10.409149, train_elapsed_s=0.806, completed_steps=1.
+    This is correctness-only evidence, not a promotion gate.
+  Focused Nsight Compute duration profile:
+    target/ncu/20260715_1b_b2_tensor_amax_chunk4096_generic.ncu-rep
+    target/ncu/20260715_1b_b2_tensor_amax_chunk4096_generic.csv
+measured_effect:
+  Across the same 2028 tensor_chunk_amax_f32_kernel launches, aggregate time
+  regressed from 54.271520ms to 54.392960ms (+0.224%). Mean launch time changed
+  from 26.761105us to 26.820986us. Halving the grid did not offset twice the
+  per-CTA scan work.
+decision:
+  Reject before the 30-second training screen and restore the 2048-value
+  generic chunks. Do not extend 4096-value chunks to the coupled optimizer
+  kernels without a separate new profile-driven reason.
+```
+
+```text
+date: 2026-07-15
+commit: rejected uncommitted candidate, code reverted
+experiment: Split each KDA recurrent state CTA across two value-column CTAs.
+status: rejected_profile_gate
+change:
+  Split each batch-head recurrence into two 128-thread CTAs, each owning 32
+  independent value columns. The two CTAs wrote disjoint v_new columns and
+  chunk-state columns and maintained disjoint recurrent-state columns. A
+  remapped four-warp tensor-core tile covered all 64 rows by its owned 32
+  columns. This raised the active grid from 64 to 128 CTAs on the 188-SM GPU;
+  arithmetic, FP16 conversion, state recurrence order within each column, and
+  global layouts were unchanged. Read-only A-tile staging was duplicated.
+verification:
+  cargo fmt --all --check: pass.
+  cargo check -q: pass.
+  cargo oxide build --arch sm_120a: pass.
+  Exact 1B FineWeb one-step diagnostic:
+    target/runs/20260715_031309Z_fineweb_60s
+    val_loss=10.409149, train_elapsed_s=0.809, completed_steps=1.
+    This is correctness-only evidence, not a promotion gate.
+  Focused Nsight Compute duration profile:
+    target/ncu/20260715_1b_b2_kda_state_split_columns.ncu-rep
+measured_effect:
+  Across the same 36 chunk_kda_state_save_kernel launches, total time regressed
+  from 101.696992ms to 107.323584ms (+5.533%). Mean launch time regressed from
+  2.824916ms to 2.981211ms. The extra grid occupancy did not compensate for
+  duplicated A staging and reduced work efficiency in each four-warp CTA.
+decision:
+  Reject before the 30-second training screen. Restore the single 256-thread
+  CTA per batch-head; do not retry column splitting without a design that
+  shares or eliminates the duplicated A staging.
+```
+
+```text
+date: 2026-07-15
+commit: rejected uncommitted candidate, code reverted
+experiment: Pair CTA-strided KDA state snapshot values in f16x2 conversion.
+status: rejected_profile_gate
+change:
+  Paired state values separated by one 256-thread CTA width in each f16x2
+  conversion, then wrote the two halves through separate coalesced 16-bit store
+  streams. This halved conversion instructions while preserving conflict-free
+  warp-contiguous shared reads, coalesced global stores, exact FP16 bits, and
+  the chunk-state layout.
+verification:
+  cargo fmt --all --check: pass.
+  cargo check -q: pass.
+  cargo oxide build --arch sm_120a: pass.
+  Generated PTX showed shared loads 1024 bytes apart, one
+  cvt.rn.f16x2.f32, and two 16-bit stores 512 bytes apart per thread pair.
+  Exact 1B FineWeb one-step diagnostic:
+    target/runs/20260715_030909Z_fineweb_60s
+    val_loss=10.409149, train_elapsed_s=0.807, completed_steps=1.
+    This is correctness-only evidence, not a promotion gate.
+  Focused Nsight Compute duration profile:
+    target/ncu/20260715_1b_b2_kda_state_strided_f16x2.ncu-rep
+measured_effect:
+  Across the same 36 chunk_kda_state_save_kernel launches, total time regressed
+  from 101.696992ms to 101.945216ms (+0.244%). Mean launch time regressed from
+  2.824916ms to 2.831812ms. Removing half the conversion instructions did not
+  improve this recurrence kernel.
+decision:
+  Reject before the 30-second training screen and restore scalar state
+  snapshots. Snapshot conversion throughput is not the limiting work.
+```
+
+```text
+date: 2026-07-15
+commit: rejected uncommitted candidate, code reverted
+experiment: Pack adjacent KDA state snapshots into aligned f16x2 stores.
+status: rejected_profile_gate
+change:
+  Remapped each state-snapshot thread to two adjacent FP32 values, converted
+  both useful values with one f16x2 instruction, and emitted one aligned
+  32-bit global store. This halved both conversion and store instructions while
+  preserving the exact FP16 bits and chunk-state layout.
+verification:
+  cargo fmt --all --check: pass.
+  cargo check -q: pass.
+  cargo oxide build --arch sm_120a: pass.
+  Generated PTX contained one cvt.rn.f16x2.f32 and one st.global.u32 per pair.
+  Exact 1B FineWeb one-step diagnostic:
+    target/runs/20260715_030749Z_fineweb_60s
+    val_loss=10.409149, train_elapsed_s=0.807, completed_steps=1.
+    This is correctness-only evidence, not a promotion gate.
+  Focused Nsight Compute duration profile:
+    target/ncu/20260715_1b_b2_kda_state_packed_f16x2.ncu-rep
+measured_effect:
+  Across the same 36 chunk_kda_state_save_kernel launches, total time regressed
+  from 101.696992ms to 102.514752ms (+0.804%). Mean launch time regressed from
+  2.824916ms to 2.847632ms. The adjacent shared-memory reads compiled as pairs
+  of adjacent 32-bit loads per thread, creating an unfavorable bank pattern.
+decision:
+  Reject before the 30-second training screen and revert the adjacent pairing.
+  A follow-up may pair values separated by one CTA width so each warp retains
+  conflict-free shared reads and coalesced 16-bit global stores.
+```
+
+```text
+date: 2026-07-15
+commit: rejected uncommitted candidate, code reverted
+experiment: Remove the post-snapshot KDA state-save CTA barrier.
+status: rejected_profile_gate
+change:
+  Removed the block-wide synchronization immediately after each KDA chunk-state
+  snapshot was written to global memory. The state-save kernel does not read
+  that global snapshot, and the shared recurrent state is already synchronized
+  after initialization and after the preceding chunk update, so the barrier is
+  not required for correctness. This removed 64 barriers per batch-head CTA at
+  the active seq_len=4096 and chunk_size=64 shape without changing arithmetic,
+  state layout, global stores, or launch geometry.
+verification:
+  cargo fmt --all --check: pass.
+  cargo check -q: pass.
+  cargo oxide build --arch sm_120a: pass.
+  Exact 1B FineWeb one-step diagnostic:
+    target/runs/20260715_030505Z_fineweb_60s
+    val_loss=10.409149, train_elapsed_s=0.807, completed_steps=1.
+    This is correctness-only evidence, not a promotion gate.
+  Focused Nsight Compute duration profile:
+    target/ncu/20260715_1b_b2_kda_state_no_snapshot_barrier.ncu-rep
+measured_effect:
+  Across the same 36 chunk_kda_state_save_kernel launches, total time changed
+  from 101.696992ms to 101.753984ms (+0.056%). Mean launch time changed from
+  2.824916ms to 2.826500ms. The candidate was flat to slightly slower despite
+  eliminating the redundant barrier.
+decision:
+  Reject before the 30-second training screen and restore the barrier. The
+  focused target kernel did not show a speed signal, so a noisy end-to-end gate
+  would not justify a 900-second run.
+```
+
+```text
+date: 2026-07-15
 commit: current working change after lsvnmzqy
 experiment: Restore the fixed 1B model invariant and establish the first FineWeb baseline at that size.
 status: accepted_1b_fineweb_baseline

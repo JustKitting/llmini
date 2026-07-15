@@ -1,4 +1,4 @@
-use cuda_device::thread;
+use cuda_device::{thread, warp};
 
 use crate::device_ptr::read_f32;
 use crate::f16_tc_matmul::cta_tile::CTA_THREADS;
@@ -49,17 +49,17 @@ fn encode_group(
         group_leader,
         lane_in_group,
     );
+    let pair = group_leader + lane_in_group as u32 * 2;
+    let hi = warp::shuffle_f32_sync(group_mask, value, pair);
+    let lo = warp::shuffle_f32_sync(group_mask, value, pair + 1);
 
     unsafe {
         if lane_in_group == 0 {
             *out_scales.add(group as usize) = scale_bits;
         }
         if lane_in_group < GROUP_SIZE / 2 {
-            let pair = lane_in_group * 2;
-            let hi = read_f32(x, base + pair as u32) * inv_scale;
-            let lo = read_f32(x, base + pair as u32 + 1) * inv_scale;
             *out_fp4.add((base / 2 + lane_in_group as u32) as usize) =
-                cvt_rn_satfinite_e2m1x2_f32(lo, hi);
+                cvt_rn_satfinite_e2m1x2_f32(lo * inv_scale, hi * inv_scale);
         }
     }
 }
