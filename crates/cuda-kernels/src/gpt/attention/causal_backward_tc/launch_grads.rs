@@ -10,7 +10,7 @@ pub(super) fn run_grad_matmuls(
     run_tc_matmul_rhs(
         ctx.stream,
         ctx.tc_module,
-        scratch.ds,
+        scratch.ds_half,
         scratch.k,
         scratch.d_q,
         ctx.batch_head,
@@ -21,7 +21,7 @@ pub(super) fn run_grad_matmuls(
     run_tc_matmul_a_transposed_rhs(
         ctx.stream,
         ctx.tc_module,
-        scratch.ds,
+        scratch.ds_half,
         scratch.q,
         scratch.d_k,
         ctx.batch_head,
@@ -32,7 +32,7 @@ pub(super) fn run_grad_matmuls(
     run_tc_matmul_a_transposed_rhs(
         ctx.stream,
         ctx.tc_module,
-        scratch.p,
+        scratch.p_half,
         scratch.d_out,
         scratch.d_v,
         ctx.batch_head,

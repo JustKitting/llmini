@@ -9,6 +9,7 @@ pub struct CausalAttentionTcScratchBuffers {
     v: DeviceBuffer<f32>,
     scores: DeviceBuffer<f32>,
     probs: DeviceBuffer<f32>,
+    probs_half: DeviceBuffer<u16>,
     compact_out: DeviceBuffer<f32>,
     chunk_states: DeviceBuffer<u16>,
 }
@@ -27,7 +28,8 @@ impl CausalAttentionTcScratchBuffers {
             k: DeviceBuffer::zeroed(stream, compact_len)?,
             v: DeviceBuffer::zeroed(stream, compact_len)?,
             scores: DeviceBuffer::zeroed(stream, square)?,
-            probs: DeviceBuffer::zeroed(stream, square)?,
+            probs: DeviceBuffer::zeroed(stream, compact_len)?,
+            probs_half: DeviceBuffer::zeroed(stream, square)?,
             compact_out: DeviceBuffer::zeroed(stream, compact_len)?,
             chunk_states: DeviceBuffer::zeroed(stream, compact_len)?,
         })
@@ -40,6 +42,7 @@ impl CausalAttentionTcScratchBuffers {
             v: &mut self.v,
             scores: &mut self.scores,
             probs: &mut self.probs,
+            probs_half: &mut self.probs_half,
             compact_out: &mut self.compact_out,
             chunk_states: &mut self.chunk_states,
         }

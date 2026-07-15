@@ -65,15 +65,15 @@ impl AttentionModule {
             params,
         )?;
         run_pair_scores(&tc_ctx, &mut scratch)?;
-        kernels.attention_prob_ds_kernel(
+        kernels.attention_prob_ds_f16_kernel(
             stream,
             linear(batch_head * seq_len * seq_len),
             scratch.scores,
             scratch.dot,
             log_sum_exp,
             softmax_d,
-            scratch.p,
-            scratch.ds,
+            scratch.p_half,
+            scratch.ds_half,
             params,
         )?;
         run_grad_matmuls(&tc_ctx, &mut scratch)?;

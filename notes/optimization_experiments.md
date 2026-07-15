@@ -34,6 +34,79 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-15
 commit: accepted local jj commit after full gate
+experiment: Store full-attention probabilities and dS as FP16 and consume them directly with tensor-core matmuls.
+status: accepted_900s_memory_capacity
+change:
+  Added half-input lower-triangular A and transposed-A tensor-core matmul paths.
+  Full-attention softmax now rounds each causal probability to FP16 at its
+  producer and P@V consumes that FP16 square directly. Backward similarly
+  materializes P and dS as FP16 before dQ, dK, and dV. This preserves the old
+  conversion boundary because those matmuls previously converted the FP32
+  values to FP16 while staging each tile. The causal mask is applied while
+  staging, so the unwritten upper triangle is never consumed. Compact FP32 P
+  and dS buffers remain for KDA; the fixed 16-layer, d_model=2048 model and all
+  optimizer/training settings are unchanged.
+minimum_impact_gate:
+  The parent baseline was 900.298s / 1084 = 0.830533210s per step, making the
+  0.5% threshold 4.152666ms. In the matched one-step Nsight Compute reports,
+  the affected full-attention softmax, P/dS materialization, P@V, dQ, dK, and
+  dV family moved from 91.203307ms to 75.445920ms per training step. The exact
+  focused saving is 15.757387ms per step, about 1.897% of the parent whole-step
+  time, so it cleared the focused-profile gate before training screens.
+memory_capacity_gate:
+  Matched one-step allocation probes after fresh builds reported:
+    parent target/runs/20260715_063227Z_fineweb_900s:
+      used_bytes=72298463232.
+    candidate target/runs/20260715_065828Z_fineweb_900s:
+      used_bytes=68137713664.
+  The exact reduction is 4160749568 bytes, exactly 3968 MiB (3.875 GiB). This
+  replaces two 4 GiB FP32 attention squares with two 2 GiB FP16 squares while
+  retaining two 64 MiB compact FP32 KDA workspaces.
+verification:
+  cargo fmt --all: pass.
+  cargo fmt --all --check: pass.
+  cargo check -q: pass.
+  cargo oxide build --arch sm_120a: pass; fresh device and host rebuild.
+  CUDA_DEVICE_INDEX=0 cargo test -q -p rust-kernels-cuda
+    --test causal_attention_backward_tc
+    -- --ignored --nocapture --test-threads=1: pass, 1 test against the
+    materialized reference.
+  Exact 1B FineWeb one-step allocation/correctness diagnostic:
+    target/runs/20260715_065828Z_fineweb_900s
+    val_loss=10.409149, train_elapsed_s=0.767, completed_steps=1.
+    This is diagnostic evidence only.
+  Focused Nsight Compute duration profile:
+    target/ncu/20260715_1b_b2_attention_prob_f16.ncu-rep
+    target/ncu/20260715_1b_b2_attention_prob_f16.csv
+  Required 1B FineWeb 30-second screen:
+    target/runs/20260715_070242Z_fineweb_30s
+    val_loss=7.032433, train_elapsed_s=30.103, completed_steps=38.
+  Required 1B FineWeb 900-second gate with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260715_070323Z_fineweb_900s
+    val_loss=5.063667, train_elapsed_s=900.401, completed_steps=1104.
+    All 23 metric samples had Finite=1 and Nonzero=1, with zero skipped
+    updates, loss-spike skips, grad-norm-spike skips, or nonfinite skips.
+measured_effect:
+  Against the parent 30-second screen target/runs/20260715_063245Z_fineweb_30s:
+    completed_steps: 38 -> 38.
+    average step time: 0.808789474s -> 0.792184211s
+      (-16.605263ms, -2.053%).
+    held-out val_loss: 7.032433 -> 7.032433 (unchanged).
+  Against the parent 900-second gate target/runs/20260715_063325Z_fineweb_900s:
+    completed_steps: 1084 -> 1104 (+20, +1.845%).
+    average step time: 0.830533210s -> 0.815580616s
+      (-14.952594ms, -1.800%).
+    held-out val_loss: 5.075435 -> 5.063667 (-0.2319%).
+decision:
+  Keep and promote. The candidate clears the whole-step speed threshold, saves
+  3968 MiB, improves held-out loss, and remains numerically stable through the
+  full gate. notes/sweep_baseline.env now points to this live-code run. The new
+  nominal 0.5% threshold is 4.077903ms per step.
+```
+
+```text
+date: 2026-07-15
+commit: accepted local jj commit after full gate
 experiment: Remove unused FP32 transpose allocations from all linear-backward scratch arenas.
 status: accepted_900s_memory_capacity
 change:

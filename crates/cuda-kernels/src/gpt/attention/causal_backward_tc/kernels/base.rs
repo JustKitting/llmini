@@ -1,7 +1,7 @@
 use cuda_device::{DisjointSlice, SharedArray, cuda_module, kernel};
 
 use super::super::gather::gather_body;
-use super::super::probs::prob_ds_body;
+use super::super::probs::{prob_ds_body, prob_ds_f16_body};
 use super::super::scatter::scatter_body;
 use super::super::softmax_d::softmax_d_f16_body;
 use crate::attention::CausalAttentionParams;
@@ -45,6 +45,19 @@ pub(super) mod module {
         params: CausalAttentionParams,
     ) {
         prob_ds_body(scores, dot, log_sum_exp, softmax_d, p, ds, params);
+    }
+
+    #[kernel]
+    pub fn attention_prob_ds_f16_kernel(
+        scores: &[f32],
+        dot: &[f32],
+        log_sum_exp: &[f32],
+        softmax_d: &[f32],
+        p: DisjointSlice<u16>,
+        ds: DisjointSlice<u16>,
+        params: CausalAttentionParams,
+    ) {
+        prob_ds_f16_body(scores, dot, log_sum_exp, softmax_d, p, ds, params);
     }
 
     #[kernel]

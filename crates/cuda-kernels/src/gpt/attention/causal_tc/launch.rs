@@ -3,7 +3,7 @@ use cuda_core::DriverError;
 use super::gather::TC_FORWARD_THREADS_PER_BLOCK;
 use super::types::CausalAttentionTcArgs;
 use crate::attention::AttentionModule;
-use crate::f16_tc_matmul::{F16TcMatmulF32Args, F16TcMatmulF32HalfRhsArgs};
+use crate::f16_tc_matmul::{F16TcMatmulF32Args, F16TcMatmulHalfRhsArgs};
 use crate::launch::{launch_config, linear_config};
 
 impl AttentionModule {
@@ -42,21 +42,21 @@ impl AttentionModule {
             })?;
         self.causal_attention_tc
             .base
-            .attention_softmax_forward_kernel(
+            .attention_softmax_forward_f16_kernel(
                 args.stream,
                 launch_config(
                     (args.seq_len, args.head_count, args.batch_size),
                     TC_FORWARD_THREADS_PER_BLOCK,
                 ),
                 &*scratch.scores,
-                &mut *scratch.probs,
+                &mut *scratch.probs_half,
                 args.log_sum_exp,
                 params,
             )?;
         args.tc_module
-            .batched_matmul_f32_half_rhs_lower_a(F16TcMatmulF32HalfRhsArgs {
+            .batched_matmul_half_rhs_lower_a(F16TcMatmulHalfRhsArgs {
                 stream: args.stream,
-                a: &*scratch.probs,
+                a: &*scratch.probs_half,
                 rhs: &*scratch.chunk_states,
                 out: &mut *scratch.compact_out,
                 batch_count: batch_head,

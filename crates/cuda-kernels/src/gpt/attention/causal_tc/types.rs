@@ -9,6 +9,7 @@ pub struct CausalAttentionTcScratch<'a> {
     pub v: &'a mut DeviceBuffer<f32>,
     pub scores: &'a mut DeviceBuffer<f32>,
     pub probs: &'a mut DeviceBuffer<f32>,
+    pub probs_half: &'a mut DeviceBuffer<u16>,
     pub compact_out: &'a mut DeviceBuffer<f32>,
     pub chunk_states: &'a mut DeviceBuffer<u16>,
 }
@@ -53,6 +54,7 @@ impl<'a> CausalAttentionTcScratch<'a> {
             v: self.v,
             scores: self.scores,
             probs: self.probs,
+            probs_half: self.probs_half,
             compact_out: self.compact_out,
             chunk_states: self.chunk_states,
         }

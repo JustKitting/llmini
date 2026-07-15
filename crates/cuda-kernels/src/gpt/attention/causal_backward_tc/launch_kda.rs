@@ -55,6 +55,8 @@ impl AttentionModule {
             dot: aqk_or_dm,
             p: local_grad,
             ds: dkg_from_state,
+            p_half: _p_half,
+            ds_half: _ds_half,
             d_q: kneg_vnew_dqg_dv,
             d_k: kpos_u_dw,
             d_v: w_du_dq,
