@@ -32,6 +32,69 @@ impl NormalizeSourceToX {
     }
 }
 
+pub(crate) fn source_sumsq_chunks(
+    source: *const f32,
+    chunks: *mut f32,
+    warp_sums: &mut SharedArray<f32, { WARPS_PER_BLOCK as usize }>,
+    work: WorkGrid,
+    len: u32,
+) {
+    let tid = thread::threadIdx_x();
+    let lane = tid & (WARP_SIZE - 1);
+    let warp_in_block = tid / WARP_SIZE;
+    let mut local = 0.0;
+    let mut index = work.thread();
+    while index < len {
+        let value = read_f32(source, index);
+        local = fma_f32(value, value, local);
+        index += work.stride();
+    }
+    let local_sum =
+        crate::block_reduce::block_sum_shared_f32(warp_sums, local, lane, warp_in_block);
+    if tid == 0 {
+        write_f32(chunks, work.block(), local_sum);
+    }
+}
+
+pub(crate) fn reduce_source_sumsq_chunks_to_inv_norm(
+    chunks: *mut f32,
+    warp_sums: &mut SharedArray<f32, { WARPS_PER_BLOCK as usize }>,
+    chunk_count: u32,
+) {
+    let tid = thread::threadIdx_x();
+    let lane = tid & (WARP_SIZE - 1);
+    let warp_in_block = tid / WARP_SIZE;
+    let mut local = 0.0;
+    let mut chunk = tid;
+    while chunk < chunk_count {
+        local += read_f32(chunks, chunk);
+        chunk += CTA_THREADS;
+    }
+    let sum = crate::block_reduce::block_sum_shared_f32(warp_sums, local, lane, warp_in_block);
+    if tid == 0 {
+        write_f32(
+            chunks,
+            0,
+            1.0 / (sqrt_f32(sum) * POLAR_EXPRESS_NORM_SAFETY + POLAR_EXPRESS_EPS),
+        );
+    }
+}
+
+pub(crate) fn scale_source_to_x(
+    source: *const f32,
+    x: *mut f32,
+    chunks: *const f32,
+    work: WorkGrid,
+    len: u32,
+) {
+    let inv_norm = read_f32(chunks, 0);
+    let mut index = work.thread();
+    while index < len {
+        write_f32(x, index, read_f32(source, index) * inv_norm);
+        index += work.stride();
+    }
+}
+
 #[expect(clippy::too_many_arguments, reason = "CUDA ABI uses explicit buffers")]
 pub(crate) fn normalize_source_to_x(
     source: *const f32,
@@ -55,25 +118,13 @@ pub(crate) fn normalize_source_to_x(
         polar_cols,
         transpose_source,
     };
-    let len = job.source_rows * job.source_cols;
-    let tid = thread::threadIdx_x();
-    let lane = tid & (WARP_SIZE - 1);
-    let warp_in_block = tid / WARP_SIZE;
-    let stride = work.stride();
-    let mut local = 0.0;
-    let mut index = work.thread();
-
-    while index < len {
-        let value = read_f32(job.source, index);
-        local = fma_f32(value, value, local);
-        index += stride;
-    }
-
-    let local_sum =
-        crate::block_reduce::block_sum_shared_f32(warp_sums, local, lane, warp_in_block);
-    if tid == 0 {
-        write_f32(job.chunks, work.block(), local_sum);
-    }
+    source_sumsq_chunks(
+        job.source,
+        job.chunks,
+        warp_sums,
+        work,
+        job.source_rows * job.source_cols,
+    );
     grid::sync();
 
     normalize_source_to_x_from_chunks(job, warp_sums, work);
@@ -84,26 +135,10 @@ fn normalize_source_to_x_from_chunks(
     warp_sums: &mut SharedArray<f32, { WARPS_PER_BLOCK as usize }>,
     work: WorkGrid,
 ) {
-    let tid = thread::threadIdx_x();
-    let lane = tid & (WARP_SIZE - 1);
-    let warp_in_block = tid / WARP_SIZE;
     let stride = work.stride();
 
     if work.block() == 0 {
-        let mut local = 0.0;
-        let mut chunk = tid;
-        while chunk < work.blocks() {
-            local += read_f32(job.chunks, chunk);
-            chunk += CTA_THREADS;
-        }
-        let sum = crate::block_reduce::block_sum_shared_f32(warp_sums, local, lane, warp_in_block);
-        if tid == 0 {
-            write_f32(
-                job.chunks,
-                0,
-                1.0 / (sqrt_f32(sum) * POLAR_EXPRESS_NORM_SAFETY + POLAR_EXPRESS_EPS),
-            );
-        }
+        reduce_source_sumsq_chunks_to_inv_norm(job.chunks, warp_sums, work.blocks());
     }
     grid::sync();
 

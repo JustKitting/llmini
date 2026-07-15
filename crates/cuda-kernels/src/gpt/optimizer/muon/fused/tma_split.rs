@@ -9,7 +9,10 @@ use crate::optimizer::MuonSlotDescriptor;
 
 use super::super::super::threads::{WARP_SIZE, WARPS_PER_BLOCK};
 use super::super::super::work_grid::WorkGrid;
-use super::super::polar::fused::normalize_source_to_x;
+use super::super::polar::fused::{
+    normalize_source_to_x, reduce_source_sumsq_chunks_to_inv_norm, scale_source_to_x,
+    source_sumsq_chunks,
+};
 use super::momentum::momentum_orient;
 use super::quant::{encode_four_six, quantize_updated_master};
 use super::types::{MuonMatrixShape, MuonUpdateScalars};
@@ -68,6 +71,80 @@ pub(crate) mod module {
                 false,
             );
         }
+    }
+
+    #[kernel]
+    pub fn muon_tma_momentum_orient_kernel(
+        slots: &[MuonSlotDescriptor],
+        mut oriented: DisjointSlice<f32>,
+        slot_index: u32,
+        mu: f32,
+        grad_scale: f32,
+    ) {
+        let desc = slots[slot_index as usize];
+        let shape = MuonMatrixShape {
+            rows: desc.rows,
+            cols: desc.cols,
+        };
+        momentum_orient(
+            ptr_const(desc.grad),
+            ptr_mut(desc.momentum),
+            oriented.as_mut_ptr(),
+            WorkGrid::x_axis(),
+            shape,
+            mu,
+            grad_scale,
+            shape.polar_transposed(),
+        );
+    }
+
+    #[kernel]
+    pub fn muon_tma_source_sumsq_chunks_kernel(
+        source: &[f32],
+        mut polar_chunks: DisjointSlice<f32>,
+        matrix_len: u32,
+    ) {
+        static mut WARP_SUMS: SharedArray<f32, { WARPS_PER_BLOCK as usize }> = SharedArray::UNINIT;
+        unsafe {
+            source_sumsq_chunks(
+                source.as_ptr(),
+                polar_chunks.as_mut_ptr(),
+                &mut WARP_SUMS,
+                WorkGrid::x_axis(),
+                matrix_len,
+            );
+        }
+    }
+
+    #[kernel]
+    pub fn muon_tma_reduce_source_norm_kernel(
+        mut polar_chunks: DisjointSlice<f32>,
+        chunk_count: u32,
+    ) {
+        static mut WARP_SUMS: SharedArray<f32, { WARPS_PER_BLOCK as usize }> = SharedArray::UNINIT;
+        unsafe {
+            reduce_source_sumsq_chunks_to_inv_norm(
+                polar_chunks.as_mut_ptr(),
+                &mut WARP_SUMS,
+                chunk_count,
+            );
+        }
+    }
+
+    #[kernel]
+    pub fn muon_tma_scale_source_to_x_kernel(
+        source: &[f32],
+        mut polar_x: DisjointSlice<f32>,
+        polar_chunks: &[f32],
+        matrix_len: u32,
+    ) {
+        scale_source_to_x(
+            source.as_ptr(),
+            polar_x.as_mut_ptr(),
+            polar_chunks.as_ptr(),
+            WorkGrid::x_axis(),
+            matrix_len,
+        );
     }
 
     #[kernel]

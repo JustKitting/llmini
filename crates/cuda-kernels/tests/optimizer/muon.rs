@@ -8,6 +8,8 @@ mod fixture;
 mod nonconstant;
 #[path = "muon/tma_finish.rs"]
 mod tma_finish;
+#[path = "muon/tma_prepare.rs"]
+mod tma_prepare;
 
 #[ignore = "requires generated sm_120a PTX"]
 #[test]
@@ -43,4 +45,10 @@ fn muon_tma_finish_retains_next_schedule_amax() -> Result<(), Box<dyn Error>> {
 #[test]
 fn muon_tma_split_finish_matches_cooperative_reference() -> Result<(), Box<dyn Error>> {
     tma_finish::run_split_matches_reference_case()
+}
+
+#[ignore = "requires generated sm_120a PTX"]
+#[test]
+fn muon_tma_split_prepare_matches_cooperative_reference() -> Result<(), Box<dyn Error>> {
+    tma_prepare::run_split_matches_reference_case()
 }

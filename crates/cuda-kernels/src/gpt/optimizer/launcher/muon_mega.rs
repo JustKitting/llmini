@@ -42,6 +42,56 @@ impl OptimizerModule {
 
     pub fn muon_tma_prepare_polar(&self, args: MuonTmaPrepareArgs<'_>) -> Result<(), DriverError> {
         assert!(args.slot_index < args.slots.len() as u32);
+        assert!(args.matrix_len > 0);
+        assert!(args.polar_chunks.len() >= MUON_COOPERATIVE_BLOCKS);
+
+        self.apply.muon.tma_split.muon_tma_momentum_orient_kernel(
+            args.stream,
+            grid_x_config(args.matrix_len.div_ceil(CTA_THREADS), CTA_THREADS),
+            args.slots,
+            &mut *args.oriented,
+            args.slot_index,
+            args.mu,
+            args.grad_scale,
+        )?;
+
+        self.apply
+            .muon
+            .tma_split
+            .muon_tma_source_sumsq_chunks_kernel(
+                args.stream,
+                grid_x_config(MUON_COOPERATIVE_BLOCKS as u32, CTA_THREADS),
+                &*args.oriented,
+                &mut *args.polar_chunks,
+                args.matrix_len,
+            )?;
+
+        self.apply
+            .muon
+            .tma_split
+            .muon_tma_reduce_source_norm_kernel(
+                args.stream,
+                grid_x_config(1, CTA_THREADS),
+                &mut *args.polar_chunks,
+                MUON_COOPERATIVE_BLOCKS as u32,
+            )?;
+
+        self.apply.muon.tma_split.muon_tma_scale_source_to_x_kernel(
+            args.stream,
+            grid_x_config(args.matrix_len.div_ceil(CTA_THREADS), CTA_THREADS),
+            &*args.oriented,
+            args.polar_x,
+            &*args.polar_chunks,
+            args.matrix_len,
+        )
+    }
+
+    pub fn muon_tma_prepare_polar_cooperative_reference(
+        &self,
+        args: MuonTmaPrepareArgs<'_>,
+    ) -> Result<(), DriverError> {
+        assert!(args.slot_index < args.slots.len() as u32);
+        assert!(args.matrix_len > 0);
         self.apply.muon.tma_split.muon_tma_prepare_polar_kernel(
             args.stream,
             launch_config((MUON_COOPERATIVE_BLOCKS as u32, 1, 1), CTA_THREADS),

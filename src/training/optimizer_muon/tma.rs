@@ -50,6 +50,7 @@ pub(in crate::training) fn apply_muon_tma(args: MuonTmaArgs<'_>) -> Result<(), D
                 polar_x: &mut args.scratch.polar_x,
                 polar_chunks: &mut args.scratch.polar_chunks,
                 slot_index: slot_index as u32,
+                matrix_len: desc.rows * desc.cols,
                 mu: MU,
                 grad_scale: args.grad_scale,
             })?;
