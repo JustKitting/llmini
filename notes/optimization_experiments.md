@@ -45,6 +45,103 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-15
 commit: accepted local jj commit after full gate
+experiment: Partition and coalesce f16 layer-norm parameter gradients.
+status: accepted_900s
+change:
+  The active f16 layer-norm parameter kernel launched one 256-thread CTA per
+  embedding column. Every CTA walked the same 8192 rows through long-stride
+  loads, and the resulting 2048 CTAs repeatedly loaded row statistics. The
+  accepted kernel assigns each warp lane one of 32 adjacent columns and splits
+  rows across eight CTA partitions. Each warp reads a contiguous 32-column
+  segment, lane zero broadcasts mean and inverse standard deviation, and the
+  eight partition results use one atomic add per parameter output. This gives
+  the active 2048-column shape 512 CTAs. Non-exact shapes and the f32 final
+  layer-norm path retain the former kernel.
+numerics:
+  The reduction tree changes from one 256-thread column reduction to eight
+  coalesced row partitions combined by FP32 atomic addition. The result is
+  mathematically equivalent but not bitwise identical. A dedicated GPU test
+  compares the routed f16 path with a host reference, and both fixed-wall gates
+  remain inside the active 1% held-out-loss band.
+memory:
+  No persistent allocation was added. The new kernel uses 2048 bytes of CTA
+  shared memory and zeroes the existing 16KiB of d_weight/d_bias output before
+  its partitioned atomic reductions.
+minimum_impact_gate:
+  The promoted baseline averaged 900.286 / 1383 = 650.966016ms per step, so the
+  required saving was 3.254830ms per step. The active f16 layer-norm parameter
+  kernel cost 84.691175ms over 10 steps, or 8.469118ms per step, providing a
+  credible 2.602x pre-edit ceiling.
+geometry_screen:
+  A four-partition, 256-CTA version reduced the target to 64.006985ms over 10
+  steps, but total GPU work improved only about 1.70ms per step after memset
+  overhead. It was rejected before training gates. Eight partitions raised the
+  active grid to 512 CTAs and reduced the target to 37.061880ms, which cleared
+  the post-implementation floor. Do not retry four partitions on this shape.
+focused_profile:
+  Parent:
+    target/nsys/20260715_ms_eden_pair_bias_fused_candidate.nsys-rep
+    target/nsys/20260715_ms_eden_pair_bias_fused_candidate_cuda_gpu_kern_sum.csv
+    target/nsys/20260715_ms_eden_pair_bias_fused_candidate_cuda_gpu_mem_time_sum.csv
+  Accepted eight-partition candidate:
+    target/nsys/20260715_layer_norm_params_partitioned8_candidate.nsys-rep
+    target/nsys/20260715_layer_norm_params_partitioned8_candidate_cuda_gpu_kern_sum.csv
+    target/nsys/20260715_layer_norm_params_partitioned8_candidate_cuda_gpu_mem_time_sum.csv
+  Across the same 10 training steps plus endpoint validation:
+    f16 layer-norm parameter kernel: 84.691175 -> 37.061880ms,
+      saving 4.762930ms per step.
+    total GPU kernels: 643.139936 -> 639.291572ms per step.
+    added memset cost: 0.029778ms per step.
+    net GPU kernel-plus-memory saving: 3.818586ms per step, 0.587% of the
+      promoted whole step and above the 3.254830ms implementation floor.
+    held-out val_loss: 8.666283 -> 8.668301 (+0.023%).
+verification:
+  cargo fmt --all --check: pass.
+  cargo check --workspace: pass.
+  Fresh cargo oxide build --arch sm_120a after selecting eight partitions:
+    pass.
+  cargo test --workspace --release --lib --bins: pass, including 45 sweep tests
+    and 4 rust-kernels tests.
+  Routed f16 tiled parameter-gradient and existing f32 fallback GPU tests:
+    pass, 2 tests after the fresh PTX build.
+  ptxas: 26 registers, 2048 bytes shared memory, one barrier, and zero spill
+    stores/loads.
+  Focused 10-step run:
+    target/runs/20260715_144626Z_fineweb_60s
+    completed_steps=10, train_elapsed_s=6.360, val_loss=8.668301.
+  Required 30-second screen with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260715_144658Z_fineweb_30s
+    completed_steps=48, train_elapsed_s=30.108, val_loss=6.829417.
+  Required 900-second gate with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260715_144736Z_fineweb_900s
+    stdout: target/layer_norm_params_partitioned8_900_20260715.log
+    completed_steps=1393, train_elapsed_s=900.524, val_loss=4.934438.
+    All 28 high-fidelity samples were finite and nonzero, with zero skipped
+    updates, loss-spike skips, grad-norm-spike skips, or nonfinite skips. Grad
+    norm ranged from 1.160177708 to 18.969253540. Every sample retained batch 4
+    and sequence 2048.
+measured_effect:
+  Against the matched 30-second baseline:
+    completed_steps: 48 -> 48.
+    average step time: 631.020833ms -> 627.250000ms
+      (-3.770833ms, -0.598%).
+    held-out val_loss: 6.827017 -> 6.829417 (+0.002400, +0.035%).
+  Against the matched 900-second baseline:
+    completed_steps: 1383 -> 1393 (+10, +0.723%).
+    average step time: 650.966016ms -> 646.463747ms
+      (-4.502269ms, -0.692%).
+    training tokens: 11329536 -> 11411456 (+81920, +0.723%).
+    held-out val_loss: 4.925822 -> 4.934438 (+0.008616, +0.175%).
+decision:
+  Keep and promote. The focused profile and both fixed-wall gates reproduce the
+  speed signal, held-out loss remains within the 1% band, and the full run has
+  no numerical or skip instability. The next 0.5% threshold is
+  (900.524 / 1393) * 0.005 = 3.232319ms per step.
+```
+
+```text
+date: 2026-07-15
+commit: accepted local jj commit after full gate
 experiment: Fuse linear bias-gradient reduction into MS-EDEN pair transpose quantization.
 status: accepted_900s
 change:
