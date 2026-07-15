@@ -40,6 +40,83 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-15
 commit: accepted local jj commit after full gate
+experiment: Shrink the dead full-attention FP32 dot scratch after fused dS.
+status: accepted_900s_memory_capacity
+change:
+  The accepted fused dO-V/dS production path no longer writes or reads the
+  full-square FP32 dot matrix. Resize that scratch from the full
+  B*H*S*S allocation to the B*S*d compact allocation still required as KDA
+  workspace. The GPT-2 wrapper now asserts that full-attention backward has
+  saved forward probabilities, making its compact-scratch contract explicit;
+  the lower-level CUDA fallback remains available to callers that provide a
+  square dot scratch. The exact 16-layer, width-2048, 32-head, batch-1,
+  seq-8192 model and its training math are unchanged.
+minimum_impact_gate:
+  This is a measured memory-capacity candidate, so the 0.5% whole-step speed
+  filter does not apply. It must preserve model math, held-out loss, stability,
+  and step time through the normal 30-second and 900-second gates.
+memory_capacity_gate:
+  The old dot buffer contained 2147483648 FP32 values, or 8589934592 bytes.
+  KDA needs only 16777216 FP32 values, or 67108864 bytes. Exact one-step used
+  memory fell from 97128742912 to 88605917184 bytes: a reduction of
+  8522825728 bytes, exactly 7.9375 GiB and exactly the projected buffer delta.
+  On the 101973491712-byte device, measured free memory increased from
+  4844748800 bytes (4.512024 GiB) to 13367574528 bytes (12.449524 GiB).
+  This materially expands activation/tape headroom, but does not by itself
+  establish that batch 2 fits or improves throughput; either claim still
+  requires a separately rebuilt and validated B2 configuration.
+verification:
+  cargo fmt --all --check: pass.
+  cargo check -q: pass.
+  cargo test -q -p rust-kernels-cuda --lib: pass.
+  cargo test -q -p gpt2-nvfp4 --lib: pass.
+  cargo test -q --bin sweep: pass, 45 tests.
+  cargo test -q --bin rust-kernels: pass, 4 tests.
+  Fresh cargo oxide build --arch sm_120a: pass.
+  Dedicated GPU reference test after the fresh PTX build:
+    CUDA_DEVICE_INDEX=0 cargo test -q -p rust-kernels-cuda
+      --test causal_attention_backward_tc
+      materialized_tc_backward_matches_reference --release
+      -- --ignored --nocapture --test-threads=1: pass, 1 test.
+  Exact 1B/8K FineWeb one-step memory/correctness diagnostic:
+    target/runs/20260715_114205Z_fineweb_60s
+    completed_steps=1, train_elapsed_s=0.875, val_loss=10.407254,
+    used_bytes=88605917184, free_bytes=13367574528. The logged loss matches the
+    parent exactly.
+  Required 30-second screen with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260715_114312Z_fineweb_30s
+    completed_steps=34, train_elapsed_s=30.529, val_loss=7.080664.
+  Required 900-second gate with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260715_114400Z_fineweb_900s
+    completed_steps=979, train_elapsed_s=900.349, val_loss=5.112494.
+    All 20 high-fidelity samples were finite and nonzero, with zero skipped
+    updates, loss-spike skips, grad-norm-spike skips, or nonfinite skips. Grad
+    norm ranged from 1.175463557 to 19.025783539.
+measured_effect:
+  Against the matched 30-second parent:
+    completed_steps: 34 -> 34 (unchanged).
+    average step time: 0.896235294s -> 0.897911765s
+      (+1.676471ms, +0.187%).
+    token throughput: 9140.457 -> 9123.391 tokens/s (-0.187%).
+    held-out val_loss: 7.080103 -> 7.080664 (+0.000561, +0.008%).
+  Against the matched 900-second parent:
+    completed_steps: 980 -> 979 (-1, -0.102%).
+    average step time: 0.918817347s -> 0.919661900s
+      (+0.844553ms, +0.092%).
+    training tokens: 8028160 -> 8019968 (-8192, -0.102%).
+    token throughput: 8915.809 -> 8907.621 tokens/s (-0.092%).
+    held-out val_loss: 5.115751 -> 5.112494 (-0.003257, -0.064%).
+decision:
+  Keep and promote under the memory-capacity rule. The exact allocation saving
+  is 7.9375 GiB, both fixed-wall comparisons show only sub-0.2% runtime noise,
+  held-out loss does not regress, and the sustained stability record is clean.
+  notes/sweep_baseline.env points to this run. The new nominal 0.5% kernel
+  threshold is 4.598309ms per step.
+```
+
+```text
+date: 2026-07-15
+commit: accepted local jj commit after full gate
 experiment: Fuse full-attention dO-V matmul with the dS epilogue.
 status: accepted_900s
 change:

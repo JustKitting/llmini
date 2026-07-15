@@ -46,7 +46,7 @@ impl AttentionCoreScratchBuffers {
             backward_d_out: DeviceBuffer::zeroed(stream, compact)?,
             d_out: DeviceBuffer::zeroed(stream, compact)?,
             scores: DeviceBuffer::zeroed(stream, square)?,
-            dot: DeviceBuffer::zeroed(stream, square)?,
+            dot: DeviceBuffer::zeroed(stream, compact)?,
             p: DeviceBuffer::zeroed(stream, compact)?,
             ds: DeviceBuffer::zeroed(stream, compact)?,
             p_half: DeviceBuffer::zeroed(stream, square)?,

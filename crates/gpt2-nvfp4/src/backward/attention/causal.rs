@@ -7,6 +7,10 @@ use crate::AttentionDims;
 pub fn causal_attention_backward(
     args: AttentionCoreBackwardArgs<'_, '_, '_>,
 ) -> Result<(), DriverError> {
+    assert!(
+        !args.use_full_attention || args.reuse_forward_probs,
+        "the GPT-2 full-attention backward scratch requires saved forward probabilities"
+    );
     let dims = AttentionDims::new(args.use_full_attention);
     let tc_args = CausalAttentionBackwardTcArgs {
         reuse_forward_probs: args.reuse_forward_probs,
