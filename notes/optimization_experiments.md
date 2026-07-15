@@ -44,6 +44,60 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 
 ```text
 date: 2026-07-15
+commit: rejected uncommitted candidate, code reverted
+experiment: Fuse the Muon prepare normalization sum into momentum orientation.
+status: rejected_profile_gate
+change:
+  On the active split TMA prepare path, accumulated each block's Nesterov
+  momentum sumsq while momentum_orient wrote the oriented FP32 tensor. Reused
+  those chunks in Polar normalization and removed its separate full source
+  scan. The mega fallback path was unchanged. This revisited a legacy failed
+  experiment only because the launch contract materially changed: the former
+  180-block mega kernel used 80 registers before the candidate and failed at
+  91, while the current 125-block split prepare kernel used only 32 registers.
+minimum_impact_gate:
+  The parent prepare family cost 25.447039ms per step. Its explicit memory
+  traffic is approximately 28 bytes per element across momentum/orient,
+  norm-scan, and normalized-copy work; removing the 4-byte norm read gave a
+  conservative 4/28 * 25.447039 = 3.635291ms per-step ceiling. This was 1.110x
+  the active 3.276448ms pre-edit floor.
+verification:
+  cargo fmt --all: pass.
+  cargo check -p rust-kernels-cuda -p rust-kernels: pass.
+  Fresh cargo oxide build --arch sm_120a: pass.
+  Muon GPU recurrence suite after the fresh PTX build: pass, 4 tests.
+  ptxas:
+    target/ptxas_muon_prepare_baseline.log
+    target/ptxas_muon_prepare_norm_fused.log
+    muon_tma_prepare_polar_kernel moved from 32 to 29 registers, retained 32
+    bytes shared memory, and had zero spill stores/loads. The prior cooperative
+    launch failure did not recur.
+  One-step launch diagnostic only:
+    target/runs/20260715_141050Z_fineweb_60s
+    completed_steps=1, train_elapsed_s=0.618, val_loss=10.416952.
+focused_profile:
+  Parent:
+    target/nsys/20260715_muon_final_row_norm_candidate.nsys-rep
+    target/nsys/20260715_muon_final_row_norm_candidate_cuda_gpu_kern_sum.csv
+  Candidate:
+    target/nsys/20260715_muon_prepare_norm_fused_candidate.nsys-rep
+    target/nsys/20260715_muon_prepare_norm_fused_candidate_cuda_gpu_kern_sum.csv
+  Across the same 10 training steps plus endpoint validation:
+    muon_tma_prepare_polar_kernel: 25.447039 -> 24.097794ms per step,
+      saving 1.349245ms per step.
+    total GPU kernel time: 649.594602 -> 649.393867ms per step,
+      saving only 0.200735ms per step (0.031%).
+    held-out val_loss: 8.659902 -> 8.664639 (+0.055%).
+decision:
+  Reject before the 30-second and 900-second gates. The changed split launch
+  made the implementation viable, but its 1.349245ms local saving missed the
+  3.276448ms post-implementation profile floor and did not produce a credible
+  whole-step speedup. Code was reverted and the committed sm_120a PTX/release
+  baseline was rebuilt.
+```
+
+```text
+date: 2026-07-15
 commit: accepted local jj commit after full gate
 experiment: Replace the final Muon Gram construction with fused FP32 row norms.
 status: accepted_900s
