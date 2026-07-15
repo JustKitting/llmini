@@ -14,6 +14,7 @@ use super::cta_f32_rhs::cta_matmul_f32_rhs_body;
 use super::cta_half_rhs::{
     cta_matmul_half_a_transposed_rhs_lower_a_body, cta_matmul_half_rhs_lower_a_body,
 };
+use super::cta_lower_ds::cta_matmul_lower_ds_body;
 use super::pad::pad_rows_body;
 
 pub const F16_THREADS_PER_BLOCK: u32 = 256;
@@ -72,6 +73,24 @@ pub(super) mod module {
         k: u32,
     ) {
         call_with_tiles!(cta_matmul_lower_body; a, b_t, out; batch_count, m, n, k);
+    }
+
+    #[kernel]
+    pub fn f16_cta_tc_matmul_lower_ds_kernel(
+        a: &[u16],
+        b_t: &[u16],
+        probs: &[u16],
+        softmax_d: &[f32],
+        out: DisjointSlice<u16>,
+        batch_count: u32,
+        m: u32,
+        n: u32,
+        k: u32,
+    ) {
+        call_with_tiles!(
+            cta_matmul_lower_ds_body; a, b_t, probs, softmax_d, out;
+            batch_count, m, n, k
+        );
     }
 
     #[kernel]

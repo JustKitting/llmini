@@ -40,6 +40,88 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-15
 commit: accepted local jj commit after full gate
+experiment: Fuse full-attention dO-V matmul with the dS epilogue.
+status: accepted_900s
+change:
+  Added a lower-triangular tensor-core matmul entry whose store epilogue reads
+  saved FP16 probabilities and the row softmax dot, then writes
+  dS = P * (dO*V^T - D) directly as FP16 while each FP32 accumulator is live.
+  All four production full-attention backward passes now bypass the 8-GiB FP32
+  dot write/read and the standalone attention_ds_from_probs_f16 launch. The
+  fallback reconstruction path remains available for callers without saved
+  probabilities. The exact 1B/8K model and all KDA blocks are unchanged.
+minimum_impact_gate:
+  The active baseline was 900.630s / 965 = 0.933295337s per step, making the
+  0.5% threshold 4.666477ms. The four parent dO-V lower matmuls took
+  28.421600ms and the four following dS kernels took 27.278688ms, for a
+  55.700288ms affected family. Eliminating the intermediate FP32 matrix and
+  separate pass had a credible impact far above the threshold before editing.
+focused_profile:
+  Parent full-step report:
+    target/ncu/20260715_1b_b1_s8192_tape_attention_probs.ncu-rep
+    target/ncu/20260715_1b_b1_s8192_tape_attention_probs.csv
+  Candidate filtered report:
+    target/ncu/20260715_1b_b1_s8192_fused_dot_ds.ncu-rep
+    target/ncu/20260715_1b_b1_s8192_fused_dot_ds.csv
+  The four fused f16_cta_tc_matmul_lower_ds_kernel launches took 42.006944ms,
+  replacing 55.700288ms of parent work. The focused saving is 13.693344ms per
+  step, 24.584% of the affected family and 1.467% of the active whole step, so
+  it clears the required 4.666477ms gate.
+memory_capacity:
+  This first fusion stage leaves allocation unchanged at 97128742912 bytes.
+  The old FP32 dot scratch is no longer touched by the production saved-prob
+  path, but remains allocated for the reconstruction fallback. Removing or
+  shrinking that buffer is a separate measured memory candidate.
+verification:
+  cargo fmt --all --check: pass.
+  cargo check -q: pass.
+  cargo test -q -p rust-kernels-cuda --lib: pass.
+  cargo test -q -p gpt2-nvfp4 --lib: pass.
+  cargo test -q --bin sweep: pass, 45 tests.
+  cargo test -q --bin rust-kernels: pass, 4 tests.
+  Fresh cargo oxide build --arch sm_120a: pass.
+  Dedicated GPU reference test exercises the fused external-probability path:
+    CUDA_DEVICE_INDEX=0 cargo test -q -p rust-kernels-cuda
+      --test causal_attention_backward_tc
+      materialized_tc_backward_matches_reference --release
+      -- --ignored --nocapture --test-threads=1: pass, 1 test.
+  Exact 1B/8K FineWeb one-step diagnostic:
+    target/runs/20260715_112314Z_fineweb_60s
+    completed_steps=1, train_elapsed_s=0.872, val_loss=10.407254,
+    used_bytes=97128742912. The logged loss matches the parent exactly.
+  Required 30-second screen with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260715_112344Z_fineweb_30s
+    completed_steps=34, train_elapsed_s=30.472, val_loss=7.080103.
+  Required 900-second gate with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260715_112423Z_fineweb_900s
+    completed_steps=980, train_elapsed_s=900.441, val_loss=5.115751.
+    All 20 high-fidelity samples were finite and nonzero, with zero skipped
+    updates, loss-spike skips, grad-norm-spike skips, or nonfinite skips. Grad
+    norm ranged from 1.163026452 to 19.025783539.
+measured_effect:
+  Against the matched 30-second parent:
+    completed_steps: 33 -> 34 (+1, +3.030%).
+    average step time: 0.913333333s -> 0.896235294s
+      (-17.098039ms, -1.872%).
+    token throughput: 8969.343 -> 9140.457 tokens/s (+1.908%).
+    held-out val_loss: 7.101087 -> 7.080103 (-0.020984, -0.296%).
+  Against the matched 900-second parent:
+    completed_steps: 965 -> 980 (+15, +1.554%).
+    average step time: 0.933295337s -> 0.918817347s
+      (-14.477990ms, -1.551%).
+    training tokens: 7905280 -> 8028160 (+122880, +1.554%).
+    token throughput: 8777.500 -> 8915.809 tokens/s (+1.576%).
+    held-out val_loss: 5.118188 -> 5.115751 (-0.002437, -0.048%).
+decision:
+  Keep and promote. The focused profile and both fixed-wall gates reproduce the
+  speed signal, held-out loss improves, and the sustained stability record is
+  clean. notes/sweep_baseline.env points to this run. The new nominal 0.5%
+  kernel threshold is 4.594087ms per step.
+```
+
+```text
+date: 2026-07-15
+commit: accepted local jj commit after full gate
 experiment: Tape earlier full-attention FP16 probabilities for backward reuse.
 status: accepted_900s_speed_memory_trade
 change:

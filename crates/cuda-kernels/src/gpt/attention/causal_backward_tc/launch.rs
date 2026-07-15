@@ -3,7 +3,7 @@ use cuda_core::DriverError;
 use super::gather::TC_BACKWARD_THREADS_PER_BLOCK;
 use super::launch_config::attention_config;
 use super::launch_grads::run_grad_matmuls;
-use super::launch_scores::{run_dot_scores, run_pair_scores};
+use super::launch_scores::{run_ds_scores, run_pair_scores};
 use super::matmul::AttentionTcMatmulContext;
 use super::types::CausalAttentionBackwardTcArgs;
 use crate::attention::AttentionModule;
@@ -71,29 +71,26 @@ impl AttentionModule {
             params,
         )?;
         if reuse_forward_probs {
-            run_dot_scores(&tc_ctx, &mut scratch)?;
             match forward_probs_f16 {
                 Some(probs_half) => {
-                    kernels.attention_ds_from_probs_f16_kernel(
-                        stream,
-                        linear(batch_head * seq_len * seq_len),
+                    run_ds_scores(
+                        &tc_ctx,
+                        &*scratch.d_out,
+                        &*scratch.v,
                         probs_half,
-                        scratch.dot,
                         softmax_d,
-                        scratch.ds_half,
-                        params,
+                        &mut *scratch.ds_half,
                     )?;
                     run_grad_matmuls(&tc_ctx, &mut scratch, Some(probs_half))?;
                 }
                 None => {
-                    kernels.attention_ds_from_probs_f16_kernel(
-                        stream,
-                        linear(batch_head * seq_len * seq_len),
+                    run_ds_scores(
+                        &tc_ctx,
+                        &*scratch.d_out,
+                        &*scratch.v,
                         &*scratch.p_half,
-                        scratch.dot,
                         softmax_d,
-                        scratch.ds_half,
-                        params,
+                        &mut *scratch.ds_half,
                     )?;
                     run_grad_matmuls(&tc_ctx, &mut scratch, None)?;
                 }

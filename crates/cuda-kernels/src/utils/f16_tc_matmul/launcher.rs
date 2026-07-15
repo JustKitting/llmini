@@ -2,7 +2,10 @@ use std::sync::Arc;
 
 use cuda_core::{CudaModule, DriverError, LaunchConfig};
 
-use super::args::{F16ConvertArgs, F16TcMatmulArgs, F16TcMatmulHalfArgs, F16TcMatmulHalfRhsArgs};
+use super::args::{
+    F16ConvertArgs, F16TcMatmulArgs, F16TcMatmulHalfArgs, F16TcMatmulHalfDsArgs,
+    F16TcMatmulHalfRhsArgs,
+};
 use super::cta_tile::{CTA_M, CTA_N, CTA_THREADS, CtaMatmulDims};
 use super::kernels;
 use super::launch_ops::convert;
@@ -91,6 +94,32 @@ impl F16TcMatmulModule {
             cta_config(args.m, args.n, args.batch_count),
             args.a,
             args.b_t,
+            args.out,
+            args.batch_count,
+            args.m,
+            args.n,
+            args.k,
+        )
+    }
+
+    pub fn batched_matmul_half_input_lower_ds(
+        &self,
+        args: F16TcMatmulHalfDsArgs<'_, '_>,
+    ) -> Result<(), DriverError> {
+        assert_eq!(args.m, args.n);
+        assert!(args.a.len() >= elements(args.batch_count, args.m, args.k));
+        assert!(args.b_t.len() >= elements(args.batch_count, args.n, args.k));
+        assert!(args.probs.len() >= elements(args.batch_count, args.m, args.n));
+        assert!(args.softmax_d.len() >= elements(args.batch_count, args.m, 1));
+        assert!(args.out.len() >= elements(args.batch_count, args.m, args.n));
+
+        self.module.f16_cta_tc_matmul_lower_ds_kernel(
+            args.stream,
+            cta_config(args.m, args.n, args.batch_count),
+            args.a,
+            args.b_t,
+            args.probs,
+            args.softmax_d,
             args.out,
             args.batch_count,
             args.m,
