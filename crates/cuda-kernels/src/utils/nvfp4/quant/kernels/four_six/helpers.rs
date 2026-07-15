@@ -76,9 +76,8 @@ pub(crate) fn four_six_group_scale(
         candidate_error_and_payload_with_inv_scale(value, scale_six, global_scale, inv_scale_six);
     let (local_err_four, payload_four) =
         candidate_error_and_payload_with_inv_scale(value, scale_four, global_scale, inv_scale_four);
-    let err_six = half_warp_sum_f32(local_err_six, group_mask);
-    let err_four = half_warp_sum_f32(local_err_four, group_mask);
-    if err_six <= err_four {
+    let error_delta = half_warp_sum_f32(local_err_six - local_err_four, group_mask);
+    if error_delta <= 0.0 {
         (scale_bits_six as u8, payload_six)
     } else {
         (scale_bits_four as u8, payload_four)

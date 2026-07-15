@@ -45,6 +45,95 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-15
 commit: accepted local jj commit after full gate
+experiment: Compare four-six candidate errors with one half-warp reduction.
+status: accepted_900s
+change:
+  Four-six scale selection formerly reduced the nonnegative reconstruction
+  errors for grid maxima six and four independently, then compared the two
+  sums. It now subtracts the two lane-local squared errors and reduces that
+  difference once. This removes four half-warp shuffle stages and four FP32
+  additions from every group in ordinary, rowwise, exact, bounded, transposed,
+  schedule-free, and Muon four-six producers.
+numerics:
+  In real arithmetic, sum(error_six - error_four) <= 0 selects the same scale
+  as sum(error_six) <= sum(error_four). FP32 rounding can change a near-tie
+  choice because the subtraction now occurs before the reduction, so this is
+  quality-gated rather than claimed bitwise identical to the former selector.
+  Candidate scales, E2M1 payloads, individual squared errors, and stored byte
+  construction are unchanged. Both short matched endpoints and both fixed-wall
+  gates below show no adverse quality signal.
+memory:
+  No allocation, scratch size, or buffer lifetime changed. This is not a VRAM
+  capacity win.
+minimum_impact_gate:
+  The promoted baseline averaged 900.236 / 1513 = 595.000661ms per step and
+  required 2.975003ms per step. Directly affected kernels occupied 843.559511
+  / 846.168847ms over 10 steps, or approximately 84.5ms per step. Removing one
+  of two four-stage error reductions established a credible ceiling well above
+  the whole-step threshold.
+focused_profile:
+  Committed payload/XOR samples:
+    target/nsys/20260715_four_six_payload_xor_pack_batch_candidate.nsys-rep
+    target/nsys/20260715_four_six_payload_xor_pack_batch_candidate_reciprocal.nsys-rep
+    train elapsed: 5.822 and 5.834 seconds.
+    held-out val_loss: 8.663598 and 8.666880.
+  Candidate samples:
+    target/nsys/20260715_four_six_error_delta_candidate.nsys-rep
+    target/nsys/20260715_four_six_error_delta_candidate_reciprocal.nsys-rep
+    train elapsed: 5.786 and 5.800 seconds.
+    held-out val_loss: 8.665353 and 8.667118.
+  Across the same 10 training steps plus endpoint validation:
+    affected four-six producers including Muon encode:
+      843.559511 -> 800.790902ms and 846.168847 -> 803.198864ms,
+      saving 4.276861 / 4.296998ms per step.
+    all GPU kernels:
+      5926.982738 -> 5890.596234ms and 5939.349712 -> 5904.572064ms,
+      saving 3.638650 / 3.477765ms per step.
+    kernel launch counts remain exactly 92061 in all four profiles.
+verification:
+  cargo fmt --all, git diff --check, and fresh
+  cargo oxide build --arch sm_120a: pass.
+  All six focused NVFP4/linear GPU tests, the schedule-free Adam GPU test, and
+  all three focused Muon TMA GPU tests pass after the fresh rebuild.
+  Generated affected-kernel PTX uses 13 shuffle instructions instead of 17.
+  Representative registers change exact 27 -> 25, tiled transpose 37 -> 35,
+  generic 30 -> 27, and Muon encode 37 -> 36; other affected kernels are flat,
+  with zero per-thread local memory and no spills.
+  Required clean 30-second screen with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260715_200214Z_fineweb_30s
+    stdout: target/four_six_error_delta_30_20260715.log
+    completed_steps=53, train_elapsed_s=30.419, val_loss=6.749176.
+    Both high-fidelity samples were finite and nonzero, with zero skip flags.
+  Required 900-second gate with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260715_200301Z_fineweb_900s
+    stdout: target/four_six_error_delta_900_20260715.log
+    completed_steps=1526, train_elapsed_s=900.305, val_loss=4.890196.
+    All 31 high-fidelity samples were finite and nonzero, with zero skipped
+    updates, loss-spike skips, grad-norm-spike skips, or nonfinite skips. Grad
+    norm ranged from 1.130396724 to 18.956151962. Every sample retained batch
+    4, sequence 2048, and 8192 tokens per step.
+measured_effect:
+  Against the matched 30-second baseline:
+    completed_steps: 52 -> 53 (+1, +1.923%).
+    average step time: 578.019231 -> 573.943396ms
+      (-4.075835ms, -0.705%).
+    held-out val_loss: 6.765794 -> 6.749176 (-0.016618, -0.246%).
+  Against the matched 900-second baseline:
+    completed_steps: 1513 -> 1526 (+13, +0.859%).
+    average step time: 595.000661 -> 589.977064ms
+      (-5.023597ms, -0.844%).
+    training tokens: 12394496 -> 12500992 (+106496, +0.859%).
+    held-out val_loss: 4.898784 -> 4.890196 (-0.008588, -0.175%).
+decision:
+  Keep and promote. Both matched profiles clear the aggregate floor, both
+  fixed-wall gates improve throughput and held-out loss, and the full run is
+  stable. The next 0.5% threshold is
+  (900.305 / 1526) * 0.005 = 2.949885ms per step.
+```
+
+```text
+date: 2026-07-15
+commit: accepted local jj commit after full gate
 experiment: Reuse four-six candidate payloads and pack adjacent nibbles with one XOR shuffle.
 status: accepted_900s
 change:
