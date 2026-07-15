@@ -265,7 +265,7 @@ fn run_tma_polar_iteration(
         polar_cols,
         defer_bounds,
     )?;
-    run_tma_gemm_prepared(stream, runtime, ax, &mut tma, action_dims)?;
+    run_tma_gemm_prepared_and_b_amax(stream, runtime, ax, &mut tma, action_dims)?;
     trace_buffer(
         stream,
         trace,
@@ -276,7 +276,7 @@ fn run_tma_polar_iteration(
         Some(iter),
         desc,
     )?;
-    prepare_tma_b_transposed(
+    prepare_tma_b_transposed_precomputed_amax(
         stream,
         runtime,
         ax,
@@ -423,13 +423,6 @@ fn bound_source_and_gram(
     defer_bounds: bool,
 ) -> Result<(), DriverError> {
     let tma = tma;
-    runtime.quant.tensor_amax_f32(TensorAmaxArgs {
-        stream,
-        x: gram,
-        chunk_amax: tma.b.chunk_amax,
-        out: tma.bound_amax,
-        element_count: polar_rows * polar_rows,
-    })?;
     if defer_bounds {
         return Ok(());
     }
@@ -471,7 +464,7 @@ fn tma_matmul_self_transpose(
         dims.m,
         dims.k,
     )?;
-    run_tma_gemm_self_prepared(stream, runtime, out, &mut tma, dims)
+    run_tma_gemm_self_prepared_and_bound_amax(stream, runtime, out, &mut tma, dims)
 }
 
 fn prepare_tma_a_padded(
@@ -537,6 +530,27 @@ fn prepare_tma_b_transposed(
     cols: u32,
 ) -> Result<(), DriverError> {
     quantize_operand_transposed_padded(
+        stream,
+        runtime,
+        input,
+        tma.b.reborrow(),
+        rows,
+        cols,
+        dims.n,
+        dims.k,
+    )
+}
+
+fn prepare_tma_b_transposed_precomputed_amax(
+    stream: &CudaStream,
+    runtime: &Runtime,
+    input: &DeviceBuffer<f32>,
+    tma: &mut TmaScratchRefs<'_>,
+    dims: TmaDims,
+    rows: u32,
+    cols: u32,
+) -> Result<(), DriverError> {
+    quantize_operand_transposed_padded_with_amax(
         stream,
         runtime,
         input,
@@ -666,6 +680,57 @@ fn run_tma_gemm_prepared(
     crop_tma_out(stream, runtime, out, tma.out_padded, dims)
 }
 
+fn run_tma_gemm_prepared_and_b_amax(
+    stream: &CudaStream,
+    runtime: &Runtime,
+    out: &mut DeviceBuffer<f32>,
+    tma: &mut TmaScratchRefs<'_>,
+    dims: TmaDims,
+) -> Result<(), DriverError> {
+    if !dims.is_exact() {
+        run_tma_gemm_prepared(stream, runtime, out, tma, dims)?;
+        return runtime.quant.tensor_amax_f32(TensorAmaxArgs {
+            stream,
+            x: out,
+            chunk_amax: tma.b.chunk_amax,
+            out: tma.b.amax,
+            element_count: dims.logical_m * dims.logical_n,
+        });
+    }
+
+    runtime
+        .optimizer
+        .tma_gemm()
+        .prepare_tma_nvfp4_device_scales_into(
+            stream,
+            &*tma.a.bytes,
+            &*tma.a.scale_packed,
+            &*tma.b.bytes,
+            &*tma.b.scale_packed,
+            dims.m,
+            dims.k,
+            dims.n,
+            tma.descriptors,
+        )?;
+    let chunk_count = runtime
+        .optimizer
+        .tma_gemm()
+        .gemm_tma_nvfp4_device_scales_and_global_scale_buffers_with_output_amax(
+            stream,
+            &*tma.descriptors,
+            out,
+            tma.b.chunk_amax,
+            dims.m,
+            dims.k,
+            dims.n,
+            &*tma.a.global_scale,
+            &*tma.b.global_scale,
+        )?;
+    runtime
+        .quant
+        .tensor_amax_from_chunks_f32(stream, &*tma.b.chunk_amax, tma.b.amax, chunk_count)
+}
+
 fn run_tma_gemm_self_prepared(
     stream: &CudaStream,
     runtime: &Runtime,
@@ -730,6 +795,60 @@ fn run_tma_gemm_self_prepared(
             &*tma.a.global_scale,
         )?;
     crop_tma_out(stream, runtime, out, tma.out_padded, dims)
+}
+
+fn run_tma_gemm_self_prepared_and_bound_amax(
+    stream: &CudaStream,
+    runtime: &Runtime,
+    out: &mut DeviceBuffer<f32>,
+    tma: &mut TmaScratchRefs<'_>,
+    dims: TmaDims,
+) -> Result<(), DriverError> {
+    if !dims.is_exact() {
+        run_tma_gemm_self_prepared(stream, runtime, out, tma, dims)?;
+        return runtime.quant.tensor_amax_f32(TensorAmaxArgs {
+            stream,
+            x: out,
+            chunk_amax: tma.b.chunk_amax,
+            out: tma.bound_amax,
+            element_count: dims.logical_m * dims.logical_n,
+        });
+    }
+
+    runtime
+        .optimizer
+        .tma_gemm()
+        .prepare_tma_nvfp4_device_scales_into(
+            stream,
+            &*tma.a.bytes,
+            &*tma.a.scale_packed,
+            &*tma.a.bytes,
+            &*tma.a.scale_packed,
+            dims.m,
+            dims.k,
+            dims.n,
+            tma.descriptors,
+        )?;
+    let chunk_count = runtime
+        .optimizer
+        .tma_gemm()
+        .gemm_tma_nvfp4_device_scales_and_global_scale_buffers_with_output_amax(
+            stream,
+            &*tma.descriptors,
+            out,
+            tma.b.chunk_amax,
+            dims.m,
+            dims.k,
+            dims.n,
+            &*tma.a.global_scale,
+            &*tma.a.global_scale,
+        )?;
+    runtime.quant.tensor_amax_from_chunks_f32(
+        stream,
+        &*tma.b.chunk_amax,
+        tma.bound_amax,
+        chunk_count,
+    )
 }
 
 fn crop_tma_out(
@@ -808,6 +927,32 @@ fn quantize_operand_transposed_padded(
         out: scratch.amax,
         element_count: elements,
     })?;
+    quantize_operand_transposed_padded_with_amax(
+        stream,
+        runtime,
+        input,
+        scratch,
+        rows,
+        cols,
+        padded_rows,
+        padded_cols,
+    )
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "padded transpose quantization uses explicit dimensions"
+)]
+fn quantize_operand_transposed_padded_with_amax(
+    stream: &CudaStream,
+    runtime: &Runtime,
+    input: &DeviceBuffer<f32>,
+    scratch: OperandScratchRefs<'_>,
+    rows: u32,
+    cols: u32,
+    padded_rows: u32,
+    padded_cols: u32,
+) -> Result<(), DriverError> {
     runtime
         .quant
         .fp32_transpose_to_nvfp4_four_six_padded(Nvfp4QuantTransposePaddedArgs {

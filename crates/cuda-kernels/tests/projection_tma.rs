@@ -7,6 +7,7 @@ use rust_kernels_cuda::mlp::{MlpDownResidualArgs, MlpModule, MlpUpRelu2Args};
 use rust_kernels_cuda::mma::Nvfp4FourSixMmaWeightTensor;
 use rust_kernels_cuda::nvfp4::{Nvfp4DeviceTensor, Nvfp4RowwiseDeviceTensor};
 use rust_kernels_cuda::nvfp4_tma_matmul::{
+    kernels::tma_nvfp4_output_amax_chunks,
     launcher::Nvfp4GemmModule,
     pad::{TmaMatrixPadModule, U4RowPadArgs},
     scale_layout::{sm120_scale_packed_len, sm120_scale_padded_mn_extent},
@@ -38,6 +39,32 @@ fn tma_raw_padded_output_matches_old_lm_head_projection() -> Result<(), Box<dyn 
         &old_out.to_host_vec(&fixture.stream)?,
         TOLERANCE,
     );
+    Ok(())
+}
+
+#[ignore = "requires generated sm_120a PTX"]
+#[test]
+fn tma_output_amax_matches_stored_output() -> Result<(), Box<dyn Error>> {
+    let fixture = Fixture::new(ROWS, K, 128)?;
+    let mut plain = DeviceBuffer::<f32>::zeroed(&fixture.stream, ROWS * 128)?;
+    let mut fused = DeviceBuffer::<f32>::zeroed(&fixture.stream, ROWS * 128)?;
+    let chunk_count = tma_nvfp4_output_amax_chunks(ROWS as u32, 128);
+    let mut chunk_amax = DeviceBuffer::<f32>::zeroed(&fixture.stream, chunk_count as usize)?;
+
+    let launched_chunks =
+        fixture.tma_scalar_with_output_amax(&mut plain, &mut fused, &mut chunk_amax)?;
+    assert_eq!(launched_chunks, chunk_count);
+
+    let plain = plain.to_host_vec(&fixture.stream)?;
+    let fused = fused.to_host_vec(&fixture.stream)?;
+    assert_eq!(fused, plain, "amax epilogue changed the stored GEMM output");
+
+    let output_amax = fused.iter().copied().map(f32::abs).fold(0.0_f32, f32::max);
+    let fused_amax = chunk_amax
+        .to_host_vec(&fixture.stream)?
+        .into_iter()
+        .fold(0.0_f32, f32::max);
+    assert_eq!(fused_amax, output_amax);
     Ok(())
 }
 
@@ -288,6 +315,78 @@ impl Fixture {
             &self.weight_global,
         )?;
         Ok(())
+    }
+
+    fn tma_scalar_with_output_amax(
+        &self,
+        plain: &mut DeviceBuffer<f32>,
+        fused: &mut DeviceBuffer<f32>,
+        chunk_amax: &mut DeviceBuffer<f32>,
+    ) -> Result<u32, Box<dyn Error>> {
+        let mut input_scale_packed = DeviceBuffer::zeroed(
+            &self.stream,
+            sm120_scale_packed_len(sm120_scale_padded_mn_extent(self.rows), self.k),
+        )?;
+        let mut weight_scale_packed = DeviceBuffer::zeroed(
+            &self.stream,
+            sm120_scale_packed_len(sm120_scale_padded_mn_extent(self.n), self.k),
+        )?;
+        let mut descriptors = TmaNvfp4DeviceScaleDescriptors {
+            a: DeviceBuffer::zeroed(&self.stream, 1)?,
+            b: DeviceBuffer::zeroed(&self.stream, 1)?,
+            a_scales: DeviceBuffer::zeroed(&self.stream, 1)?,
+            b_scales: DeviceBuffer::zeroed(&self.stream, 1)?,
+        };
+
+        self.scale_pack.pack(
+            &self.stream,
+            &self.input_scales,
+            &mut input_scale_packed,
+            self.rows as u32,
+            self.k as u32,
+        )?;
+        self.scale_pack.pack(
+            &self.stream,
+            &self.weight_scales,
+            &mut weight_scale_packed,
+            self.n as u32,
+            self.k as u32,
+        )?;
+        self.tma.prepare_tma_nvfp4_device_scales_into(
+            &self.stream,
+            &self.input_bytes,
+            &input_scale_packed,
+            &self.weight_bytes,
+            &weight_scale_packed,
+            self.rows as u32,
+            self.k as u32,
+            self.n as u32,
+            &mut descriptors,
+        )?;
+        self.tma
+            .gemm_tma_nvfp4_device_scales_and_global_scale_buffers(
+                &self.stream,
+                &descriptors,
+                plain,
+                self.rows as u32,
+                self.k as u32,
+                self.n as u32,
+                &self.input_globals,
+                &self.weight_global,
+            )?;
+        Ok(self
+            .tma
+            .gemm_tma_nvfp4_device_scales_and_global_scale_buffers_with_output_amax(
+                &self.stream,
+                &descriptors,
+                fused,
+                chunk_amax,
+                self.rows as u32,
+                self.k as u32,
+                self.n as u32,
+                &self.input_globals,
+                &self.weight_global,
+            )?)
     }
 
     fn tma_affine(&self, out: &mut DeviceBuffer<f32>) -> Result<(), Box<dyn Error>> {

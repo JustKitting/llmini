@@ -45,6 +45,106 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-15
 commit: accepted local jj commit after full gate
+experiment: Produce Muon operand maxima in the TMA GEMM epilogue.
+status: accepted_900s
+change:
+  Every one of Muon's five Polar iterations launched a full FP32 tensor-amax
+  scan after both the self-transpose Gram product and the first Gram-action
+  product. The TMA epilogue already holds each scaled FP32 result immediately
+  before storing it, so a dedicated exact-shape variant now accumulates one
+  output maximum per MMA warp while writing the unchanged result. The existing
+  scalar reduction consumes those warp maxima. Gram maxima feed the numerical
+  bound directly, and first-action maxima feed the following transposed NVFP4
+  quantization. This replaces 670 full-output scan launches per training step.
+  Non-exact/padded output shapes retain the previous GEMM, crop, and scan path.
+numerics:
+  The fused maximum is taken from the exact FP32 values passed to the existing
+  global stores. Regrouping finite max operations is exact. The focused GPU
+  test confirms that the fused and ordinary TMA variants store bitwise-identical
+  output and that reducing the fused warp maxima equals a host maximum over the
+  stored output. The downstream scalar reduction and bound/quantization math
+  are unchanged.
+memory:
+  No allocation changes. The largest active fused launch writes 8320 FP32 warp
+  maxima into the existing 16640-element Muon operand chunk-amax scratch, so
+  peak VRAM and batch-capacity headroom are unchanged.
+minimum_impact_gate:
+  The promoted baseline averaged 900.207 / 1406 = 640.261024ms per step, so the
+  required saving was 3.201305ms per step. In the parent profile, the 6700
+  output scans attributable to these two TMA products cost 39.065085ms over 10
+  steps, or 3.906509ms per step. The candidate therefore cleared the pre-edit
+  mathematical screen before implementation.
+focused_profile:
+  Parent:
+    target/nsys/20260715_muon_schedule_amax_candidate.nsys-rep
+    target/nsys/20260715_muon_schedule_amax_candidate_cuda_gpu_kern_sum.csv
+    target/nsys/20260715_muon_schedule_amax_candidate_cuda_gpu_mem_time_sum.csv
+  Candidate:
+    target/nsys/20260715_tma_output_amax_candidate.nsys-rep
+    target/nsys/20260715_tma_output_amax_candidate_cuda_gpu_kern_sum.csv
+    target/nsys/20260715_tma_output_amax_candidate_cuda_gpu_mem_time_sum.csv
+  Across the same 10 training steps plus endpoint validation:
+    total GPU kernels: 6324.725731 -> 6209.374565ms.
+    memory operations: 94.449974 -> 94.465122ms.
+    net GPU kernel-plus-memory saving: 115.336018ms, or 11.533602ms per
+      training step, 1.801% of the promoted whole step and above the
+      3.201305ms implementation floor.
+    tensor-chunk amax launches: 12240 -> 5540, exactly 6700 fewer; time fell
+      from 127.748395 to 88.579452ms, saving 3.916894ms per step.
+    ordinary plus fused-amax TMA time: 922.464653 -> 880.150203ms. Restricting
+      the comparison to the six affected launch shapes gives
+      663.141366 -> 637.873120ms; the fused epilogue did not trade the removed
+      scans for a slower affected TMA aggregate.
+    held-out val_loss: 8.659158 -> 8.661894 (+0.032%).
+verification:
+  cargo fmt --all --check: pass.
+  cargo check --workspace: pass.
+  Fresh cargo oxide build --arch sm_120a: pass.
+  cargo test --workspace --release --lib --bins: pass, including 45 sweep tests
+    and 4 rust-kernels tests.
+  All six projection-TMA GPU tests after the fresh PTX build: pass, including
+    bitwise stored-output and exact output-amax checks for the new variant.
+  Five focused Muon optimizer GPU tests: pass.
+  ptxas for nvfp4_gemm_tma_amax_kernel: 161 registers, 92240 bytes shared
+    memory, one barrier, and zero spills, identical resources to the ordinary
+    TMA GEMM kernel.
+  Focused 10-step run:
+    target/runs/20260715_160741Z_fineweb_60s
+    completed_steps=10, train_elapsed_s=6.176, val_loss=8.661894.
+  Required captured 30-second screen with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260715_160946Z_fineweb_30s
+    stdout: target/tma_output_amax_30_20260715.log
+    completed_steps=49, train_elapsed_s=30.349, val_loss=6.811712.
+  Required 900-second gate with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260715_161103Z_fineweb_900s
+    stdout: target/tma_output_amax_900_20260715.log
+    completed_steps=1418, train_elapsed_s=900.331, val_loss=4.910333.
+    All 29 high-fidelity samples were finite and nonzero, with zero skipped
+    updates, loss-spike skips, grad-norm-spike skips, or nonfinite skips. Grad
+    norm ranged from 1.189586520 to 18.969266891. Every sample retained batch 4
+    and sequence 2048.
+measured_effect:
+  Against the matched 30-second baseline:
+    completed_steps: 49 -> 49.
+    average step time: 619.551020 -> 619.367347ms
+      (-0.183673ms, -0.030%).
+    held-out val_loss: 6.809889 -> 6.811712 (+0.001823, +0.027%).
+  Against the matched 900-second baseline:
+    completed_steps: 1406 -> 1418 (+12, +0.853%).
+    average step time: 640.261024 -> 634.930183ms
+      (-5.330841ms, -0.833%).
+    training tokens: 11517952 -> 11616256 (+98304, +0.853%).
+    held-out val_loss: 4.911748 -> 4.910333 (-0.001415, -0.029%).
+decision:
+  Keep and promote. The focused profile clears the minimum-impact gate, the
+  full fixed-wall run executes 12 more steps with slightly better held-out
+  loss, and all high-fidelity samples remain stable. The next 0.5% threshold
+  is (900.331 / 1418) * 0.005 = 3.174651ms per step.
+```
+
+```text
+date: 2026-07-15
+commit: accepted local jj commit after full gate
 experiment: Reuse next-step schedule-free amax from the Muon finish pass.
 status: accepted_900s
 change:
