@@ -32,6 +32,7 @@ pub fn run_first_iteration_case(row_count: usize, col_count: usize) -> Result<()
         max_ax_len: len as u32,
         max_dim: gram_dim as u32,
         mu: MU,
+        grad_scale: GRAD_SCALE,
         learning_rate: LEARNING_RATE,
         weight_decay: WEIGHT_DECAY,
         average_coefficient: 1.0,
@@ -49,12 +50,13 @@ pub fn run_first_iteration_case(row_count: usize, col_count: usize) -> Result<()
 }
 
 const GRAD_VALUE: f32 = 0.5;
+const GRAD_SCALE: f32 = 0.5;
 const LEARNING_RATE: f32 = 0.25;
 const MU: f32 = 0.95;
 const WEIGHT_DECAY: f32 = 0.1;
 
 fn expected_update(rows: usize, cols: usize) -> f32 {
-    let nesterov = (1.0 - MU) * (1.0 + MU) * GRAD_VALUE;
+    let nesterov = (1.0 - MU) * (1.0 + MU) * GRAD_VALUE * GRAD_SCALE;
     let update = polar_first_iteration_scalar(nesterov, rows, cols);
     let scale = 0.2 * (rows.max(cols) as f32).sqrt();
     (1.0 - LEARNING_RATE * WEIGHT_DECAY) - LEARNING_RATE * update * scale

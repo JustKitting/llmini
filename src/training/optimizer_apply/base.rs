@@ -23,6 +23,7 @@ pub(super) struct BaseAdamUpdateArgs<'a> {
     pub state: &'a mut OptimizerStateBuffers,
     pub step: u32,
     pub average_coefficient: f32,
+    pub grad_scale: f32,
     pub trace: &'a mut OptimizerTrace,
 }
 
@@ -34,6 +35,7 @@ pub(super) fn update_base_adam(args: BaseAdamUpdateArgs<'_>) -> Result<(), Drive
             args.scratch,
             args.step,
             args.average_coefficient,
+            args.grad_scale,
         );
         let token_embedding_ms = adam.update_timed(
             &mut args.uploaded.token_embedding,
@@ -59,6 +61,7 @@ pub(super) fn update_base_adam(args: BaseAdamUpdateArgs<'_>) -> Result<(), Drive
             state: &mut args.state.next_latent,
             step: args.step,
             average_coefficient: args.average_coefficient,
+            grad_scale: args.grad_scale,
         })
     })?;
 

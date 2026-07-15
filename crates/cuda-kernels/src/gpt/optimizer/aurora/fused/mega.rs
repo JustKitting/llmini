@@ -30,6 +30,7 @@ pub(crate) mod module {
         max_ax_len: u32,
         max_dim: u32,
         mu: f32,
+        grad_scale: f32,
         learning_rate: f32,
         weight_decay: f32,
         average_coefficient: f32,
@@ -54,6 +55,7 @@ pub(crate) mod module {
         };
         let scalars = AuroraUpdateScalars {
             mu,
+            grad_scale,
             learning_rate,
             weight_decay,
             average_coefficient,

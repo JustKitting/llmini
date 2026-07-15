@@ -31,6 +31,7 @@ pub struct AuroraMegaUpdateArgs<'a> {
     pub max_ax_len: u32,
     pub max_dim: u32,
     pub mu: f32,
+    pub grad_scale: f32,
     pub learning_rate: f32,
     pub weight_decay: f32,
     pub average_coefficient: f32,
@@ -45,6 +46,7 @@ pub struct AuroraTmaPrepareArgs<'a> {
     pub polar_chunks: &'a mut DeviceBuffer<f32>,
     pub slot_index: u32,
     pub mu: f32,
+    pub grad_scale: f32,
 }
 
 pub struct AuroraTmaFinishArgs<'a> {

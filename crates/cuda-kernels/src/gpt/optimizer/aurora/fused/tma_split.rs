@@ -23,6 +23,7 @@ pub(crate) mod module {
         mut polar_chunks: DisjointSlice<f32>,
         slot_index: u32,
         mu: f32,
+        grad_scale: f32,
     ) {
         static mut WARP_SUMS: SharedArray<f32, { WARPS_PER_BLOCK as usize }> = SharedArray::UNINIT;
 
@@ -41,6 +42,7 @@ pub(crate) mod module {
             work,
             shape,
             mu,
+            grad_scale,
             transposed,
         );
         grid::sync();
@@ -85,6 +87,7 @@ pub(crate) mod module {
         let work = WorkGrid::x_axis();
         let scalars = AuroraUpdateScalars {
             mu: 0.0,
+            grad_scale: 1.0,
             learning_rate: learning_rate * desc.learning_rate_multiplier,
             weight_decay,
             average_coefficient,

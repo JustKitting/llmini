@@ -24,6 +24,7 @@ pub(in crate::training) struct AuroraTmaArgs<'a> {
     pub(in crate::training) slot_count: usize,
     pub(in crate::training) step: u32,
     pub(in crate::training) average_coefficient: f32,
+    pub(in crate::training) grad_scale: f32,
 }
 
 pub(in crate::training) fn apply_aurora_tma(args: AuroraTmaArgs<'_>) -> Result<(), DriverError> {
@@ -46,6 +47,7 @@ pub(in crate::training) fn apply_aurora_tma(args: AuroraTmaArgs<'_>) -> Result<(
                 polar_chunks: &mut args.scratch.polar_chunks,
                 slot_index: slot_index as u32,
                 mu: MU,
+                grad_scale: args.grad_scale,
             })?;
 
         let (polar_rows, polar_cols) = polar_shape(desc);

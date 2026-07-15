@@ -7,6 +7,7 @@ use crate::common::nvfp4::{one_pair_bytes, one_scales};
 use crate::common::{self, assert_all_close};
 
 const LEN: usize = 32;
+const GRAD_SCALE: f32 = 0.5;
 
 struct AdamFixture {
     bytes: DeviceBuffer<u8>,
@@ -51,6 +52,7 @@ impl AdamFixture {
             z_master: &mut self.z_master,
             x_master: &mut self.x_master,
             grad: &self.grad,
+            grad_scale: GRAD_SCALE,
             first_moment: &mut self.first,
             second_moment: &mut self.second,
             amax: &mut self.amax,
@@ -78,8 +80,8 @@ fn nvfp4_adamw_update_tracks_moments_and_requantizes() -> Result<(), Box<dyn Err
     fixture.apply(&stream, &module, 1.0)?;
     assert_all_close(&fixture.z_master.to_host_vec(&stream)?, 0.725, 1.0e-6);
     assert_all_close(&fixture.x_master.to_host_vec(&stream)?, 0.725, 1.0e-6);
-    assert_all_close(&fixture.first.to_host_vec(&stream)?, 0.05, 1.0e-6);
-    assert_all_close(&fixture.second.to_host_vec(&stream)?, 0.0125, 1.0e-6);
+    assert_all_close(&fixture.first.to_host_vec(&stream)?, 0.025, 1.0e-6);
+    assert_all_close(&fixture.second.to_host_vec(&stream)?, 0.003125, 1.0e-6);
     Ok(())
 }
 

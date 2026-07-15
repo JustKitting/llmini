@@ -32,6 +32,7 @@ impl OptimizerModule {
                 args.max_ax_len,
                 args.max_dim,
                 args.mu,
+                args.grad_scale,
                 args.learning_rate,
                 args.weight_decay,
                 args.average_coefficient,
@@ -53,6 +54,7 @@ impl OptimizerModule {
             args.polar_chunks,
             args.slot_index,
             args.mu,
+            args.grad_scale,
         )
     }
 

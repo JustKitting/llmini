@@ -35,15 +35,18 @@ impl OptimizerModule {
             args.max_norm,
         )?;
 
-        self.apply.grad_clip.grad_clip_apply_kernel(
-            args.stream,
-            grid_x_config(args.chunk_count, GRAD_CLIP_THREADS_PER_BLOCK),
-            args.ptrs,
-            args.lens,
-            args.chunk_offsets,
-            args.scale,
-            args.slot_count,
-            args.chunk_count,
-        )
+        if args.apply {
+            self.apply.grad_clip.grad_clip_apply_kernel(
+                args.stream,
+                grid_x_config(args.chunk_count, GRAD_CLIP_THREADS_PER_BLOCK),
+                args.ptrs,
+                args.lens,
+                args.chunk_offsets,
+                args.scale,
+                args.slot_count,
+                args.chunk_count,
+            )?;
+        }
+        Ok(())
     }
 }

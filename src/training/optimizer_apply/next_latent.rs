@@ -17,6 +17,7 @@ pub(super) struct NextLatUpdateArgs<'a> {
     pub state: &'a mut NextLatState,
     pub step: u32,
     pub average_coefficient: f32,
+    pub grad_scale: f32,
 }
 
 pub(super) fn update_next_latent(args: NextLatUpdateArgs<'_>) -> Result<(), DriverError> {
@@ -29,6 +30,7 @@ pub(super) fn update_next_latent(args: NextLatUpdateArgs<'_>) -> Result<(), Driv
         state,
         step,
         average_coefficient,
+        grad_scale,
     } = args;
     let learning_rate = next_latent_adam_learning_rate(step);
     let mut adam = AdamUpdate::with_learning_rate(
@@ -37,6 +39,7 @@ pub(super) fn update_next_latent(args: NextLatUpdateArgs<'_>) -> Result<(), Driv
         scratch,
         step,
         average_coefficient,
+        grad_scale,
         learning_rate,
     );
 

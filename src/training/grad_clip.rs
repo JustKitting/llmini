@@ -22,6 +22,11 @@ pub(super) struct GradientClipBuffers {
     chunk_count: u32,
 }
 
+pub(super) struct GradientClipResult {
+    pub norm: f32,
+    pub scale: f32,
+}
+
 impl GradientClipBuffers {
     pub(super) fn new(
         stream: &CudaStream,
@@ -47,7 +52,7 @@ impl GradientClipBuffers {
         &mut self,
         stream: &CudaStream,
         optimizer: &OptimizerModule,
-    ) -> Result<f32, DriverError> {
+    ) -> Result<GradientClipResult, DriverError> {
         optimizer.clip_gradients(GradientClipArgs {
             stream,
             ptrs: &self.ptrs,
@@ -59,8 +64,11 @@ impl GradientClipBuffers {
             slot_count: self.slot_count,
             chunk_count: self.chunk_count,
             max_norm: GLOBAL_GRAD_CLIP_NORM,
+            apply: false,
         })?;
-        Ok(self.norm.to_host_vec(stream)?[0])
+        let scale = self.scale.to_host_vec(stream)?[0];
+        let norm = self.norm.to_host_vec(stream)?[0];
+        Ok(GradientClipResult { norm, scale })
     }
 }
 

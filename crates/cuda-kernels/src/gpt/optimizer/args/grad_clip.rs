@@ -11,4 +11,5 @@ pub struct GradientClipArgs<'a> {
     pub slot_count: u32,
     pub chunk_count: u32,
     pub max_norm: f32,
+    pub apply: bool,
 }

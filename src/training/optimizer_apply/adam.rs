@@ -19,6 +19,7 @@ pub(super) struct AdamUpdate<'a, 'scratch> {
     scratch: &'scratch mut OptimizerScratch,
     step: u32,
     average_coefficient: f32,
+    grad_scale: f32,
     learning_rate: f32,
 }
 
@@ -29,6 +30,7 @@ impl<'a, 'scratch> AdamUpdate<'a, 'scratch> {
         scratch: &'scratch mut OptimizerScratch,
         step: u32,
         average_coefficient: f32,
+        grad_scale: f32,
     ) -> Self {
         Self::with_learning_rate(
             stream,
@@ -36,6 +38,7 @@ impl<'a, 'scratch> AdamUpdate<'a, 'scratch> {
             scratch,
             step,
             average_coefficient,
+            grad_scale,
             adam_learning_rate(step),
         )
     }
@@ -46,6 +49,7 @@ impl<'a, 'scratch> AdamUpdate<'a, 'scratch> {
         scratch: &'scratch mut OptimizerScratch,
         step: u32,
         average_coefficient: f32,
+        grad_scale: f32,
         learning_rate: f32,
     ) -> Self {
         Self {
@@ -54,6 +58,7 @@ impl<'a, 'scratch> AdamUpdate<'a, 'scratch> {
             scratch,
             step,
             average_coefficient,
+            grad_scale,
             learning_rate,
         }
     }
@@ -72,6 +77,7 @@ impl<'a, 'scratch> AdamUpdate<'a, 'scratch> {
             z_master: &mut state.z_master,
             x_master: &mut state.x_master,
             grad,
+            grad_scale: self.grad_scale,
             first_moment: &mut state.first,
             second_moment: &mut state.second,
             amax: &mut self.scratch.amax,

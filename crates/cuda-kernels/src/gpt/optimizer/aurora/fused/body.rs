@@ -28,6 +28,7 @@ pub(super) fn aurora_matrix_update_body(
         work,
         shape,
         scalars.mu,
+        scalars.grad_scale,
         transposed,
     );
     grid::sync();

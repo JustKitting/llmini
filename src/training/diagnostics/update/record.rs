@@ -12,15 +12,22 @@ pub(super) struct UpdateSnapshotCollector<'a> {
     stream: &'a CudaStream,
     step: u32,
     average_coefficient: f32,
+    grad_scale: f32,
     updates: Vec<PendingTensorUpdateDiagnostics>,
 }
 
 impl<'a> UpdateSnapshotCollector<'a> {
-    pub(super) fn new(stream: &'a CudaStream, step: u32, average_coefficient: f32) -> Self {
+    pub(super) fn new(
+        stream: &'a CudaStream,
+        step: u32,
+        average_coefficient: f32,
+        grad_scale: f32,
+    ) -> Self {
         Self {
             stream,
             step,
             average_coefficient,
+            grad_scale,
             updates: Vec::new(),
         }
     }
@@ -91,13 +98,17 @@ impl<'a> UpdateSnapshotCollector<'a> {
         grad: &DeviceBuffer<f32>,
         adam: Option<AdamSnapshot>,
     ) -> AppResult {
+        let mut grad = grad.to_host_vec(self.stream)?;
+        for value in &mut grad {
+            *value *= self.grad_scale;
+        }
         self.updates.push(PendingTensorUpdateDiagnostics {
             name: name.to_string(),
             len: tensor.len,
             before_bytes: tensor.bytes.to_host_vec(self.stream)?,
             before_scales: tensor.scales.to_host_vec(self.stream)?,
             before_global: tensor.global_scale_to_host(self.stream)?,
-            grad: grad.to_host_vec(self.stream)?,
+            grad,
             adam,
         });
         Ok(())

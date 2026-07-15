@@ -13,13 +13,22 @@ pub(super) fn f32_buffer_stats(
     stream: &CudaStream,
     buffer: &DeviceBuffer<f32>,
 ) -> AppResult<(f32, f32)> {
+    f32_buffer_stats_scaled(stream, buffer, 1.0)
+}
+
+pub(super) fn f32_buffer_stats_scaled(
+    stream: &CudaStream,
+    buffer: &DeviceBuffer<f32>,
+    scale: f32,
+) -> AppResult<(f32, f32)> {
     let values = buffer.to_host_vec(stream)?;
     let mut sum_sq = 0.0f64;
     let mut max = 0.0f32;
 
     for value in &values {
+        let value = *value * scale;
         let abs = value.abs();
-        sum_sq += (*value as f64) * (*value as f64);
+        sum_sq += (value as f64) * (value as f64);
         max = max.max(abs);
     }
 

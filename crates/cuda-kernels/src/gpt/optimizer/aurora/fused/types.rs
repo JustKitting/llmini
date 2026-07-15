@@ -53,6 +53,7 @@ impl AuroraMatrixShape {
 #[derive(Clone, Copy)]
 pub(super) struct AuroraUpdateScalars {
     pub mu: f32,
+    pub grad_scale: f32,
     pub learning_rate: f32,
     pub weight_decay: f32,
     pub average_coefficient: f32,

@@ -14,6 +14,7 @@ pub(super) fn update_aurora_groups(
     scratch: &mut AuroraScratchBuffers,
     step: u32,
     average_coefficient: f32,
+    grad_scale: f32,
     trace: &mut OptimizerTrace,
 ) -> Result<(), DriverError> {
     trace.aurora_ms += timed_ms(|| {
@@ -24,6 +25,7 @@ pub(super) fn update_aurora_groups(
             slot_count: tables.slot_count,
             step,
             average_coefficient,
+            grad_scale,
         })
     })?;
     Ok(())

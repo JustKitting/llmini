@@ -8,7 +8,7 @@ use super::update::{
     PendingTensorUpdateDiagnostics, changed_bytes, collect_update_snapshots,
     finish_update_snapshots,
 };
-use super::util::{f32_buffer_stats, hash_bytes};
+use super::util::{f32_buffer_stats, f32_buffer_stats_scaled, hash_bytes};
 use crate::training::grads::BackwardBuffers;
 use crate::training::optimizer_state::OptimizerStateBuffers;
 
@@ -26,14 +26,23 @@ impl PendingTrainingDiagnostics {
         state: &OptimizerStateBuffers,
         step: u32,
         average_coefficient: f32,
+        grad_scale: f32,
     ) -> AppResult<Self> {
         let token_embedding_bytes_before = uploaded.token_embedding.bytes.to_host_vec(stream)?;
         let (dlogits_rms, dlogits_max) = f32_buffer_stats(stream, &grads.dlogits)?;
-        let (d_lm_head_rms, d_lm_head_max) = f32_buffer_stats(stream, &grads.d_lm_head_weight)?;
+        let (d_lm_head_rms, d_lm_head_max) =
+            f32_buffer_stats_scaled(stream, &grads.d_lm_head_weight, grad_scale)?;
         let (d_embedding_rms, d_embedding_max) =
             f32_buffer_stats(stream, &grads.d_embedding_residual)?;
-        let updates =
-            collect_update_snapshots(stream, uploaded, grads, state, step, average_coefficient)?;
+        let updates = collect_update_snapshots(
+            stream,
+            uploaded,
+            grads,
+            state,
+            step,
+            average_coefficient,
+            grad_scale,
+        )?;
         let token_embedding_global = uploaded.token_embedding.global_scale_to_host(stream)?;
 
         Ok(Self {

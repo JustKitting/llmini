@@ -21,6 +21,7 @@ pub(super) struct BlockUpdateArgs<'a> {
     pub state: &'a mut OptimizerStateBuffers,
     pub step: u32,
     pub average_coefficient: f32,
+    pub grad_scale: f32,
     pub trace: &'a mut OptimizerTrace,
 }
 
@@ -31,6 +32,7 @@ pub(super) fn update_blocks(args: BlockUpdateArgs<'_>) -> Result<(), DriverError
         args.scratch,
         args.step,
         args.average_coefficient,
+        args.grad_scale,
     );
     let blocks_ms = timed_ms(|| {
         for ((block, grad), state) in args

@@ -9,6 +9,7 @@ pub(super) fn momentum_orient(
     work: WorkGrid,
     shape: AuroraMatrixShape,
     mu: f32,
+    grad_scale: f32,
     transposed: bool,
 ) {
     let len = shape.len();
@@ -16,7 +17,7 @@ pub(super) fn momentum_orient(
     while index < len {
         let row = index / shape.cols;
         let col = index - row * shape.cols;
-        let g = unsafe { *grad.add(index as usize) };
+        let g = unsafe { *grad.add(index as usize) } * grad_scale;
         unsafe {
             let momentum_ptr = momentum.add(index as usize);
             let next_momentum = mu * *momentum_ptr + (1.0 - mu) * g;

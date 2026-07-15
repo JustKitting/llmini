@@ -20,6 +20,7 @@ impl OptimizerModule {
             args.z_master,
             args.x_master,
             args.grad,
+            args.grad_scale,
             args.first_moment,
             args.second_moment,
             args.learning_rate,

@@ -16,8 +16,9 @@ pub(in crate::training::diagnostics) fn collect_update_snapshots(
     state: &OptimizerStateBuffers,
     step: u32,
     average_coefficient: f32,
+    grad_scale: f32,
 ) -> AppResult<Vec<PendingTensorUpdateDiagnostics>> {
-    let mut collector = UpdateSnapshotCollector::new(stream, step, average_coefficient);
+    let mut collector = UpdateSnapshotCollector::new(stream, step, average_coefficient, grad_scale);
     collector.push_adam(
         "token_embedding",
         &uploaded.token_embedding,

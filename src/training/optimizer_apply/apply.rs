@@ -36,10 +36,10 @@ pub fn apply_weight_updates(args: WeightUpdateArgs<'_>) -> AppResult<WeightUpdat
     trace.embedding_lookup_ms =
         timed_ms(|| add_embedding_lookup_grad(stream, optimizer, batch, grads, next_latent_grads))?;
 
-    let grad_norm = grad_clip.clip(stream, optimizer)?;
-    trace.grad_norm = grad_norm;
+    let grad_clip = grad_clip.clip(stream, optimizer)?;
+    trace.grad_norm = grad_clip.norm;
 
-    let skip_decision = state.should_skip_update(observed_loss, grad_norm);
+    let skip_decision = state.should_skip_update(observed_loss, grad_clip.norm);
     if record_skip_decision(
         stream,
         grads,
@@ -67,6 +67,7 @@ pub fn apply_weight_updates(args: WeightUpdateArgs<'_>) -> AppResult<WeightUpdat
                 state,
                 step,
                 average_coefficient,
+                grad_clip.scale,
             )
         })
         .transpose()?;
@@ -81,6 +82,7 @@ pub fn apply_weight_updates(args: WeightUpdateArgs<'_>) -> AppResult<WeightUpdat
         state,
         step,
         average_coefficient,
+        grad_scale: grad_clip.scale,
         trace: &mut trace,
     })?;
 
@@ -93,6 +95,7 @@ pub fn apply_weight_updates(args: WeightUpdateArgs<'_>) -> AppResult<WeightUpdat
         state,
         step,
         average_coefficient,
+        grad_scale: grad_clip.scale,
         trace: &mut trace,
     })?;
 
@@ -103,6 +106,7 @@ pub fn apply_weight_updates(args: WeightUpdateArgs<'_>) -> AppResult<WeightUpdat
         aurora,
         step,
         average_coefficient,
+        grad_clip.scale,
         &mut trace,
     )?;
     apply_kda_aurora_clip(stream, runtime, uploaded, tape, scratch, state, &mut trace)?;

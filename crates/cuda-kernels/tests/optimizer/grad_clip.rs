@@ -30,6 +30,7 @@ fn global_clip_scales_all_gradient_buffers_together() -> Result<(), Box<dyn Erro
         slot_count: 2,
         chunk_count: chunks(4) * 2,
         max_norm: 6.5,
+        apply: true,
     })?;
 
     assert_slice_close(&first.to_host_vec(&stream)?, &[1.5, 2.0, 0.0, 0.0], 1.0e-6);

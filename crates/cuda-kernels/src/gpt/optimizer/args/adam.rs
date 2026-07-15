@@ -8,6 +8,7 @@ pub struct AdamWUpdateArgs<'a> {
     pub z_master: &'a mut DeviceBuffer<f32>,
     pub x_master: &'a mut DeviceBuffer<f32>,
     pub grad: &'a DeviceBuffer<f32>,
+    pub grad_scale: f32,
     pub first_moment: &'a mut DeviceBuffer<f32>,
     pub second_moment: &'a mut DeviceBuffer<f32>,
     pub amax: &'a mut DeviceBuffer<f32>,
