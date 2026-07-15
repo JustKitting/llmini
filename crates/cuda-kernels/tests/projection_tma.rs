@@ -271,12 +271,7 @@ impl Fixture {
             })?;
             &weight_bytes_padded
         };
-        let mut descriptors = TmaNvfp4DeviceScaleDescriptors {
-            a: DeviceBuffer::zeroed(&self.stream, 1)?,
-            b: DeviceBuffer::zeroed(&self.stream, 1)?,
-            a_scales: DeviceBuffer::zeroed(&self.stream, 1)?,
-            b_scales: DeviceBuffer::zeroed(&self.stream, 1)?,
-        };
+        let mut descriptors = TmaNvfp4DeviceScaleDescriptors::new(&self.stream)?;
 
         self.scale_pack.pack(
             &self.stream,
@@ -331,12 +326,7 @@ impl Fixture {
             &self.stream,
             sm120_scale_packed_len(sm120_scale_padded_mn_extent(self.n), self.k),
         )?;
-        let mut descriptors = TmaNvfp4DeviceScaleDescriptors {
-            a: DeviceBuffer::zeroed(&self.stream, 1)?,
-            b: DeviceBuffer::zeroed(&self.stream, 1)?,
-            a_scales: DeviceBuffer::zeroed(&self.stream, 1)?,
-            b_scales: DeviceBuffer::zeroed(&self.stream, 1)?,
-        };
+        let mut descriptors = TmaNvfp4DeviceScaleDescriptors::new(&self.stream)?;
 
         self.scale_pack.pack(
             &self.stream,
@@ -411,12 +401,7 @@ impl Fixture {
             })?;
             &weight_bytes_padded
         };
-        let mut descriptors = TmaNvfp4DeviceScaleDescriptors {
-            a: DeviceBuffer::zeroed(&self.stream, 1)?,
-            b: DeviceBuffer::zeroed(&self.stream, 1)?,
-            a_scales: DeviceBuffer::zeroed(&self.stream, 1)?,
-            b_scales: DeviceBuffer::zeroed(&self.stream, 1)?,
-        };
+        let mut descriptors = TmaNvfp4DeviceScaleDescriptors::new(&self.stream)?;
 
         self.scale_pack.pack(
             &self.stream,
@@ -479,12 +464,7 @@ impl Fixture {
         )?;
         let mut weight_scale_packed =
             DeviceBuffer::zeroed(&self.stream, sm120_scale_packed_len(self.n, self.k))?;
-        let mut descriptors = TmaNvfp4DeviceScaleDescriptors {
-            a: DeviceBuffer::zeroed(&self.stream, 1)?,
-            b: DeviceBuffer::zeroed(&self.stream, 1)?,
-            a_scales: DeviceBuffer::zeroed(&self.stream, 1)?,
-            b_scales: DeviceBuffer::zeroed(&self.stream, 1)?,
-        };
+        let mut descriptors = TmaNvfp4DeviceScaleDescriptors::new(&self.stream)?;
 
         self.scale_pack.pack(
             &self.stream,
@@ -538,12 +518,7 @@ impl Fixture {
         )?;
         let mut weight_scale_packed =
             DeviceBuffer::zeroed(&self.stream, sm120_scale_packed_len(padded_n, self.k))?;
-        let mut descriptors = TmaNvfp4DeviceScaleDescriptors {
-            a: DeviceBuffer::zeroed(&self.stream, 1)?,
-            b: DeviceBuffer::zeroed(&self.stream, 1)?,
-            a_scales: DeviceBuffer::zeroed(&self.stream, 1)?,
-            b_scales: DeviceBuffer::zeroed(&self.stream, 1)?,
-        };
+        let mut descriptors = TmaNvfp4DeviceScaleDescriptors::new(&self.stream)?;
 
         self.scale_pack.pack(
             &self.stream,

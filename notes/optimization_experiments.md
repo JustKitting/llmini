@@ -44,6 +44,109 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 
 ```text
 date: 2026-07-15
+commit: accepted local jj commit after full gate
+experiment: Cache stable packed TMA descriptor bundles.
+status: accepted_900s
+change:
+  TMA GEMM preparation re-encoded four tensor maps and uploaded four separate
+  128-byte device descriptors before every launch, even when the four operand
+  addresses and matrix shape had already been seen. Descriptor sets are now
+  keyed by the four device addresses plus token/input/output dimensions. A
+  miss encodes the same four maps, packs them into one 512-byte stable bundle,
+  and uploads it once; a hit only selects the cached device pointer. Immutable
+  boxed host bundles retain the source bytes for the lifetime required by the
+  asynchronous copy. Device storage grows in 64-bundle chunks so cache growth
+  does not invalidate pointers already referenced by queued kernels.
+numerics:
+  Cache keys include every value that controls the four tensor-map encodings:
+  the input, weight, input-scale, and weight-scale addresses and all three
+  matrix dimensions. Tile and scale layouts are compile-time constants. A
+  miss stores the exact four 128-byte encodings produced by the former path,
+  and a hit reuses only that immutable byte sequence. Descriptor offsets stay
+  128-byte aligned inside CUDA-aligned allocations. All projection, LM-head,
+  and MS-EDEN linear-backward GPU comparisons passed after a fresh build.
+memory:
+  The matched profile's 40 old 128-byte descriptor allocations were replaced
+  by 11 uninitialized 32768-byte cache chunks, reducing cuMemAlloc calls from
+  2562 to 2533 and cuMemset calls from 2608 to 2568. Raw persistent device
+  descriptor storage therefore increases from 5120 to 360448 bytes, a
+  355328-byte increase, while 95 immutable host bundles use 48640 payload
+  bytes plus map metadata. This is negligible relative to model memory but is
+  not a VRAM-capacity win and does not unlock a larger batch.
+minimum_impact_gate:
+  The active baseline averaged 900.331 / 1418 = 634.930183ms per step, so the
+  required saving was 3.174651ms per step. The matched parent made 48500
+  tensor-map encodes and descriptor-sized uploads over 10 steps: 12125 TMA
+  preparations times four descriptors. Its 48599 total 128-byte H2D calls
+  occupied 2557.390305ms of the single launch thread, establishing a credible
+  host-critical-path ceiling far above the threshold before implementation.
+focused_profile:
+  Matched parent:
+    target/nsys/20260715_tma_descriptor_cache_parent_matched.nsys-rep
+    target/nsys/20260715_tma_descriptor_cache_parent_matched_cuda_gpu_kern_sum.csv
+    target/nsys/20260715_tma_descriptor_cache_parent_matched_cuda_gpu_mem_time_sum.csv
+    target/nsys/20260715_tma_descriptor_cache_parent_matched_cuda_api_sum.csv
+  Candidate samples:
+    target/nsys/20260715_tma_descriptor_cache_candidate.nsys-rep
+    target/nsys/20260715_tma_descriptor_cache_candidate_reciprocal.nsys-rep
+  Across the same 10 training steps plus endpoint validation:
+    tensor-map encodes: 48500 -> 380. The candidate encoded 95 unique bundles
+      once instead of re-encoding 12125 launch preparations.
+    all H2D API calls: 49134 -> 729. Descriptor uploads changed from 48500
+      128-byte calls to 95 512-byte calls.
+    all H2D API time: 2587.582 -> 32.220 / 31.264ms. Kernel-launch API time
+      increased from 2336.538 to 4444.054 / 4429.530ms as CUDA moved queue
+      backpressure to launch submission, so the theoretical API total is not
+      itself a wall-clock saving.
+    parent train elapsed: 6.244 seconds. Candidate elapsed: 6.218 and 6.197
+      seconds, averaging 6.2075. The average saving is 36.5ms over 10 steps,
+      or 3.65ms per step / 0.585%, above the 3.174651ms profile gate.
+    GPU kernel + memcpy + memset time was 6374.075458ms for the parent and
+      6397.821102 / 6377.064681ms for the candidates. The device aggregate is
+      flat-to-noisy rather than faster; the measured wall gain is specifically
+      host submission overlap, later confirmed by both fixed-wall gates.
+    held-out val_loss: parent 8.665316; candidates 8.664306 and 8.660353.
+verification:
+  cargo fmt --all --check: pass.
+  cargo check --workspace: pass.
+  Fresh cargo oxide build --arch sm_120a: pass.
+  cargo test --workspace --release --lib --bins: pass, including 45 sweep tests
+    and 4 rust-kernels tests.
+  All six projection-TMA GPU tests, both LM-head GPU tests, and the focused
+  MS-EDEN linear-backward GPU test: pass after the fresh PTX/host rebuild.
+  Required captured 30-second screen with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260715_170535Z_fineweb_30s
+    stdout: target/tma_descriptor_cache_30_20260715.log
+    completed_steps=49, train_elapsed_s=30.029, val_loss=6.813850.
+  Required 900-second gate with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260715_170628Z_fineweb_900s
+    stdout: target/tma_descriptor_cache_900_20260715.log
+    completed_steps=1424, train_elapsed_s=900.402, val_loss=4.925005.
+    All 29 high-fidelity samples were finite and nonzero, with zero skipped
+    updates, loss-spike skips, grad-norm-spike skips, or nonfinite skips. Grad
+    norm ranged from 1.155520797 to 18.969266891. Every sample retained batch 4
+    and sequence 2048.
+measured_effect:
+  Against the matched 30-second baseline:
+    completed_steps: 49 -> 49.
+    average step time: 619.367347 -> 612.836735ms
+      (-6.530612ms, -1.054%).
+    held-out val_loss: 6.811712 -> 6.813850 (+0.002138, +0.031%).
+  Against the matched 900-second baseline:
+    completed_steps: 1418 -> 1424 (+6, +0.423%).
+    average step time: 634.930183 -> 632.304775ms
+      (-2.625408ms, -0.413%).
+    training tokens: 11616256 -> 11665408 (+49152, +0.423%).
+    held-out val_loss: 4.910333 -> 4.925005 (+0.014672, +0.299%).
+decision:
+  Keep and promote. The full fixed-wall run executes six more steps, the loss
+  regression remains well inside the active 1% seed-noise band, and sustained
+  training remains stable. The next 0.5% threshold is
+  (900.402 / 1424) * 0.005 = 3.161524ms per step.
+```
+
+```text
+date: 2026-07-15
 commit: rejected uncommitted candidate, code reverted
 experiment: Produce backward-error maxima in the ReLU2 and KDA gradient producers.
 status: rejected_profile_gate

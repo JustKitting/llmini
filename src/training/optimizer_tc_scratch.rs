@@ -67,12 +67,7 @@ impl MuonTmaScratch {
                 max_tma_k(),
             )?,
             bound_amax: DeviceBuffer::zeroed(stream, 1)?,
-            descriptors: TmaNvfp4DeviceScaleDescriptors {
-                a: DeviceBuffer::zeroed(stream, 1)?,
-                b: DeviceBuffer::zeroed(stream, 1)?,
-                a_scales: DeviceBuffer::zeroed(stream, 1)?,
-                b_scales: DeviceBuffer::zeroed(stream, 1)?,
-            },
+            descriptors: TmaNvfp4DeviceScaleDescriptors::new(stream)?,
         })
     }
 }

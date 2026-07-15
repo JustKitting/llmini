@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use cuda_core::{
-    CudaContext, CudaModule, CudaStream, DeviceBuffer, DriverError, LaunchConfig, memory,
+    CudaContext, CudaModule, CudaStream, DeviceBuffer, DriverError, LaunchConfig,
     sys::cudaError_enum_CUDA_ERROR_INVALID_VALUE,
 };
 use cuda_device::TmaDescriptor;
@@ -12,7 +12,10 @@ use super::kernels::{
     tma_nvfp4_output_amax_chunks,
 };
 use super::scale_layout::sm120_scale_tma_shape_padded;
-use super::tma::{TmaNvfp4DeviceScaleDescriptors, encode_u4_tiled_layout, encode_u16_tiled};
+use super::tma::{
+    TmaNvfp4DeviceScaleDescriptorKey, TmaNvfp4DeviceScaleDescriptors, encode_u4_tiled_layout,
+    encode_u16_tiled,
+};
 use crate::nvfp4::Nvfp4DeviceTensor;
 
 const PACKS_PER_ROW: u32 = TILE_K / 8;
@@ -49,56 +52,19 @@ impl Nvfp4GemmModule {
         input_dim: u32,
         output_dim: u32,
     ) -> Result<TmaNvfp4DeviceScaleDescriptors, DriverError> {
-        let packed_row_stride = (input_dim / 2) as u64;
-        let a = encode_u4_tiled_layout::<Nvfp4TmaOperandLayout>(
-            input_bytes.cu_deviceptr() as usize as *mut _,
-            input_dim as u64,
-            token_count as u64,
-            packed_row_stride,
-            TILE_M,
+        let mut out = TmaNvfp4DeviceScaleDescriptors::new(stream)?;
+        self.prepare_tma_nvfp4_device_scales_into(
+            stream,
+            input_bytes,
+            input_scale_data,
+            weight_bytes,
+            weight_scale_data,
+            token_count,
+            input_dim,
+            output_dim,
+            &mut out,
         )?;
-        let b = encode_u4_tiled_layout::<Nvfp4TmaOperandLayout>(
-            weight_bytes.cu_deviceptr() as usize as *mut _,
-            input_dim as u64,
-            output_dim as u64,
-            packed_row_stride,
-            TILE_N,
-        )?;
-        let a_scale_shape = sm120_scale_tma_shape_padded(
-            token_count as usize,
-            input_dim as usize,
-            TILE_M as usize,
-            TILE_K as usize,
-        );
-        let b_scale_shape = sm120_scale_tma_shape_padded(
-            output_dim as usize,
-            input_dim as usize,
-            TILE_N as usize,
-            TILE_K as usize,
-        );
-        let a_scales = encode_u16_tiled(
-            input_scale_data.cu_deviceptr() as usize as *mut _,
-            a_scale_shape.width_u16,
-            a_scale_shape.height,
-            a_scale_shape.row_stride_bytes,
-            a_scale_shape.tile_width_u16,
-            a_scale_shape.tile_height,
-        )?;
-        let b_scales = encode_u16_tiled(
-            weight_scale_data.cu_deviceptr() as usize as *mut _,
-            b_scale_shape.width_u16,
-            b_scale_shape.height,
-            b_scale_shape.row_stride_bytes,
-            b_scale_shape.tile_width_u16,
-            b_scale_shape.tile_height,
-        )?;
-
-        Ok(TmaNvfp4DeviceScaleDescriptors {
-            a: DeviceBuffer::from_host(stream, &[a])?,
-            b: DeviceBuffer::from_host(stream, &[b])?,
-            a_scales: DeviceBuffer::from_host(stream, &[a_scales])?,
-            b_scales: DeviceBuffer::from_host(stream, &[b_scales])?,
-        })
+        Ok(out)
     }
 
     #[expect(
@@ -117,6 +83,21 @@ impl Nvfp4GemmModule {
         output_dim: u32,
         out: &mut TmaNvfp4DeviceScaleDescriptors,
     ) -> Result<(), DriverError> {
+        let key = TmaNvfp4DeviceScaleDescriptorKey::new(
+            [
+                input_bytes.cu_deviceptr(),
+                weight_bytes.cu_deviceptr(),
+                input_scale_data.cu_deviceptr(),
+                weight_scale_data.cu_deviceptr(),
+            ],
+            token_count,
+            input_dim,
+            output_dim,
+        );
+        if out.activate(key) {
+            return Ok(());
+        }
+
         let packed_row_stride = (input_dim / 2) as u64;
         let a = encode_u4_tiled_layout::<Nvfp4TmaOperandLayout>(
             input_bytes.cu_deviceptr() as usize as *mut _,
@@ -161,10 +142,7 @@ impl Nvfp4GemmModule {
             b_scale_shape.tile_height,
         )?;
 
-        copy_descriptor(stream, &mut out.a, &a)?;
-        copy_descriptor(stream, &mut out.b, &b)?;
-        copy_descriptor(stream, &mut out.a_scales, &a_scales)?;
-        copy_descriptor(stream, &mut out.b_scales, &b_scales)
+        out.insert(stream, key, [a, b, a_scales, b_scales])
     }
 
     #[expect(
@@ -210,10 +188,10 @@ impl Nvfp4GemmModule {
         self.module.nvfp4_gemm_tma_kernel(
             stream,
             config,
-            tma.a.cu_deviceptr() as *const TmaDescriptor,
-            tma.b.cu_deviceptr() as *const TmaDescriptor,
-            tma.a_scales.cu_deviceptr() as *const TmaDescriptor,
-            tma.b_scales.cu_deviceptr() as *const TmaDescriptor,
+            tma.a_deviceptr() as *const TmaDescriptor,
+            tma.b_deviceptr() as *const TmaDescriptor,
+            tma.a_scales_deviceptr() as *const TmaDescriptor,
+            tma.b_scales_deviceptr() as *const TmaDescriptor,
             out,
             params,
         )
@@ -265,10 +243,10 @@ impl Nvfp4GemmModule {
         self.module.nvfp4_gemm_tma_amax_kernel(
             stream,
             config,
-            tma.a.cu_deviceptr() as *const TmaDescriptor,
-            tma.b.cu_deviceptr() as *const TmaDescriptor,
-            tma.a_scales.cu_deviceptr() as *const TmaDescriptor,
-            tma.b_scales.cu_deviceptr() as *const TmaDescriptor,
+            tma.a_deviceptr() as *const TmaDescriptor,
+            tma.b_deviceptr() as *const TmaDescriptor,
+            tma.a_scales_deviceptr() as *const TmaDescriptor,
+            tma.b_scales_deviceptr() as *const TmaDescriptor,
             out,
             output_chunk_amax,
             params,
@@ -319,10 +297,10 @@ impl Nvfp4GemmModule {
         self.module.nvfp4_gemm_tma_kernel(
             stream,
             config,
-            tma.a.cu_deviceptr() as *const TmaDescriptor,
-            tma.b.cu_deviceptr() as *const TmaDescriptor,
-            tma.a_scales.cu_deviceptr() as *const TmaDescriptor,
-            tma.b_scales.cu_deviceptr() as *const TmaDescriptor,
+            tma.a_deviceptr() as *const TmaDescriptor,
+            tma.b_deviceptr() as *const TmaDescriptor,
+            tma.a_scales_deviceptr() as *const TmaDescriptor,
+            tma.b_scales_deviceptr() as *const TmaDescriptor,
             out,
             params,
         )
@@ -378,10 +356,10 @@ impl Nvfp4GemmModule {
         self.module.nvfp4_gemm_tma_affine_kernel(
             stream,
             config,
-            tma.a.cu_deviceptr() as *const TmaDescriptor,
-            tma.b.cu_deviceptr() as *const TmaDescriptor,
-            tma.a_scales.cu_deviceptr() as *const TmaDescriptor,
-            tma.b_scales.cu_deviceptr() as *const TmaDescriptor,
+            tma.a_deviceptr() as *const TmaDescriptor,
+            tma.b_deviceptr() as *const TmaDescriptor,
+            tma.a_scales_deviceptr() as *const TmaDescriptor,
+            tma.b_scales_deviceptr() as *const TmaDescriptor,
             out,
             bias.bytes,
             bias.scales,
@@ -434,10 +412,10 @@ impl Nvfp4GemmModule {
         self.module.nvfp4_gemm_tma_residual_kernel(
             stream,
             config,
-            tma.a.cu_deviceptr() as *const TmaDescriptor,
-            tma.b.cu_deviceptr() as *const TmaDescriptor,
-            tma.a_scales.cu_deviceptr() as *const TmaDescriptor,
-            tma.b_scales.cu_deviceptr() as *const TmaDescriptor,
+            tma.a_deviceptr() as *const TmaDescriptor,
+            tma.b_deviceptr() as *const TmaDescriptor,
+            tma.a_scales_deviceptr() as *const TmaDescriptor,
+            tma.b_scales_deviceptr() as *const TmaDescriptor,
             residual,
             bias.bytes,
             bias.scales,
@@ -491,10 +469,10 @@ impl Nvfp4GemmModule {
         self.module.nvfp4_gemm_tma_relu2_kernel(
             stream,
             config,
-            tma.a.cu_deviceptr() as *const TmaDescriptor,
-            tma.b.cu_deviceptr() as *const TmaDescriptor,
-            tma.a_scales.cu_deviceptr() as *const TmaDescriptor,
-            tma.b_scales.cu_deviceptr() as *const TmaDescriptor,
+            tma.a_deviceptr() as *const TmaDescriptor,
+            tma.b_deviceptr() as *const TmaDescriptor,
+            tma.a_scales_deviceptr() as *const TmaDescriptor,
+            tma.b_scales_deviceptr() as *const TmaDescriptor,
             pre_activation,
             out,
             bias.bytes,
@@ -553,28 +531,12 @@ impl Nvfp4GemmModule {
         self.module.nvfp4_gemm_tma_kernel(
             stream,
             config,
-            tma.a.cu_deviceptr() as *const TmaDescriptor,
-            tma.b.cu_deviceptr() as *const TmaDescriptor,
-            tma.a_scales.cu_deviceptr() as *const TmaDescriptor,
-            tma.b_scales.cu_deviceptr() as *const TmaDescriptor,
+            tma.a_deviceptr() as *const TmaDescriptor,
+            tma.b_deviceptr() as *const TmaDescriptor,
+            tma.a_scales_deviceptr() as *const TmaDescriptor,
+            tma.b_scales_deviceptr() as *const TmaDescriptor,
             out,
             params,
-        )
-    }
-}
-
-fn copy_descriptor(
-    stream: &CudaStream,
-    dst: &mut DeviceBuffer<[u64; 16]>,
-    src: &[u64; 16],
-) -> Result<(), DriverError> {
-    debug_assert_eq!(dst.len(), 1);
-    unsafe {
-        memory::memcpy_htod_async(
-            dst.cu_deviceptr(),
-            src as *const [u64; 16],
-            std::mem::size_of_val(src),
-            stream.cu_stream(),
         )
     }
 }

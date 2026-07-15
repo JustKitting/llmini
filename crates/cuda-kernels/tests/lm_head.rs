@@ -127,12 +127,7 @@ fn lm_head_tma_matches_old_projection() -> Result<(), Box<dyn Error>> {
         DeviceBuffer::<u8>::zeroed(&stream, sm120_scale_packed_len(padded_rows, K))?;
     let mut weight_scale_packed =
         DeviceBuffer::<u8>::zeroed(&stream, sm120_scale_packed_len(padded_cols, K))?;
-    let mut descriptors = TmaNvfp4DeviceScaleDescriptors {
-        a: DeviceBuffer::zeroed(&stream, 1)?,
-        b: DeviceBuffer::zeroed(&stream, 1)?,
-        a_scales: DeviceBuffer::zeroed(&stream, 1)?,
-        b_scales: DeviceBuffer::zeroed(&stream, 1)?,
-    };
+    let mut descriptors = TmaNvfp4DeviceScaleDescriptors::new(&stream)?;
 
     let input = Nvfp4RowwiseDeviceTensor::new(
         &input_bytes_dev,

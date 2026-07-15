@@ -139,12 +139,7 @@ impl LinearBackwardTmaScratchBuffers {
             weight_t_h_scales: DeviceBuffer::zeroed(stream, packed_scale_len(input_dim, output_k))?,
             e_t_h_scales: DeviceBuffer::zeroed(stream, packed_scale_len(output_dim, token_k))?,
             input_t_h_scales: DeviceBuffer::zeroed(stream, packed_scale_len(input_dim, token_k))?,
-            descriptors: TmaNvfp4DeviceScaleDescriptors {
-                a: DeviceBuffer::zeroed(stream, 1)?,
-                b: DeviceBuffer::zeroed(stream, 1)?,
-                a_scales: DeviceBuffer::zeroed(stream, 1)?,
-                b_scales: DeviceBuffer::zeroed(stream, 1)?,
-            },
+            descriptors: TmaNvfp4DeviceScaleDescriptors::new(stream)?,
         })
     }
 

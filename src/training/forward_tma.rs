@@ -30,12 +30,7 @@ impl ForwardTmaBuffers {
                 stream,
                 sm120_scale_padded_mn_extent(GPT2_QKV) * GPT2_N_EMBD / 2,
             )?,
-            descriptors: TmaNvfp4DeviceScaleDescriptors {
-                a: DeviceBuffer::zeroed(stream, 1)?,
-                b: DeviceBuffer::zeroed(stream, 1)?,
-                a_scales: DeviceBuffer::zeroed(stream, 1)?,
-                b_scales: DeviceBuffer::zeroed(stream, 1)?,
-            },
+            descriptors: TmaNvfp4DeviceScaleDescriptors::new(stream)?,
         })
     }
 }

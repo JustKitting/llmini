@@ -1,15 +1,147 @@
+use std::collections::HashMap;
 use std::ffi::c_void;
 use std::mem::MaybeUninit;
 
-use cuda_core::{DeviceBuffer, DriverError};
+use cuda_core::{CudaStream, DeviceBuffer, DriverError, memory};
 
 use super::cute::{TmaSwizzle, U4SmemLayout};
 
+const TMA_DESCRIPTOR_WORDS: usize = 16;
+const TMA_DESCRIPTOR_COUNT: usize = 4;
+const TMA_DESCRIPTOR_CACHE_CHUNK_ENTRIES: usize = 64;
+type TmaDescriptorWords = [u64; TMA_DESCRIPTOR_WORDS];
+type PackedTmaDescriptors = [TmaDescriptorWords; TMA_DESCRIPTOR_COUNT];
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(super) struct TmaNvfp4DeviceScaleDescriptorKey {
+    addresses: [u64; TMA_DESCRIPTOR_COUNT],
+    shape: [u32; 3],
+}
+
+impl TmaNvfp4DeviceScaleDescriptorKey {
+    pub(super) const fn new(
+        addresses: [u64; TMA_DESCRIPTOR_COUNT],
+        token_count: u32,
+        input_dim: u32,
+        output_dim: u32,
+    ) -> Self {
+        Self {
+            addresses,
+            shape: [token_count, input_dim, output_dim],
+        }
+    }
+}
+
+struct CachedTmaDescriptors {
+    device_base: u64,
+    // The async H2D source must remain valid until the copy completes. Keeping
+    // the immutable host descriptor for the cache lifetime makes that explicit.
+    _host: Box<PackedTmaDescriptors>,
+}
+
 pub struct TmaNvfp4DeviceScaleDescriptors {
-    pub a: DeviceBuffer<[u64; 16]>,
-    pub b: DeviceBuffer<[u64; 16]>,
-    pub a_scales: DeviceBuffer<[u64; 16]>,
-    pub b_scales: DeviceBuffer<[u64; 16]>,
+    indices: HashMap<TmaNvfp4DeviceScaleDescriptorKey, usize>,
+    entries: Vec<CachedTmaDescriptors>,
+    chunks: Vec<DeviceBuffer<PackedTmaDescriptors>>,
+    active: Option<usize>,
+}
+
+impl TmaNvfp4DeviceScaleDescriptors {
+    pub fn new(stream: &CudaStream) -> Result<Self, DriverError> {
+        Ok(Self {
+            indices: HashMap::new(),
+            entries: Vec::new(),
+            chunks: vec![allocate_descriptor_chunk(stream)?],
+            active: None,
+        })
+    }
+
+    pub(super) fn activate(&mut self, key: TmaNvfp4DeviceScaleDescriptorKey) -> bool {
+        let Some(&index) = self.indices.get(&key) else {
+            return false;
+        };
+        self.active = Some(index);
+        true
+    }
+
+    pub(super) fn insert(
+        &mut self,
+        stream: &CudaStream,
+        key: TmaNvfp4DeviceScaleDescriptorKey,
+        descriptors: PackedTmaDescriptors,
+    ) -> Result<(), DriverError> {
+        debug_assert!(!self.indices.contains_key(&key));
+
+        let index = self.entries.len();
+        let chunk_index = index / TMA_DESCRIPTOR_CACHE_CHUNK_ENTRIES;
+        let chunk_slot = index % TMA_DESCRIPTOR_CACHE_CHUNK_ENTRIES;
+        if chunk_index == self.chunks.len() {
+            self.chunks.push(allocate_descriptor_chunk(stream)?);
+        }
+
+        let device_base = self.chunks[chunk_index].cu_deviceptr()
+            + (chunk_slot * std::mem::size_of::<PackedTmaDescriptors>()) as u64;
+        let host = Box::new(descriptors);
+        unsafe {
+            memory::memcpy_htod_async(
+                device_base,
+                host.as_ref() as *const PackedTmaDescriptors,
+                std::mem::size_of::<PackedTmaDescriptors>(),
+                stream.cu_stream(),
+            )?;
+        }
+
+        self.entries.push(CachedTmaDescriptors {
+            device_base,
+            _host: host,
+        });
+        self.indices.insert(key, index);
+        self.active = Some(index);
+        Ok(())
+    }
+
+    #[inline]
+    pub(super) fn a_deviceptr(&self) -> u64 {
+        self.descriptor_deviceptr(0)
+    }
+
+    #[inline]
+    pub(super) fn b_deviceptr(&self) -> u64 {
+        self.descriptor_deviceptr(1)
+    }
+
+    #[inline]
+    pub(super) fn a_scales_deviceptr(&self) -> u64 {
+        self.descriptor_deviceptr(2)
+    }
+
+    #[inline]
+    pub(super) fn b_scales_deviceptr(&self) -> u64 {
+        self.descriptor_deviceptr(3)
+    }
+
+    #[inline]
+    fn descriptor_deviceptr(&self, descriptor: usize) -> u64 {
+        let active = self
+            .active
+            .expect("TMA descriptors must be prepared before launch");
+        self.entries[active].device_base
+            + (descriptor * std::mem::size_of::<TmaDescriptorWords>()) as u64
+    }
+}
+
+fn allocate_descriptor_chunk(
+    stream: &CudaStream,
+) -> Result<DeviceBuffer<PackedTmaDescriptors>, DriverError> {
+    let bytes = TMA_DESCRIPTOR_CACHE_CHUNK_ENTRIES * std::mem::size_of::<PackedTmaDescriptors>();
+    let ptr = unsafe { memory::malloc_sync(bytes)? };
+    Ok(unsafe {
+        DeviceBuffer::from_raw_parts(
+            ptr,
+            TMA_DESCRIPTOR_CACHE_CHUNK_ENTRIES,
+            stream.context().clone(),
+        )
+    })
 }
 
 pub fn encode_u4_tiled_layout<L: U4SmemLayout>(
