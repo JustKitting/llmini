@@ -45,6 +45,91 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-15
 commit: accepted local jj commit after full gate
+experiment: Defer Muon Polar magnitude-bound scaling to existing consumers.
+status: accepted_900s
+change:
+  Each of the five Muon Polar iterations computed a Gram-derived magnitude
+  bound, then launched two full FP32 read/write passes to scale the source by
+  its reciprocal square root and Gram by its reciprocal. The quantizers and
+  recurrence immediately reread those tensors. For exact active shapes, retain
+  the bound in one persistent FP32 scalar and apply the identical multiplication
+  while loading Gram in the bounded A quantizer, source in the square-root-
+  bounded transposed B quantizer, source in linear3, and the final Polar update
+  in Muon finish. Unsupported or padded shapes retain the former materialized
+  scaling path. The five Polar iterations and all magnitude protections remain.
+memory:
+  Added one persistent FP32 bound scalar to Muon TMA scratch: 4 bytes of logical
+  payload. No model, activation, batch, sequence, or optimizer-state allocation
+  changed, so this is not a memory-capacity candidate.
+minimum_impact_gate:
+  The promoted baseline averaged 900.000 / 1322 = 680.786687ms per step, so the
+  required 0.5% saving was 3.403933ms per step. Its exact 10-step profile spent
+  109.331869ms in source square-root scaling and 38.259928ms in Gram reciprocal
+  scaling, or 14.759180ms per step before charging consumer overhead. That was
+  a credible 4.336x pre-edit ceiling over the threshold.
+focused_profile:
+  Parent:
+    target/nsys/20260715_kda_reuse_norms_candidate.nsys-rep
+    target/nsys/20260715_kda_reuse_norms_candidate_cuda_gpu_kern_sum.csv
+  Candidate:
+    target/nsys/20260715_muon_lazy_bounds_candidate.nsys-rep
+    target/nsys/20260715_muon_lazy_bounds_candidate_cuda_gpu_kern_sum.csv
+  Across the same 10 training steps plus endpoint validation, the directly
+  affected family was:
+    parent scale-sqrt + scale-reciprocal + linear3 + bounded A quant +
+      sqrt-bounded B quant + Muon finish = 1080.833133ms.
+    candidate deferred linear3 + bounded A quant + sqrt-bounded B quant +
+      Muon finish = 941.481867ms.
+  Net saving was 139.351266ms / 10 = 13.935127ms per step, or 2.047% of the
+  active whole-step baseline and 4.094x the required post-implementation gate.
+  Total profiled GPU kernel time also fell from 6722.890173ms to 6580.378950ms.
+verification:
+  cargo fmt --all --check: pass.
+  cargo check -p rust-kernels-cuda -p rust-kernels: pass.
+  cargo test --workspace --lib --bins: pass, including 45 sweep tests and 4
+    rust-kernels tests.
+  Fresh cargo oxide build --arch sm_120a: pass.
+  Deferred bounded-A and square-root-bounded transpose quantizers are bitwise
+  equal to the former materialize, rescan, and quantize references: pass, 2 GPU
+  tests after the fresh PTX build.
+  Muon GPU recurrence suite after the fresh PTX build: pass, 4 tests.
+  One-step launch diagnostic only:
+    target/runs/20260715_132702Z_fineweb_60s
+    completed_steps=1, train_elapsed_s=0.627, val_loss=10.419855, exactly the
+    promoted baseline's one-step loss.
+  Required 30-second screen with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260715_132808Z_fineweb_30s
+    completed_steps=47, train_elapsed_s=30.371, val_loss=6.842956.
+  Required 900-second gate with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260715_132907Z_fineweb_900s
+    stdout: target/muon_lazy_bounds_900_20260715.log
+    completed_steps=1351, train_elapsed_s=900.603, val_loss=4.935461.
+    All 28 high-fidelity samples were finite and nonzero, with zero skipped
+    updates, loss-spike skips, grad-norm-spike skips, or nonfinite skips. Grad
+    norm ranged from 1.189224958 to 18.969253540. Every sample retained batch
+    4 and sequence 2048.
+measured_effect:
+  Against the matched 30-second baseline:
+    completed_steps: 46 -> 47 (+1, +2.174%).
+    average step time: 660.434783ms -> 646.191489ms
+      (-14.243293ms, -2.157%).
+    held-out val_loss: 6.856266 -> 6.842956 (-0.013310, -0.194%).
+  Against the matched 900-second baseline:
+    completed_steps: 1322 -> 1351 (+29, +2.194%).
+    average step time: 680.786687ms -> 666.619541ms
+      (-14.167146ms, -2.081%).
+    training tokens: 10829824 -> 11067392 (+237568, +2.194%).
+    held-out val_loss: 4.937674 -> 4.935461 (-0.002213, -0.045%).
+decision:
+  Keep and promote. The focused GPU profile exceeds the 0.5% minimum, both
+  fixed-window gates improve throughput and held-out loss, and the full run has
+  no numerical or skip instability. The next 0.5% threshold is
+  (900.603 / 1351) * 0.005 = 3.333098ms per step.
+```
+
+```text
+date: 2026-07-15
+commit: accepted local jj commit after full gate
 experiment: Reuse KDA backward Q/K norms for the Muon magnitude bound.
 status: accepted_900s
 change:

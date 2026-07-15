@@ -23,6 +23,7 @@ pub(super) struct MuonTmaScratch {
     pub(super) out_padded: DeviceBuffer<f32>,
     pub(super) a: MuonTmaOperandScratch,
     pub(super) b: MuonTmaOperandScratch,
+    pub(super) bound_amax: DeviceBuffer<f32>,
     pub(super) descriptors: TmaNvfp4DeviceScaleDescriptors,
 }
 
@@ -65,6 +66,7 @@ impl MuonTmaScratch {
                 max_tma_b_rows(),
                 max_tma_k(),
             )?,
+            bound_amax: DeviceBuffer::zeroed(stream, 1)?,
             descriptors: TmaNvfp4DeviceScaleDescriptors {
                 a: DeviceBuffer::zeroed(stream, 1)?,
                 b: DeviceBuffer::zeroed(stream, 1)?,

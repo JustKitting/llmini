@@ -61,6 +61,7 @@ pub(super) fn muon_matrix_update_body(
         shape.cols,
         len,
         shape.master_transposed(),
+        1.0,
         scalars.learning_rate,
         scalars.weight_decay,
         scalars.average_coefficient,

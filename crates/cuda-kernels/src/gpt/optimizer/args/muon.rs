@@ -53,9 +53,11 @@ pub struct MuonTmaFinishArgs<'a> {
     pub stream: &'a CudaStream,
     pub slots: &'a DeviceBuffer<MuonSlotDescriptor>,
     pub polar_update: &'a DeviceBuffer<f32>,
+    pub polar_bound_amax: &'a DeviceBuffer<f32>,
     pub polar_chunks: &'a mut DeviceBuffer<f32>,
     pub slot_index: u32,
     pub learning_rate: f32,
     pub weight_decay: f32,
     pub average_coefficient: f32,
+    pub apply_polar_sqrt_bound: u32,
 }

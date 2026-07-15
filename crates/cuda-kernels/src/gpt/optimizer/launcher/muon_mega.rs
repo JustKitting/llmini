@@ -59,11 +59,13 @@ impl OptimizerModule {
             launch_config((MUON_COOPERATIVE_BLOCKS as u32, 1, 1), CTA_THREADS),
             args.slots,
             args.polar_update,
+            args.polar_bound_amax,
             args.polar_chunks,
             args.slot_index,
             args.learning_rate,
             args.weight_decay,
             args.average_coefficient,
+            args.apply_polar_sqrt_bound,
         )
     }
 }

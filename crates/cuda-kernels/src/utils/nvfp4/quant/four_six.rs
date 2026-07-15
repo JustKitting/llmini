@@ -71,6 +71,21 @@ impl Nvfp4QuantModule {
         &self,
         args: Nvfp4QuantPaddedArgs<'_, '_>,
     ) -> Result<(), DriverError> {
+        self.launch_fp32_to_nvfp4_four_six_exact_bounded_amax(args, false)
+    }
+
+    pub fn fp32_to_nvfp4_four_six_exact_lazy_bounded_amax(
+        &self,
+        args: Nvfp4QuantPaddedArgs<'_, '_>,
+    ) -> Result<(), DriverError> {
+        self.launch_fp32_to_nvfp4_four_six_exact_bounded_amax(args, true)
+    }
+
+    fn launch_fp32_to_nvfp4_four_six_exact_bounded_amax(
+        &self,
+        args: Nvfp4QuantPaddedArgs<'_, '_>,
+        apply_bound: bool,
+    ) -> Result<(), DriverError> {
         assert_eq!(args.rows, args.padded_rows);
         assert_eq!(args.cols, args.padded_cols);
         let elements = args.rows * args.cols;
@@ -84,6 +99,7 @@ impl Nvfp4QuantModule {
                 args.out_fp4,
                 args.out_scales,
                 args.out_global_scale,
+                apply_bound as u32,
             )
     }
 
@@ -167,6 +183,31 @@ impl Nvfp4QuantModule {
         args: Nvfp4QuantTransposePaddedArgs<'_, '_>,
         sqrt_bound_amax: &DeviceBuffer<f32>,
     ) -> Result<(), DriverError> {
+        self.launch_fp32_transpose_to_nvfp4_four_six_exact_sqrt_bounded_amax(
+            args,
+            sqrt_bound_amax,
+            false,
+        )
+    }
+
+    pub fn fp32_transpose_to_nvfp4_four_six_exact_lazy_sqrt_bounded_amax(
+        &self,
+        args: Nvfp4QuantTransposePaddedArgs<'_, '_>,
+        sqrt_bound_amax: &DeviceBuffer<f32>,
+    ) -> Result<(), DriverError> {
+        self.launch_fp32_transpose_to_nvfp4_four_six_exact_sqrt_bounded_amax(
+            args,
+            sqrt_bound_amax,
+            true,
+        )
+    }
+
+    fn launch_fp32_transpose_to_nvfp4_four_six_exact_sqrt_bounded_amax(
+        &self,
+        args: Nvfp4QuantTransposePaddedArgs<'_, '_>,
+        sqrt_bound_amax: &DeviceBuffer<f32>,
+        apply_bound: bool,
+    ) -> Result<(), DriverError> {
         assert_eq!(args.source_cols, args.padded_rows);
         assert_eq!(args.source_rows, args.padded_cols);
         assert!(args.source_rows.is_power_of_two());
@@ -184,6 +225,7 @@ impl Nvfp4QuantModule {
                 args.out_global_scale,
                 args.source_rows,
                 args.source_cols,
+                apply_bound as u32,
             )
     }
 

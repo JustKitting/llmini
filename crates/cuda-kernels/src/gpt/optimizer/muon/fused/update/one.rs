@@ -12,6 +12,7 @@ pub(super) fn update_one(
     len: u32,
     transposed: bool,
     scale: f32,
+    polar_update_scale: f32,
     learning_rate: f32,
     weight_decay: f32,
     average_coefficient: f32,
@@ -24,7 +25,7 @@ pub(super) fn update_one(
     let row = index / cols;
     let col = index - row * cols;
     let update_index = if transposed { col * rows + row } else { index };
-    let muon_update = scale * read_f32(u, update_index);
+    let muon_update = scale * (read_f32(u, update_index) * polar_update_scale);
     let decay = 1.0 - learning_rate * weight_decay;
 
     unsafe {

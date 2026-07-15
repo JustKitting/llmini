@@ -1,5 +1,6 @@
 use cuda_device::{DisjointSlice, SharedArray, cooperative_launch, cuda_module, grid, kernel};
 
+use crate::float_ptx::sqrt_f32;
 use crate::optimizer::MuonSlotDescriptor;
 
 use super::super::super::threads::WARPS_PER_BLOCK;
@@ -70,11 +71,13 @@ pub(crate) mod module {
     pub fn muon_tma_finish_update_kernel(
         slots: &[MuonSlotDescriptor],
         polar_update: &[f32],
+        polar_bound_amax: &[f32],
         mut polar_chunks: DisjointSlice<f32>,
         slot_index: u32,
         learning_rate: f32,
         weight_decay: f32,
         average_coefficient: f32,
+        apply_polar_sqrt_bound: u32,
     ) {
         static mut WARP_SUMS: SharedArray<f32, { WARPS_PER_BLOCK as usize }> = SharedArray::UNINIT;
 
@@ -93,6 +96,12 @@ pub(crate) mod module {
             average_coefficient,
             iterations: 0,
         };
+        let bound = polar_bound_amax[0];
+        let polar_update_scale = if apply_polar_sqrt_bound != 0 && bound > 1.0 {
+            1.0 / sqrt_f32(bound)
+        } else {
+            1.0
+        };
 
         unsafe {
             update_master_chunks(
@@ -104,6 +113,7 @@ pub(crate) mod module {
                 shape.cols,
                 len,
                 shape.master_transposed(),
+                polar_update_scale,
                 scalars.learning_rate,
                 scalars.weight_decay,
                 scalars.average_coefficient,

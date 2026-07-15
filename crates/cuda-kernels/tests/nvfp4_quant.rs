@@ -84,6 +84,10 @@ fn bounded_amax_four_six_matches_rescanned_input() -> Result<(), Box<dyn Error>>
     let mut bounded_fp4 = DeviceBuffer::<u8>::zeroed(&stream, x.len() / 2)?;
     let mut bounded_scales = DeviceBuffer::<u8>::zeroed(&stream, x.len() / 16)?;
     let mut bounded_global = DeviceBuffer::<f32>::zeroed(&stream, 1)?;
+    let unbounded = DeviceBuffer::from_host(&stream, &x)?;
+    let mut lazy_fp4 = DeviceBuffer::<u8>::zeroed(&stream, x.len() / 2)?;
+    let mut lazy_scales = DeviceBuffer::<u8>::zeroed(&stream, x.len() / 16)?;
+    let mut lazy_global = DeviceBuffer::<f32>::zeroed(&stream, 1)?;
 
     quant.fp32_to_nvfp4_four_six_padded(Nvfp4QuantPaddedArgs {
         stream: &stream,
@@ -109,6 +113,18 @@ fn bounded_amax_four_six_matches_rescanned_input() -> Result<(), Box<dyn Error>>
         padded_rows: ROWS as u32,
         padded_cols: COLS as u32,
     })?;
+    quant.fp32_to_nvfp4_four_six_exact_lazy_bounded_amax(Nvfp4QuantPaddedArgs {
+        stream: &stream,
+        x: &unbounded,
+        amax: &original_amax_dev,
+        out_fp4: &mut lazy_fp4,
+        out_scales: &mut lazy_scales,
+        out_global_scale: &mut lazy_global,
+        rows: ROWS as u32,
+        cols: COLS as u32,
+        padded_rows: ROWS as u32,
+        padded_cols: COLS as u32,
+    })?;
 
     assert_eq!(
         bounded_fp4.to_host_vec(&stream)?,
@@ -120,6 +136,18 @@ fn bounded_amax_four_six_matches_rescanned_input() -> Result<(), Box<dyn Error>>
     );
     assert_eq!(
         bounded_global.to_host_vec(&stream)?,
+        reference_global.to_host_vec(&stream)?
+    );
+    assert_eq!(
+        lazy_fp4.to_host_vec(&stream)?,
+        reference_fp4.to_host_vec(&stream)?
+    );
+    assert_eq!(
+        lazy_scales.to_host_vec(&stream)?,
+        reference_scales.to_host_vec(&stream)?
+    );
+    assert_eq!(
+        lazy_global.to_host_vec(&stream)?,
         reference_global.to_host_vec(&stream)?
     );
     Ok(())
@@ -236,6 +264,10 @@ fn sqrt_bounded_amax_transpose_matches_rescanned_input() -> Result<(), Box<dyn E
     let mut bounded_fp4 = DeviceBuffer::<u8>::zeroed(&stream, x.len() / 2)?;
     let mut bounded_scales = DeviceBuffer::<u8>::zeroed(&stream, x.len() / 16)?;
     let mut bounded_global = DeviceBuffer::<f32>::zeroed(&stream, 1)?;
+    let unbounded = DeviceBuffer::from_host(&stream, &x)?;
+    let mut lazy_fp4 = DeviceBuffer::<u8>::zeroed(&stream, x.len() / 2)?;
+    let mut lazy_scales = DeviceBuffer::<u8>::zeroed(&stream, x.len() / 16)?;
+    let mut lazy_global = DeviceBuffer::<f32>::zeroed(&stream, 1)?;
 
     quant.fp32_transpose_to_nvfp4_four_six_padded(Nvfp4QuantTransposePaddedArgs {
         stream: &stream,
@@ -264,6 +296,21 @@ fn sqrt_bounded_amax_transpose_matches_rescanned_input() -> Result<(), Box<dyn E
         },
         &sqrt_bound_amax_dev,
     )?;
+    quant.fp32_transpose_to_nvfp4_four_six_exact_lazy_sqrt_bounded_amax(
+        Nvfp4QuantTransposePaddedArgs {
+            stream: &stream,
+            x: &unbounded,
+            amax: &original_amax_dev,
+            out_fp4: &mut lazy_fp4,
+            out_scales: &mut lazy_scales,
+            out_global_scale: &mut lazy_global,
+            source_rows: ROWS as u32,
+            source_cols: COLS as u32,
+            padded_rows: COLS as u32,
+            padded_cols: ROWS as u32,
+        },
+        &sqrt_bound_amax_dev,
+    )?;
 
     assert_eq!(
         bounded_fp4.to_host_vec(&stream)?,
@@ -275,6 +322,18 @@ fn sqrt_bounded_amax_transpose_matches_rescanned_input() -> Result<(), Box<dyn E
     );
     assert_eq!(
         bounded_global.to_host_vec(&stream)?,
+        reference_global.to_host_vec(&stream)?
+    );
+    assert_eq!(
+        lazy_fp4.to_host_vec(&stream)?,
+        reference_fp4.to_host_vec(&stream)?
+    );
+    assert_eq!(
+        lazy_scales.to_host_vec(&stream)?,
+        reference_scales.to_host_vec(&stream)?
+    );
+    assert_eq!(
+        lazy_global.to_host_vec(&stream)?,
         reference_global.to_host_vec(&stream)?
     );
     Ok(())

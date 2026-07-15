@@ -21,6 +21,18 @@ pub struct F32Linear3Args<'a, 'out> {
     pub c_scale: f32,
 }
 
+pub struct F32Linear3SqrtBoundArgs<'a, 'out> {
+    pub stream: &'a CudaStream,
+    pub a: &'a DeviceBuffer<f32>,
+    pub b: &'a DeviceBuffer<f32>,
+    pub c_out: &'out mut DeviceBuffer<f32>,
+    pub bound_amax: &'a DeviceBuffer<f32>,
+    pub len: u32,
+    pub a_scale: f32,
+    pub b_scale: f32,
+    pub c_scale: f32,
+}
+
 pub struct F32AddScaledIdentityArgs<'a, 'out> {
     pub stream: &'a CudaStream,
     pub src: &'a DeviceBuffer<f32>,

@@ -51,6 +51,37 @@ pub(super) mod module {
     }
 
     #[kernel]
+    pub fn f32_linear3_sqrt_bound_a_in_place_kernel(
+        a: &[f32],
+        b: &[f32],
+        mut c_out: DisjointSlice<f32>,
+        bound_amax: &[f32],
+        len: u32,
+        a_scale: f32,
+        b_scale: f32,
+        c_scale: f32,
+    ) {
+        let bound = bound_amax[0];
+        let bound_scale = if bound > 1.0 {
+            1.0 / sqrt_f32(bound)
+        } else {
+            1.0
+        };
+        let mut index = thread::blockIdx_x() * thread::blockDim_x() + thread::threadIdx_x();
+        let stride = thread::gridDim_x() * thread::blockDim_x();
+        let c_ptr = c_out.as_mut_ptr();
+        while index < len {
+            let i = index as usize;
+            unsafe {
+                let current = *c_ptr.add(i);
+                let bc = fma_f32(b_scale, b[i], c_scale * current);
+                *c_ptr.add(i) = fma_f32(a_scale, a[i] * bound_scale, bc);
+            }
+            index += stride;
+        }
+    }
+
+    #[kernel]
     pub fn f32_add_scaled_identity_kernel(
         src: &[f32],
         mut out: DisjointSlice<f32>,

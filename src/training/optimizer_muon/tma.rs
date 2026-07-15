@@ -1,5 +1,7 @@
 use cuda_core::{CudaStream, DeviceBuffer, DriverError};
-use rust_kernels_cuda::f32_matrix_ops::{F32Linear3Args, F32ScaleInPlaceByAmaxArgs};
+use rust_kernels_cuda::f32_matrix_ops::{
+    F32Linear3Args, F32Linear3SqrtBoundArgs, F32ScaleInPlaceByAmaxArgs,
+};
 use rust_kernels_cuda::nvfp4_quant::{
     Nvfp4QuantPaddedArgs, Nvfp4QuantTransposePaddedArgs, TensorAmaxArgs,
 };
@@ -51,6 +53,7 @@ pub(in crate::training) fn apply_muon_tma(args: MuonTmaArgs<'_>) -> Result<(), D
             })?;
 
         let (polar_rows, polar_cols) = polar_shape(desc);
+        let defer_bounds = can_defer_polar_bounds(polar_rows, polar_cols);
         trace_buffer(
             stream,
             trace,
@@ -62,7 +65,15 @@ pub(in crate::training) fn apply_muon_tma(args: MuonTmaArgs<'_>) -> Result<(), D
             desc,
         )?;
 
-        run_tma_polar_loop(stream, args.runtime, args.scratch, desc, slot_index, trace)?;
+        run_tma_polar_loop(
+            stream,
+            args.runtime,
+            args.scratch,
+            desc,
+            slot_index,
+            trace,
+            defer_bounds,
+        )?;
 
         if POLAR_ITERATIONS & 1 == 0 {
             args.runtime
@@ -71,11 +82,13 @@ pub(in crate::training) fn apply_muon_tma(args: MuonTmaArgs<'_>) -> Result<(), D
                     stream,
                     slots: &args.table.slots,
                     polar_update: &args.scratch.polar_x,
+                    polar_bound_amax: &args.scratch.tma.bound_amax,
                     polar_chunks: &mut args.scratch.polar_chunks,
                     slot_index: slot_index as u32,
                     learning_rate,
                     weight_decay: MUON_WEIGHT_DECAY,
                     average_coefficient: args.average_coefficient,
+                    apply_polar_sqrt_bound: defer_bounds as u32,
                 })?;
         } else {
             args.runtime
@@ -84,11 +97,13 @@ pub(in crate::training) fn apply_muon_tma(args: MuonTmaArgs<'_>) -> Result<(), D
                     stream,
                     slots: &args.table.slots,
                     polar_update: &args.scratch.polar_next,
+                    polar_bound_amax: &args.scratch.tma.bound_amax,
                     polar_chunks: &mut args.scratch.polar_chunks,
                     slot_index: slot_index as u32,
                     learning_rate,
                     weight_decay: MUON_WEIGHT_DECAY,
                     average_coefficient: args.average_coefficient,
+                    apply_polar_sqrt_bound: defer_bounds as u32,
                 })?;
         }
     }
@@ -102,6 +117,7 @@ fn run_tma_polar_loop(
     desc: MuonSlotDescriptor,
     slot_index: usize,
     trace: TmaTraceConfig,
+    defer_bounds: bool,
 ) -> Result<(), DriverError> {
     let (polar_rows, polar_cols) = polar_shape(desc);
     for iter in 0..POLAR_ITERATIONS {
@@ -120,6 +136,7 @@ fn run_tma_polar_loop(
                 slot_index,
                 trace,
                 desc,
+                defer_bounds,
             )?;
         } else {
             run_tma_polar_iteration(
@@ -136,6 +153,7 @@ fn run_tma_polar_loop(
                 slot_index,
                 trace,
                 desc,
+                defer_bounds,
             )?;
         }
     }
@@ -160,6 +178,7 @@ fn run_tma_polar_iteration(
     slot_index: usize,
     trace: TmaTraceConfig,
     desc: MuonSlotDescriptor,
+    defer_bounds: bool,
 ) -> Result<(), DriverError> {
     let mut tma = tma;
     tma_matmul_self_transpose(
@@ -189,12 +208,17 @@ fn run_tma_polar_iteration(
         tma.reborrow(),
         polar_rows,
         polar_cols,
+        defer_bounds,
     )?;
     trace_buffer(
         stream,
         trace,
         slot_index,
-        "source_bounded",
+        if defer_bounds {
+            "source_bound_deferred"
+        } else {
+            "source_bounded"
+        },
         source,
         polar_rows * polar_cols,
         Some(iter),
@@ -204,7 +228,11 @@ fn run_tma_polar_iteration(
         stream,
         trace,
         slot_index,
-        "gram_bounded",
+        if defer_bounds {
+            "gram_bound_deferred"
+        } else {
+            "gram_bounded"
+        },
         gram,
         polar_rows * polar_rows,
         Some(iter),
@@ -221,6 +249,7 @@ fn run_tma_polar_iteration(
         action_dims,
         polar_rows,
         polar_rows,
+        defer_bounds,
     )?;
     prepare_tma_b_sqrt_bounded_transposed(
         stream,
@@ -230,6 +259,7 @@ fn run_tma_polar_iteration(
         action_dims,
         polar_rows,
         polar_cols,
+        defer_bounds,
     )?;
     run_tma_gemm_prepared(stream, runtime, ax, &mut tma, action_dims)?;
     trace_buffer(
@@ -262,16 +292,32 @@ fn run_tma_polar_iteration(
         Some(iter),
         desc,
     )?;
-    runtime.f32_ops.linear3(F32Linear3Args {
-        stream,
-        a: source,
-        b: ax,
-        c_out: target,
-        len: polar_rows * polar_cols,
-        a_scale: coeffs.a,
-        b_scale: coeffs.b,
-        c_scale: coeffs.c,
-    })?;
+    if defer_bounds {
+        runtime
+            .f32_ops
+            .linear3_sqrt_bound_a(F32Linear3SqrtBoundArgs {
+                stream,
+                a: source,
+                b: ax,
+                c_out: target,
+                bound_amax: &*tma.bound_amax,
+                len: polar_rows * polar_cols,
+                a_scale: coeffs.a,
+                b_scale: coeffs.b,
+                c_scale: coeffs.c,
+            })?;
+    } else {
+        runtime.f32_ops.linear3(F32Linear3Args {
+            stream,
+            a: source,
+            b: ax,
+            c_out: target,
+            len: polar_rows * polar_cols,
+            a_scale: coeffs.a,
+            b_scale: coeffs.b,
+            c_scale: coeffs.c,
+        })?;
+    }
     trace_buffer(
         stream,
         trace,
@@ -310,12 +356,17 @@ fn run_tma_polar_iteration(
             tma.reborrow(),
             polar_rows,
             polar_cols,
+            defer_bounds,
         )?;
         trace_buffer(
             stream,
             trace,
             slot_index,
-            "final_next_bounded",
+            if defer_bounds {
+                "final_next_bound_deferred"
+            } else {
+                "final_next_bounded"
+            },
             target,
             polar_rows * polar_cols,
             Some(iter),
@@ -333,21 +384,25 @@ fn bound_source_and_gram(
     tma: TmaScratchRefs<'_>,
     polar_rows: u32,
     polar_cols: u32,
+    defer_bounds: bool,
 ) -> Result<(), DriverError> {
     let tma = tma;
     runtime.quant.tensor_amax_f32(TensorAmaxArgs {
         stream,
         x: gram,
         chunk_amax: tma.b.chunk_amax,
-        out: tma.b.amax,
+        out: tma.bound_amax,
         element_count: polar_rows * polar_rows,
     })?;
+    if defer_bounds {
+        return Ok(());
+    }
     runtime
         .f32_ops
         .scale_in_place_by_sqrt_amax_bound(F32ScaleInPlaceByAmaxArgs {
             stream,
             x: source,
-            amax: &*tma.b.amax,
+            amax: &*tma.bound_amax,
             len: polar_rows * polar_cols,
         })?;
     runtime
@@ -355,7 +410,7 @@ fn bound_source_and_gram(
         .scale_in_place_by_amax_bound(F32ScaleInPlaceByAmaxArgs {
             stream,
             x: gram,
-            amax: &*tma.b.amax,
+            amax: &*tma.bound_amax,
             len: polar_rows * polar_rows,
         })
 }
@@ -391,6 +446,7 @@ fn prepare_tma_a_padded(
     dims: TmaDims,
     rows: u32,
     cols: u32,
+    defer_bound: bool,
 ) -> Result<(), DriverError> {
     if rows != dims.m || cols != dims.k {
         return quantize_operand_padded(
@@ -405,20 +461,27 @@ fn prepare_tma_a_padded(
         );
     }
 
-    runtime
-        .quant
-        .fp32_to_nvfp4_four_six_exact_bounded_amax(Nvfp4QuantPaddedArgs {
-            stream,
-            x: input,
-            amax: &*tma.b.amax,
-            out_fp4: tma.a.bytes,
-            out_scales: tma.a.scales,
-            out_global_scale: tma.a.global_scale,
-            rows,
-            cols,
-            padded_rows: dims.m,
-            padded_cols: dims.k,
-        })?;
+    let args = Nvfp4QuantPaddedArgs {
+        stream,
+        x: input,
+        amax: &*tma.bound_amax,
+        out_fp4: tma.a.bytes,
+        out_scales: tma.a.scales,
+        out_global_scale: tma.a.global_scale,
+        rows,
+        cols,
+        padded_rows: dims.m,
+        padded_cols: dims.k,
+    };
+    if defer_bound {
+        runtime
+            .quant
+            .fp32_to_nvfp4_four_six_exact_lazy_bounded_amax(args)?;
+    } else {
+        runtime
+            .quant
+            .fp32_to_nvfp4_four_six_exact_bounded_amax(args)?;
+    }
     runtime.optimizer.tma_scale_pack().pack(
         stream,
         &*tma.a.scales,
@@ -457,6 +520,7 @@ fn prepare_tma_b_sqrt_bounded_transposed(
     dims: TmaDims,
     rows: u32,
     cols: u32,
+    defer_bound: bool,
 ) -> Result<(), DriverError> {
     if cols != dims.n
         || rows != dims.k
@@ -467,23 +531,30 @@ fn prepare_tma_b_sqrt_bounded_transposed(
         return prepare_tma_b_transposed(stream, runtime, input, tma, dims, rows, cols);
     }
 
-    runtime
-        .quant
-        .fp32_transpose_to_nvfp4_four_six_exact_sqrt_bounded_amax(
-            Nvfp4QuantTransposePaddedArgs {
-                stream,
-                x: input,
-                amax: &*tma.a.amax,
-                out_fp4: tma.b.bytes,
-                out_scales: tma.b.scales,
-                out_global_scale: tma.b.global_scale,
-                source_rows: rows,
-                source_cols: cols,
-                padded_rows: dims.n,
-                padded_cols: dims.k,
-            },
-            &*tma.b.amax,
-        )?;
+    let args = Nvfp4QuantTransposePaddedArgs {
+        stream,
+        x: input,
+        amax: &*tma.a.amax,
+        out_fp4: tma.b.bytes,
+        out_scales: tma.b.scales,
+        out_global_scale: tma.b.global_scale,
+        source_rows: rows,
+        source_cols: cols,
+        padded_rows: dims.n,
+        padded_cols: dims.k,
+    };
+    if defer_bound {
+        runtime
+            .quant
+            .fp32_transpose_to_nvfp4_four_six_exact_lazy_sqrt_bounded_amax(
+                args,
+                &*tma.bound_amax,
+            )?;
+    } else {
+        runtime
+            .quant
+            .fp32_transpose_to_nvfp4_four_six_exact_sqrt_bounded_amax(args, &*tma.bound_amax)?;
+    }
     runtime.optimizer.tma_scale_pack().pack(
         stream,
         &*tma.b.scales,
@@ -732,6 +803,16 @@ fn polar_shape(desc: MuonSlotDescriptor) -> (u32, u32) {
     }
 }
 
+fn can_defer_polar_bounds(rows: u32, cols: u32) -> bool {
+    let dims = TmaDims::new(rows, cols, rows);
+    rows == dims.m
+        && rows == dims.k
+        && cols == dims.n
+        && rows.is_power_of_two()
+        && rows.is_multiple_of(16)
+        && cols.is_multiple_of(64)
+}
+
 #[derive(Clone, Copy)]
 struct TmaDims {
     logical_m: u32,
@@ -761,6 +842,7 @@ struct TmaScratchRefs<'a> {
     out_padded: &'a mut DeviceBuffer<f32>,
     a: OperandScratchRefs<'a>,
     b: OperandScratchRefs<'a>,
+    bound_amax: &'a mut DeviceBuffer<f32>,
     descriptors: &'a mut TmaNvfp4DeviceScaleDescriptors,
 }
 
@@ -770,6 +852,7 @@ impl<'a> TmaScratchRefs<'a> {
             out_padded: &mut *self.out_padded,
             a: self.a.reborrow(),
             b: self.b.reborrow(),
+            bound_amax: &mut *self.bound_amax,
             descriptors: &mut *self.descriptors,
         }
     }
@@ -802,6 +885,7 @@ fn tma_refs(scratch: &mut MuonTmaScratch) -> TmaScratchRefs<'_> {
         out_padded: &mut scratch.out_padded,
         a: operand_refs(&mut scratch.a),
         b: operand_refs(&mut scratch.b),
+        bound_amax: &mut scratch.bound_amax,
         descriptors: &mut scratch.descriptors,
     }
 }

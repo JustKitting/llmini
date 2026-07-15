@@ -186,6 +186,7 @@ pub(crate) mod module {
         out_fp4: DisjointSlice<u8>,
         out_scales: DisjointSlice<u8>,
         out_global_scale: DisjointSlice<f32>,
+        apply_bound: u32,
     ) {
         let group_ctx = four_six_group_ctx();
 
@@ -195,6 +196,11 @@ pub(crate) mod module {
                 bound * (1.0 / bound)
             } else {
                 bound
+            };
+            let bound_scale = if apply_bound != 0 && bound > 1.0 {
+                1.0 / bound
+            } else {
+                1.0
             };
             let out = FourSixOutputs {
                 fp4: out_fp4,
@@ -208,7 +214,7 @@ pub(crate) mod module {
                 0,
                 group_ctx.group == 0,
                 1.0,
-                x[group_ctx.base + group_ctx.lane],
+                x[group_ctx.base + group_ctx.lane] * bound_scale,
             );
         }
     }
@@ -401,6 +407,7 @@ pub(crate) mod module {
         mut out_global_scale: DisjointSlice<f32>,
         source_rows: u32,
         source_cols: u32,
+        apply_bound: u32,
     ) {
         static mut TILE: SharedArray<f32, TRANSPOSE_TILE_ELEMS> = SharedArray::UNINIT;
 
@@ -435,7 +442,10 @@ pub(crate) mod module {
         let mut col = half_warp;
 
         while col < TRANSPOSE_TILE_COLS {
-            let value = unsafe { TILE[lane * TRANSPOSE_TILE_STRIDE + col] };
+            let mut value = unsafe { TILE[lane * TRANSPOSE_TILE_STRIDE + col] };
+            if apply_bound != 0 {
+                value *= scale;
+            }
             let group = (source_col_base + col) * groups_per_output_row + group_in_output_row;
             let base = group * GROUP_SIZE;
             let (scale_bits, inv_scale) =
