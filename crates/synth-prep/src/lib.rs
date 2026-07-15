@@ -1,5 +1,6 @@
 use std::error::Error;
 
+pub mod fineweb;
 mod huggingface;
 mod parquet_text;
 mod pipeline;

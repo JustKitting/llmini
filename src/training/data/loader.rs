@@ -54,7 +54,7 @@ impl TokenDataLoader {
         if next_index >= self.train_paths.len() {
             if !self.wrap_train {
                 return Err(format!(
-                    "ran out of fresh train shards after {}; prepare more SYNTH train shards",
+                    "ran out of fresh train shards after {}; prepare more train shards",
                     self.path.display()
                 )
                 .into());

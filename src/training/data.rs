@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 mod factory;
+mod fineweb;
 mod loader;
 mod shakespeare;
 mod source;

@@ -32,6 +32,297 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```
 
 ```text
+date: 2026-07-15
+commit: lsvnmzqy (FineWeb baseline on accepted 7b426db8 kernel state)
+experiment: Add a tokenizer-namespaced FineWeb path and make it the short-term optimization baseline.
+status: accepted_dataset_baseline
+purpose:
+  Replace SYNTH with natural-language data while comparing training behavior
+  with modded-NanoGPT. Keep the existing Llama-2 tokenizer and 32000-wide tied
+  embedding/head so this changes the data distribution without also changing
+  the model shape or kernels. Tokenizer comparisons remain a separate future
+  experiment because raw per-token cross-entropy is not comparable across
+  tokenizations.
+data:
+  HuggingFaceFW/fineweb, sample-10BT, source parquet
+  sample/10BT/014_00000.parquet. FineWeb artifacts are isolated under
+  data/fineweb with the fineweb_llama2 prefix and a metadata marker recording
+  the source, tokenizer, vocabulary, and BOS/EOS document boundaries. Prepared
+  one 25000000-token validation shard and one 25000000-token training shard.
+implementation:
+  Generalized the existing shard writer to accept a dataset directory, file
+  prefix, and shard size. Added FineWeb download/tokenization, exact full-shard
+  validation, a separate validation shard, and fineweb as the default training
+  and sweep dataset. Existing synth and shakespeare paths remain selectable
+  through TRAIN_DATASET.
+verification:
+  cargo check -q: pass.
+  cargo test -q -p synth-prep: pass.
+  cargo test -q --bin rust-kernels: pass, 4 tests.
+  cargo oxide build --arch sm_120a: pass from a fresh rebuild.
+  One-step launch/preparation diagnostic only:
+    target/runs/20260715_014957Z_fineweb_1s
+    completed_steps=2, train_elapsed_s=1.353, val_loss=10.403628.
+  Clean 30-second gate with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260715_015014Z_fineweb_30s
+    completed_steps=45, train_elapsed_s=30.459, val_loss=6.776073.
+  Full 900-second gate with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260715_015056Z_fineweb_900s
+    completed_steps=1291, train_elapsed_s=900.359, val_loss=4.709991.
+  cargo check --workspace --all-targets remains blocked by pre-existing stale
+  gpt2-nvfp4 test fixtures missing newer TMA fields; the targeted checks above
+  and the real rebuilt training path pass.
+curve:
+  The run processed 21151744 training tokens. Logged raw training loss was
+  noisy but its envelope was substantially closer to continuously decreasing
+  than SYNTH: it moved from 6.9340 at step 50 to 5.1946 at step 500 and 4.8777
+  at step 1250. The sustained late pre-clip norm increase was also milder,
+  rising from about 1.04 at step 350 to 1.81 at step 1250. This supports a
+  significant SYNTH-distribution contribution to the earlier tail, without
+  claiming that FineWeb optimization is fully solved.
+nanogpt_context:
+  This model has approximately 535939264 effective parameters and 546036736
+  allocated parameter slots. At 21151744 tokens, the run exposed only 0.0395
+  tokens per effective parameter. The historical modded-NanoGPT optimizer run
+  used 2673868800 tokens for a nominal 124M-parameter model, or 21.56 tokens
+  per parameter: approximately 126.4 times more total tokens and 546 times
+  more token exposure per parameter. Our complete 900-second run therefore
+  corresponds to only about step 40 of its 524288-token steps; its first
+  post-start validation at step 125 had already seen 65536000 tokens, and its
+  schedule cooldown did not begin until roughly 1.91B tokens.
+decision:
+  Accept FineWeb as the active short-term baseline and point
+  notes/sweep_baseline.env at this gate. Do not compare its absolute validation
+  loss with the former SYNTH baseline; future speed candidates must compare
+  against this FineWeb run with the same Llama-2 tokenizer and high-fidelity
+  TRAIN_LOG_INTERVAL=50 metric sampling.
+```
+
+```text
+date: 2026-07-15
+commit: rejected diagnostic candidates on accepted 7b426db8 state
+experiment: Investigate the sustained late gradient-norm rise with lower LR and NanoGPT-style WSD.
+status: stable_controls_rejected
+purpose:
+  Determine whether the sustained late increase in pre-clip gradient norm and
+  slow raw-loss tail came from excessive constant LR, or whether the late
+  warmdown responsible for the kink in modded-NanoGPT's optimizer comparison
+  would improve the fixed-wall held-out result.
+reference:
+  The linked historical modded-NanoGPT optimizer comparison used 5100 steps,
+  batch_size=512 sequences, and sequence_length=1024: 524288 tokens/step and
+  2673868800 total training tokens. It explicitly attributes the approximately
+  75%-of-training curve kink to a warmup-stable-decay schedule with 1450 final
+  warmdown steps.
+  https://github.com/KellerJordan/modded-nanogpt/blob/2b3f4963dc83a04134b9b21a2c64b6a68a0b0ace/records/2024-10-29_Optimizers/README.md
+matched_diagnostic_baseline:
+  target/runs/20260715_000651Z_synth_900s
+  TRAIN_LOG_INTERVAL=50, completed_steps=1291, train_elapsed_s=900.233,
+  val_loss=3.762952.
+lower_lr_control:
+  target/runs/20260715_002506Z_synth_900s
+  TRAIN_LR_SCALE=2.0, TRAIN_ADAM_LR_SCALE=2.0,
+  TRAIN_LOG_INTERVAL=50, completed_steps=1291, train_elapsed_s=900.134,
+  val_loss=3.783353 (+0.542% versus the matched diagnostic baseline).
+  The late norm trend and contributor families remained, so nominal constant
+  LR=2.5 was not the primary cause.
+wsd_implementation:
+  Kept LR flat through step 970 of a 1293-step budget, then linearly decayed
+  Adam and Aurora LR to zero at step 1293. The first diagnostic incorrectly
+  weighted the schedule-free X average by current LR squared; the reference
+  schedule-free implementation uses the maximum LR seen. That first coupling
+  was invalidated and replaced before the decisive run.
+invalid_low_fidelity_run:
+  target/runs/20260715_005142Z_synth_900s
+  TRAIN_LOG_INTERVAL=250, completed_steps=1294, val_loss=3.789165.
+  This run is retained only as rejected endpoint evidence. Reducing metric
+  cadence while investigating the curve was a testing error; its grad-norm
+  trajectory must not be used.
+corrected_high_fidelity_run:
+  target/runs/20260715_012818Z_synth_900s
+  Schedule-free averaging retained the peak post-warmup weight while only the
+  optimizer update LR decayed. TRAIN_LOG_INTERVAL=50, completed_steps=1290,
+  train_elapsed_s=900.368, val_loss=3.788831 (+0.688% versus the matched
+  diagnostic baseline; +0.964% versus the accepted clean baseline).
+  Pre-clip norms at logged steps 750, 950, 1000, and 1250 were 1.3895, 2.0356,
+  2.4998, and 2.0676. The matched no-warmdown diagnostic was 1.4338, 1.9157,
+  2.0867, and 2.0880 at those steps. WSD did not consistently suppress the
+  sustained norm rise and made held-out loss worse.
+decision:
+  Reject and revert both WSD variants and the temporary norm-breakdown/clip
+  controls. The sharp late drop in the NanoGPT plot is deliberately
+  schedule-shaped, but copying it does not improve this AMUSE schedule-free
+  setup. Preserve TRAIN_LOG_INTERVAL=50 for all future curve investigations;
+  terminal polling cadence is independent of metric sampling cadence.
+```
+
+```text
+date: 2026-07-14
+commit: diagnostic run on accepted 7b426db8 state
+experiment: Extend accepted training state to exactly 2000 steps.
+status: stable_continued_learning_with_sustained_grad_norm_rise
+purpose:
+  Check whether the raw training-loss rise after the approximately 850-step
+  minimum in the accepted 900-second plot indicated a hidden late-training
+  instability. This run is diagnostic only and is not promotion evidence for
+  a kernel candidate.
+verification:
+  Reverted the rejected 3D attention-probability grid candidate first.
+  cargo fmt --all: pass.
+  cargo check -q: pass.
+  cargo oxide build --arch sm_120a: pass.
+  CUDA_DEVICE_INDEX=0 cargo test -q -p rust-kernels-cuda --test
+    causal_attention_backward_tc -- --ignored --nocapture --test-threads=1:
+    pass, 1 test.
+  CUDA_DEVICE_INDEX=0 TRAIN_DATASET=synth TRAIN_STEPS=2000
+    TRAIN_MAX_SECONDS=1800 TRAIN_LOG_INTERVAL=50
+    ./target/release/rust-kernels:
+    target/runs/20260714_233024Z_synth_1800s
+    val_loss=3.581317, train_elapsed_s=1397.043, completed_steps=2000.
+observed_curve:
+  The raw train loss remained noisy rather than monotonically decreasing. It
+  reached a new minimum of 3.7787 at step 1550 and finished at 3.9247. Mean
+  raw loss was 4.064963 over logged steps 750-1200 and 3.999427 over the
+  representative late samples, only a 1.61% reduction. The
+  plotted EMA uses alpha=0.08 only at the 50-step logging points and starts at
+  10.8451, so its continued decline mainly reflects long lag and is not proof
+  that the contemporary raw loss kept falling.
+gradient_behavior:
+  The pre-clip global gradient norm rose from 1.4214 at step 750 to 2.1467 at
+  step 1200, 2.3199 at step 1450, and 2.9766 at step 2000. Since the hard global
+  clip threshold is 1.0, the logged updates were all clipped and the implied
+  scale fell from about 0.70 to 0.34. No NaN, infinity, overflow, or runtime
+  failure appeared.
+conclusion:
+  There was no unbounded numerical instability, but the post-850 behavior is
+  not merely harmless minibatch fluctuation: raw optimization largely
+  plateaued while pre-clip gradient norms trended upward. Held-out loss still
+  improved from 3.752669 at the accepted 1293-step/900-second gate to 3.581317
+  at step 2000 (-0.171352, -4.57% cross-entropy), reducing implied perplexity
+  from 42.63 to 35.92 (-15.75%). Training had not reversed, but the marginal
+  return from 707 additional steps warranted optimizer and data-distribution
+  controls.
+```
+
+```text
+date: 2026-07-14
+commit: rejected uncommitted candidate, code reverted
+experiment: Schedule attention probability-gradient with a 3D grid.
+status: rejected_full_900s_gate
+change:
+  Replaced the flat full-square attention_prob_ds launch with a 3D grid whose
+  x, y, and z coordinates directly represented key tile, query, and
+  batch-head. This removed the per-thread modulo/division sequence-coordinate
+  decode while preserving the exact dense index, active triangle, math, and
+  stores.
+verification:
+  cargo fmt --all: pass.
+  cargo check -q: pass.
+  cargo oxide build --arch sm_120a: pass.
+  CUDA_DEVICE_INDEX=0 cargo test -q -p rust-kernels-cuda --test
+    causal_attention_backward_tc -- --ignored --nocapture --test-threads=1:
+    pass, 1 test.
+  Filtered Nsight Compute duration profiles:
+    target/ncu/20260714_attention_prob_ds_3d_baseline.ncu-rep
+    target/ncu/20260714_attention_prob_ds_3d_baseline.csv
+    target/ncu/20260714_attention_prob_ds_3d.ncu-rep
+    target/ncu/20260714_attention_prob_ds_3d.csv
+  Clean 30-second candidate gate:
+    target/runs/20260714_231259Z_synth_30s
+    val_loss=6.411225, train_elapsed_s=30.425, completed_steps=45.
+  Full 900-second candidate gate:
+    target/runs/20260714_231346Z_synth_900s
+    val_loss=3.755548, train_elapsed_s=900.697, completed_steps=1292.
+measured_effect:
+  attention_prob_ds_kernel improved locally from 23.772832ms to 23.746208ms
+  over two calls (-0.11%) with the same 16 registers/thread. The candidate tied
+  the accepted 30-second screen at 45 steps and identical 6.411225 loss, but
+  elapsed time rose from 30.412s to 30.425s. At 900 seconds it completed one
+  fewer step than the accepted baseline (1292 versus 1293), elapsed time rose
+  from 900.186s to 900.697s, and loss was effectively tied (3.755548 versus
+  3.752669, +0.08%).
+decision:
+  Reject and revert. The local 0.11% kernel movement did not survive either
+  end-to-end throughput gate, so it is not a speed win even though numerical
+  behavior remained stable and within the loss tolerance.
+```
+
+```text
+date: 2026-07-14
+commit: rejected uncommitted candidate, code reverted
+experiment: Pair adjacent causal f32-by-f16 lower-A tensor-core row tiles.
+status: rejected_profile_gate
+change:
+  Added aligned row-pair variants for the normal and A-transposed half-RHS
+  lower-A matmuls. One CTA computed two adjacent 64-row output tiles, staged
+  each A tile separately, and reused one RHS KxN shared tile across the common
+  causal K range. Each output tile retained its original K iteration order,
+  masking, tensor-core operations, and stores; unaligned shapes kept the old
+  kernels.
+verification:
+  cargo fmt --all: pass.
+  cargo check -q: pass.
+  cargo oxide build --arch sm_120a: pass.
+  Added and passed a direct 128-row GPU test comparing both paired causal
+    orientations with their closed-form reference outputs.
+  CUDA_DEVICE_INDEX=0 cargo test -q -p rust-kernels-cuda --test
+    causal_attention_backward_tc -- --ignored --nocapture --test-threads=1:
+    pass, 1 test.
+  Filtered Nsight Compute duration profiles:
+    target/ncu/20260714_f16_lower_a_row_pair_baseline.ncu-rep
+    target/ncu/20260714_f16_lower_a_row_pair_baseline.csv
+    target/ncu/20260714_f16_lower_a_row_pair.ncu-rep
+    target/ncu/20260714_f16_lower_a_row_pair.csv
+measured_effect:
+  The six-launch normal lower-A family regressed from 33.231168ms to
+  40.380704ms (+21.52%), and the four-launch A-transposed family regressed from
+  23.769280ms to 27.925472ms (+17.49%). Combined time rose from 57.000448ms to
+  68.306176ms (+19.83%). The paired kernels used 72 registers/thread and
+  7.168KB shared memory versus 40 registers/thread and 5.120KB for the original
+  kernels; reduced occupancy overwhelmed the saved RHS loads.
+decision:
+  Reject before the 30s screen and revert. Keep one 64-row output tile per CTA
+  for these causal half-RHS matmuls.
+```
+
+```text
+date: 2026-07-14
+commit: rejected uncommitted candidate, code reverted
+experiment: Cache the active 4096-wide forward softmax score row in shared memory.
+status: rejected_profile_gate
+change:
+  Added a seq_len=4096 specialization that loaded each causal score once into
+  a 4096-element shared tile, then reused that tile for max, denominator, and
+  final probability passes. Other sequence lengths retained the existing
+  kernel. Reduction order, exponential math, probability stores, log-sum-exp,
+  attention math, and launch geometry were unchanged.
+verification:
+  cargo fmt --all: pass.
+  cargo check -q: pass.
+  cargo oxide build --arch sm_120a: pass.
+  CUDA_DEVICE_INDEX=0 cargo test -q -p rust-kernels-cuda --test
+    causal_attention_log_sum_exp -- --ignored --nocapture --test-threads=1:
+    pass, 2 tests.
+  CUDA_DEVICE_INDEX=1 cargo test -q -p rust-kernels-cuda --test
+    causal_attention_backward_tc -- --ignored --nocapture --test-threads=1:
+    pass, 1 test.
+  Filtered Nsight Compute duration profiles:
+    target/ncu/20260714_attention_softmax_shared_scores_baseline.ncu-rep
+    target/ncu/20260714_attention_softmax_shared_scores_baseline.csv
+    target/ncu/20260714_attention_softmax_shared_scores.ncu-rep
+    target/ncu/20260714_attention_softmax_shared_scores.csv
+measured_effect:
+  On the same four-launch forward-softmax mix, total kernel time regressed from
+  36.780832ms to 37.175232ms (+1.07%). Registers rose from 26 to 28 per thread,
+  static shared memory rose from 1.056KB to 17.440KB, and theoretical waves
+  rose from 464.79 to 557.75. The saved global score reads did not offset the
+  added load barrier and lower occupancy.
+decision:
+  Reject before the 30s screen and revert. Keep direct score reads in the
+  current forward softmax.
+```
+
+```text
 date: 2026-07-14
 commit: accepted local jj commit after full gate
 experiment: Swap KDA backward dH shared-buffer roles instead of copying the tile.

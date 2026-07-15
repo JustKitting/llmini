@@ -23,7 +23,7 @@ pub struct SweepConfig {
     pub sweep_exploration_weight: f64,
     #[arg(long, default_value_t = 1)]
     pub log_interval: usize,
-    #[arg(long, default_value = "synth")]
+    #[arg(long, default_value = "fineweb")]
     pub dataset: String,
     #[arg(long, default_value = "sm_120a")]
     pub arch: String,

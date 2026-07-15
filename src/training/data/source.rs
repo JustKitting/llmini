@@ -7,10 +7,11 @@ const TRAIN_DATASET_ENV: &str = "TRAIN_DATASET";
 const TRAIN_REPEAT_BATCH_ENV: &str = "TRAIN_REPEAT_BATCH";
 
 pub(super) const DATASET_SYNTH: &str = "synth";
+pub(super) const DATASET_FINEWEB: &str = "fineweb";
 pub(super) const DATASET_SHAKESPEARE: &str = "shakespeare";
 
 pub(super) fn training_dataset() -> String {
-    env_nonempty(TRAIN_DATASET_ENV).unwrap_or_else(|| DATASET_SYNTH.to_string())
+    env_nonempty(TRAIN_DATASET_ENV).unwrap_or_else(|| DATASET_FINEWEB.to_string())
 }
 
 pub(super) fn repeat_first_window() -> bool {

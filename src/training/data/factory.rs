@@ -3,10 +3,10 @@ use std::path::PathBuf;
 use crate::AppResult;
 
 use super::{
-    TokenDataLoader, shakespeare,
+    TokenDataLoader, fineweb, shakespeare,
     source::{
-        DATASET_SHAKESPEARE, DATASET_SYNTH, repeat_first_window, token_count_paths,
-        training_dataset,
+        DATASET_FINEWEB, DATASET_SHAKESPEARE, DATASET_SYNTH, repeat_first_window,
+        token_count_paths, training_dataset,
     },
     synth, tokens,
     validation::train_end,
@@ -16,14 +16,28 @@ impl TokenDataLoader {
     pub fn from_training_dataset() -> AppResult<(String, Self)> {
         let dataset = training_dataset();
         let loader = match dataset.as_str() {
+            DATASET_FINEWEB => Self::from_fineweb(),
             DATASET_SYNTH => Self::from_synth(),
             DATASET_SHAKESPEARE => Self::from_shakespeare(),
             dataset => Err(format!(
-                "unknown TRAIN_DATASET={dataset}; expected synth or shakespeare"
+                "unknown TRAIN_DATASET={dataset}; expected fineweb, synth, or shakespeare"
             )
             .into()),
         }?;
         Ok((dataset, loader))
+    }
+
+    pub fn from_fineweb() -> AppResult<Self> {
+        fineweb::ensure_shards()?;
+        let train_paths = fineweb::train_shards()?;
+        let validation_path = fineweb::first_val_shard()?;
+        let validation_tokens = tokens::read_u16_tokens(&validation_path)?;
+        Self::from_train_paths(
+            train_paths,
+            Some((validation_path, validation_tokens)),
+            false,
+            false,
+        )
     }
 
     pub fn from_synth() -> AppResult<Self> {
