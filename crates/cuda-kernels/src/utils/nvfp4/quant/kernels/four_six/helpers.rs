@@ -4,8 +4,8 @@ use crate::float_ptx::abs_f32;
 use crate::warp_reduce::{half_warp_max_f32, half_warp_sum_f32};
 
 use super::super::convert::{
-    candidate_error_with_inv_scale, local_scale_bits, nonzero_global_scale, nvfp4_inv_scale,
-    scale_value,
+    candidate_error_and_payload_with_inv_scale, local_scale_bits, nonzero_global_scale,
+    nvfp4_inv_scale, scale_value,
 };
 
 pub(crate) const GROUP_SIZE: usize = 16;
@@ -47,7 +47,7 @@ pub(crate) fn four_six_group_scale(
     group_mask: u32,
     group_leader: u32,
     lane_in_group: usize,
-) -> (u8, f32) {
+) -> (u8, u8) {
     let group_amax = half_warp_max_f32(abs_f32(value), group_mask);
     let mut scale_bits_six = 0u16;
     let mut scale_bits_four = 0u16;
@@ -65,24 +65,28 @@ pub(crate) fn four_six_group_scale(
         inv_scale_four = nvfp4_inv_scale(scale_four, global_scale);
     }
 
-    scale_bits_six = warp::shuffle_sync(group_mask, scale_bits_six as u32, group_leader) as u16;
-    scale_bits_four = warp::shuffle_sync(group_mask, scale_bits_four as u32, group_leader) as u16;
+    // Every caller stores scale bits only from the group leader, where both
+    // candidates were produced. The candidate scales remain group-wide.
     scale_six = warp::shuffle_f32_sync(group_mask, scale_six, group_leader);
     scale_four = warp::shuffle_f32_sync(group_mask, scale_four, group_leader);
     inv_scale_six = warp::shuffle_f32_sync(group_mask, inv_scale_six, group_leader);
     inv_scale_four = warp::shuffle_f32_sync(group_mask, inv_scale_four, group_leader);
 
-    let err_six = half_warp_sum_f32(
-        candidate_error_with_inv_scale(value, scale_six, global_scale, inv_scale_six),
-        group_mask,
-    );
-    let err_four = half_warp_sum_f32(
-        candidate_error_with_inv_scale(value, scale_four, global_scale, inv_scale_four),
-        group_mask,
-    );
+    let (local_err_six, payload_six) =
+        candidate_error_and_payload_with_inv_scale(value, scale_six, global_scale, inv_scale_six);
+    let (local_err_four, payload_four) =
+        candidate_error_and_payload_with_inv_scale(value, scale_four, global_scale, inv_scale_four);
+    let err_six = half_warp_sum_f32(local_err_six, group_mask);
+    let err_four = half_warp_sum_f32(local_err_four, group_mask);
     if err_six <= err_four {
-        (scale_bits_six as u8, inv_scale_six)
+        (scale_bits_six as u8, payload_six)
     } else {
-        (scale_bits_four as u8, inv_scale_four)
+        (scale_bits_four as u8, payload_four)
     }
+}
+
+#[inline(always)]
+pub(crate) fn four_six_payload_byte(payload: u8, group_mask: u32) -> u8 {
+    let peer = warp::shuffle_xor_sync(group_mask, payload as u32, 1) as u8;
+    payload | (peer << 4)
 }

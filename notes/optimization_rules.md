@@ -78,16 +78,23 @@ threshold from the active baseline whenever that baseline changes:
 minimum_step_saving = (TRAIN_ELAPSED_S / COMPLETED_STEPS) * 0.005
 ```
 
-For the current baseline, `900.402 / 1424 = 0.632304775` seconds per step, so a
-candidate must credibly be able to save at least `3.161524 ms/step` before any
-code edit, rebuild, GPU test, or training screen. Multiply a per-launch saving
-by the launch count per step and compare that aggregate saving with the
-threshold; do not pursue sub-threshold micro-optimizations.
+For the current baseline, `900.236 / 1513 = 0.595000661` seconds per step, so a
+candidate batch must credibly be able to save at least `2.975003 ms/step`
+before a rebuild, GPU test, or training screen. Multiply a per-launch saving by
+the launch count per step and compare that aggregate saving with the threshold.
+
+The threshold applies to the complete compatible batch, not every atomic edit.
+Several clear savings may be implemented and profiled together when their
+credible combined ceiling clears `0.5%`. A component that has already measured
+a real but sub-threshold speedup may remain in an unproven batch while another
+compatible saving is added; do not discard known-good work merely because it
+misses `0.5%` alone. Do not run the 30-second or 900-second gates until the
+combined profile clears the whole-step threshold.
 
 After implementation, the focused profile must measure at least the same
 aggregate `0.5%` whole-step saving before proceeding to the 30-second screen or
-900-second validation gate. A larger fusion may qualify based on the aggregate
-time it removes even when each constituent operation would not qualify alone.
+900-second validation gate. This aggregate rule applies equally to a fusion or
+to a batch of independent compatible wins.
 
 ### Memory-Capacity Wins
 

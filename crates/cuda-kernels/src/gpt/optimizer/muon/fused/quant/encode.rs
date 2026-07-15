@@ -1,10 +1,9 @@
-use cuda_device::{thread, warp};
+use cuda_device::thread;
 
 use crate::device_ptr::read_f32;
 use crate::f16_tc_matmul::cta_tile::CTA_THREADS;
-use crate::nvfp4_quant::kernels::convert::cvt_rn_satfinite_e2m1x2_f32;
 use crate::nvfp4_quant::kernels::four_six::helpers::{
-    GROUP_SIZE, four_six_group_scale, four_six_lane,
+    GROUP_SIZE, four_six_group_scale, four_six_lane, four_six_payload_byte,
 };
 
 use super::super::super::super::work_grid::WorkGrid;
@@ -41,7 +40,7 @@ fn encode_group(
     let (lane_in_group, group_mask, group_leader) = four_six_lane();
     let base = group * GROUP_SIZE as u32;
     let value = read_f32(x, base + lane_in_group as u32);
-    let (scale_bits, inv_scale) = four_six_group_scale(
+    let (scale_bits, payload) = four_six_group_scale(
         value,
         global_scale,
         SCALE_OVERRIDE,
@@ -49,17 +48,14 @@ fn encode_group(
         group_leader,
         lane_in_group,
     );
-    let pair = group_leader + lane_in_group as u32 * 2;
-    let hi = warp::shuffle_f32_sync(group_mask, value, pair);
-    let lo = warp::shuffle_f32_sync(group_mask, value, pair + 1);
+    let payload_byte = four_six_payload_byte(payload, group_mask);
 
     unsafe {
         if lane_in_group == 0 {
             *out_scales.add(group as usize) = scale_bits;
         }
-        if lane_in_group < GROUP_SIZE / 2 {
-            *out_fp4.add((base / 2 + lane_in_group as u32) as usize) =
-                cvt_rn_satfinite_e2m1x2_f32(lo * inv_scale, hi * inv_scale);
+        if lane_in_group.is_multiple_of(2) {
+            *out_fp4.add((base / 2 + lane_in_group as u32 / 2) as usize) = payload_byte;
         }
     }
 }

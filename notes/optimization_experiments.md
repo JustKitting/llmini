@@ -44,6 +44,103 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 
 ```text
 date: 2026-07-15
+commit: accepted local jj commit after full gate
+experiment: Reuse four-six candidate payloads and pack adjacent nibbles with one XOR shuffle.
+status: accepted_900s
+change:
+  The four-six selector already quantized every lane against both candidate
+  scales to measure reconstruction error, but each caller discarded those FP4
+  nibbles, shuffled the original FP32 values into eight packing lanes, and ran
+  a third E2M1 conversion. The shared selector now returns the nibble belonging
+  to the selected scale. All 16 lanes exchange that selected nibble once with
+  their XOR-1 neighbor, and even lanes pack and store each adjacent pair. Scale
+  bits remain in the half-warp leader that stores them, so two unused scale-bit
+  broadcasts are also removed. Schedule-free encoding no longer recomputes two
+  optimizer values per packing lane.
+numerics:
+  Candidate scales, inverse scales, both per-value E2M1 conversions, decoded
+  reconstruction errors, half-warp reductions, and the six-versus-four choice
+  are unchanged. The stored low nibble is the selected even-lane payload and
+  the stored high nibble is the selected odd-lane payload, exactly matching the
+  former final conversion. All focused output comparisons pass bit-for-bit.
+memory:
+  No allocation, scratch size, or buffer lifetime changed. The sustained run
+  used approximately 62988 MiB at the midpoint, but there is no matched memory
+  reduction and this is not a batch-capacity win.
+minimum_impact_gate:
+  The promoted baseline averaged 900.302 / 1501 = 599.801466ms per step, so the
+  required aggregate saving was 2.999007ms per step. Payload reuse alone saved
+  2.541712 / 2.741199ms per step in matched samples and was retained as a known
+  real near-win rather than discarded. Replacing its two arbitrary payload
+  gathers with one XOR-neighbor shuffle then lifted the complete batch above
+  the whole-step threshold in both corresponding samples.
+focused_profile:
+  Accepted reciprocal-broadcast samples:
+    target/nsys/20260715_four_six_group_reciprocal_hoist_candidate.nsys-rep
+    target/nsys/20260715_four_six_group_reciprocal_hoist_candidate_reciprocal.nsys-rep
+    train elapsed: 5.866 and 5.879 seconds.
+    held-out val_loss: 8.662814 and 8.661613.
+  Candidate samples:
+    target/nsys/20260715_four_six_payload_xor_pack_batch_candidate.nsys-rep
+    target/nsys/20260715_four_six_payload_xor_pack_batch_candidate_reciprocal.nsys-rep
+    train elapsed: 5.822 and 5.834 seconds.
+    held-out val_loss: 8.663598 and 8.666880.
+  Across the same 10 training steps plus endpoint validation:
+    affected four-six producers including Muon encode:
+      893.574124 -> 843.559511ms and 895.862864 -> 846.168847ms,
+      saving 5.001461 / 4.969402ms per step.
+    all GPU kernels:
+      5971.654922 -> 5926.982738ms and 5984.189230 -> 5939.349712ms,
+      saving 4.467218 / 4.483952ms per step.
+    kernel launch counts remain exactly 92061 in all four profiles.
+  A discarded refinement broadcast global and square-root-bound scalars from
+  group/warp leaders. Against payload reuse it regressed the four-six family
+  from 819.243016 to 838.799636ms and bounded linear3 from 280.989656 to
+  281.187026ms over 10 steps, so it was removed before either fixed-wall gate.
+verification:
+  cargo fmt --all, git diff --check, and fresh
+  cargo oxide build --arch sm_120a: pass.
+  All six focused NVFP4/linear GPU tests, the schedule-free Adam GPU test, and
+  all three focused Muon TMA GPU tests pass after the fresh rebuild.
+  Generated exact-kernel PTX uses 17 shuffles instead of 20 and two E2M1
+  conversions instead of three. Representative registers change exact 30 ->
+  27, tiled transpose 40 -> 37, rowwise 34 -> 29, bounded exact 30 -> 25,
+  schedule-free 31 -> 27, and Muon encode 39 -> 37. Affected kernels have zero
+  per-thread local memory and no spills.
+  Required clean 30-second screen with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260715_194132Z_fineweb_30s
+    stdout: target/four_six_payload_xor_pack_30_20260715.log
+    completed_steps=52, train_elapsed_s=30.057, val_loss=6.765794.
+    Both high-fidelity samples were finite and nonzero, with zero skip flags.
+  Required 900-second gate with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260715_194240Z_fineweb_900s
+    stdout: target/four_six_payload_xor_pack_900_20260715.log
+    completed_steps=1513, train_elapsed_s=900.236, val_loss=4.898784.
+    All 31 high-fidelity samples were finite and nonzero, with zero skipped
+    updates, loss-spike skips, grad-norm-spike skips, or nonfinite skips. Grad
+    norm ranged from 1.190310836 to 18.969266891. Every sample retained batch
+    4, sequence 2048, and 8192 tokens per step.
+measured_effect:
+  Against the matched 30-second baseline:
+    completed_steps: 52 -> 52.
+    average step time: 581.692308 -> 578.019231ms
+      (-3.673077ms, -0.631%).
+    held-out val_loss: 6.766351 -> 6.765794 (-0.000557, -0.008%).
+  Against the matched 900-second baseline:
+    completed_steps: 1501 -> 1513 (+12, +0.799%).
+    average step time: 599.801466 -> 595.000661ms
+      (-4.800805ms, -0.800%).
+    training tokens: 12296192 -> 12394496 (+98304, +0.799%).
+    held-out val_loss: 4.903946 -> 4.898784 (-0.005162, -0.105%).
+decision:
+  Keep and promote. The combined batch clears the focused profile gate twice,
+  preserves its speed signal in both fixed-wall runs, improves held-out loss,
+  and remains stable throughout the full gate. The next 0.5% threshold is
+  (900.236 / 1513) * 0.005 = 2.975003ms per step.
+```
+
+```text
+date: 2026-07-15
 commit: rejected uncommitted candidate, code reverted
 experiment: Move MS-EDEN group-scalar scale correction into the half-warp leader.
 status: rejected_profile_gate

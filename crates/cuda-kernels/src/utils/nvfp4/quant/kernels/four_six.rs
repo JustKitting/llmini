@@ -2,8 +2,6 @@ use cuda_device::{DisjointSlice, SharedArray, cuda_module, kernel, thread};
 
 use crate::float_ptx::sqrt_f32;
 
-use super::convert::cvt_rn_satfinite_e2m1x2_f32;
-
 #[path = "four_six/helpers.rs"]
 pub(crate) mod helpers;
 
@@ -374,11 +372,9 @@ pub(crate) mod module {
             let value = unsafe { TILE[lane * TRANSPOSE_TILE_STRIDE + col] };
             let group = (source_col_base + col) * groups_per_output_row + group_in_output_row;
             let base = group * GROUP_SIZE;
-            let (scale_bits, inv_scale) =
+            let (scale_bits, payload) =
                 four_six_group_scale(value, global_scale, scale_override, mask, leader, lane);
-            let pair = leader + lane as u32 * 2;
-            let hi = cuda_device::warp::shuffle_f32_sync(mask, value, pair);
-            let lo = cuda_device::warp::shuffle_f32_sync(mask, value, pair + 1);
+            let payload_byte = four_six_payload_byte(payload, mask);
 
             unsafe {
                 if group == 0 && lane == 0 {
@@ -387,9 +383,8 @@ pub(crate) mod module {
                 if lane == 0 {
                     *out_scales.get_unchecked_mut(group) = scale_bits;
                 }
-                if lane < GROUP_SIZE / 2 {
-                    *out_fp4.get_unchecked_mut(base / 2 + lane) =
-                        cvt_rn_satfinite_e2m1x2_f32(lo * inv_scale, hi * inv_scale);
+                if lane.is_multiple_of(2) {
+                    *out_fp4.get_unchecked_mut(base / 2 + lane / 2) = payload_byte;
                 }
             }
 
@@ -448,11 +443,9 @@ pub(crate) mod module {
             }
             let group = (source_col_base + col) * groups_per_output_row + group_in_output_row;
             let base = group * GROUP_SIZE;
-            let (scale_bits, inv_scale) =
+            let (scale_bits, payload) =
                 four_six_group_scale(value, global_scale, 1.0, mask, leader, lane);
-            let pair = leader + lane as u32 * 2;
-            let hi = cuda_device::warp::shuffle_f32_sync(mask, value, pair);
-            let lo = cuda_device::warp::shuffle_f32_sync(mask, value, pair + 1);
+            let payload_byte = four_six_payload_byte(payload, mask);
 
             unsafe {
                 if group == 0 && lane == 0 {
@@ -461,9 +454,8 @@ pub(crate) mod module {
                 if lane == 0 {
                     *out_scales.get_unchecked_mut(group) = scale_bits;
                 }
-                if lane < GROUP_SIZE / 2 {
-                    *out_fp4.get_unchecked_mut(base / 2 + lane) =
-                        cvt_rn_satfinite_e2m1x2_f32(lo * inv_scale, hi * inv_scale);
+                if lane.is_multiple_of(2) {
+                    *out_fp4.get_unchecked_mut(base / 2 + lane / 2) = payload_byte;
                 }
             }
 
@@ -503,7 +495,7 @@ pub(crate) mod module {
         value: f32,
     ) {
         let global_scale = four_six_global_scale(tensor_amax, scale_override);
-        let (scale_bits, inv_scale) = four_six_group_scale(
+        let (scale_bits, payload) = four_six_group_scale(
             value,
             global_scale,
             scale_override,
@@ -511,9 +503,7 @@ pub(crate) mod module {
             group_ctx.leader,
             group_ctx.lane,
         );
-        let pair = group_ctx.leader + group_ctx.lane as u32 * 2;
-        let hi = cuda_device::warp::shuffle_f32_sync(group_ctx.mask, value, pair);
-        let lo = cuda_device::warp::shuffle_f32_sync(group_ctx.mask, value, pair + 1);
+        let payload_byte = four_six_payload_byte(payload, group_ctx.mask);
 
         unsafe {
             if writes_global_scale && group_ctx.lane == 0 {
@@ -522,10 +512,9 @@ pub(crate) mod module {
             if group_ctx.lane == 0 {
                 *out.scales.get_unchecked_mut(group_ctx.group) = scale_bits;
             }
-            if group_ctx.lane < GROUP_SIZE / 2 {
+            if group_ctx.lane.is_multiple_of(2) {
                 *out.fp4
-                    .get_unchecked_mut(group_ctx.base / 2 + group_ctx.lane) =
-                    cvt_rn_satfinite_e2m1x2_f32(lo * inv_scale, hi * inv_scale);
+                    .get_unchecked_mut(group_ctx.base / 2 + group_ctx.lane / 2) = payload_byte;
             }
         }
     }
