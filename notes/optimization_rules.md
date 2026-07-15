@@ -50,6 +50,27 @@ completed step count inside the band can be a valid long-run improvement.
 This rule is for math-preserving kernel/runtime changes. It does not apply to
 hyperparameter sweep promotion.
 
+### Minimum Whole-Step Impact
+
+Do not implement or benchmark a kernel/runtime candidate unless its credible
+mathematical ceiling can reduce total step time by at least `0.5%`. Compute the
+threshold from the active baseline whenever that baseline changes:
+
+```text
+minimum_step_saving = (TRAIN_ELAPSED_S / COMPLETED_STEPS) * 0.005
+```
+
+For the current baseline, `900.596 / 1067 = 0.844044986` seconds per step, so a
+candidate must credibly be able to save at least `4.220225 ms/step` before any
+code edit, rebuild, GPU test, or training screen. Multiply a per-launch saving
+by the launch count per step and compare that aggregate saving with the
+threshold; do not pursue sub-threshold micro-optimizations.
+
+After implementation, the focused profile must measure at least the same
+aggregate `0.5%` whole-step saving before proceeding to the 30-second screen or
+900-second validation gate. A larger fusion may qualify based on the aggregate
+time it removes even when each constituent operation would not qualify alone.
+
 ## Active Baseline
 
 NextLat is part of the active model path. Do not protect or compare against
