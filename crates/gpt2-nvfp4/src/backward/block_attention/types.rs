@@ -1,4 +1,4 @@
-use cuda_core::CudaStream;
+use cuda_core::{CudaStream, DeviceBuffer};
 use rust_kernels_cuda::attention::AttentionModule;
 use rust_kernels_cuda::f16_tc_matmul::F16TcMatmulModule;
 use rust_kernels_cuda::layer_norm_backward::LayerNormBackwardModule;
@@ -61,6 +61,10 @@ pub struct BlockAttentionBackwardArgs<'a, 'scratch, 'out> {
     pub saved: BlockForwardSaved<'a>,
     pub ln_1: LayerNormTensors<'a>,
     pub projections: AttentionProjectionTensors<'a>,
+    pub d_residual_after_attention: &'scratch DeviceBuffer<f32>,
+    pub d_residual_in: &'scratch mut DeviceBuffer<f32>,
+    pub d_hidden: &'scratch mut DeviceBuffer<f32>,
+    pub d_qkv: &'scratch mut DeviceBuffer<f32>,
     pub grads: BlockBackwardGrads<'out>,
     pub scratch: BlockAttentionBackwardScratch<'scratch>,
     pub seeds: BlockAttentionBackwardSeeds,

@@ -22,6 +22,7 @@ impl Trainer {
             );
             let weights = self.uploaded.backward_weights();
             let backward = self.buffers.backward.parts();
+            let scratch = self.buffers.scratch.scratch();
 
             next_latent_backward(NextLatBackwardArgs {
                 stream,
@@ -47,7 +48,7 @@ impl Trainer {
                 extra_final_normalized_grad: Some(&self.buffers.next_latent_grads.d_current_states),
                 d_lm_head_weight: backward.d_lm_head_weight,
                 grads: backward.grads,
-                scratch: self.buffers.scratch.scratch(),
+                scratch,
                 seeds: Gpt2BackwardSeeds::from_rng(&mut self.rng),
             })?;
         }

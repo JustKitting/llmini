@@ -32,6 +32,8 @@ fn block_attention_side_backward_runs_full_chain() -> TestResult {
     let mut scratch = scratch::BlockAttentionScratch::new(&stream)?;
     let mut rng = Gpt2Rng::new(0x4154_544e);
 
+    let (d_residual_after_attention, d_residual_in, d_hidden, d_qkv, backward_grads) =
+        grads.block();
     attention_side_backward(BlockAttentionBackwardArgs {
         block_index: 0,
         use_full_attention: false,
@@ -52,13 +54,17 @@ fn block_attention_side_backward_runs_full_chain() -> TestResult {
         saved: saved.block(),
         ln_1: weights.ln_1(),
         projections: weights.projections(),
-        grads: grads.block(),
+        d_residual_after_attention,
+        d_residual_in,
+        d_hidden,
+        d_qkv,
+        grads: backward_grads,
         scratch: scratch.block(),
         seeds: BlockAttentionBackwardSeeds::from_rng(&mut rng),
     })?;
 
     assert_nonzero_finite(&grads.d_residual_in.to_host_vec(&stream)?);
-    assert_nonzero_finite(&grads.d_attention_out.to_host_vec(&stream)?);
+    assert_nonzero_finite(&grads.d_hidden.to_host_vec(&stream)?);
     assert_nonzero_finite(&grads.d_qkv.to_host_vec(&stream)?);
     assert_nonzero_finite(&grads.d_attn_qkv_weight.to_host_vec(&stream)?);
     assert_nonzero_finite(&grads.d_attn_c_proj_weight.to_host_vec(&stream)?);

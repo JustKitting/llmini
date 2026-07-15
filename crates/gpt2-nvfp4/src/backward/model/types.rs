@@ -36,6 +36,11 @@ pub struct Gpt2BackwardScratch<'scratch> {
     pub final_head: FinalHeadBackwardScratch<'scratch>,
     pub attention: BlockAttentionBackwardScratch<'scratch>,
     pub mlp: MlpBackwardScratch<'scratch>,
+    pub d_residual_after_attention: &'scratch mut DeviceBuffer<f32>,
+    pub d_hidden: &'scratch mut DeviceBuffer<f32>,
+    pub d_qkv: &'scratch mut DeviceBuffer<f32>,
+    pub d_mlp_up: &'scratch mut DeviceBuffer<f32>,
+    pub d_mlp_relu2: &'scratch mut DeviceBuffer<f32>,
 }
 
 #[derive(Clone, Copy)]

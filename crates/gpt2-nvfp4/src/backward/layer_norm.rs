@@ -41,6 +41,8 @@ pub struct Gpt2LayerNormBackwardArgs<'a, 'out> {
     pub saved: LayerNormSaved<'a>,
     pub weights: LayerNormTensors<'a>,
     pub grads: LayerNormGrads<'out>,
+    pub d_normalized: &'a DeviceBuffer<f32>,
+    pub d_residual: &'out mut DeviceBuffer<f32>,
 }
 
 pub struct Gpt2LayerNormBackwardAddArgs<'a, 'out> {
@@ -49,6 +51,7 @@ pub struct Gpt2LayerNormBackwardAddArgs<'a, 'out> {
     pub saved: LayerNormSaved<'a>,
     pub weights: LayerNormTensors<'a>,
     pub grads: LayerNormGrads<'out>,
+    pub d_normalized: &'a DeviceBuffer<f32>,
     pub direct: &'a DeviceBuffer<f32>,
     pub d_residual: &'out mut DeviceBuffer<f32>,
 }
@@ -110,7 +113,7 @@ pub fn layer_norm_backward(args: Gpt2LayerNormBackwardArgs<'_, '_>) -> Result<()
         stream: args.stream,
         module: args.module,
         saved: args.saved,
-        d_normalized: &*grads.d_normalized,
+        d_normalized: args.d_normalized,
         d_weight: grads.d_weight,
         d_bias: grads.d_bias,
     })?;
@@ -119,8 +122,8 @@ pub fn layer_norm_backward(args: Gpt2LayerNormBackwardArgs<'_, '_>) -> Result<()
         module: args.module,
         saved: args.saved,
         weights: args.weights,
-        d_normalized: &*grads.d_normalized,
-        d_residual: grads.d_residual,
+        d_normalized: args.d_normalized,
+        d_residual: args.d_residual,
     })
 }
 
@@ -133,7 +136,7 @@ pub fn layer_norm_backward_add(
         stream: args.stream,
         module: args.module,
         saved: args.saved,
-        d_normalized: &*grads.d_normalized,
+        d_normalized: args.d_normalized,
         d_weight: grads.d_weight,
         d_bias: grads.d_bias,
     })?;
@@ -142,7 +145,7 @@ pub fn layer_norm_backward_add(
         module: args.module,
         saved: args.saved,
         weights: args.weights,
-        d_normalized: &*grads.d_normalized,
+        d_normalized: args.d_normalized,
         direct: args.direct,
         d_residual: args.d_residual,
     })

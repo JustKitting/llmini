@@ -45,6 +45,101 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-15
 commit: accepted local jj commit after full gate
+experiment: Remove dead residual-gradient allocations and share sequential backward activation scratch.
+status: accepted_900s_memory_capacity
+change:
+  LayerNormGrads now contains only persistent parameter gradients; its input
+  gradient and normalized-input gradient are explicit sequential destinations.
+  BlockBackwardGrads likewise contains only persistent layer-norm, attention,
+  and MLP parameter gradients. All 16 blocks share dedicated backward buffers
+  for d_residual_after_attention, hidden-sized attention/LN scratch, d_qkv,
+  d_mlp_up, and d_mlp_relu2. The embedding residual buffer carries the
+  residual-gradient chain through all 16 blocks. This removes 49 dead
+  HiddenState allocations and replaces every per-block activation-gradient
+  allocation with one shape-matched shared instance.
+numerics:
+  Kernel implementations, launch order, optimizer math, and tensor values are
+  unchanged. Every shared buffer is consumed before the following operation
+  overwrites it on the same CUDA stream. The residual chain is read by MLP
+  backward, then updated after the attention-side residual has been produced.
+  Dedicated backward scratch is retained because the forward workspaces are
+  not safe to overwrite at the start of backward.
+rejected_side_check:
+  A more aggressive variant reused the forward residual, normalized, QKV, and
+  MLP activation buffers directly. It reduced one-step allocation further to
+  44381175808 bytes, but it was invalid: Grad_norm changed from 18.929119110
+  to 734426.9375 and held-out one-step loss changed from 10.421818 to
+  10.474436. That aliasing was reverted before profiling or fixed-wall gates.
+memory_capacity_gate:
+  Exact committed-parent 1B/B4/S2048 one-step allocation diagnostic:
+    target/gates/20260715_residual_grad_alloc_baseline_1step.log
+    total_bytes=101973491712, used_bytes=66057338880,
+    free_bytes=35916152832.
+  Exact final-candidate diagnostic:
+    target/gates/20260715_shared_backward_dedicated_scratch_1step.log
+    total_bytes=101973491712, used_bytes=45324894208,
+    free_bytes=56648597504.
+  Used allocation fell by exactly 20732444672 bytes = 19772 MiB =
+  19.308594 GiB, a 31.386% reduction. This creates substantial raw capacity
+  for a larger batch/tokens-per-step experiment, but no larger-shape fit or
+  throughput claim is made until that exact shape is rebuilt and measured.
+focused_profile:
+  Promoted baseline samples:
+    target/nsys/20260715_kda_causal_ln_residual_batch_candidate.nsys-rep
+    target/nsys/20260715_kda_causal_ln_residual_batch_candidate_reciprocal.nsys-rep
+    total GPU kernels: 5655.460741 and 5661.903018ms.
+    kernel launches: 90025 in both samples.
+  Candidate samples:
+    target/nsys/20260715_shared_backward_scratch_candidate.nsys-rep
+    target/nsys/20260715_shared_backward_scratch_candidate_reciprocal.nsys-rep
+    total GPU kernels: 5654.247788 and 5667.101387ms.
+    kernel launches: 90025 in both samples.
+  Over the same 10 training steps plus endpoint validation, the reciprocal
+  average changes by +0.199271ms per training step, a +0.035% movement. This
+  is throughput-neutral and far below a meaningful regression.
+verification:
+  cargo fmt --all --check, git diff --check,
+  cargo check --workspace --lib --bins, fresh
+  cargo oxide build --arch sm_120a, and
+  cargo test --workspace --release --lib --bins: pass (50 host tests).
+  The focused block-attention backward GPU comparison passes after the final
+  rebuild. A whole-training one-step diagnostic is finite and restores
+  Grad_norm to 18.951820374, near the committed parent's 18.929119110.
+  Required clean 30-second screen with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260715_233302Z_fineweb_30s
+    stdout: target/gates/20260715_shared_backward_scratch_30s.log
+    completed_steps=55, train_elapsed_s=30.275, val_loss=6.722232.
+  Required 900-second gate with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260715_233351Z_fineweb_900s
+    stdout: target/gates/20260715_shared_backward_scratch_900s.log
+    completed_steps=1584, train_elapsed_s=900.019, val_loss=4.869185.
+    All 32 high-fidelity samples were finite and nonzero, with zero skipped
+    updates, loss-spike skips, grad-norm-spike skips, or nonfinite skips. Grad
+    norm ranged from 1.155835152 to 18.951820374. Every sample retained batch
+    4, sequence 2048, and 8192 tokens per step.
+measured_effect:
+  Against the matched 30-second baseline:
+    completed_steps: 55 -> 55.
+    average step time: 551.309091 -> 550.454545ms
+      (-0.854545ms, -0.155%).
+    held-out val_loss: 6.720118 -> 6.722232
+      (+0.002114, +0.031%).
+  Against the matched 900-second baseline:
+    completed_steps: 1584 -> 1584.
+    average step time: 568.200126 -> 568.193813ms
+      (-0.006313ms, -0.001%).
+    held-out val_loss: 4.858758 -> 4.869185
+      (+0.010427, +0.215%).
+decision:
+  Keep and promote under the memory-capacity rule. The exact allocation saving
+  is 19.308594 GiB, throughput is neutral, held-out loss remains inside the
+  active 1% noise band, and the sustained run is stable. The next speed-batch
+  threshold is (900.019 / 1584) * 0.005 = 2.840969ms per step.
+```
+
+```text
+date: 2026-07-15
+commit: accepted local jj commit after full gate
 experiment: Reuse KDA intermediates, emit causal matmul outputs, and fuse residual joins.
 status: accepted_900s
 change:
