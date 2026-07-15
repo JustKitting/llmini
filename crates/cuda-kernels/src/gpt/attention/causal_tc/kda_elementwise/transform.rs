@@ -50,6 +50,64 @@ pub(in super::super) fn make_kg_kpos_vbeta_body(
     }
 }
 
+pub(in super::super) fn make_qg_kneg_kg_kpos_vbeta_body(
+    mut q: DisjointSlice<f32>,
+    mut k: DisjointSlice<f32>,
+    mut v: DisjointSlice<f32>,
+    g: &[f32],
+    beta: &[f32],
+    mut kneg: DisjointSlice<f32>,
+    mut kpos_beta: DisjointSlice<f32>,
+    params: CausalAttentionParams,
+) {
+    let Some(index) = thread_index(compact_elems(&params)) else {
+        return;
+    };
+    let (dim, token, _bh, batch, head) = compact_linear_parts(index, &params);
+    let compact = index as usize;
+    let chunk_end = chunk_end_token(token / params.chunk_size, &params);
+    let g_value = g[compact];
+    let g_last = g[compact_index(batch, chunk_end, head, dim, &params)];
+    let beta_value = beta[beta_compact_index(batch, token, head, &params)];
+    let exp_g = kda_decay_exp(g_value);
+
+    unsafe {
+        let q_value = *q.get_unchecked_mut(compact);
+        let k_value = *k.get_unchecked_mut(compact);
+        let v_value = *v.get_unchecked_mut(compact);
+        *q.get_unchecked_mut(compact) = q_value * exp_g;
+        *kneg.get_unchecked_mut(compact) = k_value * kda_decay_exp(-g_value);
+        *k.get_unchecked_mut(compact) = k_value * kda_decay_exp(g_last - g_value);
+        *v.get_unchecked_mut(compact) = v_value * beta_value;
+        *kpos_beta.get_unchecked_mut(compact) = k_value * beta_value * exp_g;
+    }
+}
+
+pub(in super::super) fn make_qg_kg_vbeta_body(
+    mut q: DisjointSlice<f32>,
+    mut k: DisjointSlice<f32>,
+    mut v: DisjointSlice<f32>,
+    g: &[f32],
+    beta: &[f32],
+    params: CausalAttentionParams,
+) {
+    let Some(index) = thread_index(compact_elems(&params)) else {
+        return;
+    };
+    let (dim, token, _bh, batch, head) = compact_linear_parts(index, &params);
+    let compact = index as usize;
+    let chunk_end = chunk_end_token(token / params.chunk_size, &params);
+    let g_value = g[compact];
+    let g_last = g[compact_index(batch, chunk_end, head, dim, &params)];
+    let beta_value = beta[beta_compact_index(batch, token, head, &params)];
+
+    unsafe {
+        *q.get_unchecked_mut(compact) *= kda_decay_exp(g_value);
+        *k.get_unchecked_mut(compact) *= kda_decay_exp(g_last - g_value);
+        *v.get_unchecked_mut(compact) *= beta_value;
+    }
+}
+
 pub(in super::super) fn make_kneg_from_kg_body(
     k: &[f32],
     chunk_g_last: &[f32],

@@ -2,9 +2,9 @@ use cuda_device::{DisjointSlice, cuda_module, kernel};
 
 use super::super::kda::{
     KdaStateSaveInputs, chunk_cumsum_g_body, chunk_kda_output_from_state_body,
-    chunk_kda_state_save_body, make_kg_kpos_vbeta_body, make_kneg_from_kg_body, make_qg_kneg_body,
-    mask_akk_body, mask_aqk_body, prepare_kda_body, solve_akk_inv_body, store_chunk_g_last_body,
-    zero_f32_body,
+    chunk_kda_state_save_body, make_kg_kpos_vbeta_body, make_kneg_from_kg_body,
+    make_qg_kg_vbeta_body, make_qg_kneg_body, make_qg_kneg_kg_kpos_vbeta_body, mask_akk_body,
+    mask_aqk_body, prepare_kda_body, solve_akk_inv_body, store_chunk_g_last_body, zero_f32_body,
 };
 use crate::attention::CausalAttentionParams;
 use crate::kda_tc::{with_kda_tiles, with_tc_ab_tiles};
@@ -71,6 +71,32 @@ pub(super) mod module {
         params: CausalAttentionParams,
     ) {
         make_kg_kpos_vbeta_body(k, v, g, beta, kpos_beta, params);
+    }
+
+    #[kernel]
+    pub fn make_kda_qg_kneg_kg_kpos_vbeta_kernel(
+        q: DisjointSlice<f32>,
+        k: DisjointSlice<f32>,
+        v: DisjointSlice<f32>,
+        g: &[f32],
+        beta: &[f32],
+        kneg: DisjointSlice<f32>,
+        kpos_beta: DisjointSlice<f32>,
+        params: CausalAttentionParams,
+    ) {
+        make_qg_kneg_kg_kpos_vbeta_body(q, k, v, g, beta, kneg, kpos_beta, params);
+    }
+
+    #[kernel]
+    pub fn make_kda_qg_kg_vbeta_kernel(
+        q: DisjointSlice<f32>,
+        k: DisjointSlice<f32>,
+        v: DisjointSlice<f32>,
+        g: &[f32],
+        beta: &[f32],
+        params: CausalAttentionParams,
+    ) {
+        make_qg_kg_vbeta_body(q, k, v, g, beta, params);
     }
 
     #[kernel]

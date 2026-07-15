@@ -45,6 +45,118 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-15
 commit: accepted local jj commit after full gate
+experiment: Batch four compatible KDA transform and gradient-accumulation fusions.
+status: accepted_900s
+change:
+  Forward now performs the QG/K-neg and KG/K-pos/V-beta transforms in one
+  elementwise pass, sharing the compact index, G load, and exp(G). The backward
+  fallback uses the same complete transform. The production backward path,
+  where v_new, Akk^-1, W, and AQK are all taped, uses a specialized fused
+  transform that omits the dead K-neg/K-pos exponentials and stores whose
+  scratch is overwritten before use. Late backward creates K-neg and K-pos
+  together into their two eventual inputs instead of launching two separate
+  transforms around the tensor-core matmuls. Finally, the local-grad x K-neg
+  tensor-core epilogue accumulates directly into dQ instead of materializing an
+  intermediate compact tensor and launching a separate add. The normal path
+  removes 48 launches per training step.
+numerics:
+  All retained transform outputs use the same expressions as the former
+  kernels; fusion only shares already-identical loads and exp(G). Dead-output
+  elimination is selected only when all four production KDA tapes are present,
+  and the complete reconstruction fallback remains available otherwise. The
+  accumulating tensor-core kernel uses the unchanged MMA accumulation and the
+  same FP32 old_dQ + matmul_accumulator operation in its epilogue. Direct KDA,
+  GPT wrapper, full block-backward, short training, and sustained training
+  comparisons all pass.
+memory:
+  Existing tapes and scratch buffers are reused. No allocation, lifetime,
+  scratch capacity, or peak-VRAM requirement changed.
+minimum_impact_gate:
+  The promoted baseline averaged 900.527 / 1561 = 576.891095ms per step and
+  required 2.884455ms per step. In the matched reciprocal profiles, directly
+  affected transform-plus-accumulation work saved 3.889099 and 3.898965ms per
+  step. The whole-profile savings were larger and both cleared the aggregate
+  floor before either fixed-wall gate was run.
+focused_profile:
+  Promoted baseline samples:
+    target/nsys/20260715_fused_forward_tapes_candidate.nsys-rep
+    target/nsys/20260715_fused_forward_tapes_candidate_reciprocal.nsys-rep
+    total GPU kernels: 5750.637894 and 5757.421326ms.
+    kernel launches: 91473 in both samples.
+    train elapsed: 5.651 and 5.657 seconds.
+    held-out val_loss: 8.666674 and 8.664021.
+  Candidate samples:
+    target/nsys/20260715_kda_transform_accumulate_batch_candidate.nsys-rep
+    target/nsys/20260715_kda_transform_accumulate_batch_candidate_reciprocal.nsys-rep
+    total GPU kernels: 5704.663117 and 5704.055651ms.
+    kernel launches: 90981 in both samples.
+    train elapsed: 5.605 and 5.605 seconds.
+    held-out val_loss: 8.667749 and 8.664646.
+  Across the same 10 training steps plus endpoint validation:
+    all GPU kernels saved 4.597478 and 5.336568ms per step,
+      or 0.799473% and 0.926902%.
+    directly affected work saved 3.889099 and 3.898965ms per step.
+    launches fell by 492: 48 per training step plus 12 forward-only launches
+      in the endpoint evaluation.
+  The adjacent experiment that folded the transforms into the serial chunk-G
+  cumsum was screened out and reverted. Its report is
+    target/nsys/20260715_kda_five_fusion_batch_candidate.nsys-rep.
+  Although its noisy whole-profile total moved from 5704.663117 to
+  5703.645916ms, the directly affected kernels regressed from 107.061483 to
+  111.533812ms. The apparent 0.101720ms/step movement was therefore not a
+  credible speed win.
+verification:
+  cargo fmt --all, git diff --check, fresh
+  cargo oxide build --arch sm_120a, and
+  cargo test --workspace --release --lib --bins: pass (50 host tests).
+  Direct causal-attention backward, the GPT2 causal-backward wrapper, and full
+  block-attention backward GPU comparisons pass after the final rebuild.
+  The legacy standalone l2_attention test cannot currently compile because its
+  AttentionForwardArgs initializer predates seven existing TMA fields; this
+  candidate does not touch that harness. Exact training-path forward execution
+  passes in both profiles and both fixed-wall gates.
+  ptxas reports zero spills for every new kernel. The complete transform uses
+  24 registers/thread, the taped backward transform 20, the late K-neg/K-pos
+  transform 15, and the accumulating tensor-core kernel 40 registers/thread
+  with 4096 bytes shared memory.
+  Required clean 30-second screen with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260715_223145Z_fineweb_30s
+    stdout: target/gates/20260715_kda_transform_accumulate_batch_30s.log
+    completed_steps=55, train_elapsed_s=30.537, val_loss=6.723579.
+  Required 900-second gate with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260715_223243Z_fineweb_900s
+    stdout: target/gates/20260715_kda_transform_accumulate_batch_900s.log
+    completed_steps=1570, train_elapsed_s=900.365, val_loss=4.878554.
+    All 32 high-fidelity samples were finite and nonzero, with zero skipped
+    updates, loss-spike skips, grad-norm-spike skips, or nonfinite skips. Grad
+    norm ranged from 1.172127843 to 18.956151962. Every sample retained batch
+    4, sequence 2048, and 8192 tokens per step.
+measured_effect:
+  Against the matched 30-second baseline:
+    completed_steps: 54 -> 55 (+1, +1.852%).
+    average step time: 559.870370 -> 555.218182ms
+      (-4.652189ms, -0.831%).
+    training tokens: 442368 -> 450560 (+8192, +1.852%).
+    held-out val_loss: 6.736575 -> 6.723579
+      (-0.012996, -0.193%).
+  Against the matched 900-second baseline:
+    completed_steps: 1561 -> 1570 (+9, +0.577%).
+    average step time: 576.891095 -> 573.480892ms
+      (-3.410204ms, -0.591%).
+    training tokens: 12787712 -> 12861440 (+73728, +0.577%).
+    held-out val_loss: 4.876506 -> 4.878554
+      (+0.002048, +0.042%).
+decision:
+  Keep and promote. Both reciprocal profiles clear the aggregate 0.5% floor,
+  both fixed-wall gates preserve the speed signal, the full run is stable, and
+  held-out loss is only 0.042% higher, well inside the active 1% noise band.
+  The next 0.5% threshold is
+  (900.365 / 1570) * 0.005 = 2.867404ms per step.
+```
+
+```text
+date: 2026-07-15
+commit: accepted local jj commit after full gate
 experiment: Write forward FP16 tapes in the KDA prepare and MLP ReLU2 producers.
 status: accepted_900s
 change:

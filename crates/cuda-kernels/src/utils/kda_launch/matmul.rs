@@ -50,6 +50,12 @@ impl<'a> MatmulRunner<'a> {
     }
 
     matmul_method!(f32_input, batched_matmul_f32_input, F16TcMatmulF32Args, b_t);
+    matmul_method!(
+        f32_input_accumulate,
+        batched_matmul_f32_input_accumulate,
+        F16TcMatmulF32Args,
+        b_t
+    );
     matmul_method!(f32_rhs, batched_matmul_f32_rhs, F16TcMatmulF32RhsArgs, rhs);
     matmul_method!(
         f32_a_transposed_rhs,

@@ -3,8 +3,8 @@ use cuda_device::{DisjointSlice, SharedArray, cuda_module, kernel, thread};
 use super::super::gather::TC_BACKWARD_THREADS_PER_BLOCK;
 use super::super::kda::{
     FinishKdaGrads, add_kda_compact_body, chunk_cumsum_g_body, finish_kda_backward_body,
-    gather_kda_dout_body, make_kda_kneg_from_kg_body, make_kda_kpos_from_kg_body,
-    make_kda_strict_neg_matrix_body, prepare_kda_backward_inputs_body,
+    gather_kda_dout_body, make_kda_kneg_from_kg_body, make_kda_kneg_kpos_from_kg_body,
+    make_kda_kpos_from_kg_body, make_kda_strict_neg_matrix_body, prepare_kda_backward_inputs_body,
 };
 use crate::attention::CausalAttentionParams;
 use crate::block_reduce::{block_max_pair_leader_f32, block_max_store_f32};
@@ -76,6 +76,18 @@ pub(super) mod module {
         params: CausalAttentionParams,
     ) {
         make_kda_kpos_from_kg_body(kg, g, beta, kpos, params);
+    }
+
+    #[kernel]
+    pub fn make_kda_backward_kneg_kpos_from_kg_kernel(
+        kg: &[f32],
+        g: &[f32],
+        beta: &[f32],
+        kneg: DisjointSlice<f32>,
+        kpos: DisjointSlice<f32>,
+        params: CausalAttentionParams,
+    ) {
+        make_kda_kneg_kpos_from_kg_body(kg, g, beta, kneg, kpos, params);
     }
 
     #[kernel]

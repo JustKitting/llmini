@@ -100,6 +100,31 @@ pub(crate) fn make_kda_kpos_from_kg_body(
     }
 }
 
+pub(crate) fn make_kda_kneg_kpos_from_kg_body(
+    kg: &[f32],
+    g: &[f32],
+    beta: &[f32],
+    mut kneg: DisjointSlice<f32>,
+    mut kpos: DisjointSlice<f32>,
+    params: CausalAttentionParams,
+) {
+    let Some(index) = thread_index(compact_elems(&params)) else {
+        return;
+    };
+    let (dim, token, _bh, batch, head) = compact_linear_parts(index, &params);
+    let chunk_end = chunk_end_token(token / params.chunk_size, &params);
+    let compact = compact_index(batch, token, head, dim, &params);
+    let g_value = g[compact];
+    let g_last = g[compact_index(batch, chunk_end, head, dim, &params)];
+    let beta_value = beta[beta_compact_index(batch, token, head, &params)];
+    let kg_value = kg[index as usize];
+    unsafe {
+        *kneg.get_unchecked_mut(index as usize) = kg_value * kda_decay_exp(-g_last);
+        *kpos.get_unchecked_mut(index as usize) =
+            beta_value * kg_value * kda_decay_exp(2.0 * g_value - g_last);
+    }
+}
+
 pub(crate) fn make_kda_strict_neg_matrix_body(
     src: &[f32],
     mut dst: DisjointSlice<f32>,

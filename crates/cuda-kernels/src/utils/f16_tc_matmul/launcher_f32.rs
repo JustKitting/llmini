@@ -36,6 +36,14 @@ impl F16TcMatmulModule {
         a(m, k),
         rhs(n, k)
     );
+    f32_matmul_launcher!(
+        batched_matmul_f32_input_accumulate,
+        F16TcMatmulF32Args<'_, '_>,
+        b_t,
+        f16_cta_tc_matmul_f32_accumulate_kernel,
+        a(m, k),
+        rhs(n, k)
+    );
 
     pub fn batched_matmul_f32_input_lower(
         &self,

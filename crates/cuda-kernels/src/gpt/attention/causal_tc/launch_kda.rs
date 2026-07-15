@@ -49,8 +49,7 @@ impl AttentionModule {
             kda_kernel!(prepare_kda_forward_kernel(linear(dims.batch_head * args.seq_len * 32); args.qkv, &mut *scratch.q, &mut *scratch.k, &mut *scratch.v, &mut *scratch.scores, &mut *args.log_sum_exp));
         }
         kda_kernel!(chunk_cumsum_kda_g_kernel(chunk_cfg; &mut *scratch.scores));
-        kda_kernel!(make_kda_qg_kneg_kernel(linear(dims.compact_elems); &mut *scratch.q, &*scratch.k, &*scratch.scores, &mut *scratch.compact_out));
-        kda_kernel!(make_kda_kg_kpos_vbeta_kernel(linear(dims.compact_elems); &mut *scratch.k, &mut *scratch.v, &*scratch.scores, &*args.log_sum_exp, &mut *scratch.probs));
+        kda_kernel!(make_kda_qg_kneg_kg_kpos_vbeta_kernel(linear(dims.compact_elems); &mut *scratch.q, &mut *scratch.k, &mut *scratch.v, &*scratch.scores, &*args.log_sum_exp, &mut *scratch.compact_out, &mut *scratch.probs));
         kda_kernel!(store_kda_chunk_g_last_kernel(linear(dims.batch_head * dims.chunks * args.head_dim); &*scratch.scores, &mut *args.log_sum_exp));
         let w = {
             let akk_inv = match args.kda_akk_inv {
