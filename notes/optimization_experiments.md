@@ -44,6 +44,95 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 
 ```text
 date: 2026-07-15
+commit: accepted local jj commit after full gate
+experiment: Fuse linear bias-gradient reduction into MS-EDEN pair transpose quantization.
+status: accepted_900s
+change:
+  The active linear-backward path read each FP32 error matrix once to reduce
+  dbias, then reread it immediately in the tiled MS-EDEN row/transpose pair
+  quantizer. On exact no-pad shapes, each transpose CTA now owns eight complete
+  output columns, loops over their 32-token row tiles, emits the same transpose
+  NVFP4 chunks, and accumulates those eight bias gradients in registers. The
+  transpose grid contracts from one CTA per row-tile/column-tile pair to one
+  persistent CTA per eight columns. Unsupported shapes retain the independent
+  pair quantizer and former bias-gradient kernel.
+numerics:
+  Row and transpose NVFP4 payloads remain bitwise equal to the independent
+  quantizer references. The bias sum uses a different FP32 reduction tree from
+  the former eight-warp shared-memory reduction, so dbias is mathematically
+  equivalent but not claimed bitwise identical. A GPU test compares it with a
+  host column sum, and the matched training gates validate the trajectory.
+memory:
+  No persistent or peak logical buffer was added. The fused kernel writes the
+  existing dbias output and uses 1152 bytes of CTA shared memory.
+minimum_impact_gate:
+  The promoted baseline averaged 900.368 / 1374 = 655.289665ms per step, so the
+  required saving was 3.276448ms per step. Its separate bias-gradient kernel
+  cost 88.551790ms over 10 steps, or 8.855179ms per step, and reread the same
+  source as the following pair quantizer. Eliminating that pass provided a
+  credible 2.702x pre-edit ceiling.
+focused_profile:
+  Parent:
+    target/nsys/20260715_muon_final_row_norm_candidate.nsys-rep
+    target/nsys/20260715_muon_final_row_norm_candidate_cuda_gpu_kern_sum.csv
+  Candidate:
+    target/nsys/20260715_ms_eden_pair_bias_fused_candidate.nsys-rep
+    target/nsys/20260715_ms_eden_pair_bias_fused_candidate_cuda_gpu_kern_sum.csv
+  Across the same 10 training steps plus endpoint validation:
+    parent pair-quantization plus bias family = 465.868516ms.
+    candidate fused pair-quantization family = 416.441195ms.
+  The directly affected family saved 49.427321ms / 10 = 4.942732ms per step,
+  clearing the 3.276448ms implementation gate. Total GPU kernel time improved
+  from 649.594602 to 643.139936ms per step, saving 6.454666ms per step (0.99%).
+  Held-out val_loss moved from 8.659902 to 8.666283 (+0.074%).
+verification:
+  cargo fmt --all --check: pass.
+  cargo check --workspace: pass.
+  Fresh cargo oxide build --arch sm_120a: pass.
+  cargo test --workspace --release --lib --bins: pass, including 45 sweep tests
+    and 4 rust-kernels tests.
+  Fused pair payload bitwise equivalence plus host-reference dbias GPU test:
+    pass, 1 test after the fresh PTX build.
+  Full linear-backward MS-EDEN GPU test: pass, 1 test after the fresh PTX build.
+  ptxas for both generic and power-of-two fused kernels: 38 registers, 1152
+    bytes shared memory, one barrier, and zero spill stores/loads.
+  One-step launch diagnostic only:
+    target/runs/20260715_142022Z_fineweb_60s
+    completed_steps=1, train_elapsed_s=0.612, val_loss=10.418017.
+  Focused 10-step run:
+    target/runs/20260715_142038Z_fineweb_60s
+    completed_steps=10, train_elapsed_s=6.397, val_loss=8.666283.
+  Required 30-second screen with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260715_142132Z_fineweb_30s
+    completed_steps=48, train_elapsed_s=30.289, val_loss=6.827017.
+  Required 900-second gate with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260715_142243Z_fineweb_900s
+    stdout: target/ms_eden_pair_bias_fused_900_20260715.log
+    completed_steps=1383, train_elapsed_s=900.286, val_loss=4.925822.
+    All 28 high-fidelity samples were finite and nonzero, with no skip or
+    instability reports. Grad norm ranged from 1.163542151 to 18.969253540.
+    Every sample retained batch 4 and sequence 2048.
+measured_effect:
+  Against the matched 30-second baseline:
+    completed_steps: 48 -> 48.
+    average step time: 637.187500ms -> 631.020833ms
+      (-6.166667ms, -0.968%).
+    held-out val_loss: 6.828311 -> 6.827017 (-0.001294, -0.019%).
+  Against the matched 900-second baseline:
+    completed_steps: 1374 -> 1383 (+9, +0.655%).
+    average step time: 655.289665ms -> 650.966016ms
+      (-4.323649ms, -0.660%).
+    training tokens: 11255808 -> 11329536 (+73728, +0.655%).
+    held-out val_loss: 4.922318 -> 4.925822 (+0.003504, +0.071%).
+decision:
+  Keep and promote. The focused profile exceeds the 0.5% floor, both fixed-wall
+  gates preserve the speed signal, held-out loss remains within the active 1%
+  noise band, and the full run has no numerical or skip instability. The next
+  0.5% threshold is (900.286 / 1383) * 0.005 = 3.254830ms per step.
+```
+
+```text
+date: 2026-07-15
 commit: rejected uncommitted candidate, code reverted
 experiment: Fuse the Muon prepare normalization sum into momentum orientation.
 status: rejected_profile_gate

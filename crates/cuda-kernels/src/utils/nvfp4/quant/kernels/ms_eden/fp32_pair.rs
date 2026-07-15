@@ -13,7 +13,8 @@ use super::body::{
 };
 use super::pack::ms_eden_pack_chunk_no_chunk_amax_row;
 use super::random::random_sign;
-use dispatch::{dispatch_fp32_pair, dispatch_fp32_pair_tiled};
+use crate::warp_reduce::warp_sum_f32;
+use dispatch::{dispatch_fp32_pair, dispatch_fp32_pair_tiled, dispatch_fp32_pair_tiled_bias};
 
 const FP32_PAIR_TRANSPOSE_TILE_ROWS: usize = 32;
 const FP32_PAIR_TRANSPOSE_TILE_COLS: usize = 8;
@@ -134,6 +135,44 @@ pub(crate) mod module {
     }
 
     #[kernel]
+    pub fn fp32_pair_to_nvfp4_ms_eden_device_scale_no_chunk_amax_exact_no_pad_pow2_tiled_bias_kernel(
+        x: &[f32],
+        mut out_fp4: DisjointSlice<u8>,
+        mut out_scales: DisjointSlice<u8>,
+        mut out_global_scales: DisjointSlice<f32>,
+        mut transpose_out_fp4: DisjointSlice<u8>,
+        mut transpose_out_scales: DisjointSlice<u8>,
+        mut transpose_out_global_scales: DisjointSlice<f32>,
+        mut out_bias: DisjointSlice<f32>,
+        global_scale: &[f32],
+        row_grid_dim: u32,
+        source_cols: u32,
+        row_chunks_per_row_shift: u32,
+        transpose_chunks_per_row_shift: u32,
+        scale_override: f32,
+        sign_seed: u32,
+        scale_seed: u32,
+        transpose_scale_seed: u32,
+    ) {
+        dispatch_fp32_pair_tiled_bias!(
+            row_grid_dim: row_grid_dim,
+            source_rows: 32u32 << transpose_chunks_per_row_shift,
+            source_cols: source_cols,
+            transpose_chunks: transpose_chunks_per_row_shift,
+            transpose_chunks_are_shift: true,
+            x: x,
+            output: [out_fp4, out_scales, out_global_scales],
+            transpose_output: [transpose_out_fp4, transpose_out_scales, transpose_out_global_scales],
+            bias_output: out_bias,
+            scale: [global_scale, scale_override, sign_seed, scale_seed, transpose_scale_seed],
+            row: fp32_to_nvfp4_ms_eden_body_no_chunk_amax_no_pad_pow2(
+                source_cols,
+                row_chunks_per_row_shift,
+            )
+        );
+    }
+
+    #[kernel]
     pub fn fp32_pair_to_nvfp4_ms_eden_device_scale_no_chunk_amax_exact_no_pad_kernel(
         x: &[f32],
         mut out_fp4: DisjointSlice<u8>,
@@ -194,6 +233,44 @@ pub(crate) mod module {
             x: x,
             output: [out_fp4, out_scales, out_global_scales],
             transpose_output: [transpose_out_fp4, transpose_out_scales, transpose_out_global_scales],
+            scale: [global_scale, scale_override, sign_seed, scale_seed, transpose_scale_seed],
+            row: fp32_to_nvfp4_ms_eden_body_no_chunk_amax_no_pad(
+                source_cols,
+                row_chunks_per_row,
+            )
+        );
+    }
+
+    #[kernel]
+    pub fn fp32_pair_to_nvfp4_ms_eden_device_scale_no_chunk_amax_exact_no_pad_tiled_bias_kernel(
+        x: &[f32],
+        mut out_fp4: DisjointSlice<u8>,
+        mut out_scales: DisjointSlice<u8>,
+        mut out_global_scales: DisjointSlice<f32>,
+        mut transpose_out_fp4: DisjointSlice<u8>,
+        mut transpose_out_scales: DisjointSlice<u8>,
+        mut transpose_out_global_scales: DisjointSlice<f32>,
+        mut out_bias: DisjointSlice<f32>,
+        global_scale: &[f32],
+        row_grid_dim: u32,
+        source_cols: u32,
+        row_chunks_per_row: u32,
+        transpose_chunks_per_row: u32,
+        scale_override: f32,
+        sign_seed: u32,
+        scale_seed: u32,
+        transpose_scale_seed: u32,
+    ) {
+        dispatch_fp32_pair_tiled_bias!(
+            row_grid_dim: row_grid_dim,
+            source_rows: transpose_chunks_per_row * 32,
+            source_cols: source_cols,
+            transpose_chunks: transpose_chunks_per_row,
+            transpose_chunks_are_shift: false,
+            x: x,
+            output: [out_fp4, out_scales, out_global_scales],
+            transpose_output: [transpose_out_fp4, transpose_out_scales, transpose_out_global_scales],
+            bias_output: out_bias,
             scale: [global_scale, scale_override, sign_seed, scale_seed, transpose_scale_seed],
             row: fp32_to_nvfp4_ms_eden_body_no_chunk_amax_no_pad(
                 source_cols,

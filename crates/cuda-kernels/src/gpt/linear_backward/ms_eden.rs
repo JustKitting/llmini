@@ -14,11 +14,18 @@ use super::{
 impl LinearBackwardModule {
     pub fn backward_ms_eden(
         &self,
-        args: LinearBackwardMsEdenArgs<'_, '_, '_>,
+        mut args: LinearBackwardMsEdenArgs<'_, '_, '_>,
     ) -> Result<(), DriverError> {
         let quantize = QuantizeContext::for_args(&args);
+        let mut scratch = args.scratch;
+        let bias_fused = quantize.error_pair(
+            args.e,
+            &mut scratch,
+            args.precomputed_e_amax_chunks,
+            args.dbias.as_deref_mut(),
+        )?;
 
-        if let Some(dbias) = args.dbias {
+        if !bias_fused && let Some(dbias) = args.dbias {
             self.module.bias.linear_bias_grad_kernel(
                 args.stream,
                 grid_x_config(
@@ -32,8 +39,6 @@ impl LinearBackwardModule {
             )?;
         }
 
-        let mut scratch = args.scratch;
-        quantize.error_pair(args.e, &mut scratch, args.precomputed_e_amax_chunks)?;
         quantize.weight_transpose(args.weight_t, &mut scratch.weight_t_h)?;
         quantize.input_transpose(args.input_t, &mut scratch.input_t_h)?;
 

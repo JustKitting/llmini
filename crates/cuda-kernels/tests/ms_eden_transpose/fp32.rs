@@ -88,30 +88,33 @@ fn fp32_pair_tiled_matches_independent_row_and_transpose_quantization() -> TestR
     let mut pair_transpose = QuantScratch::new_exact(&stream, LOCAL_COLS, LOCAL_ROWS)?;
     let mut row_reference = QuantScratch::new_exact(&stream, LOCAL_ROWS, LOCAL_COLS)?;
     let mut transpose_reference = QuantScratch::new_exact(&stream, LOCAL_COLS, LOCAL_ROWS)?;
+    let mut bias = DeviceBuffer::<f32>::zeroed(&stream, LOCAL_COLS)?;
 
-    quant.fp32_pair_to_nvfp4_quartet_backward_ms_eden_derived_device_scale_no_chunk_amax(
-        MsEdenPairDeviceScaleQuantArgs {
-            stream: &stream,
-            x: &x_dev,
-            out_fp4: &mut pair_row.bytes,
-            out_scales: &mut pair_row.scales,
-            out_global_scales: &mut pair_row.global_scales,
-            transpose_out_fp4: &mut pair_transpose.bytes,
-            transpose_out_scales: &mut pair_transpose.scales,
-            transpose_out_global_scales: &mut pair_transpose.global_scales,
-            out_chunk_amax: &mut pair_row.chunk_amax,
-            out_global_scale: &mut pair_row.global_scale,
-            row_count: LOCAL_ROWS as u32,
-            src_row_len: LOCAL_COLS as u32,
-            dst_row_len: LOCAL_COLS as u32,
-            transpose_dst_row_len: LOCAL_ROWS as u32,
-            scale_override: SCALE_OVERRIDE,
-            sign_seed: SIGN_SEED,
-            scale_seed: SCALE_SEED,
-            transpose_scale_seed: TRANSPOSE_SCALE_SEED,
-            precomputed_chunk_count: None,
-        },
-    )?;
+    let bias_fused = quant
+        .fp32_pair_to_nvfp4_quartet_backward_ms_eden_derived_device_scale_no_chunk_amax_with_bias(
+            MsEdenPairDeviceScaleQuantArgs {
+                stream: &stream,
+                x: &x_dev,
+                out_fp4: &mut pair_row.bytes,
+                out_scales: &mut pair_row.scales,
+                out_global_scales: &mut pair_row.global_scales,
+                transpose_out_fp4: &mut pair_transpose.bytes,
+                transpose_out_scales: &mut pair_transpose.scales,
+                transpose_out_global_scales: &mut pair_transpose.global_scales,
+                out_chunk_amax: &mut pair_row.chunk_amax,
+                out_global_scale: &mut pair_row.global_scale,
+                row_count: LOCAL_ROWS as u32,
+                src_row_len: LOCAL_COLS as u32,
+                dst_row_len: LOCAL_COLS as u32,
+                transpose_dst_row_len: LOCAL_ROWS as u32,
+                scale_override: SCALE_OVERRIDE,
+                sign_seed: SIGN_SEED,
+                scale_seed: SCALE_SEED,
+                transpose_scale_seed: TRANSPOSE_SCALE_SEED,
+                precomputed_chunk_count: None,
+            },
+            &mut bias,
+        )?;
 
     quant.fp32_to_nvfp4_ms_eden_device_scale_no_chunk_amax(MsEdenDeviceScaleQuantArgs {
         stream: &stream,
@@ -148,5 +151,10 @@ fn fp32_pair_tiled_matches_independent_row_and_transpose_quantization() -> TestR
 
     pair_row.assert_payload_eq(&stream, &row_reference)?;
     pair_transpose.assert_payload_eq(&stream, &transpose_reference)?;
+    assert!(bias_fused);
+    let expected_bias = (0..LOCAL_COLS)
+        .map(|col| (0..LOCAL_ROWS).map(|row| x[row * LOCAL_COLS + col]).sum())
+        .collect::<Vec<f32>>();
+    common::assert_slice_close(&bias.to_host_vec(&stream)?, &expected_bias, 1.0e-5);
     Ok(())
 }
