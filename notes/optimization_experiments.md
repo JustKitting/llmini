@@ -40,6 +40,104 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-15
 commit: accepted local jj commit after full gate
+experiment: Tape earlier full-attention FP16 probabilities for backward reuse.
+status: accepted_900s_speed_memory_trade
+change:
+  Full-attention blocks 3, 7, and 11 now write their forward FP16 probability
+  matrices directly into persistent tape buffers. Their backward passes read
+  those tensors and skip both QK score reconstruction and probability
+  reconstruction. Block 15 retains the accepted zero-allocation shared-scratch
+  reuse path because no later attention block overwrites its probabilities.
+  The 12 KDA blocks and the exact 16-layer, width-2048, 32-head, batch-1,
+  seq-8192 model are unchanged.
+minimum_impact_gate:
+  The active baseline was 900.280s / 935 = 0.962866310s per step, making the
+  0.5% threshold 4.814332ms. The accepted final-block reuse saved 9.210144ms
+  in the affected QK/probability family. Applying the same operation to three
+  earlier full-attention blocks therefore had a credible 27.630432ms whole-step
+  ceiling before implementation, well above the required floor.
+memory_capacity:
+  Exact one-step allocation rose from 84243841024 to 97128742912 bytes, an
+  increase of exactly 12884901888 bytes, or 12.000 GiB. This is three 4-GiB
+  FP16 probability matrices and matches the allocation model exactly. The
+  candidate leaves 4844748800 bytes, or 4.512 GiB, free on the
+  101973491712-byte device. This is an explicit speed-for-memory trade and does
+  not create enough capacity for batch 2.
+focused_profile:
+  Parent:
+    target/ncu/20260715_1b_b1_s8192_reuse_last_attention_probs.ncu-rep
+    target/ncu/20260715_1b_b1_s8192_reuse_last_attention_probs.csv
+  Candidate:
+    target/ncu/20260715_1b_b1_s8192_tape_attention_probs.ncu-rep
+    target/ncu/20260715_1b_b1_s8192_tape_attention_probs.csv
+  Across the exact training-step launch ranges, the parent measured:
+    f16_cta_tc_matmul_lower_kernel: 7 launches, 49.741728ms.
+    attention_prob_ds_f16_kernel: 3 launches, 26.832000ms.
+    attention_ds_from_probs_f16_kernel: 1 launch, 6.821792ms.
+    affected-family total: 83.395520ms.
+    focused total including downstream dQ/dK/dV matmuls: 179.841920ms.
+    all training-step GPU kernels: 997.925984ms.
+  The candidate measured:
+    f16_cta_tc_matmul_lower_kernel: 4 launches, 28.421600ms.
+    attention_prob_ds_f16_kernel: 0 launches, 0ms.
+    attention_ds_from_probs_f16_kernel: 4 launches, 27.278688ms.
+    affected-family total: 55.700288ms.
+    focused total including downstream dQ/dK/dV matmuls: 152.192192ms.
+    all training-step GPU kernels: 971.123840ms.
+  The affected family saved 27.695232ms, the focused family saved 27.649728ms,
+  and total measured GPU work fell by 26.802144ms. Every measure clears the
+  required 4.814332ms gate.
+verification:
+  cargo fmt --all --check: pass.
+  cargo check -q: pass.
+  cargo test -q -p rust-kernels-cuda --lib: pass.
+  cargo test -q -p gpt2-nvfp4 --lib: pass.
+  cargo test -q --bin sweep: pass, 45 tests.
+  cargo test -q --bin rust-kernels: pass, 4 tests.
+  Fresh cargo oxide build --arch sm_120a: pass.
+  Dedicated external-tape GPU equivalence test:
+    CUDA_DEVICE_INDEX=0 cargo test -p rust-kernels-cuda
+      --test causal_attention_backward_tc
+      materialized_tc_backward_matches_reference --release
+      -- --ignored --nocapture: pass, 1 test.
+  Exact 1B/8K FineWeb one-step allocation/correctness diagnostic:
+    target/runs/20260715_105520Z_fineweb_60s
+    used_bytes=97128742912, free_bytes=4844748800, completed_steps=1,
+    train_elapsed_s=0.887, val_loss=10.407254.
+  Required 30-second screen with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260715_105827Z_fineweb_30s
+    completed_steps=33, train_elapsed_s=30.140, val_loss=7.101087.
+  Required 900-second gate with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260715_105914Z_fineweb_900s
+    completed_steps=965, train_elapsed_s=900.630, val_loss=5.118188.
+    All 20 high-fidelity samples were finite and nonzero, with zero skipped
+    updates, loss-spike skips, grad-norm-spike skips, or nonfinite skips. Grad
+    norm ranged from 1.147391558 to 19.025783539.
+measured_effect:
+  Against the matched 30-second parent:
+    completed_steps: 32 -> 33 (+1, +3.125%).
+    average step time: 0.942000000s -> 0.913333333s
+      (-28.666667ms, -3.043%).
+    token throughput: 8696.391 -> 8969.343 tokens/s (+3.139%).
+    held-out val_loss: 7.127242 -> 7.101087 (-0.026155, -0.367%).
+  Against the matched 900-second parent:
+    completed_steps: 935 -> 965 (+30, +3.209%).
+    average step time: 0.962866310s -> 0.933295337s
+      (-29.570973ms, -3.071%).
+    training tokens: 7659520 -> 7905280 (+245760, +3.209%).
+    token throughput: 8507.931 -> 8777.500 tokens/s (+3.168%).
+    held-out val_loss: 5.134145 -> 5.118188 (-0.015957, -0.311%).
+decision:
+  Keep and promote. The profile and both fixed-wall gates reproduce the speed
+  signal, held-out loss improves, and the full stability record is clean. The
+  exact 12-GiB tape cost still leaves 4.512 GiB free. notes/sweep_baseline.env
+  points to this run. The new nominal 0.5% kernel threshold is 4.666477ms per
+  step.
+```
+
+```text
+date: 2026-07-15
+commit: accepted local jj commit after full gate
 experiment: Reuse the final full-attention block's forward FP16 probabilities in backward.
 status: accepted_900s
 change:

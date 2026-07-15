@@ -17,6 +17,7 @@ impl AttentionModule {
         let params = args.params();
         let CausalAttentionBackwardTcArgs {
             reuse_forward_probs,
+            forward_probs_f16,
             stream,
             tc_module,
             qkv,
@@ -71,15 +72,32 @@ impl AttentionModule {
         )?;
         if reuse_forward_probs {
             run_dot_scores(&tc_ctx, &mut scratch)?;
-            kernels.attention_ds_from_probs_f16_kernel(
-                stream,
-                linear(batch_head * seq_len * seq_len),
-                scratch.p_half,
-                scratch.dot,
-                softmax_d,
-                scratch.ds_half,
-                params,
-            )?;
+            match forward_probs_f16 {
+                Some(probs_half) => {
+                    kernels.attention_ds_from_probs_f16_kernel(
+                        stream,
+                        linear(batch_head * seq_len * seq_len),
+                        probs_half,
+                        scratch.dot,
+                        softmax_d,
+                        scratch.ds_half,
+                        params,
+                    )?;
+                    run_grad_matmuls(&tc_ctx, &mut scratch, Some(probs_half))?;
+                }
+                None => {
+                    kernels.attention_ds_from_probs_f16_kernel(
+                        stream,
+                        linear(batch_head * seq_len * seq_len),
+                        &*scratch.p_half,
+                        scratch.dot,
+                        softmax_d,
+                        scratch.ds_half,
+                        params,
+                    )?;
+                    run_grad_matmuls(&tc_ctx, &mut scratch, None)?;
+                }
+            }
         } else {
             run_pair_scores(&tc_ctx, &mut scratch)?;
             kernels.attention_prob_ds_f16_kernel(
@@ -93,8 +111,8 @@ impl AttentionModule {
                 scratch.ds_half,
                 params,
             )?;
+            run_grad_matmuls(&tc_ctx, &mut scratch, None)?;
         }
-        run_grad_matmuls(&tc_ctx, &mut scratch)?;
         kernels.scatter_dqkv_kernel(
             stream,
             linear(batch_head * seq_len * head_dim),

@@ -43,6 +43,7 @@ fn materialized_tc_backward_matches_reference() -> Result<(), Box<dyn Error>> {
     let mut scratch = TcScratchBuffers::new(&stream)?;
     attention.causal_attention_backward_tc(CausalAttentionBackwardTcArgs {
         reuse_forward_probs: false,
+        forward_probs_f16: None,
         stream: &stream,
         tc_module: &tc,
         qkv: &qkv,
@@ -79,9 +80,10 @@ fn materialized_tc_backward_matches_reference() -> Result<(), Box<dyn Error>> {
         DeviceBuffer::<f32>::zeroed(&stream, shape::TOKEN_COUNT * shape::HEADS)?;
     let mut reuse_grad = DeviceBuffer::<f32>::zeroed(&stream, shape::TOKEN_COUNT * shape::QKV_DIM)?;
     let mut reuse_scratch = TcScratchBuffers::new(&stream)?;
-    reuse_scratch.set_forward_probs(DeviceBuffer::from_host(&stream, &saved_probs)?);
+    let saved_probs = DeviceBuffer::from_host(&stream, &saved_probs)?;
     attention.causal_attention_backward_tc(CausalAttentionBackwardTcArgs {
         reuse_forward_probs: true,
+        forward_probs_f16: Some(&saved_probs),
         stream: &stream,
         tc_module: &tc,
         qkv: &qkv,

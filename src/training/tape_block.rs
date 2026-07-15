@@ -1,7 +1,7 @@
 use cuda_core::{CudaStream, DeviceBuffer, DriverError};
 use gpt2_nvfp4::{
-    AttentionLogSumExp, BlockForwardSaved, BlockForwardTape, HiddenState, MlpActivation,
-    QkvActivation, uses_full_attention,
+    AttentionLogSumExp, BlockForwardSaved, BlockForwardTape, GPT2_BATCH_SIZE, GPT2_N_HEAD,
+    GPT2_N_LAYER, GPT2_SEQ_LEN, HiddenState, MlpActivation, QkvActivation, uses_full_attention,
 };
 
 use super::device_buffer::zero;
@@ -12,6 +12,7 @@ pub struct BlockTapeBuffers {
     qkv_input: RowwiseTapeBuffers,
     qkv: DeviceBuffer<u16>,
     attention_out: DeviceBuffer<u16>,
+    attention_probs: Option<DeviceBuffer<u16>>,
     kda_v_new: Option<DeviceBuffer<f32>>,
     kda_akk_inv: Option<DeviceBuffer<f32>>,
     kda_w: Option<DeviceBuffer<f32>>,
@@ -31,6 +32,15 @@ impl BlockTapeBuffers {
             qkv_input: RowwiseTapeBuffers::gpt2_rows(stream, HiddenState::LEN)?,
             qkv: zero(stream, QkvActivation::LEN)?,
             attention_out: zero(stream, HiddenState::LEN)?,
+            attention_probs: if uses_full_attention(block_index) && block_index != GPT2_N_LAYER - 1
+            {
+                Some(zero(
+                    stream,
+                    GPT2_BATCH_SIZE * GPT2_N_HEAD * GPT2_SEQ_LEN * GPT2_SEQ_LEN,
+                )?)
+            } else {
+                None
+            },
             kda_v_new: if uses_full_attention(block_index) {
                 None
             } else {
@@ -66,6 +76,7 @@ impl BlockTapeBuffers {
             qkv_input_nvfp4: self.qkv_input.tape(),
             qkv: &mut self.qkv,
             attention_out: &mut self.attention_out,
+            attention_probs: self.attention_probs.as_mut(),
             kda_v_new: self.kda_v_new.as_mut(),
             kda_akk_inv: self.kda_akk_inv.as_mut(),
             kda_w: self.kda_w.as_mut(),
@@ -88,6 +99,7 @@ impl BlockTapeBuffers {
             qkv_input_nvfp4: self.qkv_input.saved(),
             qkv: &self.qkv,
             attention_out: &self.attention_out,
+            attention_probs: self.attention_probs.as_ref(),
             kda_v_new: self.kda_v_new.as_ref(),
             kda_akk_inv: self.kda_akk_inv.as_ref(),
             kda_w: self.kda_w.as_ref(),

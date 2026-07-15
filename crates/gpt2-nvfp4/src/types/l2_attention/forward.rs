@@ -92,25 +92,30 @@ pub(super) fn forward<'a, 'scratch>(
         })?;
     }
 
-    let (qkv_f16, attention_out_f16, kda_v_new, kda_akk_inv, kda_w, kda_aqk) = match tape.as_mut() {
-        Some(tape) if args.use_full_attention => (
-            None,
-            Some(&mut *tape.attention_out_f16),
-            None,
-            None,
-            None,
-            None,
-        ),
-        Some(tape) => (
-            Some(&mut *tape.qkv_f16),
-            Some(&mut *tape.attention_out_f16),
-            tape.kda_v_new.as_mut().map(|buffer| &mut **buffer),
-            tape.kda_akk_inv.as_mut().map(|buffer| &mut **buffer),
-            tape.kda_w.as_mut().map(|buffer| &mut **buffer),
-            tape.kda_aqk.as_mut().map(|buffer| &mut **buffer),
-        ),
-        None => (None, None, None, None, None, None),
-    };
+    let (qkv_f16, attention_out_f16, attention_probs_f16, kda_v_new, kda_akk_inv, kda_w, kda_aqk) =
+        match tape.as_mut() {
+            Some(tape) if args.use_full_attention => (
+                None,
+                Some(&mut *tape.attention_out_f16),
+                tape.attention_probs_f16
+                    .as_mut()
+                    .map(|buffer| &mut **buffer),
+                None,
+                None,
+                None,
+                None,
+            ),
+            Some(tape) => (
+                Some(&mut *tape.qkv_f16),
+                Some(&mut *tape.attention_out_f16),
+                None,
+                tape.kda_v_new.as_mut().map(|buffer| &mut **buffer),
+                tape.kda_akk_inv.as_mut().map(|buffer| &mut **buffer),
+                tape.kda_w.as_mut().map(|buffer| &mut **buffer),
+                tape.kda_aqk.as_mut().map(|buffer| &mut **buffer),
+            ),
+            None => (None, None, None, None, None, None, None),
+        };
 
     let attention_args = CausalAttentionTcArgs {
         stream: hidden.stream,
@@ -119,6 +124,7 @@ pub(super) fn forward<'a, 'scratch>(
         out: &mut *hidden.normalized,
         qkv_f16,
         attention_out_f16,
+        forward_probs_f16: attention_probs_f16,
         kda_v_new,
         kda_akk_inv,
         kda_w,

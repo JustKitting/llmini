@@ -14,6 +14,7 @@ impl AttentionModule {
         let params = args.params();
         let batch_head = args.batch_size * args.head_count;
         let scratch = args.scratch;
+        let probs_half = args.forward_probs_f16.unwrap_or(scratch.probs_half);
 
         self.causal_attention_tc
             .base
@@ -49,14 +50,14 @@ impl AttentionModule {
                     TC_FORWARD_THREADS_PER_BLOCK,
                 ),
                 &*scratch.scores,
-                &mut *scratch.probs_half,
+                &mut *probs_half,
                 args.log_sum_exp,
                 params,
             )?;
         args.tc_module
             .batched_matmul_half_rhs_lower_a(F16TcMatmulHalfRhsArgs {
                 stream: args.stream,
-                a: &*scratch.probs_half,
+                a: &*probs_half,
                 rhs: &*scratch.chunk_states,
                 out: &mut *scratch.compact_out,
                 batch_count: batch_head,

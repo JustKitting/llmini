@@ -63,6 +63,7 @@ fn causal_attention_backward_wrapper_matches_direct_kernel() -> Result<(), Box<d
     let direct_core = direct_scratch.args();
     module.causal_attention_backward_tc(CausalAttentionBackwardTcArgs {
         reuse_forward_probs: false,
+        forward_probs_f16: None,
         stream: &stream,
         tc_module: &tc_module,
         qkv: &qkv,

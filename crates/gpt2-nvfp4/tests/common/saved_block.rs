@@ -32,6 +32,7 @@ pub fn saved_block(parts: SavedBlockParts<'_>) -> BlockForwardSaved<'_> {
         qkv_input_nvfp4: parts.rowwise,
         qkv: parts.qkv,
         attention_out: parts.attention_out,
+        attention_probs: None,
         kda_v_new: None,
         kda_akk_inv: None,
         kda_w: None,

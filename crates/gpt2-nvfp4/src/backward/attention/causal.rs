@@ -10,6 +10,7 @@ pub fn causal_attention_backward(
     let dims = AttentionDims::new(args.use_full_attention);
     let tc_args = CausalAttentionBackwardTcArgs {
         reuse_forward_probs: args.reuse_forward_probs,
+        forward_probs_f16: args.saved.attention_probs,
         stream: args.stream,
         tc_module: args.tc_module,
         qkv: args.saved.qkv,

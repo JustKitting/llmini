@@ -73,7 +73,7 @@ fn run_block<'a, 'scratch, 'out>(
     })?;
     attention_side_backward(BlockAttentionBackwardArgs {
         use_full_attention,
-        reuse_forward_probs: use_full_attention && block_index == GPT2_N_LAYER - 1,
+        reuse_forward_probs: use_full_attention,
         stream,
         modules: modules.attention,
         saved: saved.blocks[block_index],
