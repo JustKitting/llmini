@@ -10,7 +10,7 @@ use cuda_device::{
 
 use crate::float_ptx::{abs_f32, fma_f32, max_f32};
 use crate::nvfp4::nvfp4_value;
-use crate::warp_reduce::warp_max_f32;
+use crate::warp_reduce::warp_max_nonnegative_f32;
 
 use super::cute::{
     KMajorU4, Sm120KMajorSwizzle, Sm120Nvfp4MmaAtom, Sm120Nvfp4WarpMma, Sm120ScaleLayout,
@@ -2054,7 +2054,7 @@ pub mod module {
         );
 
         if thread_id < MMA_THREADS_PER_BLOCK {
-            let warp_amax = warp_max_f32(local_amax);
+            let warp_amax = warp_max_nonnegative_f32(local_amax);
             if thread_id & 31 == 0 {
                 let cta =
                     thread::blockIdx_y() * (params.output_dim / TILE_N) + thread::blockIdx_x();

@@ -3,7 +3,7 @@
 use cuda_device::{DisjointSlice, thread, warp};
 
 use crate::float_ptx::abs_f32;
-use crate::warp_reduce::warp_max_f32;
+use crate::warp_reduce::warp_max_nonnegative_f32;
 
 use super::super::{AMAX_WARPS_PER_BLOCK, HADAMARD_DIM};
 use super::hadamard::hadamard_transform_lane;
@@ -25,7 +25,7 @@ pub(in super::super) fn ms_eden_pack_chunk(
     let (value, lane) =
         pack_chunk_value(input, out_global_scales, chunk, dst_row_len, global_scale);
 
-    let chunk_amax = warp_max_f32(abs_f32(value));
+    let chunk_amax = warp_max_nonnegative_f32(abs_f32(value));
     if lane == 0 {
         unsafe {
             *out_chunk_amax.get_unchecked_mut(chunk as usize) = chunk_amax;

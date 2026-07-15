@@ -45,6 +45,108 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-15
 commit: accepted local jj commit after full gate
+experiment: Reuse MS-EDEN payloads and batch nonnegative warp maxima onto hardware redux.
+status: accepted_900s
+change:
+  MS-EDEN already converted each lane to E2M1 to calculate its scale correction,
+  but later discarded that nibble, gathered two FP32 values, and converted the
+  pair again for storage. It now exchanges the existing nibble once with its
+  XOR-1 neighbor and lets even lanes pack the same adjacent bytes directly.
+  In the same batch, finite nonnegative FP32 maxima use their monotonically
+  ordered unsigned bit patterns with one SM120 redux.sync.max.u32 instruction.
+  This replaces four-shuffle half-warp max trees in four-six and MS-EDEN, five-
+  shuffle full-warp max trees in MS-EDEN chunk amax, and the TMA output-amax
+  warp tree. The repo's pinned cuda-device predates its redux wrapper, so the
+  supported PTX instruction is emitted directly through the existing PTX-asm
+  mechanism.
+numerics:
+  MS-EDEN payload bytes are bitwise identical: the reused nibble came from the
+  exact initial inverse scale used by the former final conversion, and even/
+  odd nibble order is unchanged. For finite nonnegative FP32 values, unsigned
+  bit ordering is exactly numerical ordering, so redux selects the same max.
+  NaN ordering is not claimed equivalent to legacy max.f32; the real training
+  path remained finite in every sample and existing nonfinite guards remain.
+memory:
+  No allocation, scratch size, or buffer lifetime changed. This is not a VRAM
+  capacity win.
+minimum_impact_gate:
+  The promoted baseline averaged 900.305 / 1526 = 589.977064ms per step and
+  required 2.949885ms per step. MS-EDEN payload kernels occupied approximately
+  66.3ms per step, four-six producers approximately 80.2ms, and TMA-amax
+  kernels approximately 41.3ms. The combined removal of one MS-EDEN conversion
+  plus one gather and nine max-tree shuffle stages had a credible aggregate
+  ceiling above the floor even though no single redux component did alone.
+focused_profile:
+  Committed single-error-reduction samples:
+    target/nsys/20260715_four_six_error_delta_candidate.nsys-rep
+    target/nsys/20260715_four_six_error_delta_candidate_reciprocal.nsys-rep
+    train elapsed: 5.786 and 5.800 seconds.
+    held-out val_loss: 8.665353 and 8.667118.
+  Candidate samples:
+    target/nsys/20260715_ms_eden_payload_redux_max_batch_candidate.nsys-rep
+    target/nsys/20260715_ms_eden_payload_redux_max_batch_candidate_reciprocal.nsys-rep
+    train elapsed: 5.746 and 5.751 seconds.
+    held-out val_loss: 8.662500 and 8.665192.
+  Across the same 10 training steps plus endpoint validation:
+    four-six producers including Muon encode:
+      800.790902 -> 789.552043ms and 803.198864 -> 790.168179ms,
+      saving 1.123886 / 1.303069ms per step.
+    MS-EDEN kernels:
+      662.745566 -> 639.644889ms and 664.298209 -> 640.220039ms,
+      saving 2.310068 / 2.407817ms per step.
+    TMA-amax kernels:
+      412.161087 -> 409.822242ms and 413.620077 -> 410.373315ms,
+      saving 0.233885 / 0.324676ms per step.
+    all GPU kernels:
+      5890.596234 -> 5850.036621ms and 5904.572064 -> 5855.131026ms,
+      saving 4.055961 / 4.944104ms per step.
+    kernel launch counts remain exactly 92061 in all four profiles.
+verification:
+  cargo fmt --all, git diff --check, and fresh
+  cargo oxide build --arch sm_120a: pass.
+  Six NVFP4/linear, five MS-EDEN transpose/pair, six projection-TMA, two linear
+  backward, one schedule-free Adam, and three Muon TMA GPU tests pass after the
+  fresh rebuild: 23 focused comparisons total.
+  Generated four-six PTX uses one redux plus 9 shuffles instead of 13 shuffles.
+  MS-EDEN emits one E2M1 payload conversion per output instead of two, and the
+  TMA-amax reduction emits one redux instead of five shuffles. Representative
+  register counts remain flat: MS-EDEN pair 38, NVFP4 transpose 25, four-six
+  exact 25, and TMA-amax 161, with zero spills.
+  Required clean 30-second screen with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260715_202302Z_fineweb_30s
+    stdout: target/ms_eden_payload_redux_max_batch_30_20260715.log
+    completed_steps=53, train_elapsed_s=30.168, val_loss=6.748165.
+    Both high-fidelity samples were finite and nonzero, with zero skip flags.
+  Required 900-second gate with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260715_202344Z_fineweb_900s
+    stdout: target/ms_eden_payload_redux_max_batch_900_20260715.log
+    completed_steps=1535, train_elapsed_s=900.214, val_loss=4.890575.
+    All 31 high-fidelity samples were finite and nonzero, with zero skipped
+    updates, loss-spike skips, grad-norm-spike skips, or nonfinite skips. Grad
+    norm ranged from 1.168300867 to 18.956151962. Every sample retained batch
+    4, sequence 2048, and 8192 tokens per step.
+measured_effect:
+  Against the matched 30-second baseline:
+    completed_steps: 53 -> 53.
+    average step time: 573.943396 -> 569.207547ms
+      (-4.735849ms, -0.825%).
+    held-out val_loss: 6.749176 -> 6.748165 (-0.001011, -0.015%).
+  Against the matched 900-second baseline:
+    completed_steps: 1526 -> 1535 (+9, +0.590%).
+    average step time: 589.977064 -> 586.458632ms
+      (-3.518432ms, -0.596%).
+    training tokens: 12500992 -> 12574720 (+73728, +0.590%).
+    held-out val_loss: 4.890196 -> 4.890575 (+0.000379, +0.008%).
+decision:
+  Keep and promote. The component batch clears the profile floor twice, both
+  fixed-wall runs preserve the speed signal, held-out loss is effectively
+  identical, and the full run is stable. The next 0.5% threshold is
+  (900.214 / 1535) * 0.005 = 2.932293ms per step.
+```
+
+```text
+date: 2026-07-15
+commit: accepted local jj commit after full gate
 experiment: Compare four-six candidate errors with one half-warp reduction.
 status: accepted_900s
 change:

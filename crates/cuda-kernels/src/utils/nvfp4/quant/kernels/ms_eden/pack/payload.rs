@@ -2,7 +2,7 @@ use cuda_device::{DisjointSlice, warp};
 
 use crate::float_ptx::abs_f32;
 use crate::nvfp4_cast::{e2m1_value, e4m3_value};
-use crate::warp_reduce::{half_warp_max_f32, half_warp_sum_f32};
+use crate::warp_reduce::{half_warp_max_nonnegative_f32, half_warp_sum_f32};
 
 use super::super::super::convert::{
     cvt_rn_satfinite_e2m1x2_f32, cvt_rn_satfinite_e4m3x2_f32, nonzero_global_scale, nonzero_scale,
@@ -32,7 +32,7 @@ pub(super) fn ms_eden_pack_payload(
     let group_leader = lane & !0x0f;
     let group = chunk * 2 + lane / GROUP_SIZE;
     let safe_global_scale = nonzero_global_scale(global_scale);
-    let group_amax = half_warp_max_f32(abs_f32(value), group_mask);
+    let group_amax = half_warp_max_nonnegative_f32(abs_f32(value), group_mask);
     let scale_bits = cvt_rn_satfinite_e4m3x2_f32(
         0.0,
         group_amax * scale_override * nvfp4_inv_scale(FP4_MAX, safe_global_scale),
@@ -55,15 +55,11 @@ pub(super) fn ms_eden_pack_payload(
         }
     }
 
-    let pair = group_leader + (lane_in_group & 0x7) * 2;
-    let hi_value = warp::shuffle_f32_sync(0xffff_ffff, value, pair);
-    let lo_value = warp::shuffle_f32_sync(0xffff_ffff, value, pair + 1);
-    if lane_in_group < GROUP_SIZE / 2 {
-        let byte = chunk_base / 2 + (lane / GROUP_SIZE) * (GROUP_SIZE / 2) + lane_in_group;
-        let hi = hi_value * inv_scale;
-        let lo = lo_value * inv_scale;
+    let peer_payload = warp::shuffle_xor_sync(0xffff_ffff, payload as u32, 1) as u8;
+    if lane_in_group.is_multiple_of(2) {
+        let byte = chunk_base / 2 + (lane / GROUP_SIZE) * (GROUP_SIZE / 2) + lane_in_group / 2;
         unsafe {
-            *out_fp4.get_unchecked_mut(byte as usize) = cvt_rn_satfinite_e2m1x2_f32(lo, hi);
+            *out_fp4.get_unchecked_mut(byte as usize) = payload | (peer_payload << 4);
         }
     }
 }

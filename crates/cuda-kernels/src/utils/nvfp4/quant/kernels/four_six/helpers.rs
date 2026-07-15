@@ -1,7 +1,7 @@
 use cuda_device::{thread, warp};
 
 use crate::float_ptx::abs_f32;
-use crate::warp_reduce::{half_warp_max_f32, half_warp_sum_f32};
+use crate::warp_reduce::{half_warp_max_nonnegative_f32, half_warp_sum_f32};
 
 use super::super::convert::{
     candidate_error_and_payload_with_inv_scale, local_scale_bits, nonzero_global_scale,
@@ -48,7 +48,7 @@ pub(crate) fn four_six_group_scale(
     group_leader: u32,
     lane_in_group: usize,
 ) -> (u8, u8) {
-    let group_amax = half_warp_max_f32(abs_f32(value), group_mask);
+    let group_amax = half_warp_max_nonnegative_f32(abs_f32(value), group_mask);
     let mut scale_bits_six = 0u16;
     let mut scale_bits_four = 0u16;
     let mut scale_six = 0.0;
