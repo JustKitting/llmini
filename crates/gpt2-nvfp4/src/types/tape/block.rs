@@ -1,5 +1,4 @@
 use cuda_core::{CudaStream, DeviceBuffer, DriverError};
-use rust_kernels_cuda::f16_tc_matmul::{F16ConvertArgs, F16TcMatmulModule};
 
 use super::device_copy::copy_device;
 use super::types::BlockForwardTape;
@@ -71,6 +70,7 @@ impl<'a> BlockForwardTape<'a> {
     pub(crate) fn mlp_forward(&mut self) -> MlpForwardTape<'_> {
         MlpForwardTape {
             up_input_nvfp4: self.mlp_up_input_nvfp4.reborrow(),
+            pre_activation_f16: &mut *self.mlp_up,
             down_input_nvfp4: self.mlp_down_input_nvfp4.reborrow(),
         }
     }
@@ -81,20 +81,5 @@ impl<'a> BlockForwardTape<'a> {
         log_sum_exp: &DeviceBuffer<f32>,
     ) -> Result<(), DriverError> {
         copy_device(stream, log_sum_exp, self.attention_log_sum_exp)
-    }
-
-    pub(crate) fn save_mlp_up_f16(
-        &mut self,
-        stream: &CudaStream,
-        module: &F16TcMatmulModule,
-        activation: &DeviceBuffer<f32>,
-    ) -> Result<(), DriverError> {
-        let element_count = self.mlp_up.len() as u32;
-        module.fp32_to_f16(F16ConvertArgs {
-            stream,
-            src: activation,
-            dst: self.mlp_up,
-            element_count,
-        })
     }
 }

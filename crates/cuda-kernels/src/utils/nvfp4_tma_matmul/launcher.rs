@@ -433,6 +433,7 @@ impl Nvfp4GemmModule {
         stream: &CudaStream,
         tma: &TmaNvfp4DeviceScaleDescriptors,
         pre_activation: &mut DeviceBuffer<f32>,
+        pre_activation_f16: Option<&mut DeviceBuffer<u16>>,
         out: &mut DeviceBuffer<f32>,
         bias: Nvfp4DeviceTensor<'_>,
         token_count: u32,
@@ -441,6 +442,9 @@ impl Nvfp4GemmModule {
         a_global_scales: &DeviceBuffer<f32>,
         b_global_scale: &DeviceBuffer<f32>,
     ) -> Result<(), DriverError> {
+        if let Some(pre_activation_f16) = pre_activation_f16.as_ref() {
+            assert!(pre_activation_f16.len() >= (token_count * output_dim) as usize);
+        }
         if token_count % TILE_M != 0
             || output_dim % TILE_N != 0
             || input_dim % Sm120ScaleLayout::K_ATOM != 0
@@ -466,6 +470,10 @@ impl Nvfp4GemmModule {
             shared_mem_bytes: 0,
         };
 
+        let pre_activation_f16 = pre_activation_f16
+            .map(|values| values.cu_deviceptr() as *mut u16)
+            .unwrap_or(core::ptr::null_mut());
+
         self.module.nvfp4_gemm_tma_relu2_kernel(
             stream,
             config,
@@ -474,6 +482,7 @@ impl Nvfp4GemmModule {
             tma.a_scales_deviceptr() as *const TmaDescriptor,
             tma.b_scales_deviceptr() as *const TmaDescriptor,
             pre_activation,
+            pre_activation_f16,
             out,
             bias.bytes,
             bias.scales,

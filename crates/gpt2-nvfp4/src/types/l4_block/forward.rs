@@ -1,5 +1,4 @@
-use cuda_core::{DeviceBuffer, DriverError};
-use rust_kernels_cuda::f16_tc_matmul::F16TcMatmulModule;
+use cuda_core::DriverError;
 
 use super::args::BlockForwardArgs;
 use super::weights::Gpt2BlockWeights;
@@ -85,24 +84,6 @@ impl Gpt2BlockWeights {
             tape: mlp_tape,
         })?;
 
-        save_mlp_tape(
-            tape.as_mut(),
-            args.attention_tc_module,
-            mlp_pre_activation,
-            hidden,
-        )
+        Ok(hidden)
     }
-}
-
-fn save_mlp_tape<'a>(
-    tape: Option<&mut crate::types::BlockForwardTape<'_>>,
-    f16_module: &F16TcMatmulModule,
-    mlp_pre_activation: &DeviceBuffer<f32>,
-    hidden: HiddenStateDevice<'a>,
-) -> Result<HiddenStateDevice<'a>, DriverError> {
-    if let Some(tape) = tape {
-        tape.save_mlp_up_f16(hidden.stream, f16_module, mlp_pre_activation)?;
-    }
-
-    Ok(hidden)
 }

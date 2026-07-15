@@ -23,7 +23,21 @@ pub(super) mod module {
         beta: DisjointSlice<f32>,
         params: CausalAttentionParams,
     ) {
-        prepare_kda_body(qkv, q, k, v, g, beta, params);
+        prepare_kda_body(qkv, core::ptr::null_mut(), q, k, v, g, beta, params);
+    }
+
+    #[kernel]
+    pub fn prepare_kda_forward_save_f16_kernel(
+        qkv: &[f32],
+        mut qkv_f16: DisjointSlice<u16>,
+        q: DisjointSlice<f32>,
+        k: DisjointSlice<f32>,
+        v: DisjointSlice<f32>,
+        g: DisjointSlice<f32>,
+        beta: DisjointSlice<f32>,
+        params: CausalAttentionParams,
+    ) {
+        prepare_kda_body(qkv, qkv_f16.as_mut_ptr(), q, k, v, g, beta, params);
     }
 
     #[kernel]

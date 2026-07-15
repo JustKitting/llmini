@@ -1,10 +1,11 @@
-use cuda_core::{CudaStream, DriverError};
+use cuda_core::{CudaStream, DeviceBuffer, DriverError};
 use rust_kernels_cuda::nvfp4::Nvfp4RowwiseDeviceTensor;
 
 use crate::types::RowwiseNvfp4Tape;
 
 pub struct MlpForwardTape<'scratch> {
     pub up_input_nvfp4: RowwiseNvfp4Tape<'scratch>,
+    pub pre_activation_f16: &'scratch mut DeviceBuffer<u16>,
     pub down_input_nvfp4: RowwiseNvfp4Tape<'scratch>,
 }
 

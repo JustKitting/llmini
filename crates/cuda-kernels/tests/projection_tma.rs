@@ -2,6 +2,7 @@ use std::error::Error;
 
 use cuda_core::{CudaStream, DeviceBuffer};
 use rust_kernels_cuda::attention::{AttentionModule, CProjArgs, QkvProjectionArgs};
+use rust_kernels_cuda::f16_tc_matmul::{F16ConvertArgs, F16TcMatmulModule};
 use rust_kernels_cuda::lm_head::{LmHeadArgs, LmHeadModule};
 use rust_kernels_cuda::mlp::{MlpDownResidualArgs, MlpModule, MlpUpRelu2Args};
 use rust_kernels_cuda::mma::Nvfp4FourSixMmaWeightTensor;
@@ -129,6 +130,8 @@ fn tma_relu2_matches_old_mlp_up_projection() -> Result<(), Box<dyn Error>> {
     let mut old_pre = DeviceBuffer::<f32>::zeroed(&fixture.stream, ROWS * 128)?;
     let mut old_act = DeviceBuffer::<f32>::zeroed(&fixture.stream, ROWS * 128)?;
     let mut tma_pre = DeviceBuffer::<f32>::zeroed(&fixture.stream, ROWS * 128)?;
+    let mut tma_pre_f16 = DeviceBuffer::<u16>::zeroed(&fixture.stream, ROWS * 128)?;
+    let mut reference_pre_f16 = DeviceBuffer::<u16>::zeroed(&fixture.stream, ROWS * 128)?;
     let mut tma_act = DeviceBuffer::<f32>::zeroed(&fixture.stream, ROWS * 128)?;
 
     fixture.mlp.up_relu2(MlpUpRelu2Args {
@@ -142,7 +145,13 @@ fn tma_relu2_matches_old_mlp_up_projection() -> Result<(), Box<dyn Error>> {
         input_dim: K as u32,
         output_dim: 128,
     })?;
-    fixture.tma_relu2(&mut tma_pre, &mut tma_act)?;
+    fixture.tma_relu2(&mut tma_pre, Some(&mut tma_pre_f16), &mut tma_act)?;
+    fixture.f16.fp32_to_f16(F16ConvertArgs {
+        stream: &fixture.stream,
+        src: &tma_pre,
+        dst: &mut reference_pre_f16,
+        element_count: (ROWS * 128) as u32,
+    })?;
 
     common::assert_slice_close(
         &tma_pre.to_host_vec(&fixture.stream)?,
@@ -153,6 +162,11 @@ fn tma_relu2_matches_old_mlp_up_projection() -> Result<(), Box<dyn Error>> {
         &tma_act.to_host_vec(&fixture.stream)?,
         &old_act.to_host_vec(&fixture.stream)?,
         TOLERANCE,
+    );
+    assert_eq!(
+        tma_pre_f16.to_host_vec(&fixture.stream)?,
+        reference_pre_f16.to_host_vec(&fixture.stream)?,
+        "fused ReLU2 tape must match the standalone FP32-to-FP16 conversion"
     );
     Ok(())
 }
@@ -190,6 +204,7 @@ struct Fixture {
     attention: AttentionModule,
     lm_head: LmHeadModule,
     mlp: MlpModule,
+    f16: F16TcMatmulModule,
     tma: Nvfp4GemmModule,
     scale_pack: Sm120ScalePackModule,
     pad: TmaMatrixPadModule,
@@ -214,6 +229,7 @@ impl Fixture {
             attention: AttentionModule::from_module(ptx.clone())?,
             lm_head: LmHeadModule::from_module(ptx.clone())?,
             mlp: MlpModule::from_module(ptx.clone())?,
+            f16: F16TcMatmulModule::from_module(ptx.clone())?,
             tma: Nvfp4GemmModule::from_module(ptx.clone())?,
             scale_pack: Sm120ScalePackModule::from_module(ptx.clone())?,
             pad: TmaMatrixPadModule::from_module(ptx.clone())?,
@@ -508,6 +524,7 @@ impl Fixture {
     fn tma_relu2(
         &self,
         pre_activation: &mut DeviceBuffer<f32>,
+        pre_activation_f16: Option<&mut DeviceBuffer<u16>>,
         out: &mut DeviceBuffer<f32>,
     ) -> Result<(), Box<dyn Error>> {
         let padded_n = sm120_scale_padded_mn_extent(self.n);
@@ -549,6 +566,7 @@ impl Fixture {
             &self.stream,
             &descriptors,
             pre_activation,
+            pre_activation_f16,
             out,
             self.bias_device(),
             self.rows as u32,

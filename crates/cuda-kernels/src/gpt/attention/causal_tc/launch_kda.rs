@@ -3,7 +3,6 @@ use cuda_core::DriverError;
 use super::gather::TC_FORWARD_THREADS_PER_BLOCK;
 use super::types::CausalAttentionTcArgs;
 use crate::attention::AttentionModule;
-use crate::f16_tc_matmul::F16ConvertArgs;
 use crate::kda_launch::{self, KDA_HEAD_DIM};
 use crate::launch::{grid_x_config, linear_config};
 
@@ -44,15 +43,11 @@ impl AttentionModule {
             };
         }
         if let Some(qkv_f16) = args.qkv_f16 {
-            args.tc_module.fp32_to_f16(F16ConvertArgs {
-                stream,
-                src: args.qkv,
-                dst: qkv_f16,
-                element_count: args.row_count * args.qkv_dim,
-            })?;
+            assert!(qkv_f16.len() >= (args.row_count * args.qkv_dim) as usize);
+            kda_kernel!(prepare_kda_forward_save_f16_kernel(linear(dims.batch_head * args.seq_len * 32); args.qkv, qkv_f16, &mut *scratch.q, &mut *scratch.k, &mut *scratch.v, &mut *scratch.scores, &mut *args.log_sum_exp));
+        } else {
+            kda_kernel!(prepare_kda_forward_kernel(linear(dims.batch_head * args.seq_len * 32); args.qkv, &mut *scratch.q, &mut *scratch.k, &mut *scratch.v, &mut *scratch.scores, &mut *args.log_sum_exp));
         }
-
-        kda_kernel!(prepare_kda_forward_kernel(linear(dims.batch_head * args.seq_len * 32); args.qkv, &mut *scratch.q, &mut *scratch.k, &mut *scratch.v, &mut *scratch.scores, &mut *args.log_sum_exp));
         kda_kernel!(chunk_cumsum_kda_g_kernel(chunk_cfg; &mut *scratch.scores));
         kda_kernel!(make_kda_qg_kneg_kernel(linear(dims.compact_elems); &mut *scratch.q, &*scratch.k, &*scratch.scores, &mut *scratch.compact_out));
         kda_kernel!(make_kda_kg_kpos_vbeta_kernel(linear(dims.compact_elems); &mut *scratch.k, &mut *scratch.v, &*scratch.scores, &*args.log_sum_exp, &mut *scratch.probs));

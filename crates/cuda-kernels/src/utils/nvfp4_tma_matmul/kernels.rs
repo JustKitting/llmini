@@ -4,6 +4,7 @@ use cuda_device::{
         Barrier, fence_proxy_async_shared_cta, mbarrier_arrive, mbarrier_arrive_expect_tx,
         mbarrier_init, mbarrier_try_wait_parity,
     },
+    convert::cvt_f16x2_f32,
     cuda_module, kernel, launch_bounds, ptx_asm, thread,
     tma::TmaDescriptor,
 };
@@ -311,6 +312,18 @@ fn store_f32x2_global(out: &mut DisjointSlice<f32>, index: u32, x: f32, y: f32) 
             in("l") ptr as u64,
             in("f") x,
             in("f") y,
+        );
+    }
+}
+
+#[inline(always)]
+fn store_f16x2_global(out: *mut u16, index: u32, x: f32, y: f32) {
+    let packed = cvt_f16x2_f32(x, y);
+    unsafe {
+        ptx_asm!(
+            "st.global.u32 [%0], %1;",
+            in("l") out.add(index as usize) as u64,
+            in("r") packed,
         );
     }
 }
@@ -778,6 +791,56 @@ fn store_acc_relu2_scaled(
     );
 }
 
+#[inline(always)]
+fn store_acc_relu2_f16_scaled(
+    acc: [f32; 4],
+    tile: CtaTile,
+    m_repeat: u32,
+    n_repeat: u32,
+    params: Nvfp4GemmParams,
+    scale0: f32,
+    scale1: f32,
+    pre_activation: &mut DisjointSlice<f32>,
+    pre_activation_f16: *mut u16,
+    out: &mut DisjointSlice<f32>,
+    bias_bytes: &[u8],
+    bias_scales: &[u8],
+    bias_global_scale: f32,
+) {
+    let row0 = tile.mma_row_base(m_repeat) + tile.group;
+    let row1 = row0 + 8;
+    let col0 = tile.mma_col_base(n_repeat) + tile.thread_in_group * 2;
+    let output_dim = params.output_dim;
+    if col0 + 1 >= output_dim {
+        return;
+    }
+
+    let bias0 = nvfp4_value(bias_bytes, bias_scales, bias_global_scale, col0 as usize);
+    let bias1 = nvfp4_value(
+        bias_bytes,
+        bias_scales,
+        bias_global_scale,
+        (col0 + 1) as usize,
+    );
+    let pre00 = affine_from_stored_product(acc[0], scale0, bias0);
+    let pre01 = affine_from_stored_product(acc[1], scale0, bias1);
+    let pre10 = affine_from_stored_product(acc[2], scale1, bias0);
+    let pre11 = affine_from_stored_product(acc[3], scale1, bias1);
+    let relu00 = max_f32(pre00, 0.0);
+    let relu01 = max_f32(pre01, 0.0);
+    let relu10 = max_f32(pre10, 0.0);
+    let relu11 = max_f32(pre11, 0.0);
+    let index0 = row0 * output_dim + col0;
+    let index1 = row1 * output_dim + col0;
+
+    store_f32x2_global(pre_activation, index0, pre00, pre01);
+    store_f32x2_global(pre_activation, index1, pre10, pre11);
+    store_f16x2_global(pre_activation_f16, index0, pre00, pre01);
+    store_f16x2_global(pre_activation_f16, index1, pre10, pre11);
+    store_f32x2_global(out, index0, relu00 * relu00, relu01 * relu01);
+    store_f32x2_global(out, index1, relu10 * relu10, relu11 * relu11);
+}
+
 macro_rules! store_accumulator_rows {
     ([], $tile:expr, $params:expr, $output_scale:expr, $out:expr) => {};
     (
@@ -955,6 +1018,45 @@ macro_rules! store_accumulator_relu2_rows {
             $params,
             $output_scale,
             ($pre_activation, $out, $bias_bytes, $bias_scales, $bias_global_scale)
+        );
+    }};
+}
+
+macro_rules! store_accumulator_relu2_f16_rows {
+    ([], $tile:expr, $params:expr, $output_scale:expr, $args:tt) => {};
+    (
+        [($m_repeat:tt, [$(($n_repeat:tt, $acc:ident)),+ $(,)?]) $(, $rest:tt)* $(,)?],
+        $tile:expr,
+        $params:expr,
+        $output_scale:expr,
+        ($pre_activation:expr, $pre_activation_f16:expr, $out:expr, $bias_bytes:expr, $bias_scales:expr, $bias_global_scale:expr)
+    ) => {{
+        let row0 = $tile.mma_row_base($m_repeat) + $tile.group;
+        let scale0 = $output_scale.row(row0);
+        let scale1 = $output_scale.row(row0 + 8);
+        $(
+            store_acc_relu2_f16_scaled(
+                $acc,
+                $tile,
+                $m_repeat,
+                $n_repeat,
+                $params,
+                scale0,
+                scale1,
+                $pre_activation,
+                $pre_activation_f16,
+                $out,
+                $bias_bytes,
+                $bias_scales,
+                $bias_global_scale,
+            );
+        )+
+        store_accumulator_relu2_f16_rows!(
+            [$($rest),*],
+            $tile,
+            $params,
+            $output_scale,
+            ($pre_activation, $pre_activation_f16, $out, $bias_bytes, $bias_scales, $bias_global_scale)
         );
     }};
 }
@@ -1876,6 +1978,59 @@ macro_rules! run_tma_nvfp4_full_tile_relu2_shape {
     }};
 }
 
+macro_rules! run_tma_nvfp4_full_tile_relu2_f16_shape {
+    (
+        [$($m_axis:tt),+],
+        [$($n_axis:tt),+],
+        [$(($m_repeat:tt, [$(($n_repeat:tt, $acc:ident)),+ $(,)?])),+ $(,)?],
+        $a_tma:expr,
+        $b_tma:expr,
+        $a_scale_tma:expr,
+        $b_scale_tma:expr,
+        $tile:expr,
+        $params:expr,
+        $a_packs_base:expr,
+        $b_packs_base:expr,
+        $a_scales_base:expr,
+        $b_scales_base:expr,
+        $tma_bars:expr,
+        $empty_bars:expr,
+        $pre_activation:expr,
+        $pre_activation_f16:expr,
+        $out:expr,
+        $bias_bytes:expr,
+        $bias_scales:expr,
+        $bias_global_scale:expr $(,)?
+    ) => {{
+        run_tma_nvfp4_full_tile_shape_body!(
+            [$($m_axis),+],
+            [$($n_axis),+],
+            [$(($m_repeat, [$(($n_repeat, $acc)),+])),+],
+            $a_tma,
+            $b_tma,
+            $a_scale_tma,
+            $b_scale_tma,
+            $tile,
+            $params,
+            $a_packs_base,
+            $b_packs_base,
+            $a_scales_base,
+            $b_scales_base,
+            $tma_bars,
+            $empty_bars,
+            store_accumulator_relu2_f16_rows,
+            (
+                $pre_activation,
+                $pre_activation_f16,
+                $out,
+                $bias_bytes,
+                $bias_scales,
+                $bias_global_scale
+            ),
+        );
+    }};
+}
+
 macro_rules! run_tma_nvfp4_full_tile {
     ($($arg:expr),+ $(,)?) => {{
         dispatch_accumulator_shape!(run_tma_nvfp4_full_tile_shape, $($arg),+);
@@ -1903,6 +2058,12 @@ macro_rules! run_tma_nvfp4_full_tile_residual {
 macro_rules! run_tma_nvfp4_full_tile_relu2 {
     ($($arg:expr),+ $(,)?) => {{
         dispatch_accumulator_shape!(run_tma_nvfp4_full_tile_relu2_shape, $($arg),+);
+    }};
+}
+
+macro_rules! run_tma_nvfp4_full_tile_relu2_f16 {
+    ($($arg:expr),+ $(,)?) => {{
+        dispatch_accumulator_shape!(run_tma_nvfp4_full_tile_relu2_f16_shape, $($arg),+);
     }};
 }
 
@@ -2235,6 +2396,7 @@ pub mod module {
         a_scale_tma: *const TmaDescriptor,
         b_scale_tma: *const TmaDescriptor,
         mut pre_activation: DisjointSlice<f32>,
+        pre_activation_f16: *mut u16,
         mut out: DisjointSlice<f32>,
         bias_bytes: &[u8],
         bias_scales: &[u8],
@@ -2275,24 +2437,47 @@ pub mod module {
         }
         thread::sync_threads();
 
-        run_tma_nvfp4_full_tile_relu2!(
-            a_tma,
-            b_tma,
-            a_scale_tma,
-            b_scale_tma,
-            tile,
-            params,
-            a_packs_base,
-            b_packs_base,
-            a_scales_base,
-            b_scales_base,
-            tma_bars,
-            empty_bars,
-            &mut pre_activation,
-            &mut out,
-            bias_bytes,
-            bias_scales,
-            bias_global_scale[0],
-        );
+        if pre_activation_f16.is_null() {
+            run_tma_nvfp4_full_tile_relu2!(
+                a_tma,
+                b_tma,
+                a_scale_tma,
+                b_scale_tma,
+                tile,
+                params,
+                a_packs_base,
+                b_packs_base,
+                a_scales_base,
+                b_scales_base,
+                tma_bars,
+                empty_bars,
+                &mut pre_activation,
+                &mut out,
+                bias_bytes,
+                bias_scales,
+                bias_global_scale[0],
+            );
+        } else {
+            run_tma_nvfp4_full_tile_relu2_f16!(
+                a_tma,
+                b_tma,
+                a_scale_tma,
+                b_scale_tma,
+                tile,
+                params,
+                a_packs_base,
+                b_packs_base,
+                a_scales_base,
+                b_scales_base,
+                tma_bars,
+                empty_bars,
+                &mut pre_activation,
+                pre_activation_f16,
+                &mut out,
+                bias_bytes,
+                bias_scales,
+                bias_global_scale[0],
+            );
+        }
     }
 }

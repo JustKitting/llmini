@@ -49,6 +49,7 @@ pub(super) fn forward<'a, 'scratch>(
         hidden.stream,
         args.scratch.tma_descriptors,
         args.scratch.pre_activation,
+        tape.as_mut().map(|tape| &mut *tape.pre_activation_f16),
         args.scratch.activation,
         args.projections.up.bias,
         hidden.row_count,

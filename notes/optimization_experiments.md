@@ -45,6 +45,104 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-15
 commit: accepted local jj commit after full gate
+experiment: Write forward FP16 tapes in the KDA prepare and MLP ReLU2 producers.
+status: accepted_900s
+change:
+  KDA forward prepare now converts the raw Q/K/V/G, beta, and aligned padding
+  values it has already loaded directly into the saved FP16 QKV tape. The MLP
+  ReLU2 TMA epilogue writes each just-computed pre-activation to both its
+  existing FP32 output and the saved FP16 backward tape. The ordinary no-tape
+  inference paths remain available. This removes 12 KDA-QKV and 16 MLP-up
+  standalone FP32-to-FP16 launches per training step without changing either
+  producer's FP32 output.
+numerics:
+  Both fused paths use the same round-to-nearest f16x2 conversion as the
+  removed standalone kernel. KDA writes the exact raw projection values before
+  applying its SiLU, normalization, sigmoid, or softplus transforms and also
+  covers every padded QKV column. The focused TMA ReLU2 comparison proves its
+  fused FP16 tape bit-for-bit equal to converting the unchanged FP32 output.
+  The rebuilt 10-step samples and fixed-wall gates preserve the training
+  trajectory and held-out quality.
+memory:
+  Existing QKV and MLP-up tape allocations are written earlier. No allocation,
+  buffer lifetime, scratch capacity, or peak-VRAM requirement changed.
+minimum_impact_gate:
+  The promoted baseline averaged 900.149 / 1548 = 581.491602ms per step and
+  required 2.907458ms per step. Its matched reciprocal profile spent
+  74.675581ms across 308 standalone FP32-to-FP16 launches for the same 10
+  training steps plus endpoint validation, or 7.467558ms per training-step
+  equivalent. Eliminating the redundant input reads gave this compatible batch
+  a credible ceiling above the aggregate floor.
+focused_profile:
+  Accepted baseline samples:
+    target/nsys/20260715_backward_producer_redux_batch_candidate.nsys-rep
+    target/nsys/20260715_backward_producer_redux_batch_candidate_reciprocal.nsys-rep
+    total GPU kernels: 5795.352623 and 5809.654954ms.
+    train elapsed: 5.691 and 5.705 seconds.
+    held-out val_loss: 8.665930 and 8.665089.
+  Candidate samples:
+    target/nsys/20260715_fused_forward_tapes_candidate.nsys-rep
+    target/nsys/20260715_fused_forward_tapes_candidate_reciprocal.nsys-rep
+    total GPU kernels: 5750.637894 and 5757.421326ms.
+    train elapsed: 5.651 and 5.657 seconds.
+    held-out val_loss: 8.666674 and 8.664021.
+  Across the same 10 training steps plus endpoint validation:
+    all GPU kernels saved 4.471473 and 5.223363ms per step,
+      or 0.771562% and 0.899083%.
+    directly affected producer-plus-cast work saved 4.716710 and
+      4.754314ms per step.
+    kernel launches fell from 91781 to 91473 in both samples, eliminating all
+      308 standalone tape casts in the measured sequence. The normal training
+      path removes 28 launches per step; the remaining difference is endpoint
+      validation work included identically in every profile.
+verification:
+  cargo fmt --all, git diff --check, fresh
+  cargo oxide build --arch sm_120a, and
+  cargo test --workspace --release --lib --bins: pass (50 host tests).
+  The focused TMA ReLU2 tape comparison, direct causal-attention backward,
+  GPT2 causal-backward wrapper, and full block-attention backward GPU tests
+  pass after the fresh build: 4 focused comparisons.
+  ptxas reports no spills. nvfp4_gemm_tma_relu2_kernel remains at 161
+  registers/thread and 92240 bytes shared memory; the KDA fused prepare uses
+  40 registers/thread versus 29 for the no-tape path.
+  Exact one-step launch diagnostic only:
+    target/runs/20260715_215356Z_fineweb_900s
+    completed_steps=1, train_elapsed_s=0.540, val_loss=10.422237.
+  Required clean 30-second screen with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260715_215550Z_fineweb_30s
+    stdout: target/gates/20260715_fused_forward_tapes_30s.log
+    completed_steps=54, train_elapsed_s=30.233, val_loss=6.736575.
+  Required 900-second gate with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260715_215631Z_fineweb_900s
+    stdout: target/gates/20260715_fused_forward_tapes_900s.log
+    completed_steps=1561, train_elapsed_s=900.527, val_loss=4.876506.
+    All 32 high-fidelity samples were finite and nonzero, with zero skipped
+    updates, loss-spike skips, grad-norm-spike skips, or nonfinite skips. Grad
+    norm ranged from 1.167020917 to 18.956151962. Every sample retained batch
+    4, sequence 2048, and 8192 tokens per step.
+measured_effect:
+  Against the matched 30-second baseline:
+    completed_steps: 54 -> 54.
+    average step time: 564.129630 -> 559.870370ms
+      (-4.259259ms, -0.755%).
+    held-out val_loss: 6.736594 -> 6.736575 (-0.000019).
+  Against the matched 900-second baseline:
+    completed_steps: 1548 -> 1561 (+13, +0.840%).
+    average step time: 581.491602 -> 576.891095ms
+      (-4.600507ms, -0.791%).
+    training tokens: 12681216 -> 12787712 (+106496, +0.840%).
+    held-out val_loss: 4.880241 -> 4.876506
+      (-0.003735, -0.077%).
+decision:
+  Keep and promote. Both reciprocal profiles clear the aggregate 0.5% floor,
+  both fixed-wall gates preserve the speed signal, held-out loss improves, and
+  the full run is stable. The next 0.5% threshold is
+  (900.527 / 1561) * 0.005 = 2.884455ms per step.
+```
+
+```text
+date: 2026-07-15
+commit: accepted local jj commit after full gate
 experiment: Reuse backward-producer maxima and batch compatible max reductions.
 status: accepted_900s
 change:

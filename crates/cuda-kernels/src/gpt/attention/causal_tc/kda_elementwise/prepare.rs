@@ -7,6 +7,7 @@ use crate::kda_elementwise::{KdaPrepareOutputs, prepare_kda_inputs_body};
 
 pub(in super::super) fn prepare_kda_body(
     qkv: &[f32],
+    qkv_f16: *mut u16,
     q: DisjointSlice<f32>,
     k: DisjointSlice<f32>,
     v: DisjointSlice<f32>,
@@ -17,6 +18,7 @@ pub(in super::super) fn prepare_kda_body(
     prepare_kda_inputs_body(
         qkv,
         KdaPrepareOutputs { q, k, v, g, beta },
+        qkv_f16,
         params,
         TC_FORWARD_THREADS_PER_BLOCK,
     );

@@ -23,6 +23,7 @@ pub(crate) fn prepare_kda_backward_inputs_body(
     prepare_kda_inputs_body(
         qkv,
         KdaPrepareOutputs { q, k, v, g, beta },
+        core::ptr::null_mut(),
         params,
         TC_BACKWARD_THREADS_PER_BLOCK,
     );
