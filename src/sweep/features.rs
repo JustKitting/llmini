@@ -36,7 +36,7 @@ pub fn regression_features(candidate: &Candidate) -> [f64; FEATURE_COUNT] {
 
 pub fn unit_features(candidate: &Candidate) -> [f64; FEATURE_COUNT] {
     [
-        range(candidate.batch_size as f64, 4.0, 32.0),
+        range(candidate.batch_size as f64, 1.0, 32.0),
         range(candidate.n_layer as f64, 4.0, 8.0),
         range(candidate.n_embd as f64, 1024.0, 2048.0),
         range(candidate.aurora_phases as f64, 2.0, 16.0),

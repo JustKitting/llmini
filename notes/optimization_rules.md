@@ -5,8 +5,13 @@ They are not historical notes.
 
 ## Primary Objective
 
-Optimize for held-out validation loss after the fixed 15-minute wall-clock
-training run.
+Optimize for the lowest held-out validation loss after the fixed 900-second
+single-GPU training window:
+
+- 30 seconds is the fast candidate screen.
+- 900 seconds is the mandatory sustained stability, regression, and held-out
+  quality gate before a passing change is committed in JJ.
+- The target is held-out validation loss `<= 3.4` on one GPU in 900 seconds.
 
 Use this validation line as the comparable endpoint:
 
@@ -14,24 +19,30 @@ Use this validation line as the comparable endpoint:
 heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```
 
-Training loss, one-step runs, 100-step runs, tokens/s, and isolated profiler
-timings are diagnostics. They do not prove that an optimization should be
-promoted.
+Training loss, one-step runs, tokens/s, step time, memory use, and isolated
+profiler timings are diagnostics. Tokens/s is a useful explanation for quality
+movement because it controls training exposure, but it is not a hard objective:
+a slower architecture may win if it produces better held-out and downstream
+quality. Diagnostic metrics do not replace the 900-second gate.
 
 ## Model-Size Invariant
 
-The active target is the approximately 1B-parameter shape:
+The active control is the approximately 1B-effective-parameter shape with an
+8K context:
 
 ```text
+GPT2_SEQ_LEN=8192
 GPT2_N_LAYER=16
 GPT2_N_EMBD=2048
 GPT2_N_HEAD=32
 ```
 
-Kernel, runtime, optimizer, dataset, and tokenizer experiments must not reduce
-the model below 16 layers. A smaller shape may be used only for an explicitly
-labelled diagnostic; its timing or loss can never become the active baseline,
-promotion evidence, or a commit gate for the 1B target.
+This has 964376960 effective parameters and 984571904 allocated parameter
+slots. Kernel, runtime, optimizer, dataset, and tokenizer experiments must not
+reduce the model below 16 layers or below an 8192-token context. A smaller
+shape may be used only for an explicitly labelled diagnostic; its timing or
+loss can never become the active baseline, promotion evidence, or a commit
+gate.
 
 ## Kernel/Runtime Acceptance Rule
 
@@ -60,8 +71,8 @@ threshold from the active baseline whenever that baseline changes:
 minimum_step_saving = (TRAIN_ELAPSED_S / COMPLETED_STEPS) * 0.005
 ```
 
-For the current baseline, `900.478 / 1141 = 0.789200701` seconds per step, so a
-candidate must credibly be able to save at least `3.946004 ms/step` before any
+For the current baseline, `900.000 / 925 = 0.972972973` seconds per step, so a
+candidate must credibly be able to save at least `4.864865 ms/step` before any
 code edit, rebuild, GPU test, or training screen. Multiply a per-launch saving
 by the launch count per step and compare that aggregate saving with the
 threshold; do not pursue sub-threshold micro-optimizations.
@@ -76,7 +87,7 @@ time it removes even when each constituent operation would not qualify alone.
 Actively look for clear, measured reductions in peak GPU memory as a separate
 optimization path. The `0.5%` whole-step speed filter does not exclude a
 candidate whose primary benefit is lower peak VRAM. A memory-only candidate may
-be kept when it preserves the fixed 1B model math, held-out loss, and stability,
+be kept when it preserves the active model math, held-out loss, and stability,
 and does not introduce a meaningful step-time regression.
 
 Report the exact matched-run peak-memory reduction and the concrete capacity it
@@ -92,9 +103,10 @@ NextLat is part of the active model path. Do not protect or compare against
 pre-NextLat validation results when evaluating current NextLat work.
 
 `notes/sweep_baseline.env` is the mutable baseline for the active model lineage.
-For current work, that means a 900-second result from the active 16-layer
-NextLat model, current dataset, and current tokenizer, not a result from an
-older or smaller architecture.
+For current work, that means a 900-second result from the active 16-layer,
+width-2048, 32-head, 8K-context NextLat model, current dataset, and current
+tokenizer, not a result from an older or smaller architecture or shorter
+context.
 
 ## Sweep Rule
 

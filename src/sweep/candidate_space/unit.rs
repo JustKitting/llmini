@@ -56,7 +56,7 @@ mod tests {
         let low = from_unit([0.0; FACTOR_COUNT]);
         let high = from_unit([1.0; FACTOR_COUNT]);
 
-        assert_eq!(low.batch_size, 4);
+        assert_eq!(low.batch_size, 1);
         assert_eq!(low.n_layer, 16);
         assert_eq!(low.n_embd, 2048);
         assert_eq!(low.n_head, 32);

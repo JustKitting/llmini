@@ -9,26 +9,135 @@ those rules when accepting, rejecting, or comparing experiments in this file.
 
 ## Goal
 
-Train a GPT-2-small-shaped model with local Rust/CUDA kernels, targeting
-NVFP4-heavy training where tensor-core matmuls dominate runtime.
+Train a depth-preserving approximately 1B model with local Rust/CUDA kernels,
+8K context, and NVFP4-heavy training where tensor-core matmuls dominate
+runtime.
 
 External reference target:
 
-- llm.c / Karpathy GPT-2 124M FineWeb run: 10B tokens in roughly 4-24 hours on
-  one strong single GPU equivalent, with higher-end 8x A100 runs around 90
-  minutes.
+- Modded-NanoGPT main track: train its 124M-class model to at most 3.28
+  cross-entropy on its fixed FineWeb validation stream. Current master uses
+  1380 scheduled iterations plus 10 extension iterations and a staged global
+  token batch, approximately 365.69M scheduled training tokens. Official
+  records use 8 H100 GPUs. Its raw loss and step count are context only because
+  this repo currently uses a different tokenizer, model, context, and hardware.
 
 Primary optimization target:
 
-- Lowest held-out validation loss after a fixed 15-minute wall-clock training
-  budget.
-- Training loss, fixed-step loss, tokens/s, and isolated kernel timings are
-  diagnostics only. They do not prove an optimization unless the held-out
-  validation loss at the same wall-clock budget improves or is preserved.
+- Lowest held-out validation loss after a fixed 900-second single-GPU training
+  window, with a target at or below 3.4.
+- A 30-second screen is the fast filter and the full 900-second sustained run
+  is the mandatory quality and stability gate before committing.
+- Training loss, fixed-step loss, tokens/s, memory, and isolated kernel timings
+  are diagnostics. Tokens/s explains training exposure but does not override
+  matched held-out or downstream quality.
 - Use the validation split endpoint line:
 
 ```text
 heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
+```
+
+```text
+date: 2026-07-15
+commit: not committed; resize rejected after full gate
+experiment: Evaluate a depth-preserving approximately 0.555B uniform 8K model.
+status: rejected_architecture_resize
+gate_policy:
+  The 30-second run is the fast screen and the 900-second run is the mandatory
+  stability, regression, and held-out quality gate before a passing change is
+  committed in JJ. The target is a one-GPU 900-second validation loss at or
+  below 3.4. Tokens/s is a quality-relevant exposure diagnostic, not a hard
+  objective or an architecture rejection rule.
+change:
+  Preserved the 16-layer depth and 8192-token context while changing the
+  uniform residual width from 2048 to 1536 and the head count from 32 to 24.
+  Head dimension remained 64 and the uniform MLP remained 4x width at 6144.
+  The tested shape had 554838816 effective parameters and 566987264 allocated
+  parameter slots, reductions of 42.467% and 42.413% from the 1B/8K control.
+reference_1b_8k:
+  Fresh 16-layer, d=2048, 32-head, seq-8192, batch-1 build: pass.
+  One-step memory/correctness diagnostic:
+    target/runs/20260715_092603Z_fineweb_900s
+    used_bytes=84243841024, val_loss=10.407915, train_elapsed_s=0.926.
+  30-second screen:
+    target/runs/20260715_092619Z_fineweb_30s
+    completed_steps=32, train_elapsed_s=30.395, val_loss=7.128106.
+  900-second stability reference:
+    target/runs/20260715_092933Z_fineweb_900s
+    completed_steps=925, train_elapsed_s=900.000, val_loss=5.137541.
+    It processed 7577600 tokens at 8419.556 tokens/s. All 19 high-fidelity
+    samples had Finite=1 and Nonzero=1 with zero skipped updates of every kind.
+verification:
+  cargo fmt --all --check: pass.
+  GPT2_SEQ_LEN=8192 GPT2_BATCH_SIZE=1 GPT2_N_LAYER=16 GPT2_N_EMBD=1536
+    GPT2_N_HEAD=24 cargo test -q --bin sweep: pass, 45 tests.
+  Same shape environment with cargo test -q --bin rust-kernels: pass, 4 tests.
+  Fresh B1 cargo oxide build --arch sm_120a: pass.
+  Resized one-step memory/correctness diagnostic:
+    target/runs/20260715_094829Z_fineweb_900s
+    used_bytes=61005299712, val_loss=10.367990, train_elapsed_s=0.696.
+    Run metadata confirms seq-8192, batch-1, 16 layers, d=1536, and 24 heads.
+  Fresh B2 cargo oxide build --arch sm_120a: pass, but the one-step allocation
+  probe failed before step 0 with DriverError(2, "out of memory"):
+    target/runs/20260715_094859Z_fineweb_900s
+  Restored B1 with another fresh cargo oxide build --arch sm_120a: pass.
+  Required resized 30-second screen with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260715_094926Z_fineweb_30s
+    completed_steps=43, train_elapsed_s=30.711, val_loss=7.021060.
+  Required resized 900-second gate with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260715_095008Z_fineweb_900s
+    completed_steps=1234, train_elapsed_s=900.305, val_loss=5.038582.
+    All 25 high-fidelity samples had Finite=1 and Nonzero=1, with zero skipped
+    updates, loss-spike skips, grad-norm-spike skips, or nonfinite skips. Grad
+    norm ranged from 1.019725680 to 16.635648727.
+measured_effect:
+  Against the matched 1B/8K 30-second reference:
+    completed_steps: 32 -> 43 (+11, +34.375%).
+    average step time: 0.949843750s -> 0.714209302s
+      (-235.634448ms, -24.808%).
+    token throughput: 8624.576 -> 11470.027 tokens/s (+32.992%).
+    held-out val_loss: 7.128106 -> 7.021060 (-1.502%).
+  Against the matched 1B/8K 900-second reference:
+    completed_steps: 925 -> 1234 (+309, +33.405%).
+    average step time: 0.972972973s -> 0.729582658s
+      (-243.390315ms, -25.015%).
+    training tokens: 7577600 -> 10108928 (+2531328, +33.405%).
+    token throughput: 8419.556 -> 11228.337 tokens/s (+33.360%).
+    held-out val_loss: 5.137541 -> 5.038582 (-1.926%).
+  Across the 18 aligned post-initial training-loss samples shared by the first
+  900 steps of both runs, the resized model was worse by 0.068447643 loss on
+  average, or 1.183%. Its fixed-wall validation improvement therefore came
+  from the additional token exposure rather than better quality per token.
+  The resized 8K loss is also 0.068% below the former 1B/4K result at 5.042004,
+  but that cross-context comparison is diagnostic only because the validation
+  windows differ.
+memory_capacity:
+  B1 allocation fell by 23238541312 bytes, 21.643 GiB, from the 1B/8K
+  reference. Auditing every token-, batch-, and square-dependent allocation in
+  the live constructors projects that B1 -> B2 requires 49337860096 additional
+  bytes, 45.949 GiB. The projected B2 total is 110343159808 bytes, 102.765 GiB,
+  against 101973491712 visible device bytes, so the current shortfall is
+  8369668096 bytes, 7.795 GiB.
+  The B2 increment comprises:
+    attention scratch: 20083900416 bytes, 18.705 GiB, including exactly
+      18.000 GiB of square attention buffers.
+    backward activations: 17372839936 bytes, 16.180 GiB.
+    forward tape: 7720501248 bytes, 7.190 GiB.
+    other token-scaled buffers: 4160618496 bytes, 3.875 GiB.
+  If future cleanup removes only fixed-size allocations, measured B1 use must
+  fall to at most 52635631616 bytes, 49.02 GiB, before B2 can merely fit. If
+  cleanup removes only batch-scaled activation/tape memory, B1 use must fall to
+  at most 56820465664 bytes, 52.92 GiB, because the saving doubles at B2.
+  Require approximately another 1 GiB of projected B2 safety margin before
+  promoting B2 rather than rebuilding exactly at the allocation boundary.
+decision:
+  Reject the 0.555B resize and restore the 16-layer, d=2048, 32-head, 8K B1
+  model as the active control. Removing 42.467% of effective parameters bought
+  only 33.360% more token throughput, the matched-exposure training loss was
+  worse, and the final held-out improvement was only 1.926%. Do not spend a
+  full gate on an intermediate residual width that introduces less favorable
+  padded kernel shapes. notes/sweep_baseline.env points to the existing
+  1B/8K full gate. Its nominal 0.5% kernel threshold is 4.864865ms per step.
 ```
 
 ```text

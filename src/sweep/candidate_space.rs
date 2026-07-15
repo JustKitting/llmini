@@ -6,7 +6,7 @@ use super::candidate::{MIN_N_EMBD, MIN_N_HEAD, MIN_N_LAYER};
 pub(in crate::sweep) use sample::{random, valid_aurora_blocks, valid_aurora_phases};
 pub(in crate::sweep) use unit::{choose_unit, from_unit, log_lerp, range_f64, range_usize};
 
-pub const BATCH_SIZE: [usize; 8] = [4, 8, 12, 16, 20, 24, 28, 32];
+pub const BATCH_SIZE: [usize; 8] = [1, 2, 4, 8, 12, 16, 24, 32];
 pub const N_LAYER: [usize; 1] = [MIN_N_LAYER];
 pub const N_EMBD: [(usize, usize); 1] = [(MIN_N_EMBD, MIN_N_HEAD)];
 pub const AURORA_BLOCKS: [usize; 5] = [80, 90, 120, 160, 180];
