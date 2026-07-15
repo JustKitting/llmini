@@ -3,7 +3,7 @@ use cuda_core::DriverError;
 use super::gather::TC_BACKWARD_THREADS_PER_BLOCK;
 use super::launch_config::attention_config;
 use super::launch_grads::run_grad_matmuls;
-use super::launch_scores::run_pair_scores;
+use super::launch_scores::{run_dot_scores, run_pair_scores};
 use super::matmul::AttentionTcMatmulContext;
 use super::types::CausalAttentionBackwardTcArgs;
 use crate::attention::AttentionModule;
@@ -16,6 +16,7 @@ impl AttentionModule {
     ) -> Result<(), DriverError> {
         let params = args.params();
         let CausalAttentionBackwardTcArgs {
+            reuse_forward_probs,
             stream,
             tc_module,
             qkv,
@@ -68,18 +69,31 @@ impl AttentionModule {
             scratch.d_out,
             params,
         )?;
-        run_pair_scores(&tc_ctx, &mut scratch)?;
-        kernels.attention_prob_ds_f16_kernel(
-            stream,
-            linear(batch_head * seq_len * seq_len),
-            scratch.scores,
-            scratch.dot,
-            log_sum_exp,
-            softmax_d,
-            scratch.p_half,
-            scratch.ds_half,
-            params,
-        )?;
+        if reuse_forward_probs {
+            run_dot_scores(&tc_ctx, &mut scratch)?;
+            kernels.attention_ds_from_probs_f16_kernel(
+                stream,
+                linear(batch_head * seq_len * seq_len),
+                scratch.p_half,
+                scratch.dot,
+                softmax_d,
+                scratch.ds_half,
+                params,
+            )?;
+        } else {
+            run_pair_scores(&tc_ctx, &mut scratch)?;
+            kernels.attention_prob_ds_f16_kernel(
+                stream,
+                linear(batch_head * seq_len * seq_len),
+                scratch.scores,
+                scratch.dot,
+                log_sum_exp,
+                softmax_d,
+                scratch.p_half,
+                scratch.ds_half,
+                params,
+            )?;
+        }
         run_grad_matmuls(&tc_ctx, &mut scratch)?;
         kernels.scatter_dqkv_kernel(
             stream,

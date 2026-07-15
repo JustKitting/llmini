@@ -50,6 +50,7 @@ fn causal_attention_backward_wrapper_matches_direct_kernel() -> Result<(), Box<d
 
     gpt2_causal_attention_backward(AttentionCoreBackwardArgs {
         use_full_attention: false,
+        reuse_forward_probs: false,
         stream: &stream,
         module: &module,
         tc_module: &tc_module,
@@ -61,6 +62,7 @@ fn causal_attention_backward_wrapper_matches_direct_kernel() -> Result<(), Box<d
 
     let direct_core = direct_scratch.args();
     module.causal_attention_backward_tc(CausalAttentionBackwardTcArgs {
+        reuse_forward_probs: false,
         stream: &stream,
         tc_module: &tc_module,
         qkv: &qkv,

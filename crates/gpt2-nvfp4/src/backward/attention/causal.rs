@@ -9,6 +9,7 @@ pub fn causal_attention_backward(
 ) -> Result<(), DriverError> {
     let dims = AttentionDims::new(args.use_full_attention);
     let tc_args = CausalAttentionBackwardTcArgs {
+        reuse_forward_probs: args.reuse_forward_probs,
         stream: args.stream,
         tc_module: args.tc_module,
         qkv: args.saved.qkv,

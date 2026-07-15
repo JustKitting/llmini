@@ -42,6 +42,7 @@ fn materialized_tc_backward_matches_reference() -> Result<(), Box<dyn Error>> {
     let mut tc_grad = DeviceBuffer::<f32>::zeroed(&stream, shape::TOKEN_COUNT * shape::QKV_DIM)?;
     let mut scratch = TcScratchBuffers::new(&stream)?;
     attention.causal_attention_backward_tc(CausalAttentionBackwardTcArgs {
+        reuse_forward_probs: false,
         stream: &stream,
         tc_module: &tc,
         qkv: &qkv,
@@ -64,6 +65,44 @@ fn materialized_tc_backward_matches_reference() -> Result<(), Box<dyn Error>> {
         head_dim: shape::HEAD_DIM as u32,
     })?;
 
-    common::assert_slice_close(&tc_grad.to_host_vec(&stream)?, &expected, 1.0e-6);
+    let recomputed = tc_grad.to_host_vec(&stream)?;
+    common::assert_slice_close(&recomputed, &expected, 1.0e-6);
+
+    let mut saved_probs = vec![0_u16; shape::HEADS * shape::TOKEN_COUNT * shape::TOKEN_COUNT];
+    for head in 0..shape::HEADS {
+        let base = head * shape::TOKEN_COUNT * shape::TOKEN_COUNT;
+        saved_probs[base] = 0x3c00;
+        saved_probs[base + shape::TOKEN_COUNT] = 0x3800;
+        saved_probs[base + shape::TOKEN_COUNT + 1] = 0x3800;
+    }
+    let mut reuse_softmax_d =
+        DeviceBuffer::<f32>::zeroed(&stream, shape::TOKEN_COUNT * shape::HEADS)?;
+    let mut reuse_grad = DeviceBuffer::<f32>::zeroed(&stream, shape::TOKEN_COUNT * shape::QKV_DIM)?;
+    let mut reuse_scratch = TcScratchBuffers::new(&stream)?;
+    reuse_scratch.set_forward_probs(DeviceBuffer::from_host(&stream, &saved_probs)?);
+    attention.causal_attention_backward_tc(CausalAttentionBackwardTcArgs {
+        reuse_forward_probs: true,
+        stream: &stream,
+        tc_module: &tc,
+        qkv: &qkv,
+        attention_out: &out,
+        kda_v_new: None,
+        kda_akk_inv: None,
+        kda_w: None,
+        kda_aqk: None,
+        d_out: &d_out,
+        log_sum_exp: &log_sum_exp,
+        softmax_d: &mut reuse_softmax_d,
+        d_qkv: &mut reuse_grad,
+        scratch: reuse_scratch.args(),
+        row_count: shape::TOKEN_COUNT as u32,
+        seq_len: shape::TOKEN_COUNT as u32,
+        batch_size: 1,
+        embedding_dim: shape::EMBEDDING as u32,
+        qkv_dim: shape::QKV_DIM as u32,
+        head_count: shape::HEADS as u32,
+        head_dim: shape::HEAD_DIM as u32,
+    })?;
+    common::assert_slice_close(&reuse_grad.to_host_vec(&stream)?, &recomputed, 1.0e-6);
     Ok(())
 }

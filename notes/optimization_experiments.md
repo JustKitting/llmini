@@ -39,6 +39,95 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 
 ```text
 date: 2026-07-15
+commit: accepted local jj commit after full gate
+experiment: Reuse the final full-attention block's forward FP16 probabilities in backward.
+status: accepted_900s
+change:
+  The final transformer block is a full-attention block, and its forward
+  probability scratch remains live when backward starts at that same block.
+  Added a final-block-only reuse path that skips the redundant backward QK
+  score matmul and consumes the saved FP16 probabilities directly. A new
+  dS-only kernel computes p * (dP - D) from those saved probabilities. All
+  earlier full-attention blocks retain the existing score/probability
+  recomputation path, and KDA blocks are unchanged. Reusing the forward FP16
+  value is numerically close but not bit-identical to recomputing probability
+  from the FP32 score and log-sum-exp in backward.
+minimum_impact_gate:
+  The active 1B/8K baseline was 900.000s / 925 = 0.972972973s per step, making
+  the 0.5% threshold 4.864865ms. In the exact baseline profile, the eight
+  f16_cta_tc_matmul_lower_kernel launches took 56.845760ms. The removable final
+  block QK launch therefore had a measured 7.105720ms average cost before
+  implementation, clearing the threshold by itself before counting the
+  cheaper probability-gradient pass.
+focused_profile:
+  Baseline:
+    target/ncu/20260715_1b_b1_s8192_baseline.ncu-rep
+    target/ncu/20260715_1b_b1_s8192_baseline.csv
+  Candidate:
+    target/ncu/20260715_1b_b1_s8192_reuse_last_attention_probs.ncu-rep
+    target/ncu/20260715_1b_b1_s8192_reuse_last_attention_probs.csv
+  Across the exact training-step launch ranges, the baseline measured:
+    f16_cta_tc_matmul_lower_kernel: 8 launches, 56.845760ms.
+    attention_prob_ds_f16_kernel: 4 launches, 35.759904ms.
+    affected-family total: 92.605664ms.
+    all training-step GPU kernels: 1006.901408ms.
+  The candidate measured:
+    f16_cta_tc_matmul_lower_kernel: 7 launches, 49.741728ms.
+    attention_prob_ds_f16_kernel: 3 launches, 26.832000ms.
+    attention_ds_from_probs_f16_kernel: 1 launch, 6.821792ms.
+    affected-family total: 83.395520ms.
+    all training-step GPU kernels: 997.925984ms.
+  The affected family saved 9.210144ms. Including the two unchanged downstream
+  gradient-matmul families gives an 8.931904ms focused saving, while total GPU
+  work fell by 8.975424ms. Every measure clears the required 4.864865ms gate.
+verification:
+  cargo fmt --all --check: pass.
+  cargo check -q: pass.
+  cargo test -q -p rust-kernels-cuda --lib: pass.
+  cargo test -q -p gpt2-nvfp4 --lib: pass.
+  cargo test -q --bin sweep: pass, 45 tests.
+  cargo test -q --bin rust-kernels: pass, 4 tests.
+  Fresh cargo oxide build --arch sm_120a: pass.
+  Dedicated GPU equivalence test exercises both backward paths on the same
+  saved FP16 probabilities:
+    CUDA_DEVICE_INDEX=0 cargo test -q -p rust-kernels-cuda
+      --test causal_attention_backward_tc
+      -- --ignored --nocapture --test-threads=1: pass, 1 test.
+  Exact 1B/8K FineWeb one-step diagnostic:
+    target/runs/20260715_102841Z_fineweb_60s
+    completed_steps=1, train_elapsed_s=0.929, val_loss=10.407080.
+    The matched baseline diagnostic was 10.407915, a -0.0080% movement; this
+    is diagnostic evidence only.
+  Required 30-second screen with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260715_103101Z_fineweb_30s
+    completed_steps=32, train_elapsed_s=30.144, val_loss=7.127242.
+  Required 900-second gate with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260715_103239Z_fineweb_900s
+    completed_steps=935, train_elapsed_s=900.280, val_loss=5.134145.
+    All 19 high-fidelity samples were finite and nonzero, with zero skipped
+    updates, loss-spike skips, grad-norm-spike skips, or nonfinite skips. Grad
+    norm ranged from 1.126215339 to 19.014635086.
+measured_effect:
+  Against the matched 1B/8K 30-second baseline:
+    completed_steps: 32 -> 32.
+    average step time: 0.949843750s -> 0.942000000s
+      (-7.843750ms, -0.826%).
+    held-out val_loss: 7.128106 -> 7.127242 (-0.012%).
+  Against the matched 1B/8K 900-second baseline:
+    completed_steps: 925 -> 935 (+10, +1.081%).
+    average step time: 0.972972973s -> 0.962866310s
+      (-10.106663ms, -1.039%).
+    token throughput: 8419.556 -> 8507.931 tokens/s (+1.050%).
+    held-out val_loss: 5.137541 -> 5.134145 (-0.003396, -0.066%).
+decision:
+  Keep and promote. The focused profile clears the minimum-impact gate, both
+  fixed-wall runs reproduce the speed signal, held-out loss improves, and the
+  full stability record is clean. notes/sweep_baseline.env points to this run.
+  The new nominal 0.5% kernel threshold is 4.814332ms per step.
+```
+
+```text
+date: 2026-07-15
 commit: not committed; resize rejected after full gate
 experiment: Evaluate a depth-preserving approximately 0.555B uniform 8K model.
 status: rejected_architecture_resize

@@ -60,6 +60,7 @@ fn run_block<'a, 'scratch, 'out>(
     block_index: usize,
 ) -> Result<(), DriverError> {
     let mut grads = current.reborrow_with_residual_in(d_residual_in);
+    let use_full_attention = uses_full_attention(block_index);
     mlp_side_backward(BlockMlpBackwardArgs {
         stream,
         modules: modules.mlp,
@@ -71,7 +72,8 @@ fn run_block<'a, 'scratch, 'out>(
         seeds: seeds.mlp[block_index],
     })?;
     attention_side_backward(BlockAttentionBackwardArgs {
-        use_full_attention: uses_full_attention(block_index),
+        use_full_attention,
+        reuse_forward_probs: use_full_attention && block_index == GPT2_N_LAYER - 1,
         stream,
         modules: modules.attention,
         saved: saved.blocks[block_index],

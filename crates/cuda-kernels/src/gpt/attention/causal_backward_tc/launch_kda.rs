@@ -17,6 +17,7 @@ impl AttentionModule {
         );
         let params = args.params();
         let CausalAttentionBackwardTcArgs {
+            reuse_forward_probs: _,
             stream,
             tc_module,
             qkv,

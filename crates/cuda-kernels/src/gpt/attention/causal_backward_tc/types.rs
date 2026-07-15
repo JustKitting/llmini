@@ -29,6 +29,7 @@ pub struct CausalAttentionBackwardTcScratch<'a> {
 }
 
 pub struct CausalAttentionBackwardTcArgs<'a, 'scratch, 'out> {
+    pub reuse_forward_probs: bool,
     pub stream: &'a CudaStream,
     pub tc_module: &'a F16TcMatmulModule,
     pub qkv: &'a DeviceBuffer<u16>,

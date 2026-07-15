@@ -30,3 +30,20 @@ pub(super) fn run_pair_scores(
         ctx.head_dim,
     )
 }
+
+pub(super) fn run_dot_scores(
+    ctx: &AttentionTcMatmulContext<'_>,
+    scratch: &mut CausalAttentionBackwardTcScratch<'_>,
+) -> Result<(), DriverError> {
+    run_tc_matmul(
+        ctx.stream,
+        ctx.tc_module,
+        scratch.d_out,
+        scratch.v,
+        scratch.dot,
+        ctx.batch_head,
+        ctx.seq_len,
+        ctx.seq_len,
+        ctx.head_dim,
+    )
+}

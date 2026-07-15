@@ -2,7 +2,7 @@ use cuda_device::{DisjointSlice, thread};
 
 use super::gather::TC_BACKWARD_THREADS_PER_BLOCK;
 use crate::attention::CausalAttentionParams;
-use crate::f16_tc_matmul::convert::cvt_rn_f16_f32;
+use crate::f16_tc_matmul::convert::{cvt_f32_f16, cvt_rn_f16_f32};
 use crate::float_ptx::exp_f32;
 
 pub(super) fn prob_ds_body(
@@ -85,6 +85,41 @@ pub(super) fn prob_ds_f16_body(
 
     unsafe {
         *p.get_unchecked_mut(index as usize) = cvt_rn_f16_f32(prob);
+        *ds.get_unchecked_mut(index as usize) = cvt_rn_f16_f32(grad);
+    }
+}
+
+pub(super) fn ds_from_probs_f16_body(
+    p: &[u16],
+    dot: &[f32],
+    softmax_d: &[f32],
+    mut ds: DisjointSlice<u16>,
+    params: CausalAttentionParams,
+) {
+    let index = thread::blockIdx_x() * TC_BACKWARD_THREADS_PER_BLOCK + thread::threadIdx_x();
+    let total = params.batch_size * params.head_count * params.seq_len * params.seq_len;
+    if index >= total {
+        return;
+    }
+
+    let key = index % params.seq_len;
+    let query = (index / params.seq_len) % params.seq_len;
+    if key > query {
+        return;
+    }
+
+    let batch_head = index / (params.seq_len * params.seq_len);
+    let batch = batch_head / params.head_count;
+    let head = batch_head - batch * params.head_count;
+    let row = batch * params.seq_len + query;
+    let grad = if row < params.row_count {
+        let lse_index = log_sum_exp_index(batch, query, head, &params);
+        cvt_f32_f16(p[index as usize]) * (dot[index as usize] - softmax_d[lse_index])
+    } else {
+        0.0
+    };
+
+    unsafe {
         *ds.get_unchecked_mut(index as usize) = cvt_rn_f16_f32(grad);
     }
 }

@@ -84,4 +84,8 @@ impl TcScratchBuffers {
             kda_d_beta: &mut self.kda_d_beta,
         }
     }
+
+    pub fn set_forward_probs(&mut self, probs: DeviceBuffer<u16>) {
+        self.p_half = probs;
+    }
 }

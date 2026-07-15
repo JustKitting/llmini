@@ -34,6 +34,7 @@ fn block_attention_side_backward_runs_full_chain() -> TestResult {
 
     attention_side_backward(BlockAttentionBackwardArgs {
         use_full_attention: false,
+        reuse_forward_probs: false,
         stream: &stream,
         modules: BlockAttentionBackwardModules {
             residual: &ResidualBackwardModule::from_module(ptx.clone())?,
