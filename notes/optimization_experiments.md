@@ -44,6 +44,60 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 
 ```text
 date: 2026-07-15
+commit: rejected build-time candidate, default binary restored
+experiment: Reduce the shared NVFP4 TMA GEMM tile from 128x128 to 64x128.
+status: rejected_profile_gate
+change:
+  Built the complete device and host program with NVFP4_TILE_M=64 while
+  retaining the 128-wide N tile, 128-wide K tile, five TMA stages, per-warp
+  32x64 accumulator shape, and all numerical operations. This doubled the CTA
+  count along M to improve wave-tail occupancy on the 188-SM GPU. No tracked
+  source was changed for the trial.
+numerics:
+  K-reduction order and each output element's MMA/store arithmetic were
+  unchanged. The matched 10-step held-out val_loss was 8.662971 versus
+  8.660399 for the accepted-code reciprocal sample (+0.030%).
+memory:
+  Per-CTA static shared memory fell from 92240 to 71760 bytes and threads fell
+  from 288 to 160. Registers fell from 161 to 156 for ordinary post-ops and 157
+  for the amax variant, with zero stack or spills. Both shapes still permit only
+  one CTA per SM because of shared-memory use, so this was not a persistent-VRAM
+  or batch-capacity change.
+minimum_impact_gate:
+  The promoted baseline averages 900.306 / 1486 = 605.858681ms per step and
+  requires 3.029293ms per step. All affected TMA GEMM variants occupy
+  1172.857108ms over 10 steps, or 117.285711ms per step, so a 2.583% family
+  improvement would have cleared the whole-step floor. Common 16x16 CTA grids
+  would double from 256 to 512 CTAs, raising ideal two-wave tail occupancy from
+  68.1% to 90.8% across three waves, establishing a credible pre-build ceiling.
+focused_profile:
+  Accepted reciprocal:
+    target/nsys/20260715_muon_prepare_noncooperative_split_candidate_reciprocal.nsys-rep
+    train elapsed: 5.936 seconds; held-out val_loss=8.660399.
+  Candidate:
+    target/nsys/20260715_nvfp4_tma_m64n128_candidate.nsys-rep
+    train elapsed: 6.349 seconds; held-out val_loss=8.662971.
+  Across the same 10 training steps plus endpoint validation:
+    all TMA GEMM variants: 1172.857108 -> 1604.998516ms,
+      regressing 43.214141ms per step / 36.845%.
+    all GPU kernels: 6042.665359 -> 6465.168395ms,
+      regressing 42.250304ms per step / 6.992%.
+    wall time regressed 0.413 seconds / 6.958%.
+verification:
+  Fresh NVFP4_TILE_M=64 cargo oxide build --arch sm_120a: pass.
+  PTXAS: zero stack and spills for all five TMA GEMM variants.
+  Fresh default 128x128 cargo oxide rebuild after rejection: pass.
+  Both current release build outputs report NVFP4_REQUESTED_TILE_M=128 after
+  restoration, and all six focused projection-TMA GPU comparisons pass.
+decision:
+  Reject before reciprocal profiling or the 30-second and 900-second gates.
+  Better grid-wave packing does not repay doubling TMA producer traffic and
+  per-CTA setup. The accepted 128x128 PTX and host binary are restored; only
+  this factual rejection record is committed.
+```
+
+```text
+date: 2026-07-15
 commit: accepted local jj commit after full gate
 experiment: Split Muon prepare into shape-sized noncooperative kernels.
 status: accepted_900s
