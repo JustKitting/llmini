@@ -48,6 +48,8 @@ fn materialized_tc_backward_matches_reference() -> Result<(), Box<dyn Error>> {
         attention_out: &out,
         kda_v_new: None,
         kda_akk_inv: None,
+        kda_w: None,
+        kda_aqk: None,
         d_out: &d_out,
         log_sum_exp: &log_sum_exp,
         softmax_d: &mut tc_softmax_d,

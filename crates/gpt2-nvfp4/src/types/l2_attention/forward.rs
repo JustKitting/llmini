@@ -92,17 +92,24 @@ pub(super) fn forward<'a, 'scratch>(
         })?;
     }
 
-    let (qkv_f16, attention_out_f16, kda_v_new, kda_akk_inv) = match tape.as_mut() {
-        Some(tape) if args.use_full_attention => {
-            (None, Some(&mut *tape.attention_out_f16), None, None)
-        }
+    let (qkv_f16, attention_out_f16, kda_v_new, kda_akk_inv, kda_w, kda_aqk) = match tape.as_mut() {
+        Some(tape) if args.use_full_attention => (
+            None,
+            Some(&mut *tape.attention_out_f16),
+            None,
+            None,
+            None,
+            None,
+        ),
         Some(tape) => (
             Some(&mut *tape.qkv_f16),
             Some(&mut *tape.attention_out_f16),
             tape.kda_v_new.as_mut().map(|buffer| &mut **buffer),
             tape.kda_akk_inv.as_mut().map(|buffer| &mut **buffer),
+            tape.kda_w.as_mut().map(|buffer| &mut **buffer),
+            tape.kda_aqk.as_mut().map(|buffer| &mut **buffer),
         ),
-        None => (None, None, None, None),
+        None => (None, None, None, None, None, None),
     };
 
     let attention_args = CausalAttentionTcArgs {
@@ -114,6 +121,8 @@ pub(super) fn forward<'a, 'scratch>(
         attention_out_f16,
         kda_v_new,
         kda_akk_inv,
+        kda_w,
+        kda_aqk,
         log_sum_exp: args.attention_log_sum_exp,
         scratch: args.tc_scratch,
         row_count: hidden.row_count,

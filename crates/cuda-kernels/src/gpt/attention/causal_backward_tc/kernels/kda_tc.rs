@@ -58,7 +58,7 @@ pub(super) mod module {
         qg: &[f32],
         kg: &[f32],
         u_to_du: DisjointSlice<f32>,
-        w_to_dw: DisjointSlice<f32>,
+        w: &[f32],
         _aqk: &[f32],
         g: &[f32],
         chunk_states: &[u16],
@@ -70,13 +70,13 @@ pub(super) mod module {
         let inputs = KdaChunkwiseInputs {
             qg,
             kg,
+            w,
             g,
             chunk_states,
             d_out,
         };
         let grads = KdaChunkwiseGrads {
             u_to_du,
-            w_to_dw,
             d_h_states,
         };
         with_kda_tiles!(backward chunkwise_kda_backward_body; inputs, grads, params);

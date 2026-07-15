@@ -26,6 +26,8 @@ pub struct BlockForwardSaved<'a> {
     pub attention_out: &'a DeviceBuffer<u16>,
     pub kda_v_new: Option<&'a DeviceBuffer<f32>>,
     pub kda_akk_inv: Option<&'a DeviceBuffer<f32>>,
+    pub kda_w: Option<&'a DeviceBuffer<f32>>,
+    pub kda_aqk: Option<&'a DeviceBuffer<f32>>,
     pub attention_log_sum_exp: &'a DeviceBuffer<f32>,
     pub c_proj_input_nvfp4: Nvfp4RowwiseDeviceTensor<'a>,
     pub ln_2: LayerNormSaved<'a>,

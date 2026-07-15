@@ -23,6 +23,8 @@ impl AttentionModule {
             attention_out: chunk_states,
             kda_v_new,
             kda_akk_inv,
+            kda_w,
+            kda_aqk,
             d_out,
             log_sum_exp: _log_sum_exp,
             softmax_d: beta,
@@ -100,16 +102,29 @@ impl AttentionModule {
             launch!(fwd.mask_kda_akk_kernel(matrix_cfg; chunk_matrix));
             launch!(fwd.solve_kda_akk_inv_kernel(matrix_cfg; chunk_matrix));
         }
-        {
+        let w = {
             let akk_inv = kda_akk_inv.unwrap_or(&*chunk_matrix);
-            mm!(f32_rhs(akk_inv, kpos_u_dw, w_du_dq, dims.chc()));
-            mm!(f32_rhs(akk_inv, vbeta, kpos_u_dw, dims.chc()));
-        }
-        mm!(f32_input(qg, kneg_vnew_dqg_dv, aqk_or_dm, dims.cch()));
-        launch!(fwd.mask_kda_aqk_kernel(linear_config(dims.chunk_matrix_elems, threads); aqk_or_dm));
+            match kda_w {
+                Some(w) => w,
+                None => {
+                    mm!(f32_rhs(akk_inv, kpos_u_dw, w_du_dq, dims.chc()));
+                    &*w_du_dq
+                }
+            }
+        };
         if kda_v_new.is_none() {
-            launch!(bwd_tc.chunk_kda_vnew_from_state_kernel(chunk_cfg; w_du_dq, kpos_u_dw, chunk_states, kneg_vnew_dqg_dv));
+            let akk_inv = kda_akk_inv.unwrap_or(&*chunk_matrix);
+            mm!(f32_rhs(akk_inv, vbeta, kpos_u_dw, dims.chc()));
+            launch!(bwd_tc.chunk_kda_vnew_from_state_kernel(chunk_cfg; w, kpos_u_dw, chunk_states, kneg_vnew_dqg_dv));
         }
+        let aqk = match kda_aqk {
+            Some(aqk) => aqk,
+            None => {
+                mm!(f32_input(qg, kneg_vnew_dqg_dv, aqk_or_dm, dims.cch()));
+                launch!(fwd.mask_kda_aqk_kernel(linear_config(dims.chunk_matrix_elems, threads); aqk_or_dm));
+                &*aqk_or_dm
+            }
+        };
         launch!(bwd_elementwise.gather_kda_dout_kernel(linear_config(dims.compact_elems, threads); d_out, dout_daqk_dvbeta));
         {
             let v_new = kda_v_new.unwrap_or(&*kneg_vnew_dqg_dv);
@@ -117,12 +132,12 @@ impl AttentionModule {
         }
         launch!(fwd.mask_kda_aqk_kernel(linear_config(dims.chunk_matrix_elems, threads); local_grad));
         mm!(f32_a_transposed_rhs(
-            aqk_or_dm,
+            aqk,
             dout_daqk_dvbeta,
             kpos_u_dw,
             dims.chc()
         ));
-        launch!(bwd_tc.chunkwise_kda_backward_kernel(batch_cfg; qg, kg, kpos_u_dw, w_du_dq, aqk_or_dm, g, chunk_states, d_out, dh_states_or_kneg, local_grad));
+        launch!(bwd_tc.chunkwise_kda_backward_kernel(batch_cfg; qg, kg, kpos_u_dw, w, aqk, g, chunk_states, d_out, dh_states_or_kneg, local_grad));
         {
             let v_new = kda_v_new.unwrap_or(&*kneg_vnew_dqg_dv);
             launch!(bwd_tc.chunk_kda_dkg_from_vnew_dh_kernel(chunk_cfg; v_new, dh_states_or_kneg, dkg_from_state));

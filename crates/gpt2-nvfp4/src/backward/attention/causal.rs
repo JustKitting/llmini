@@ -15,6 +15,8 @@ pub fn causal_attention_backward(
         attention_out: args.saved.attention_out,
         kda_v_new: args.saved.kda_v_new,
         kda_akk_inv: args.saved.kda_akk_inv,
+        kda_w: args.saved.kda_w,
+        kda_aqk: args.saved.kda_aqk,
         d_out: args.d_attention_out,
         log_sum_exp: args.saved.attention_log_sum_exp,
         softmax_d: args.scratch.softmax_d,

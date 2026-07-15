@@ -1,4 +1,4 @@
-use cuda_device::{DisjointSlice, thread};
+use cuda_device::thread;
 
 use crate::attention::CausalAttentionParams;
 use crate::f16_tc_matmul::convert::{cvt_f32_f16, cvt_rn_f16_f32};
@@ -36,12 +36,6 @@ macro_rules! stage_compact_t_a_fn {
 }
 
 stage_compact_t_a_fn!(stage_compact_t_a, src: &[f32], index, src[index]);
-stage_compact_t_a_fn!(
-    stage_compact_t_a_disjoint,
-    src: &mut DisjointSlice<f32>,
-    index,
-    unsafe { *src.get_unchecked_mut(index) }
-);
 
 pub(crate) fn stage_hidden_dout_b_t(
     d_out: &[f32],

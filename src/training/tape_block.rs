@@ -14,6 +14,8 @@ pub struct BlockTapeBuffers {
     attention_out: DeviceBuffer<u16>,
     kda_v_new: Option<DeviceBuffer<f32>>,
     kda_akk_inv: Option<DeviceBuffer<f32>>,
+    kda_w: Option<DeviceBuffer<f32>>,
+    kda_aqk: Option<DeviceBuffer<f32>>,
     attention_log_sum_exp: DeviceBuffer<f32>,
     c_proj_input: RowwiseTapeBuffers,
     ln_2: LayerNormTapeBuffers,
@@ -39,6 +41,16 @@ impl BlockTapeBuffers {
             } else {
                 Some(zero(stream, HiddenState::LEN)?)
             },
+            kda_w: if uses_full_attention(block_index) {
+                None
+            } else {
+                Some(zero(stream, HiddenState::LEN)?)
+            },
+            kda_aqk: if uses_full_attention(block_index) {
+                None
+            } else {
+                Some(zero(stream, HiddenState::LEN)?)
+            },
             attention_log_sum_exp: zero(stream, AttentionLogSumExp::LEN)?,
             c_proj_input: RowwiseTapeBuffers::gpt2_rows(stream, HiddenState::LEN)?,
             ln_2: LayerNormTapeBuffers::new(stream)?,
@@ -56,6 +68,8 @@ impl BlockTapeBuffers {
             attention_out: &mut self.attention_out,
             kda_v_new: self.kda_v_new.as_mut(),
             kda_akk_inv: self.kda_akk_inv.as_mut(),
+            kda_w: self.kda_w.as_mut(),
+            kda_aqk: self.kda_aqk.as_mut(),
             attention_log_sum_exp: &mut self.attention_log_sum_exp,
             c_proj_input_nvfp4: self.c_proj_input.tape(),
             ln_2: self.ln_2.tape(),
@@ -76,6 +90,8 @@ impl BlockTapeBuffers {
             attention_out: &self.attention_out,
             kda_v_new: self.kda_v_new.as_ref(),
             kda_akk_inv: self.kda_akk_inv.as_ref(),
+            kda_w: self.kda_w.as_ref(),
+            kda_aqk: self.kda_aqk.as_ref(),
             attention_log_sum_exp: &self.attention_log_sum_exp,
             c_proj_input_nvfp4: self.c_proj_input.saved(),
             ln_2: self.ln_2.saved(row_count),

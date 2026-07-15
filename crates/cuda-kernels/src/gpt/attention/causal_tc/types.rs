@@ -23,6 +23,8 @@ pub struct CausalAttentionTcArgs<'a, 'scratch, 'out> {
     pub attention_out_f16: Option<&'out mut DeviceBuffer<u16>>,
     pub kda_v_new: Option<&'out mut DeviceBuffer<f32>>,
     pub kda_akk_inv: Option<&'out mut DeviceBuffer<f32>>,
+    pub kda_w: Option<&'out mut DeviceBuffer<f32>>,
+    pub kda_aqk: Option<&'out mut DeviceBuffer<f32>>,
     pub log_sum_exp: &'out mut DeviceBuffer<f32>,
     pub scratch: CausalAttentionTcScratch<'scratch>,
     pub row_count: u32,

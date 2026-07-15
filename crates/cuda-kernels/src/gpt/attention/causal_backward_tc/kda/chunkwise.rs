@@ -15,13 +15,13 @@ use phase::{add_kg_dh_to_du_tc, compute_prev_dh_tc};
 pub(crate) struct KdaChunkwiseInputs<'a> {
     pub(crate) qg: &'a [f32],
     pub(crate) kg: &'a [f32],
+    pub(crate) w: &'a [f32],
     pub(crate) g: &'a [f32],
     pub(crate) chunk_states: &'a [u16],
     pub(crate) d_out: &'a [f32],
 }
 pub(crate) struct KdaChunkwiseGrads<'a> {
     pub(crate) u_to_du: DisjointSlice<'a, f32>,
-    pub(crate) w_to_dw: DisjointSlice<'a, f32>,
     pub(crate) d_h_states: DisjointSlice<'a, f32>,
 }
 pub(crate) fn chunkwise_kda_backward_body(

@@ -15,6 +15,8 @@ pub struct BlockForwardTape<'a> {
     pub attention_out: &'a mut DeviceBuffer<u16>,
     pub kda_v_new: Option<&'a mut DeviceBuffer<f32>>,
     pub kda_akk_inv: Option<&'a mut DeviceBuffer<f32>>,
+    pub kda_w: Option<&'a mut DeviceBuffer<f32>>,
+    pub kda_aqk: Option<&'a mut DeviceBuffer<f32>>,
     pub attention_log_sum_exp: &'a mut DeviceBuffer<f32>,
     pub c_proj_input_nvfp4: RowwiseNvfp4Tape<'a>,
     pub ln_2: LayerNormTape<'a>,

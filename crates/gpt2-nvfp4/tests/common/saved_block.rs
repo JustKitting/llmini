@@ -34,6 +34,8 @@ pub fn saved_block(parts: SavedBlockParts<'_>) -> BlockForwardSaved<'_> {
         attention_out: parts.attention_out,
         kda_v_new: None,
         kda_akk_inv: None,
+        kda_w: None,
+        kda_aqk: None,
         attention_log_sum_exp: parts.attention_log_sum_exp,
         c_proj_input_nvfp4: parts.rowwise,
         ln_2: ln,

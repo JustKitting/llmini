@@ -1,8 +1,6 @@
 use cuda_device::{DisjointSlice, thread};
 
-use crate::kda_backward::{
-    stage_compact_t_a, stage_compact_t_a_disjoint, stage_hidden_dout_b_t, store_dh_quads,
-};
+use crate::kda_backward::{stage_compact_t_a, stage_hidden_dout_b_t, store_dh_quads};
 use crate::kda_tc::{
     CompactStore::Add, CompactTileCtx, CtaATile, CtaBTile, KdaStateTile,
     stage_compact_a as stage_dm_compact_a, stage_compact_b_t_disjoint, stage_shared_state_b_t,
@@ -47,7 +45,7 @@ pub(super) fn compute_prev_dh_tc(
     });
 
     tc_stage_loop!(compact_ctx.tile, a_tile, b_tile, acc; k_base < compact_ctx.params.chunk_size; {
-        stage_compact_t_a_disjoint(&mut grads.w_to_dw, a_tile, compact_ctx, k_base, -1.0);
+        stage_compact_t_a(inputs.w, a_tile, compact_ctx, k_base, -1.0);
     } {
         stage_compact_b_t_disjoint(&mut grads.u_to_du, b_tile, compact_ctx, k_base);
     });

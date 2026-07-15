@@ -22,6 +22,8 @@ impl AttentionModule {
             attention_out,
             kda_v_new: _,
             kda_akk_inv: _,
+            kda_w: _,
+            kda_aqk: _,
             d_out,
             log_sum_exp,
             softmax_d,

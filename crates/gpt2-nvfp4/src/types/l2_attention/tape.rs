@@ -9,6 +9,8 @@ pub struct AttentionForwardTape<'scratch> {
     pub attention_out_f16: &'scratch mut DeviceBuffer<u16>,
     pub kda_v_new: Option<&'scratch mut DeviceBuffer<f32>>,
     pub kda_akk_inv: Option<&'scratch mut DeviceBuffer<f32>>,
+    pub kda_w: Option<&'scratch mut DeviceBuffer<f32>>,
+    pub kda_aqk: Option<&'scratch mut DeviceBuffer<f32>>,
     pub c_proj_input_nvfp4: RowwiseNvfp4Tape<'scratch>,
 }
 

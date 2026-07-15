@@ -57,7 +57,7 @@ impl AttentionModule {
         kda_kernel!(make_kda_qg_kneg_kernel(linear(dims.compact_elems); &mut *scratch.q, &*scratch.k, &*scratch.scores, &mut *scratch.compact_out));
         kda_kernel!(make_kda_kg_kpos_vbeta_kernel(linear(dims.compact_elems); &mut *scratch.k, &mut *scratch.v, &*scratch.scores, &*args.log_sum_exp, &mut *scratch.probs));
         kda_kernel!(store_kda_chunk_g_last_kernel(linear(dims.batch_head * dims.chunks * args.head_dim); &*scratch.scores, &mut *args.log_sum_exp));
-        {
+        let w = {
             let akk_inv = match args.kda_akk_inv {
                 Some(akk_inv) => akk_inv,
                 None => &mut *scratch.scores,
@@ -70,17 +70,37 @@ impl AttentionModule {
             )?;
             kda_kernel!(mask_kda_akk_kernel(matrix_cfg; &mut *akk_inv));
             kda_kernel!(solve_kda_akk_inv_kernel(matrix_cfg; &mut *akk_inv));
-            mm.f32_rhs(
-                &*akk_inv,
-                &*scratch.probs,
-                &mut *scratch.compact_out,
-                dims.chc(),
-            )?;
+            let w = match args.kda_w {
+                Some(w) => {
+                    mm.f32_rhs(&*akk_inv, &*scratch.probs, &mut *w, dims.chc())?;
+                    &*w
+                }
+                None => {
+                    mm.f32_rhs(
+                        &*akk_inv,
+                        &*scratch.probs,
+                        &mut *scratch.compact_out,
+                        dims.chc(),
+                    )?;
+                    &*scratch.compact_out
+                }
+            };
             mm.f32_rhs(&*akk_inv, &*scratch.v, &mut *scratch.probs, dims.chc())?;
-        }
+            w
+        };
         kda_kernel!(make_kda_kneg_from_kg_kernel(linear(dims.compact_elems); &*scratch.k, &*args.log_sum_exp, &mut *scratch.v));
-        mm_in_scratch!(q, v, scores, dims.cch());
-        kda_kernel!(mask_kda_aqk_kernel(linear(dims.chunk_matrix_elems); &mut *scratch.scores));
+        let aqk = match args.kda_aqk {
+            Some(aqk) => {
+                mm.f32_input(&*scratch.q, &*scratch.v, &mut *aqk, dims.cch())?;
+                kda_kernel!(mask_kda_aqk_kernel(linear(dims.chunk_matrix_elems); &mut *aqk));
+                &*aqk
+            }
+            None => {
+                mm_in_scratch!(q, v, scores, dims.cch());
+                kda_kernel!(mask_kda_aqk_kernel(linear(dims.chunk_matrix_elems); &mut *scratch.scores));
+                &*scratch.scores
+            }
+        };
 
         let v_new = match args.kda_v_new {
             Some(v_new) => v_new,
@@ -88,8 +108,8 @@ impl AttentionModule {
         };
         macro_rules! kda_output {
             ($chunk_states:expr) => {{
-                kda_kernel!(chunk_kda_state_save_kernel(batch_cfg; &*scratch.k, &mut *v_new, &*scratch.compact_out, &*scratch.probs, &*args.log_sum_exp, &mut *$chunk_states));
-                kda_kernel!(chunk_kda_output_from_state_kernel(chunk_cfg; &*scratch.q, &*v_new, &*scratch.scores, args.out, &*$chunk_states));
+                kda_kernel!(chunk_kda_state_save_kernel(batch_cfg; &*scratch.k, &mut *v_new, w, &*scratch.probs, &*args.log_sum_exp, &mut *$chunk_states));
+                kda_kernel!(chunk_kda_output_from_state_kernel(chunk_cfg; &*scratch.q, &*v_new, aqk, args.out, &*$chunk_states));
             }};
         }
         if let Some(chunk_states) = args.attention_out_f16 {

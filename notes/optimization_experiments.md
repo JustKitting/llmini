@@ -34,6 +34,106 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-15
 commit: accepted local jj commit after full gate
+experiment: Tape forward KDA W and masked AQK in FP32 for backward reuse.
+status: accepted_900s_speed_memory_trade
+change:
+  Added optional FP32 W and masked-AQK tapes only for the 12 KDA layers. Forward
+  writes each value directly into its tape as part of the existing computation,
+  with no copy or additional arithmetic. Backward reuses them and skips 12 W
+  reconstruction matmuls, 12 AQK reconstruction matmuls, and 12 AQK masks. It
+  also skips 12 U reconstruction matmuls that had become dead after v_new was
+  taped: the reconstructed U scratch was overwritten by dU before any remaining
+  consumer. Callers without either tape retain the reconstruction fallback.
+  The chunkwise kernel now receives W as an immutable input because it only
+  reads W before the shared scratch is later reused as dW. The fixed 16-layer,
+  d=2048, 32-head, batch-2, seq-4096 model is unchanged.
+minimum_impact_gate:
+  The parent baseline was 900.471s / 1131 = 0.796172414s per step, making the
+  0.5% threshold 3.980862ms. The exact affected work in the parent profile was
+  1.745536ms of W reconstruction matmuls, 1.744768ms of dead U reconstruction
+  matmuls, 1.726688ms of AQK reconstruction matmuls, and 0.408960ms of AQK
+  masks. The 5.625952ms total was a credible 0.7066% whole-step ceiling before
+  implementation and cleared the required floor.
+focused_profile:
+  Parent report:
+    target/ncu/20260715_1b_b2_grad_clip_in_optimizer.ncu-rep
+    target/ncu/20260715_1b_b2_grad_clip_in_optimizer.csv
+  Candidate report:
+    target/ncu/20260715_1b_b2_kda_w_aqk_tape.ncu-rep
+    target/ncu/20260715_1b_b2_kda_w_aqk_tape.csv
+  Across the exact training-step launch range, the parent measured:
+    FP32-RHS tensor-core matmuls: 60 launches, 8.701088ms.
+    FP32-input tensor-core matmuls: 72 launches, 10.345024ms.
+    mask_kda_aqk_kernel: 36 launches, 1.227712ms.
+    affected-family aggregate: 114.535968ms.
+  The candidate measured:
+    FP32-RHS tensor-core matmuls: 36 launches, 5.209952ms.
+    FP32-input tensor-core matmuls: 60 launches, 8.617280ms.
+    mask_kda_aqk_kernel: 24 launches, 0.818272ms.
+    affected-family aggregate: 108.991584ms.
+  The exact focused saving is 5.544384ms per step, 0.6964% of the parent
+  whole-step time and above the required 3.980862ms floor. The retained
+  chunkwise, state-save, output, and dW families remained timing-neutral in
+  aggregate.
+memory_trade:
+  Matched one-step allocation probes reported:
+    parent target/runs/20260715_082305Z_fineweb_900s:
+      used_bytes=69748326400.
+    candidate target/runs/20260715_090150Z_fineweb_900s:
+      used_bytes=71358939136.
+  The exact increase is 1610612736 bytes, exactly 1536 MiB. The candidate still
+  uses 134217728 fewer bytes, exactly 128 MiB, than the pre-attention-FP16 peak
+  at 72298463232 bytes.
+verification:
+  cargo fmt --all --check: pass.
+  cargo check -q: pass.
+  cargo oxide build --arch sm_120a: pass; fresh device and host rebuild.
+  cargo test -q -p rust-kernels-cuda --lib: pass.
+  cargo test -q -p gpt2-nvfp4 --lib: pass.
+  CUDA_DEVICE_INDEX=0 cargo test -q -p rust-kernels-cuda
+    --test causal_attention_backward_tc
+    -- --ignored --nocapture --test-threads=1: pass, 1 test.
+  Exact 1B FineWeb one-step allocation/correctness diagnostic:
+    target/runs/20260715_090150Z_fineweb_900s
+    used_bytes=71358939136, val_loss=10.408415, train_elapsed_s=0.742,
+    completed_steps=1. The -0.0027% loss movement from the parent diagnostic is
+    numerically negligible and this run is diagnostic evidence only.
+  Candidate focused NCU one-step diagnostic:
+    target/runs/20260715_090340Z_fineweb_60s
+    val_loss=10.408415, completed_steps=1. This is diagnostic evidence only.
+  Required 1B FineWeb 30-second screen with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260715_090609Z_fineweb_30s
+    val_loss=6.996084, train_elapsed_s=30.683, completed_steps=40.
+  Required 1B FineWeb 900-second gate with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260715_090711Z_fineweb_900s
+    val_loss=5.042004, train_elapsed_s=900.478, completed_steps=1141.
+    All 23 metric samples had Finite=1 and Nonzero=1, with zero skipped
+    updates, loss-spike skips, grad-norm-spike skips, or nonfinite skips. Grad
+    norm ranged from 1.1774778 to 19.016689.
+measured_effect:
+  Against the active parent 30-second screen
+  target/runs/20260715_082819Z_fineweb_30s:
+    completed_steps: 39 -> 40 (+1, +2.564%).
+    average step time: 0.774589744s -> 0.767075000s
+      (-7.514744ms, -0.970%).
+    held-out val_loss: 7.014200 -> 6.996084 (-0.2583%).
+  Against the active parent 900-second gate
+  target/runs/20260715_082933Z_fineweb_900s:
+    completed_steps: 1131 -> 1141 (+10, +0.884%).
+    average step time: 0.796172414s -> 0.789200701s
+      (-6.971713ms, -0.876%).
+    held-out val_loss: 5.054266 -> 5.042004 (-0.2426%).
+decision:
+  Keep and promote. The focused profile and both fixed-wall gates reproduce the
+  speed signal, held-out loss improves, and stability remains clean. The 1536
+  MiB tape cost retains 128 MiB of the preceding net memory win.
+  notes/sweep_baseline.env now points to this live-code run. The new nominal
+  0.5% threshold is 3.946004ms per step.
+```
+
+```text
+date: 2026-07-15
+commit: accepted local jj commit after full gate
 experiment: Fuse global gradient clipping application into Adam and Aurora gradient reads.
 status: accepted_900s_speed
 change:
