@@ -7,29 +7,29 @@ use rust_kernels_cuda::nvfp4_tma_matmul::kernels::{TILE_K, TILE_M, TILE_N};
 use rust_kernels_cuda::nvfp4_tma_matmul::pad::F32CropArgs;
 use rust_kernels_cuda::nvfp4_tma_matmul::tma::TmaNvfp4DeviceScaleDescriptors;
 use rust_kernels_cuda::optimizer::{
-    AuroraSlotDescriptor, AuroraTmaFinishArgs, AuroraTmaPrepareArgs, aurora_polar_coefficients,
+    MuonSlotDescriptor, MuonTmaFinishArgs, MuonTmaPrepareArgs, muon_polar_coefficients,
 };
 
-use super::{AURORA_WEIGHT_DECAY, AuroraGroupTable, MU, POLAR_ITERATIONS, aurora_learning_rate};
+use super::{MU, MUON_WEIGHT_DECAY, MuonGroupTable, POLAR_ITERATIONS, muon_learning_rate};
 use crate::training::env::{env_bool, env_usize};
 use crate::training::optimizer_tc_scratch::{
-    AuroraScratchBuffers, AuroraTmaOperandScratch, AuroraTmaScratch,
+    MuonScratchBuffers, MuonTmaOperandScratch, MuonTmaScratch,
 };
 use crate::training::runtime::Runtime;
 
-pub(in crate::training) struct AuroraTmaArgs<'a> {
+pub(in crate::training) struct MuonTmaArgs<'a> {
     pub(in crate::training) runtime: &'a Runtime,
-    pub(in crate::training) table: &'a AuroraGroupTable,
-    pub(in crate::training) scratch: &'a mut AuroraScratchBuffers,
+    pub(in crate::training) table: &'a MuonGroupTable,
+    pub(in crate::training) scratch: &'a mut MuonScratchBuffers,
     pub(in crate::training) slot_count: usize,
     pub(in crate::training) step: u32,
     pub(in crate::training) average_coefficient: f32,
     pub(in crate::training) grad_scale: f32,
 }
 
-pub(in crate::training) fn apply_aurora_tma(args: AuroraTmaArgs<'_>) -> Result<(), DriverError> {
+pub(in crate::training) fn apply_muon_tma(args: MuonTmaArgs<'_>) -> Result<(), DriverError> {
     let stream = args.runtime.stream.as_ref();
-    let learning_rate = aurora_learning_rate(args.step);
+    let learning_rate = muon_learning_rate(args.step);
     let trace = TmaTraceConfig::from_env();
     for slot_index in 0..args.slot_count {
         let desc = args.table.host_slots[slot_index];
@@ -39,7 +39,7 @@ pub(in crate::training) fn apply_aurora_tma(args: AuroraTmaArgs<'_>) -> Result<(
 
         args.runtime
             .optimizer
-            .aurora_tma_prepare_polar(AuroraTmaPrepareArgs {
+            .muon_tma_prepare_polar(MuonTmaPrepareArgs {
                 stream,
                 slots: &args.table.slots,
                 oriented: &mut args.scratch.oriented,
@@ -67,27 +67,27 @@ pub(in crate::training) fn apply_aurora_tma(args: AuroraTmaArgs<'_>) -> Result<(
         if POLAR_ITERATIONS & 1 == 0 {
             args.runtime
                 .optimizer
-                .aurora_tma_finish_update(AuroraTmaFinishArgs {
+                .muon_tma_finish_update(MuonTmaFinishArgs {
                     stream,
                     slots: &args.table.slots,
                     polar_update: &args.scratch.polar_x,
                     polar_chunks: &mut args.scratch.polar_chunks,
                     slot_index: slot_index as u32,
                     learning_rate,
-                    weight_decay: AURORA_WEIGHT_DECAY,
+                    weight_decay: MUON_WEIGHT_DECAY,
                     average_coefficient: args.average_coefficient,
                 })?;
         } else {
             args.runtime
                 .optimizer
-                .aurora_tma_finish_update(AuroraTmaFinishArgs {
+                .muon_tma_finish_update(MuonTmaFinishArgs {
                     stream,
                     slots: &args.table.slots,
                     polar_update: &args.scratch.polar_next,
                     polar_chunks: &mut args.scratch.polar_chunks,
                     slot_index: slot_index as u32,
                     learning_rate,
-                    weight_decay: AURORA_WEIGHT_DECAY,
+                    weight_decay: MUON_WEIGHT_DECAY,
                     average_coefficient: args.average_coefficient,
                 })?;
         }
@@ -98,8 +98,8 @@ pub(in crate::training) fn apply_aurora_tma(args: AuroraTmaArgs<'_>) -> Result<(
 fn run_tma_polar_loop(
     stream: &CudaStream,
     runtime: &Runtime,
-    scratch: &mut AuroraScratchBuffers,
-    desc: AuroraSlotDescriptor,
+    scratch: &mut MuonScratchBuffers,
+    desc: MuonSlotDescriptor,
     slot_index: usize,
     trace: TmaTraceConfig,
 ) -> Result<(), DriverError> {
@@ -159,7 +159,7 @@ fn run_tma_polar_iteration(
     iter: u32,
     slot_index: usize,
     trace: TmaTraceConfig,
-    desc: AuroraSlotDescriptor,
+    desc: MuonSlotDescriptor,
 ) -> Result<(), DriverError> {
     let mut tma = tma;
     tma_matmul_self_transpose(
@@ -211,7 +211,7 @@ fn run_tma_polar_iteration(
         desc,
     )?;
 
-    let coeffs = aurora_polar_coefficients(iter);
+    let coeffs = muon_polar_coefficients(iter);
     let action_dims = TmaDims::new(polar_rows, polar_cols, polar_rows);
     prepare_tma_a_padded(
         stream,
@@ -724,7 +724,7 @@ fn quantize_operand_transposed_padded(
     )
 }
 
-fn polar_shape(desc: AuroraSlotDescriptor) -> (u32, u32) {
+fn polar_shape(desc: MuonSlotDescriptor) -> (u32, u32) {
     if desc.rows <= desc.cols {
         (desc.rows, desc.cols)
     } else {
@@ -797,7 +797,7 @@ impl<'a> OperandScratchRefs<'a> {
     }
 }
 
-fn tma_refs(scratch: &mut AuroraTmaScratch) -> TmaScratchRefs<'_> {
+fn tma_refs(scratch: &mut MuonTmaScratch) -> TmaScratchRefs<'_> {
     TmaScratchRefs {
         out_padded: &mut scratch.out_padded,
         a: operand_refs(&mut scratch.a),
@@ -806,7 +806,7 @@ fn tma_refs(scratch: &mut AuroraTmaScratch) -> TmaScratchRefs<'_> {
     }
 }
 
-fn operand_refs(scratch: &mut AuroraTmaOperandScratch) -> OperandScratchRefs<'_> {
+fn operand_refs(scratch: &mut MuonTmaOperandScratch) -> OperandScratchRefs<'_> {
     OperandScratchRefs {
         bytes: &mut scratch.bytes,
         scales: &mut scratch.scales,
@@ -830,8 +830,8 @@ struct TmaTraceConfig {
 impl TmaTraceConfig {
     fn from_env() -> Self {
         Self {
-            enabled: env_bool("AURORA_TMA_TRACE").unwrap_or(false),
-            slot: env_usize("AURORA_TMA_TRACE_SLOT"),
+            enabled: env_bool("MUON_TMA_TRACE").unwrap_or(false),
+            slot: env_usize("MUON_TMA_TRACE_SLOT"),
         }
     }
 
@@ -848,7 +848,7 @@ fn trace_buffer(
     buffer: &DeviceBuffer<f32>,
     len: u32,
     iter: Option<u32>,
-    desc: AuroraSlotDescriptor,
+    desc: MuonSlotDescriptor,
 ) -> Result<(), DriverError> {
     if !trace.should_trace(slot_index) {
         return Ok(());
@@ -872,7 +872,7 @@ fn trace_buffer(
     }
     let rms = (sum_sq / active_len.max(1) as f64).sqrt() as f32;
     eprintln!(
-        "aurora_tma_trace slot={} shape={}x{} polar={}x{} iter={} stage={} len={} finite={} rms={:.9e} max_abs={:.9e} first_bad={} first_bad_value={:.9e}",
+        "muon_tma_trace slot={} shape={}x{} polar={}x{} iter={} stage={} len={} finite={} rms={:.9e} max_abs={:.9e} first_bad={} first_bad_value={:.9e}",
         slot_index,
         desc.rows,
         desc.cols,

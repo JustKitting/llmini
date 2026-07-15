@@ -10,8 +10,13 @@ those rules when accepting, rejecting, or comparing experiments in this file.
 ## Goal
 
 Train a depth-preserving approximately 1B model with local Rust/CUDA kernels,
-8K context, and NVFP4-heavy training where tensor-core matmuls dominate
-runtime.
+a 2K pretraining context, and NVFP4-heavy training where tensor-core matmuls
+dominate runtime.
+
+Historical entries below retain the legacy `Aurora` labels and artifact paths
+that existed when those runs were recorded. The active implementation is
+AMUSE plus Muon; it does not implement the Aurora optimizer paper's row-balance
+correction.
 
 External reference target:
 
@@ -35,6 +40,93 @@ Primary optimization target:
 
 ```text
 heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
+```
+
+```text
+date: 2026-07-15
+commit: accepted local jj commit after full gate
+experiment: Name the active optimizer Muon and use B4/S2048 for pretraining.
+status: accepted_900s_architecture_baseline
+change:
+  Renamed the active host modules, device modules, kernels, argument types,
+  state, scratch, metrics, sweep fields, tests, and build environment from the
+  legacy Aurora label to Muon. The update math is unchanged: AMUSE supplies the
+  schedule-free trajectory, matrix weights use Nesterov momentum followed by
+  five Polar Express iterations, and the existing NVFP4 magnitude bounds stay
+  in place. No Aurora row-balance correction is implemented or claimed.
+  Changed the pretraining shape from batch 1, sequence 8192 to batch 4,
+  sequence 2048. Both configurations process exactly 8192 tokens per optimizer
+  step, while B*S*S attention work falls by 4x. The exact 16-layer,
+  width-2048, 32-head model remains 964376960 effective parameters and
+  984571904 allocated parameter slots.
+baseline_transition_gate:
+  This is an explicitly requested pretraining-context transition, not a
+  same-math kernel micro-optimization. It must preserve the 1B model floor and
+  beat the matched parent on the normal 30-second and 900-second held-out
+  gates. A later long-context stage remains separate work because the current
+  model-only reload path resets AMUSE and Muon optimizer state.
+  The promoted held-out endpoint also uses 2048-token windows; it is evidence
+  for this pretraining baseline, not evidence of 8K inference quality.
+memory_capacity_gate:
+  Exact one-step allocation fell from 88605917184 to 66057338880 bytes, a
+  reduction of 22548578304 bytes, exactly 21.000 GiB. On the
+  101973491712-byte device, free memory increased to 35916152832 bytes, or
+  33.449524 GiB. This is measured capacity headroom from the shorter batched
+  attention shape; it does not by itself promote a still-larger batch.
+verification:
+  cargo fmt --all --check: pass.
+  cargo check -q: pass.
+  cargo test -q -p rust-kernels-cuda --lib: pass.
+  cargo test -q -p gpt2-nvfp4 --lib: pass.
+  cargo test -q --bin sweep: pass, 45 tests.
+  cargo test -q --bin rust-kernels: pass, 4 tests.
+  Fresh cargo oxide build --arch sm_120a: pass.
+  Renamed Muon GPU recurrence suite after the fresh PTX build:
+    CUDA_DEVICE_INDEX=0 cargo test -q -p rust-kernels-cuda --test optimizer
+      muon:: --release -- --ignored --nocapture --test-threads=1:
+      pass, 4 tests.
+  Dedicated attention GPU reference test after the fresh PTX build:
+    CUDA_DEVICE_INDEX=0 cargo test -q -p rust-kernels-cuda
+      --test causal_attention_backward_tc
+      materialized_tc_backward_matches_reference --release
+      -- --ignored --nocapture --test-threads=1: pass, 1 test.
+  Exact 1B B4/S2048 FineWeb one-step allocation diagnostic:
+    target/runs/20260715_122209Z_fineweb_60s
+    completed_steps=1, train_elapsed_s=0.645, val_loss=10.419855,
+    used_bytes=66057338880, free_bytes=35916152832. Run metadata confirms
+    batch 4, sequence 2048, 8192 token rows, 16 layers, width 2048, 32 heads,
+    and Muon build geometry 125x16.
+  Required 30-second screen with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260715_122131Z_fineweb_30s
+    completed_steps=46, train_elapsed_s=30.578, val_loss=6.856266.
+  Required 900-second gate with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260715_122241Z_fineweb_900s
+    completed_steps=1312, train_elapsed_s=900.143, val_loss=4.940953.
+    All 27 high-fidelity samples were finite and nonzero, with zero skipped
+    updates, loss-spike skips, grad-norm-spike skips, or nonfinite skips. Grad
+    norm ranged from 1.173707485 to 18.969253540. Every sample logged batch 4
+    and sequence 2048.
+measured_effect:
+  Against the matched 30-second B1/S8192 parent:
+    completed_steps: 34 -> 46 (+12, +35.294%).
+    average step time: 0.897911765s -> 0.664739130s
+      (-233.172634ms, -25.968%).
+    training tokens: 278528 -> 376832 (+98304, +35.294%).
+    token throughput: 9123.391 -> 12323.631 tokens/s (+35.077%).
+    held-out val_loss: 7.080664 -> 6.856266 (-0.224398, -3.169%).
+  Against the matched 900-second B1/S8192 parent:
+    completed_steps: 979 -> 1312 (+333, +34.014%).
+    average step time: 0.919661900s -> 0.686084604s
+      (-233.577296ms, -25.398%).
+    training tokens: 8019968 -> 10747904 (+2727936, +34.014%).
+    token throughput: 8907.621 -> 11940.218 tokens/s (+34.045%).
+    held-out val_loss: 5.112494 -> 4.940953 (-0.171541, -3.355%).
+decision:
+  Keep and promote as the active FineWeb pretraining baseline. It preserves the
+  exact 1B model and tokens per optimizer step, produces a large repeatable
+  throughput gain, improves held-out loss, lowers allocation by exactly 21
+  GiB, and completes the sustained gate without instability. The new nominal
+  0.5% kernel threshold is 3.430423ms per step.
 ```
 
 ```text

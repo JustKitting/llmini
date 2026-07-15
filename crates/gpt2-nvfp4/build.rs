@@ -9,10 +9,10 @@ fn main() {
     let baseline = Baseline::load();
     let seq_len = env_usize("GPT2_SEQ_LEN")
         .or_else(|| baseline.usize("GPT2_SEQ_LEN"))
-        .unwrap_or(8192);
+        .unwrap_or(2048);
     let batch_size = env_usize("GPT2_BATCH_SIZE")
         .or_else(|| baseline.usize("GPT2_BATCH_SIZE"))
-        .unwrap_or(1);
+        .unwrap_or(4);
     let n_layer = env_usize("GPT2_N_LAYER")
         .or_else(|| baseline.usize("GPT2_N_LAYER"))
         .unwrap_or(16);
@@ -24,8 +24,8 @@ fn main() {
         .unwrap_or(2048);
 
     assert!(
-        seq_len >= 8192,
-        "GPT2_SEQ_LEN must be >= 8192 for the 8K target"
+        seq_len >= 2048,
+        "GPT2_SEQ_LEN must be >= 2048 for the pretraining target"
     );
     assert!(batch_size > 0, "GPT2_BATCH_SIZE must be > 0");
     assert!(

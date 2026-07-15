@@ -1,6 +1,6 @@
 use cuda_core::DriverError;
 
-use super::super::tensor::{AdamState, AuroraState, StateInit};
+use super::super::tensor::{AdamState, MuonState, StateInit};
 use crate::upload::{UploadedBlock, UploadedLayerNorm, UploadedLinear, UploadedNextLat};
 
 pub(in crate::training) struct BlockState {
@@ -64,14 +64,14 @@ impl LayerNormState {
 }
 
 pub(in crate::training) struct LinearState {
-    pub(in crate::training) weight_aurora: AuroraState,
+    pub(in crate::training) weight_muon: MuonState,
     pub(in crate::training) bias: AdamState,
 }
 
 impl LinearState {
     pub(super) fn new(init: StateInit<'_>, linear: &UploadedLinear) -> Result<Self, DriverError> {
         Ok(Self {
-            weight_aurora: AuroraState::new(init, &linear.weight)?,
+            weight_muon: MuonState::new(init, &linear.weight)?,
             bias: AdamState::new(init, &linear.bias)?,
         })
     }

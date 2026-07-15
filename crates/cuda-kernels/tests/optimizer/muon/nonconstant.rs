@@ -1,7 +1,7 @@
 use std::error::Error;
 
 use cuda_core::DeviceBuffer;
-use rust_kernels_cuda::optimizer::{AuroraMegaUpdateArgs, OptimizerModule};
+use rust_kernels_cuda::optimizer::{MuonMegaUpdateArgs, OptimizerModule};
 
 use crate::{common, polar_vector};
 
@@ -24,7 +24,7 @@ pub fn run_wide_case() -> Result<(), Box<dyn Error>> {
     let slot_descriptors = descriptors(&slots, ROWS, COLS);
     let slot_descriptors = DeviceBuffer::from_host(&stream, &slot_descriptors)?;
 
-    module.aurora_mega_update(AuroraMegaUpdateArgs {
+    module.muon_mega_update(MuonMegaUpdateArgs {
         stream: &stream,
         slots: &slot_descriptors,
         oriented: &mut scratch.oriented,

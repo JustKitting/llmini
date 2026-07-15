@@ -81,6 +81,6 @@ fn materialize_linear(
     linear: &mut UploadedLinear,
     state: &LinearState,
 ) -> Result<(), DriverError> {
-    materializer.aurora(&mut linear.weight, &state.weight_aurora)?;
+    materializer.muon(&mut linear.weight, &state.weight_muon)?;
     materializer.adam(&mut linear.bias, &state.bias)
 }

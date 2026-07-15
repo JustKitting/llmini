@@ -4,7 +4,7 @@ use rust_kernels_cuda::optimizer::{OptimizerModule, ScheduleFreeMaterializeArgs}
 use crate::upload::UploadedNvfp4;
 
 use super::super::optimizer::OptimizerScratch;
-use super::super::optimizer_state::{AdamState, AuroraState};
+use super::super::optimizer_state::{AdamState, MuonState};
 
 pub(super) struct Materializer<'a> {
     stream: &'a CudaStream,
@@ -36,10 +36,10 @@ impl<'a> Materializer<'a> {
         self.tensor(tensor, &state.z_master, &state.x_master)
     }
 
-    pub(super) fn aurora(
+    pub(super) fn muon(
         &mut self,
         tensor: &mut UploadedNvfp4,
-        state: &AuroraState,
+        state: &MuonState,
     ) -> Result<(), DriverError> {
         self.tensor(tensor, &state.z_master, &state.x_master)
     }

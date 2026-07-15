@@ -3,7 +3,7 @@ use super::{candidate_space, fmt, rng::SweepRng};
 pub const MIN_N_LAYER: usize = 16;
 pub const MIN_N_EMBD: usize = 2048;
 pub const MIN_N_HEAD: usize = 32;
-pub(super) use candidate_space::valid_aurora_phases;
+pub(super) use candidate_space::valid_muon_phases;
 
 #[derive(Clone, Debug)]
 pub struct Candidate {
@@ -11,8 +11,8 @@ pub struct Candidate {
     pub n_layer: usize,
     pub n_embd: usize,
     pub n_head: usize,
-    pub aurora_phases: usize,
-    pub aurora_blocks: usize,
+    pub muon_phases: usize,
+    pub muon_blocks: usize,
     pub lr_scale: f64,
     pub adam_lr_scale: f64,
     pub nextlat_lr_scale: f64,
@@ -39,18 +39,18 @@ impl Candidate {
         let n_layer = self.n_layer.max(MIN_N_LAYER);
         let n_embd = self.n_embd.max(MIN_N_EMBD);
         let n_head = self.n_head.max(MIN_N_HEAD);
-        let phases = candidate_space::valid_aurora_phases(n_layer * 4, self.aurora_blocks);
-        let aurora_phases = phases
+        let phases = candidate_space::valid_muon_phases(n_layer * 4, self.muon_blocks);
+        let muon_phases = phases
             .iter()
             .copied()
-            .find(|phase| *phase >= self.aurora_phases)
+            .find(|phase| *phase >= self.muon_phases)
             .or_else(|| phases.first().copied())
-            .unwrap_or(self.aurora_phases);
+            .unwrap_or(self.muon_phases);
         Self {
             n_layer,
             n_embd,
             n_head,
-            aurora_phases,
+            muon_phases,
             ..self.clone()
         }
     }
@@ -76,8 +76,8 @@ impl Candidate {
             self.n_layer,
             self.n_embd,
             self.n_head,
-            self.aurora_phases,
-            self.aurora_blocks,
+            self.muon_phases,
+            self.muon_blocks,
         )
     }
 
@@ -87,8 +87,8 @@ impl Candidate {
             ("GPT2_N_LAYER", self.n_layer.to_string()),
             ("GPT2_N_EMBD", self.n_embd.to_string()),
             ("GPT2_N_HEAD", self.n_head.to_string()),
-            ("AURORA_MATRIX_PHASES", self.aurora_phases.to_string()),
-            ("AURORA_COOPERATIVE_BLOCKS", self.aurora_blocks.to_string()),
+            ("MUON_MATRIX_PHASES", self.muon_phases.to_string()),
+            ("MUON_COOPERATIVE_BLOCKS", self.muon_blocks.to_string()),
         ]
     }
 

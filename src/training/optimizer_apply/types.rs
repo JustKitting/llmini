@@ -3,8 +3,8 @@ use cuda_core::CudaStream;
 use super::super::{
     OptimizerTrace, TokenBatch, diagnostics::TrainingDiagnostics, grad_clip::GradientClipBuffers,
     grads::BackwardBuffers, next_latent::NextLatGradBuffers, optimizer::OptimizerScratch,
-    optimizer_aurora::AuroraPointerTables, optimizer_state::OptimizerStateBuffers,
-    optimizer_tc_scratch::AuroraScratchBuffers, runtime::Runtime, tape::ForwardTapeBuffers,
+    optimizer_muon::MuonPointerTables, optimizer_state::OptimizerStateBuffers,
+    optimizer_tc_scratch::MuonScratchBuffers, runtime::Runtime, tape::ForwardTapeBuffers,
 };
 use crate::upload::UploadedModel;
 
@@ -18,8 +18,8 @@ pub struct WeightUpdateArgs<'a> {
     pub observed_loss: Option<f32>,
     pub scratch: &'a mut OptimizerScratch,
     pub state: &'a mut OptimizerStateBuffers,
-    pub aurora: &'a mut AuroraScratchBuffers,
-    pub aurora_tables: &'a AuroraPointerTables,
+    pub muon: &'a mut MuonScratchBuffers,
+    pub muon_tables: &'a MuonPointerTables,
     pub tape: &'a ForwardTapeBuffers,
     pub grad_clip: &'a mut GradientClipBuffers,
 }

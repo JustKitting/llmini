@@ -2,7 +2,7 @@ use cuda_core::{CudaStream, DeviceBuffer, DriverError};
 
 use super::HostPtrs;
 
-pub(super) struct AuroraPaddingBuffers {
+pub(super) struct MuonPaddingBuffers {
     grad: DeviceBuffer<f32>,
     momentum: DeviceBuffer<f32>,
     z_master: DeviceBuffer<f32>,
@@ -12,7 +12,7 @@ pub(super) struct AuroraPaddingBuffers {
     global_scale: DeviceBuffer<f32>,
 }
 
-impl AuroraPaddingBuffers {
+impl MuonPaddingBuffers {
     pub fn new(stream: &CudaStream) -> Result<Self, DriverError> {
         Ok(Self {
             grad: DeviceBuffer::zeroed(stream, 16)?,

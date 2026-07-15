@@ -1,6 +1,6 @@
 use cuda_core::{CudaStream, DeviceBuffer};
 
-pub struct KdaAuroraClipArgs<'a> {
+pub struct KdaMuonClipArgs<'a> {
     pub stream: &'a CudaStream,
     pub qkv: &'a DeviceBuffer<u16>,
     pub bytes: &'a mut DeviceBuffer<u8>,

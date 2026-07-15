@@ -1,5 +1,5 @@
 use super::super::{
-    candidate::{Candidate, valid_aurora_phases},
+    candidate::{Candidate, valid_muon_phases},
     candidate_space::{
         self, AMUSE_BETA1_RANGE, AMUSE_RHO_RANGE, BATCH_SIZE, LR_SCALE_RANGE, N_EMBD, N_LAYER,
         START_RATIO_RANGE, WARMUP_STEPS_RANGE,
@@ -12,16 +12,16 @@ pub fn candidate(rng: &mut SweepRng, direction: &Direction, jitter: bool) -> Can
     let batch_size = pick(&BATCH_SIZE, direction.batch_size, rng, jitter);
     let n_layer = pick(&N_LAYER, direction.n_layer, rng, jitter);
     let (n_embd, n_head) = pick(&N_EMBD, direction.n_embd, rng, jitter);
-    let blocks = candidate_space::valid_aurora_blocks(n_layer);
-    let aurora_blocks = pick(&blocks, direction.aurora_blocks, rng, jitter);
-    let phases = valid_aurora_phases(n_layer * 4, aurora_blocks);
+    let blocks = candidate_space::valid_muon_blocks(n_layer);
+    let muon_blocks = pick(&blocks, direction.muon_blocks, rng, jitter);
+    let phases = valid_muon_phases(n_layer * 4, muon_blocks);
     Candidate {
         batch_size,
         n_layer,
         n_embd,
         n_head,
-        aurora_phases: pick(&phases, direction.aurora_phases, rng, jitter),
-        aurora_blocks,
+        muon_phases: pick(&phases, direction.muon_phases, rng, jitter),
+        muon_blocks,
         lr_scale: pick_f64(LR_SCALE_RANGE, direction.lr_scale, rng, jitter, true),
         adam_lr_scale: pick_f64(LR_SCALE_RANGE, direction.adam_lr_scale, rng, jitter, true),
         nextlat_lr_scale: pick_f64(

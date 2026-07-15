@@ -5,30 +5,28 @@ use rust_kernels_cuda::nvfp4_tma_matmul::scale_layout::{
     sm120_scale_packed_len, sm120_scale_padded_mn_extent,
 };
 use rust_kernels_cuda::nvfp4_tma_matmul::tma::TmaNvfp4DeviceScaleDescriptors;
-use rust_kernels_cuda::optimizer::{AURORA_COOPERATIVE_BLOCKS, AURORA_MATRIX_PHASES};
+use rust_kernels_cuda::optimizer::{MUON_COOPERATIVE_BLOCKS, MUON_MATRIX_PHASES};
 
-use super::optimizer_aurora::{
-    AURORA_MATRIX_SLOTS, max_matrix_dim, max_matrix_len, max_polar_cols,
-};
+use super::optimizer_muon::{MUON_MATRIX_SLOTS, max_matrix_dim, max_matrix_len, max_polar_cols};
 
-pub struct AuroraScratchBuffers {
+pub struct MuonScratchBuffers {
     pub(super) oriented: DeviceBuffer<f32>,
     pub(super) polar_next: DeviceBuffer<f32>,
     pub(super) polar_x: DeviceBuffer<f32>,
     pub(super) polar_gram: DeviceBuffer<f32>,
     pub(super) polar_ax: DeviceBuffer<f32>,
     pub(super) polar_chunks: DeviceBuffer<f32>,
-    pub(super) tma: AuroraTmaScratch,
+    pub(super) tma: MuonTmaScratch,
 }
 
-pub(super) struct AuroraTmaScratch {
+pub(super) struct MuonTmaScratch {
     pub(super) out_padded: DeviceBuffer<f32>,
-    pub(super) a: AuroraTmaOperandScratch,
-    pub(super) b: AuroraTmaOperandScratch,
+    pub(super) a: MuonTmaOperandScratch,
+    pub(super) b: MuonTmaOperandScratch,
     pub(super) descriptors: TmaNvfp4DeviceScaleDescriptors,
 }
 
-pub(super) struct AuroraTmaOperandScratch {
+pub(super) struct MuonTmaOperandScratch {
     pub(super) bytes: DeviceBuffer<u8>,
     pub(super) scales: DeviceBuffer<u8>,
     pub(super) scale_packed: DeviceBuffer<u8>,
@@ -37,7 +35,7 @@ pub(super) struct AuroraTmaOperandScratch {
     pub(super) chunk_amax: DeviceBuffer<f32>,
 }
 
-impl AuroraScratchBuffers {
+impl MuonScratchBuffers {
     pub fn new(stream: &CudaStream) -> Result<Self, DriverError> {
         Ok(Self {
             oriented: DeviceBuffer::zeroed(stream, grouped(max_matrix_len()))?,
@@ -45,23 +43,23 @@ impl AuroraScratchBuffers {
             polar_x: DeviceBuffer::zeroed(stream, grouped(max_matrix_len()))?,
             polar_gram: DeviceBuffer::zeroed(stream, grouped(max_matrix_dim() * max_matrix_dim()))?,
             polar_ax: DeviceBuffer::zeroed(stream, grouped(max_matrix_len()))?,
-            polar_chunks: DeviceBuffer::zeroed(stream, grouped(AURORA_COOPERATIVE_BLOCKS))?,
-            tma: AuroraTmaScratch::new(stream)?,
+            polar_chunks: DeviceBuffer::zeroed(stream, grouped(MUON_COOPERATIVE_BLOCKS))?,
+            tma: MuonTmaScratch::new(stream)?,
         })
     }
 }
 
-impl AuroraTmaScratch {
+impl MuonTmaScratch {
     fn new(stream: &CudaStream) -> Result<Self, DriverError> {
         Ok(Self {
             out_padded: DeviceBuffer::zeroed(stream, max_tma_out_elements())?,
-            a: AuroraTmaOperandScratch::new(
+            a: MuonTmaOperandScratch::new(
                 stream,
                 max_tma_a_elements(),
                 max_tma_a_rows(),
                 max_tma_k(),
             )?,
-            b: AuroraTmaOperandScratch::new(
+            b: MuonTmaOperandScratch::new(
                 stream,
                 max_tma_b_elements(),
                 max_tma_b_rows(),
@@ -77,7 +75,7 @@ impl AuroraTmaScratch {
     }
 }
 
-impl AuroraTmaOperandScratch {
+impl MuonTmaOperandScratch {
     fn new(
         stream: &CudaStream,
         elements: usize,
@@ -103,7 +101,7 @@ const fn grouped(len: usize) -> usize {
 }
 
 const fn active_matrix_slots() -> usize {
-    AURORA_MATRIX_SLOTS.div_ceil(AURORA_MATRIX_PHASES)
+    MUON_MATRIX_SLOTS.div_ceil(MUON_MATRIX_PHASES)
 }
 
 const fn max_tma_a_rows() -> usize {

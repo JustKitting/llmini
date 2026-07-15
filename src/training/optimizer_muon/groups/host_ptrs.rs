@@ -1,4 +1,4 @@
-use rust_kernels_cuda::optimizer::AuroraSlotDescriptor;
+use rust_kernels_cuda::optimizer::MuonSlotDescriptor;
 
 #[derive(Clone, Copy)]
 pub(super) struct HostPtrs {
@@ -15,8 +15,8 @@ pub(super) struct HostPtrs {
 }
 
 impl HostPtrs {
-    pub(super) fn descriptor(self) -> AuroraSlotDescriptor {
-        AuroraSlotDescriptor {
+    pub(super) fn descriptor(self) -> MuonSlotDescriptor {
+        MuonSlotDescriptor {
             grad: self.grad,
             momentum: self.momentum,
             z_master: self.z_master,

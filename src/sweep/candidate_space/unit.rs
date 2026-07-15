@@ -1,22 +1,22 @@
 use super::{
     AMUSE_BETA1_RANGE, AMUSE_RHO_RANGE, BATCH_SIZE, FACTOR_COUNT, LR_SCALE_RANGE, N_EMBD, N_LAYER,
-    START_RATIO_RANGE, WARMUP_STEPS_RANGE, valid_aurora_blocks, valid_aurora_phases,
+    START_RATIO_RANGE, WARMUP_STEPS_RANGE, valid_muon_blocks, valid_muon_phases,
 };
 use crate::sweep::candidate::Candidate;
 
 pub(in crate::sweep) fn from_unit(unit: [f64; FACTOR_COUNT]) -> Candidate {
     let (n_embd, n_head) = choose_unit(&N_EMBD, unit[2]);
     let n_layer = choose_unit(&N_LAYER, unit[1]);
-    let blocks = valid_aurora_blocks(n_layer);
-    let aurora_blocks = choose_unit(&blocks, unit[4]);
-    let phases = valid_aurora_phases(n_layer * 4, aurora_blocks);
+    let blocks = valid_muon_blocks(n_layer);
+    let muon_blocks = choose_unit(&blocks, unit[4]);
+    let phases = valid_muon_phases(n_layer * 4, muon_blocks);
     Candidate {
         batch_size: choose_unit(&BATCH_SIZE, unit[0]),
         n_layer,
         n_embd,
         n_head,
-        aurora_phases: choose_unit(&phases, unit[3]),
-        aurora_blocks,
+        muon_phases: choose_unit(&phases, unit[3]),
+        muon_blocks,
         lr_scale: log_lerp(LR_SCALE_RANGE, unit[5]),
         adam_lr_scale: log_lerp(LR_SCALE_RANGE, unit[6]),
         nextlat_lr_scale: log_lerp(LR_SCALE_RANGE, unit[7]),
@@ -49,7 +49,7 @@ pub(in crate::sweep) fn range_usize(range: (usize, usize), unit: f64) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::{FACTOR_COUNT, from_unit, valid_aurora_phases};
+    use super::{FACTOR_COUNT, from_unit, valid_muon_phases};
 
     #[test]
     fn unit_mapping_keeps_candidate_in_valid_space() {
@@ -64,11 +64,7 @@ mod tests {
         assert_eq!(high.n_layer, 16);
         assert_eq!(high.n_embd, 2048);
         assert_eq!(high.n_head, 32);
-        assert!(
-            valid_aurora_phases(low.n_layer * 4, low.aurora_blocks).contains(&low.aurora_phases)
-        );
-        assert!(
-            valid_aurora_phases(high.n_layer * 4, high.aurora_blocks).contains(&high.aurora_phases)
-        );
+        assert!(valid_muon_phases(low.n_layer * 4, low.muon_blocks).contains(&low.muon_phases));
+        assert!(valid_muon_phases(high.n_layer * 4, high.muon_blocks).contains(&high.muon_phases));
     }
 }

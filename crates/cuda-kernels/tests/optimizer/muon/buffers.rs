@@ -2,10 +2,10 @@ use std::error::Error;
 
 use cuda_core::{CudaStream, DeviceBuffer, DeviceCopy};
 use rust_kernels_cuda::optimizer::{
-    AURORA_COOPERATIVE_BLOCKS, AURORA_MATRIX_PHASES, AuroraSlotDescriptor,
+    MUON_COOPERATIVE_BLOCKS, MUON_MATRIX_PHASES, MuonSlotDescriptor,
 };
 
-pub const SLOT_COUNT: usize = AURORA_MATRIX_PHASES;
+pub const SLOT_COUNT: usize = MUON_MATRIX_PHASES;
 
 pub struct Slots {
     pub grads: Vec<DeviceBuffer<f32>>,
@@ -57,14 +57,14 @@ impl Scratch {
             polar_x: DeviceBuffer::<f32>::zeroed(stream, len)?,
             polar_gram: DeviceBuffer::<f32>::zeroed(stream, gram_dim * gram_dim)?,
             polar_ax: DeviceBuffer::<f32>::zeroed(stream, len)?,
-            polar_chunks: DeviceBuffer::<f32>::zeroed(stream, AURORA_COOPERATIVE_BLOCKS)?,
+            polar_chunks: DeviceBuffer::<f32>::zeroed(stream, MUON_COOPERATIVE_BLOCKS)?,
         })
     }
 }
 
-pub fn descriptors(slots: &Slots, rows: usize, cols: usize) -> Vec<AuroraSlotDescriptor> {
+pub fn descriptors(slots: &Slots, rows: usize, cols: usize) -> Vec<MuonSlotDescriptor> {
     (0..SLOT_COUNT)
-        .map(|slot| AuroraSlotDescriptor {
+        .map(|slot| MuonSlotDescriptor {
             grad: slots.grads[slot].cu_deviceptr(),
             momentum: slots.momentums[slot].cu_deviceptr(),
             z_master: slots.z_masters[slot].cu_deviceptr(),

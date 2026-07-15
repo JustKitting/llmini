@@ -4,12 +4,12 @@ mod common;
 mod adam;
 #[path = "optimizer/assertions.rs"]
 mod assertions;
-#[path = "optimizer/aurora.rs"]
-mod aurora;
 #[path = "optimizer/embedding.rs"]
 mod embedding;
 #[path = "optimizer/grad_clip.rs"]
 mod grad_clip;
+#[path = "optimizer/muon.rs"]
+mod muon;
 #[path = "optimizer/polar_coefficients.rs"]
 mod polar_coefficients;
 #[path = "optimizer/polar_gram_ns.rs"]

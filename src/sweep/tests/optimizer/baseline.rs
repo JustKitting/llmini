@@ -16,8 +16,8 @@ fn starts_fresh_sweep_from_best_measured_baseline() {
     assert_eq!(baseline.n_layer, MIN_N_LAYER);
     assert_eq!(baseline.n_embd, MIN_N_EMBD);
     assert_eq!(baseline.n_head, MIN_N_HEAD);
-    assert_eq!(baseline.aurora_phases, 16);
-    assert_eq!(baseline.aurora_blocks, 80);
+    assert_eq!(baseline.muon_phases, 16);
+    assert_eq!(baseline.muon_blocks, 80);
     assert_eq!(baseline.lr_scale, 1.014_040);
     assert_eq!(baseline.adam_lr_scale, 1.980_467);
     assert_eq!(baseline.nextlat_lr_scale, 1.0);

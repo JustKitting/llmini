@@ -14,7 +14,7 @@ pub(super) mod module {
     use super::*;
 
     #[kernel]
-    pub fn kda_aurora_qk_clip_kernel(
+    pub fn kda_muon_qk_clip_kernel(
         qkv: &[u16],
         mut z_master: DisjointSlice<f32>,
         mut x_master: DisjointSlice<f32>,

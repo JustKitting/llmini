@@ -32,7 +32,7 @@ fn promotes_baseline_file_when_validation_improves() {
     assert!(text.contains("GPT2_BATCH_SIZE=8"));
     assert!(text.contains("GPT2_N_LAYER=16"));
     assert!(text.contains("GPT2_N_EMBD=2048"));
-    assert!(text.contains("AURORA_MATRIX_PHASES=16"));
+    assert!(text.contains("MUON_MATRIX_PHASES=16"));
     assert!(text.contains("TRAIN_LR_SCALE=2.000000"));
     let loaded = Baseline::load(path.clone())
         .unwrap()

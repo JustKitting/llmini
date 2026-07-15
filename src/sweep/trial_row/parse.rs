@@ -30,8 +30,8 @@ fn parse_candidate(p: &[&str], has_nextlat_lr: bool) -> Option<Candidate> {
         n_layer: p[4].parse().ok()?,
         n_embd: p[5].parse().ok()?,
         n_head: p[6].parse().ok()?,
-        aurora_phases: p[7].parse().ok()?,
-        aurora_blocks: p[8].parse().ok()?,
+        muon_phases: p[7].parse().ok()?,
+        muon_blocks: p[8].parse().ok()?,
         lr_scale: p[9].parse().ok()?,
         adam_lr_scale: p[10].parse().ok()?,
         nextlat_lr_scale: if has_nextlat_lr {

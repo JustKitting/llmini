@@ -3,11 +3,11 @@ use cuda_device::{
 };
 
 use crate::f16_tc_matmul::cta_tile::{CTA_A_ELEMS, CTA_B_ELEMS};
-use crate::optimizer::AuroraSlotDescriptor;
+use crate::optimizer::MuonSlotDescriptor;
 
-use super::super::super::AURORA_MATRIX_PHASES;
+use super::super::super::MUON_MATRIX_PHASES;
 use super::super::super::threads::WARPS_PER_BLOCK;
-use super::types::{AuroraMatrixScratch, AuroraMatrixTiles, AuroraUpdateScalars};
+use super::types::{MuonMatrixScratch, MuonMatrixTiles, MuonUpdateScalars};
 
 mod slot;
 
@@ -17,8 +17,8 @@ pub(crate) mod module {
 
     #[kernel]
     #[cooperative_launch]
-    pub fn aurora_mega_update_cooperative_kernel(
-        slots: &[AuroraSlotDescriptor],
+    pub fn muon_mega_update_cooperative_kernel(
+        slots: &[MuonSlotDescriptor],
         mut oriented: DisjointSlice<f32>,
         mut polar_next: DisjointSlice<f32>,
         mut polar_x: DisjointSlice<f32>,
@@ -40,7 +40,7 @@ pub(crate) mod module {
         static mut B_TILE: SharedArray<u16, CTA_B_ELEMS> = SharedArray::UNINIT;
         static mut WARP_SUMS: SharedArray<f32, { WARPS_PER_BLOCK as usize }> = SharedArray::UNINIT;
 
-        let scratch = AuroraMatrixScratch {
+        let scratch = MuonMatrixScratch {
             oriented: oriented.as_mut_ptr(),
             polar_next: polar_next.as_mut_ptr(),
             polar_x: polar_x.as_mut_ptr(),
@@ -53,7 +53,7 @@ pub(crate) mod module {
             max_ax_len,
             max_dim,
         };
-        let scalars = AuroraUpdateScalars {
+        let scalars = MuonUpdateScalars {
             mu,
             grad_scale,
             learning_rate,
@@ -64,7 +64,7 @@ pub(crate) mod module {
         let matrix = thread::blockIdx_y();
         let matrix_count = thread::gridDim_y();
         let mut phase = 0;
-        while phase < AURORA_MATRIX_PHASES as u32 {
+        while phase < MUON_MATRIX_PHASES as u32 {
             let slot = phase * matrix_count + matrix;
             if slot < slot_count {
                 unsafe {
@@ -74,7 +74,7 @@ pub(crate) mod module {
                         slots,
                         scratch,
                         layout,
-                        AuroraMatrixTiles {
+                        MuonMatrixTiles {
                             a_tile: &mut A_TILE,
                             b_tile: &mut B_TILE,
                             warp_sums: &mut WARP_SUMS,

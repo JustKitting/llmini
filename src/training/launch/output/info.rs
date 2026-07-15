@@ -1,7 +1,7 @@
 use gpt2_nvfp4::{
     GPT2_BATCH_SIZE, GPT2_N_EMBD, GPT2_N_HEAD, GPT2_N_LAYER, GPT2_SEQ_LEN, GPT2_TOKEN_ROWS,
 };
-use rust_kernels_cuda::optimizer::{AURORA_COOPERATIVE_BLOCKS, AURORA_MATRIX_PHASES};
+use rust_kernels_cuda::optimizer::{MUON_COOPERATIVE_BLOCKS, MUON_MATRIX_PHASES};
 
 use super::super::TrainConfig;
 
@@ -20,10 +20,10 @@ pub(in crate::training::launch) fn build_run_info(dataset: &str, config: &TrainC
     push_info(&mut info, "gpt2_n_embd", GPT2_N_EMBD);
     push_info(
         &mut info,
-        "aurora_cooperative_blocks",
-        AURORA_COOPERATIVE_BLOCKS,
+        "muon_cooperative_blocks",
+        MUON_COOPERATIVE_BLOCKS,
     );
-    push_info(&mut info, "aurora_matrix_phases", AURORA_MATRIX_PHASES);
+    push_info(&mut info, "muon_matrix_phases", MUON_MATRIX_PHASES);
     push_info(&mut info, "step_cap", config.step_cap);
     push_info(&mut info, "log_interval", config.log_interval);
     push_info(&mut info, "max_seconds", config.max_seconds);

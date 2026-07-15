@@ -4,8 +4,8 @@ pub(in crate::sweep) fn candidate(batch_size: usize, n_layer: usize, lr_scale: f
     Candidate {
         n_embd: 2048,
         n_head: 32,
-        aurora_phases: 16,
-        aurora_blocks: 180,
+        muon_phases: 16,
+        muon_blocks: 180,
         lr_scale,
         warmup_steps: 5,
         start_ratio: 0.0,
@@ -19,8 +19,8 @@ pub(in crate::sweep) fn basic_candidate(batch_size: usize, n_layer: usize) -> Ca
         n_layer,
         n_embd: 1024,
         n_head: 16,
-        aurora_phases: 4,
-        aurora_blocks: 80,
+        muon_phases: 4,
+        muon_blocks: 80,
         lr_scale: 1.0,
         adam_lr_scale: 1.0,
         nextlat_lr_scale: 1.0,
@@ -33,7 +33,7 @@ pub(in crate::sweep) fn basic_candidate(batch_size: usize, n_layer: usize) -> Ca
 
 pub(in crate::sweep) fn measured_candidate() -> Candidate {
     Candidate {
-        aurora_phases: 2,
+        muon_phases: 2,
         lr_scale: 1.014_040,
         adam_lr_scale: 1.980_467,
         warmup_steps: 5,

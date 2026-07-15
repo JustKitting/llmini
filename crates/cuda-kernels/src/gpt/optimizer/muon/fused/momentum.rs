@@ -1,5 +1,5 @@
 use super::super::super::work_grid::WorkGrid;
-use super::types::AuroraMatrixShape;
+use super::types::MuonMatrixShape;
 use crate::device_ptr::write_f32;
 
 pub(super) fn momentum_orient(
@@ -7,7 +7,7 @@ pub(super) fn momentum_orient(
     momentum: *mut f32,
     oriented: *mut f32,
     work: WorkGrid,
-    shape: AuroraMatrixShape,
+    shape: MuonMatrixShape,
     mu: f32,
     grad_scale: f32,
     transposed: bool,

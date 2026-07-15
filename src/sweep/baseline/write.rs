@@ -7,7 +7,7 @@ use std::{
 use super::record::Record;
 use crate::fs_utils::ensure_parent;
 
-const DEFAULT_SEQ_LEN: usize = 8192;
+const DEFAULT_SEQ_LEN: usize = 2048;
 
 pub(super) fn record(path: &Path, record: &Record) -> io::Result<()> {
     ensure_parent(path)?;

@@ -2,7 +2,7 @@ use super::super::fmt;
 use super::super::history::Trial;
 
 pub(super) fn header() -> &'static str {
-    "status\tval_loss\tcompleted_steps\tbatch_size\tn_layer\tn_embd\tn_head\taurora_phases\taurora_blocks\tlr_scale\tadam_lr_scale\tnextlat_lr_scale\twarmup_steps\tstart_ratio\tamuse_beta1\tamuse_rho\tlog_path\telapsed_s\tscreen_val_loss\tscreen_completed_steps\tscreen_elapsed_s\tscreen_reason"
+    "status\tval_loss\tcompleted_steps\tbatch_size\tn_layer\tn_embd\tn_head\tmuon_phases\tmuon_blocks\tlr_scale\tadam_lr_scale\tnextlat_lr_scale\twarmup_steps\tstart_ratio\tamuse_beta1\tamuse_rho\tlog_path\telapsed_s\tscreen_val_loss\tscreen_completed_steps\tscreen_elapsed_s\tscreen_reason"
 }
 
 pub(super) fn format_trial(trial: &Trial) -> String {
@@ -16,8 +16,8 @@ pub(super) fn format_trial(trial: &Trial) -> String {
         c.n_layer,
         c.n_embd,
         c.n_head,
-        c.aurora_phases,
-        c.aurora_blocks,
+        c.muon_phases,
+        c.muon_blocks,
         c.lr_scale,
         c.adam_lr_scale,
         c.nextlat_lr_scale,

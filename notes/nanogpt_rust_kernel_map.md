@@ -165,7 +165,7 @@ reference.
 
 ## Training Optimizer Notes
 
-For Aurora/Muon-style polar updates, dense optimizer GEMMs should use the same
+For Muon-style polar updates, dense optimizer GEMMs should use the same
 NVFP4 tensor-core path as model GEMMs:
 
 ```text

@@ -4,10 +4,10 @@ use gpt2_nvfp4::{
     AttentionDims, GPT2_MLP, GPT2_N_EMBD, GPT2_N_LAYER, NEXTLAT_HIDDEN, NEXTLAT_INPUT,
     uses_full_attention,
 };
-use rust_kernels_cuda::optimizer::AURORA_MATRIX_PHASES;
+use rust_kernels_cuda::optimizer::MUON_MATRIX_PHASES;
 
-use super::super::AURORA_MATRIX_SLOTS;
-use super::{HostPtrs, padding::AuroraPaddingBuffers, ptrs};
+use super::super::MUON_MATRIX_SLOTS;
+use super::{HostPtrs, padding::MuonPaddingBuffers, ptrs};
 use crate::{
     training::{
         grads::BackwardBuffers, learning_rate, next_latent::NextLatGradBuffers,
@@ -21,7 +21,7 @@ pub(super) fn build_slots(
     grads: &BackwardBuffers,
     next_latent_grads: &NextLatGradBuffers,
     state: &OptimizerStateBuffers,
-    padding: &AuroraPaddingBuffers,
+    padding: &MuonPaddingBuffers,
 ) -> Vec<HostPtrs> {
     let mut rows = all_slots(uploaded, grads, next_latent_grads, state);
     schedule_slots(&mut rows);
@@ -35,7 +35,7 @@ fn all_slots(
     next_latent_grads: &NextLatGradBuffers,
     state: &OptimizerStateBuffers,
 ) -> Vec<HostPtrs> {
-    let mut rows = Vec::with_capacity(AURORA_MATRIX_SLOTS);
+    let mut rows = Vec::with_capacity(MUON_MATRIX_SLOTS);
     for i in 0..GPT2_N_LAYER {
         let qkv_dim = AttentionDims::new(uses_full_attention(i)).qkv_dim as usize;
         rows.push(ptrs::qkv(uploaded, grads, state, i).shape(GPT2_N_EMBD, qkv_dim));
@@ -71,8 +71,8 @@ fn schedule_slots(rows: &mut [HostPtrs]) {
     rows.sort_by_key(|slot| Reverse(slot.estimated_polar_work()));
 }
 
-fn pad_slots(rows: &mut Vec<HostPtrs>, padding: &AuroraPaddingBuffers) {
-    while !rows.len().is_multiple_of(AURORA_MATRIX_PHASES) {
+fn pad_slots(rows: &mut Vec<HostPtrs>, padding: &MuonPaddingBuffers) {
+    while !rows.len().is_multiple_of(MUON_MATRIX_PHASES) {
         rows.push(padding.ptrs());
     }
 }

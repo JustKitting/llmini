@@ -1,12 +1,12 @@
 use cuda_core::DriverError;
 
-use super::super::args::KdaAuroraClipArgs;
+use super::super::args::KdaMuonClipArgs;
 use super::super::kda_clip::KDA_CLIP_THREADS_PER_BLOCK;
 use super::OptimizerModule;
 use crate::launch::grid_x_config;
 
 impl OptimizerModule {
-    pub fn apply_kda_aurora_clip(&self, args: KdaAuroraClipArgs<'_>) -> Result<(), DriverError> {
+    pub fn apply_kda_muon_clip(&self, args: KdaMuonClipArgs<'_>) -> Result<(), DriverError> {
         let len = args.input_dim * args.qkv_dim;
         assert_eq!(len as usize % 16, 0);
         assert!(args.qkv.len() >= args.row_count as usize * args.qkv_dim as usize);
@@ -17,7 +17,7 @@ impl OptimizerModule {
         assert!(args.bytes.len() >= len as usize / 2);
         assert!(args.scales.len() >= len as usize / 16);
 
-        self.apply.kda_clip.kda_aurora_qk_clip_kernel(
+        self.apply.kda_clip.kda_muon_qk_clip_kernel(
             args.stream,
             grid_x_config(args.head_count, KDA_CLIP_THREADS_PER_BLOCK),
             args.qkv,

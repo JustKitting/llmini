@@ -37,7 +37,7 @@ The code already leans heavily on:
 
 - NVFP4 quantization and tensor-core paths.
 - Fused CUDA kernels for projection, attention, loss, optimizer, and tape saves.
-- Schedule-free and Aurora/Muon-style optimizer experiments.
+- Schedule-free AMUSE with Muon matrix updates.
 - Coupled sweeps over model and optimizer parameters when the architecture or
   math changes enough to justify them.
 

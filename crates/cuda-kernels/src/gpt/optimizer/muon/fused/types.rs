@@ -3,7 +3,7 @@ use crate::f16_tc_matmul::cta_tile::{CTA_A_ELEMS, CTA_B_ELEMS};
 use cuda_device::SharedArray;
 
 #[derive(Clone, Copy)]
-pub(super) struct AuroraMatrixState {
+pub(super) struct MuonMatrixState {
     pub grad: *const f32,
     pub momentum: *mut f32,
     pub z_master: *mut f32,
@@ -14,7 +14,7 @@ pub(super) struct AuroraMatrixState {
 }
 
 #[derive(Clone, Copy)]
-pub(super) struct AuroraMatrixScratch {
+pub(super) struct MuonMatrixScratch {
     pub oriented: *mut f32,
     pub polar_next: *mut f32,
     pub polar_x: *mut f32,
@@ -23,19 +23,19 @@ pub(super) struct AuroraMatrixScratch {
     pub polar_chunks: *mut f32,
 }
 
-pub(super) struct AuroraMatrixTiles<'a> {
+pub(super) struct MuonMatrixTiles<'a> {
     pub a_tile: &'a mut SharedArray<u16, CTA_A_ELEMS>,
     pub b_tile: &'a mut SharedArray<u16, CTA_B_ELEMS>,
     pub warp_sums: &'a mut SharedArray<f32, { WARPS_PER_BLOCK as usize }>,
 }
 
 #[derive(Clone, Copy)]
-pub(super) struct AuroraMatrixShape {
+pub(super) struct MuonMatrixShape {
     pub rows: u32,
     pub cols: u32,
 }
 
-impl AuroraMatrixShape {
+impl MuonMatrixShape {
     #[inline(always)]
     pub(super) fn len(self) -> u32 {
         self.rows * self.cols
@@ -51,7 +51,7 @@ impl AuroraMatrixShape {
 }
 
 #[derive(Clone, Copy)]
-pub(super) struct AuroraUpdateScalars {
+pub(super) struct MuonUpdateScalars {
     pub mu: f32,
     pub grad_scale: f32,
     pub learning_rate: f32,

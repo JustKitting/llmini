@@ -9,28 +9,28 @@ use build_support::{Baseline, emit_rerun_metadata, env_usize};
 
 fn main() {
     let baseline = Baseline::load();
-    let cooperative_blocks = env_usize("AURORA_COOPERATIVE_BLOCKS")
-        .or_else(|| baseline.usize("AURORA_COOPERATIVE_BLOCKS"))
+    let cooperative_blocks = env_usize("MUON_COOPERATIVE_BLOCKS")
+        .or_else(|| baseline.usize("MUON_COOPERATIVE_BLOCKS"))
         .unwrap_or(125);
-    let matrix_phases = env_usize("AURORA_MATRIX_PHASES")
-        .or_else(|| baseline.usize("AURORA_MATRIX_PHASES"))
+    let matrix_phases = env_usize("MUON_MATRIX_PHASES")
+        .or_else(|| baseline.usize("MUON_MATRIX_PHASES"))
         .unwrap_or(16);
 
     assert!(
         cooperative_blocks > 0,
-        "AURORA_COOPERATIVE_BLOCKS must be > 0"
+        "MUON_COOPERATIVE_BLOCKS must be > 0"
     );
-    assert!(matrix_phases > 0, "AURORA_MATRIX_PHASES must be > 0");
+    assert!(matrix_phases > 0, "MUON_MATRIX_PHASES must be > 0");
 
-    emit_rerun_metadata(&["AURORA_COOPERATIVE_BLOCKS", "AURORA_MATRIX_PHASES"]);
+    emit_rerun_metadata(&["MUON_COOPERATIVE_BLOCKS", "MUON_MATRIX_PHASES"]);
 
     let out = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR must be set"));
     build_nvfp4_config::emit_nvfp4_config(&out);
     fs::write(
         out.join("optimizer_config.rs"),
         format!(
-            "pub const AURORA_COOPERATIVE_BLOCKS: usize = {cooperative_blocks};\n\
-             pub const AURORA_MATRIX_PHASES: usize = {matrix_phases};\n"
+            "pub const MUON_COOPERATIVE_BLOCKS: usize = {cooperative_blocks};\n\
+             pub const MUON_MATRIX_PHASES: usize = {matrix_phases};\n"
         ),
     )
     .expect("failed to write generated optimizer config");

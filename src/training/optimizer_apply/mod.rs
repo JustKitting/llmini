@@ -1,11 +1,11 @@
 mod adam;
 mod apply;
-mod aurora;
 mod base;
 mod block;
 mod embedding;
 mod kda_clip;
 mod layer_norm;
+mod muon;
 mod next_latent;
 mod skip;
 mod types;

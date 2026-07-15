@@ -1,7 +1,7 @@
 use std::error::Error;
 
 use cuda_core::DeviceBuffer;
-use rust_kernels_cuda::optimizer::{AuroraMegaUpdateArgs, OptimizerModule};
+use rust_kernels_cuda::optimizer::{MuonMegaUpdateArgs, OptimizerModule};
 
 use crate::assertions::assert_update_matches;
 use crate::common;
@@ -18,7 +18,7 @@ pub fn run_first_iteration_case(row_count: usize, col_count: usize) -> Result<()
     let slot_descriptors = descriptors(&slots, row_count, col_count);
     let slot_descriptors = DeviceBuffer::from_host(&stream, &slot_descriptors)?;
 
-    module.aurora_mega_update(AuroraMegaUpdateArgs {
+    module.muon_mega_update(MuonMegaUpdateArgs {
         stream: &stream,
         slots: &slot_descriptors,
         oriented: &mut scratch.oriented,

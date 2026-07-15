@@ -12,8 +12,8 @@ fn changed_factors(left: &Candidate, right: &Candidate) -> usize {
     usize::from(left.batch_size != right.batch_size)
         + usize::from(left.n_layer != right.n_layer)
         + usize::from(left.n_embd != right.n_embd)
-        + usize::from(left.aurora_phases != right.aurora_phases)
-        + usize::from(left.aurora_blocks != right.aurora_blocks)
+        + usize::from(left.muon_phases != right.muon_phases)
+        + usize::from(left.muon_blocks != right.muon_blocks)
         + usize::from(left.lr_scale != right.lr_scale)
         + usize::from(left.adam_lr_scale != right.adam_lr_scale)
         + usize::from(left.nextlat_lr_scale != right.nextlat_lr_scale)
@@ -50,8 +50,8 @@ fn wide_candidate(i: usize) -> Candidate {
         n_layer: [4, 8][(i / 3) % 2],
         n_embd: [1024, 2048][(i / 5) % 2],
         n_head: 16,
-        aurora_phases: [4, 8, 16][(i / 7) % 3],
-        aurora_blocks: [80, 90, 120, 160, 180][(i / 11) % 5],
+        muon_phases: [4, 8, 16][(i / 7) % 3],
+        muon_blocks: [80, 90, 120, 160, 180][(i / 11) % 5],
         lr_scale: 0.5 + (i % 11) as f64 * 0.18,
         adam_lr_scale: 0.5 + (i % 13) as f64 * 0.15,
         nextlat_lr_scale: 0.5 + (i % 17) as f64 * 0.12,

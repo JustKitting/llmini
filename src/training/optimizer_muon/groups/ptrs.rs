@@ -4,7 +4,7 @@ use crate::upload::{UploadedModel, UploadedNvfp4};
 
 use super::super::super::grads::BackwardBuffers;
 use super::super::super::next_latent::NextLatGradBuffers;
-use super::super::super::optimizer_state::{AuroraState, OptimizerStateBuffers};
+use super::super::super::optimizer_state::{MuonState, OptimizerStateBuffers};
 use super::HostPtrs;
 
 macro_rules! block_linear_ptrs {
@@ -18,7 +18,7 @@ macro_rules! block_linear_ptrs {
             linear(
                 &uploaded.blocks[i].$linear.weight,
                 &grads.blocks[i].$grad,
-                &state.blocks[i].$linear.weight_aurora,
+                &state.blocks[i].$linear.weight_muon,
             )
         }
     };
@@ -34,7 +34,7 @@ macro_rules! next_latent_linear_ptrs {
             linear(
                 &uploaded.next_latent.$linear.weight,
                 &grads.$grad,
-                &state.next_latent.$linear.weight_aurora,
+                &state.next_latent.$linear.weight_muon,
             )
         }
     };
@@ -57,7 +57,7 @@ next_latent_linear_ptrs!(
     d_output_projection_weight
 );
 
-fn linear(weight: &UploadedNvfp4, grad: &DeviceBuffer<f32>, state: &AuroraState) -> HostPtrs {
+fn linear(weight: &UploadedNvfp4, grad: &DeviceBuffer<f32>, state: &MuonState) -> HostPtrs {
     HostPtrs {
         grad: grad.cu_deviceptr(),
         momentum: state.momentum.cu_deviceptr(),

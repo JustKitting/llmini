@@ -1,4 +1,4 @@
-status	val_loss	completed_steps	batch_size	n_layer	n_embd	n_head	aurora_phases	aurora_blocks	lr_scale	adam_lr_scale	nextlat_lr_scale	warmup_steps	start_ratio	amuse_beta1	amuse_rho	log_path
+status	val_loss	completed_steps	batch_size	n_layer	n_embd	n_head	muon_phases	muon_blocks	lr_scale	adam_lr_scale	nextlat_lr_scale	warmup_steps	start_ratio	amuse_beta1	amuse_rho	log_path
 rejected_screen	NaN	500	8	4	1024	16	16	80	0.581439	2.259944	2.039705	73	0.003171	0.323986	0.740917	target/sweeps/nextlat_lr_20260622T035322Z/trial_0000/screen.log	141.506000	5.458705	500	141.506000	screen_loss_worse
 rejected_screen	NaN	93	16	4	2048	16	16	90	1.777307	1.477861	1.498555	32	0.038236	0.567069	0.543923	target/sweeps/nextlat_lr_20260622T035322Z/trial_0001/screen.log	181.301000	6.699020	93	181.301000	incomplete
 rejected_screen	NaN	500	16	4	1024	16	4	80	2.081583	1.351326	1.551867	47	0.167553	0.493862	0.936629	target/sweeps/nextlat_lr_20260622T035322Z/trial_0002/screen.log	171.171000	5.315510	500	171.171000	screen_loss_worse

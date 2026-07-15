@@ -27,11 +27,13 @@ quality. Diagnostic metrics do not replace the 900-second gate.
 
 ## Model-Size Invariant
 
-The active control is the approximately 1B-effective-parameter shape with an
-8K context:
+The active control is the approximately 1B-effective-parameter shape. Its
+pretraining baseline uses four independent 2048-token sequences per optimizer
+step:
 
 ```text
-GPT2_SEQ_LEN=8192
+GPT2_SEQ_LEN=2048
+GPT2_BATCH_SIZE=4
 GPT2_N_LAYER=16
 GPT2_N_EMBD=2048
 GPT2_N_HEAD=32
@@ -39,10 +41,15 @@ GPT2_N_HEAD=32
 
 This has 964376960 effective parameters and 984571904 allocated parameter
 slots. Kernel, runtime, optimizer, dataset, and tokenizer experiments must not
-reduce the model below 16 layers or below an 8192-token context. A smaller
-shape may be used only for an explicitly labelled diagnostic; its timing or
-loss can never become the active baseline, promotion evidence, or a commit
-gate.
+reduce the model below 16 layers, width 2048, or 32 heads. A smaller model may
+be used only for an explicitly labelled diagnostic; its timing or loss can
+never become the active baseline, promotion evidence, or a commit gate.
+
+The 2048-token sequence length is the pretraining context, not a reduction in
+the model-size floor or the final context target. Any later long-context stage
+must preserve optimizer state and earn its own matched held-out validation;
+model-only checkpoint reloads that reset AMUSE and Muon state are not valid
+stage-transition evidence.
 
 ## Kernel/Runtime Acceptance Rule
 
@@ -71,8 +78,8 @@ threshold from the active baseline whenever that baseline changes:
 minimum_step_saving = (TRAIN_ELAPSED_S / COMPLETED_STEPS) * 0.005
 ```
 
-For the current baseline, `900.349 / 979 = 0.919661900` seconds per step, so a
-candidate must credibly be able to save at least `4.598309 ms/step` before any
+For the current baseline, `900.143 / 1312 = 0.686084604` seconds per step, so a
+candidate must credibly be able to save at least `3.430423 ms/step` before any
 code edit, rebuild, GPU test, or training screen. Multiply a per-launch saving
 by the launch count per step and compare that aggregate saving with the
 threshold; do not pursue sub-threshold micro-optimizations.
@@ -104,9 +111,9 @@ pre-NextLat validation results when evaluating current NextLat work.
 
 `notes/sweep_baseline.env` is the mutable baseline for the active model lineage.
 For current work, that means a 900-second result from the active 16-layer,
-width-2048, 32-head, 8K-context NextLat model, current dataset, and current
-tokenizer, not a result from an older or smaller architecture or shorter
-context.
+width-2048, 32-head, batch-4, 2K-pretraining-context NextLat model, current
+dataset, and current tokenizer, not a result from an older or smaller
+architecture.
 
 ## Sweep Rule
 

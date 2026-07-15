@@ -1,8 +1,8 @@
 mod adam;
-mod aurora_mega;
 mod embedding;
 mod grad_clip;
 mod kda_clip;
+mod muon_mega;
 mod update;
 
 use std::sync::Arc;

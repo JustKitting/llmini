@@ -1,15 +1,13 @@
 mod adam;
-mod aurora;
 mod embedding;
 mod grad_clip;
 mod kda_clip;
+mod muon;
 mod schedule_free;
 
 pub use adam::AdamWUpdateArgs;
-pub use aurora::{
-    AuroraMegaUpdateArgs, AuroraSlotDescriptor, AuroraTmaFinishArgs, AuroraTmaPrepareArgs,
-};
 pub use embedding::EmbeddingLookupGradArgs;
 pub use grad_clip::GradientClipArgs;
-pub use kda_clip::KdaAuroraClipArgs;
+pub use kda_clip::KdaMuonClipArgs;
+pub use muon::{MuonMegaUpdateArgs, MuonSlotDescriptor, MuonTmaFinishArgs, MuonTmaPrepareArgs};
 pub use schedule_free::ScheduleFreeMaterializeArgs;

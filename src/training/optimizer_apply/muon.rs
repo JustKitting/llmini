@@ -3,22 +3,22 @@ use cuda_core::{CudaStream, DriverError};
 use crate::training::runtime::Runtime;
 
 use super::super::OptimizerTrace;
-use super::super::optimizer_aurora::{AuroraPointerTables, AuroraTmaArgs, apply_aurora_tma};
-use super::super::optimizer_tc_scratch::AuroraScratchBuffers;
+use super::super::optimizer_muon::{MuonPointerTables, MuonTmaArgs, apply_muon_tma};
+use super::super::optimizer_tc_scratch::MuonScratchBuffers;
 use super::timed_ms;
 
-pub(super) fn update_aurora_groups(
+pub(super) fn update_muon_groups(
     _stream: &CudaStream,
     runtime: &Runtime,
-    tables: &AuroraPointerTables,
-    scratch: &mut AuroraScratchBuffers,
+    tables: &MuonPointerTables,
+    scratch: &mut MuonScratchBuffers,
     step: u32,
     average_coefficient: f32,
     grad_scale: f32,
     trace: &mut OptimizerTrace,
 ) -> Result<(), DriverError> {
-    trace.aurora_ms += timed_ms(|| {
-        apply_aurora_tma(AuroraTmaArgs {
+    trace.muon_ms += timed_ms(|| {
+        apply_muon_tma(MuonTmaArgs {
             runtime,
             table: &tables.all,
             scratch,

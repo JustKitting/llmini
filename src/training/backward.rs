@@ -41,8 +41,8 @@ impl Trainer {
             observed_loss,
             scratch: &mut self.buffers.optimizer,
             state: &mut self.buffers.optimizer_state,
-            aurora: &mut self.buffers.aurora,
-            aurora_tables: &self.buffers.aurora_tables,
+            muon: &mut self.buffers.muon,
+            muon_tables: &self.buffers.muon_tables,
             tape: &self.buffers.tape,
             grad_clip: &mut self.buffers.grad_clip,
         })?;

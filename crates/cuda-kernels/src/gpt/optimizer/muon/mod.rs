@@ -1,7 +1,7 @@
-//! Aurora device kernels.
+//! Muon device kernels.
 //!
 //! Algorithm ownership:
-//! - `fused`: cooperative Aurora matrix update path.
+//! - `fused`: cooperative Muon matrix update path.
 //! - `polar`: shared Polar Express inner loop used by `fused`.
 
 mod fused;

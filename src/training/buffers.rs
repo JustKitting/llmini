@@ -10,9 +10,9 @@ use super::grad_clip::GradientClipBuffers;
 use super::grads::BackwardBuffers;
 use super::next_latent::{NextLatBuffers, NextLatGradBuffers, NextLatScratchBuffers};
 use super::optimizer::OptimizerScratch;
-use super::optimizer_aurora::AuroraPointerTables;
+use super::optimizer_muon::MuonPointerTables;
 use super::optimizer_state::OptimizerStateBuffers;
-use super::optimizer_tc_scratch::AuroraScratchBuffers;
+use super::optimizer_tc_scratch::MuonScratchBuffers;
 use super::scratch::BackwardScratchBuffers;
 use super::tape::ForwardTapeBuffers;
 use crate::training::runtime::Runtime;
@@ -40,8 +40,8 @@ pub struct TrainBuffers {
     pub scratch: BackwardScratchBuffers,
     pub optimizer: OptimizerScratch,
     pub optimizer_state: OptimizerStateBuffers,
-    pub aurora: AuroraScratchBuffers,
-    pub aurora_tables: AuroraPointerTables,
+    pub muon: MuonScratchBuffers,
+    pub muon_tables: MuonPointerTables,
     pub grad_clip: GradientClipBuffers,
 }
 
@@ -54,7 +54,7 @@ impl TrainBuffers {
         let backward = BackwardBuffers::new(stream)?;
         let next_latent_grads = NextLatGradBuffers::new(stream)?;
         let optimizer_state = OptimizerStateBuffers::new(stream, &runtime.decode, uploaded)?;
-        let aurora_tables = AuroraPointerTables::new(
+        let muon_tables = MuonPointerTables::new(
             stream,
             uploaded,
             &backward,
@@ -85,8 +85,8 @@ impl TrainBuffers {
             scratch: BackwardScratchBuffers::new(stream)?,
             optimizer: OptimizerScratch::new(stream)?,
             optimizer_state,
-            aurora: AuroraScratchBuffers::new(stream)?,
-            aurora_tables,
+            muon: MuonScratchBuffers::new(stream)?,
+            muon_tables,
             grad_clip,
         })
     }

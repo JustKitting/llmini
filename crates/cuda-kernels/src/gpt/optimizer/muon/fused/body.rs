@@ -5,18 +5,17 @@ use super::momentum::momentum_orient;
 use super::polar_step::run_polar_step;
 use super::quant::quantize_updated_master;
 use super::types::{
-    AuroraMatrixScratch, AuroraMatrixShape, AuroraMatrixState, AuroraMatrixTiles,
-    AuroraUpdateScalars,
+    MuonMatrixScratch, MuonMatrixShape, MuonMatrixState, MuonMatrixTiles, MuonUpdateScalars,
 };
 use super::update::update_master_chunks;
 
-pub(super) fn aurora_matrix_update_body(
-    state: AuroraMatrixState,
-    scratch: AuroraMatrixScratch,
-    tiles: AuroraMatrixTiles<'_>,
+pub(super) fn muon_matrix_update_body(
+    state: MuonMatrixState,
+    scratch: MuonMatrixScratch,
+    tiles: MuonMatrixTiles<'_>,
     work: WorkGrid,
-    shape: AuroraMatrixShape,
-    scalars: AuroraUpdateScalars,
+    shape: MuonMatrixShape,
+    scalars: MuonUpdateScalars,
 ) {
     let len = shape.len();
     let transposed = shape.polar_transposed();

@@ -2,7 +2,7 @@ use cuda_core::{CudaStream, DeviceBuffer, DeviceCopy};
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub struct AuroraSlotDescriptor {
+pub struct MuonSlotDescriptor {
     pub grad: u64,
     pub momentum: u64,
     pub z_master: u64,
@@ -15,11 +15,11 @@ pub struct AuroraSlotDescriptor {
     pub learning_rate_multiplier: f32,
 }
 
-unsafe impl DeviceCopy for AuroraSlotDescriptor {}
+unsafe impl DeviceCopy for MuonSlotDescriptor {}
 
-pub struct AuroraMegaUpdateArgs<'a> {
+pub struct MuonMegaUpdateArgs<'a> {
     pub stream: &'a CudaStream,
-    pub slots: &'a DeviceBuffer<AuroraSlotDescriptor>,
+    pub slots: &'a DeviceBuffer<MuonSlotDescriptor>,
     pub oriented: &'a mut DeviceBuffer<f32>,
     pub polar_next: &'a mut DeviceBuffer<f32>,
     pub polar_x: &'a mut DeviceBuffer<f32>,
@@ -38,9 +38,9 @@ pub struct AuroraMegaUpdateArgs<'a> {
     pub iterations: u32,
 }
 
-pub struct AuroraTmaPrepareArgs<'a> {
+pub struct MuonTmaPrepareArgs<'a> {
     pub stream: &'a CudaStream,
-    pub slots: &'a DeviceBuffer<AuroraSlotDescriptor>,
+    pub slots: &'a DeviceBuffer<MuonSlotDescriptor>,
     pub oriented: &'a mut DeviceBuffer<f32>,
     pub polar_x: &'a mut DeviceBuffer<f32>,
     pub polar_chunks: &'a mut DeviceBuffer<f32>,
@@ -49,9 +49,9 @@ pub struct AuroraTmaPrepareArgs<'a> {
     pub grad_scale: f32,
 }
 
-pub struct AuroraTmaFinishArgs<'a> {
+pub struct MuonTmaFinishArgs<'a> {
     pub stream: &'a CudaStream,
-    pub slots: &'a DeviceBuffer<AuroraSlotDescriptor>,
+    pub slots: &'a DeviceBuffer<MuonSlotDescriptor>,
     pub polar_update: &'a DeviceBuffer<f32>,
     pub polar_chunks: &'a mut DeviceBuffer<f32>,
     pub slot_index: u32,

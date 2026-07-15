@@ -1,14 +1,12 @@
-use crate::sweep::candidate::{
-    Candidate, MIN_N_EMBD, MIN_N_HEAD, MIN_N_LAYER, valid_aurora_phases,
-};
+use crate::sweep::candidate::{Candidate, MIN_N_EMBD, MIN_N_HEAD, MIN_N_LAYER, valid_muon_phases};
 
 use super::fixtures::rng;
 
 #[test]
-fn exposes_profiled_l2_aurora_phase_layout() {
-    assert!(valid_aurora_phases(8, 90).contains(&2));
-    assert!(!valid_aurora_phases(16, 90).contains(&2));
-    assert!(valid_aurora_phases(16, 90).contains(&4));
+fn exposes_profiled_l2_muon_phase_layout() {
+    assert!(valid_muon_phases(8, 90).contains(&2));
+    assert!(!valid_muon_phases(16, 90).contains(&2));
+    assert!(valid_muon_phases(16, 90).contains(&4));
 }
 
 #[test]

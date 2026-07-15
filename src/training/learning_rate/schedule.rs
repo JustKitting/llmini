@@ -13,7 +13,7 @@ pub(in crate::training) fn next_latent_adam_multiplier(step: u32) -> f32 {
     adam_multiplier(step) * next_latent_scale()
 }
 
-pub(in crate::training) fn aurora_multiplier(step: u32) -> f32 {
+pub(in crate::training) fn muon_multiplier(step: u32) -> f32 {
     scale() * warmup_only(step)
 }
 

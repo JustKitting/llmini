@@ -35,13 +35,13 @@ impl AdamState {
     }
 }
 
-pub(in crate::training) struct AuroraState {
+pub(in crate::training) struct MuonState {
     pub(in crate::training) z_master: DeviceBuffer<f32>,
     pub(in crate::training) x_master: DeviceBuffer<f32>,
     pub(in crate::training) momentum: DeviceBuffer<f32>,
 }
 
-impl AuroraState {
+impl MuonState {
     pub(super) fn new(init: StateInit<'_>, tensor: &UploadedNvfp4) -> Result<Self, DriverError> {
         let master = decode_master(init.stream, init.decode, tensor)?;
         Ok(Self {

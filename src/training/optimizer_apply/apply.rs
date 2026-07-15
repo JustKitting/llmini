@@ -1,12 +1,12 @@
 use super::super::OptimizerTrace;
 use super::super::diagnostics::PendingTrainingDiagnostics;
-use super::super::optimizer_aurora::aurora_learning_rate;
+use super::super::optimizer_muon::muon_learning_rate;
 use super::adam::adam_learning_rate;
-use super::aurora::update_aurora_groups;
 use super::base::{BaseAdamUpdateArgs, update_base_adam};
 use super::block::{BlockUpdateArgs, update_blocks};
 use super::embedding::add_embedding_lookup_grad;
-use super::kda_clip::apply_kda_aurora_clip;
+use super::kda_clip::apply_kda_muon_clip;
+use super::muon::update_muon_groups;
 use super::skip::record_skip_decision;
 use super::timed_ms;
 use super::types::{WeightUpdateArgs, WeightUpdateResult};
@@ -23,8 +23,8 @@ pub fn apply_weight_updates(args: WeightUpdateArgs<'_>) -> AppResult<WeightUpdat
         observed_loss,
         scratch,
         state,
-        aurora,
-        aurora_tables,
+        muon,
+        muon_tables,
         tape,
         grad_clip,
     } = args;
@@ -32,7 +32,7 @@ pub fn apply_weight_updates(args: WeightUpdateArgs<'_>) -> AppResult<WeightUpdat
     let mut trace = OptimizerTrace::default();
     let candidate_step = state.next_step();
     trace.adam_lr = adam_learning_rate(candidate_step);
-    trace.aurora_lr = aurora_learning_rate(candidate_step);
+    trace.muon_lr = muon_learning_rate(candidate_step);
     trace.embedding_lookup_ms =
         timed_ms(|| add_embedding_lookup_grad(stream, optimizer, batch, grads, next_latent_grads))?;
 
@@ -99,17 +99,17 @@ pub fn apply_weight_updates(args: WeightUpdateArgs<'_>) -> AppResult<WeightUpdat
         trace: &mut trace,
     })?;
 
-    update_aurora_groups(
+    update_muon_groups(
         stream,
         runtime,
-        aurora_tables,
-        aurora,
+        muon_tables,
+        muon,
         step,
         average_coefficient,
         grad_clip.scale,
         &mut trace,
     )?;
-    apply_kda_aurora_clip(stream, runtime, uploaded, tape, scratch, state, &mut trace)?;
+    apply_kda_muon_clip(stream, runtime, uploaded, tape, scratch, state, &mut trace)?;
 
     let diagnostics = diagnostics
         .map(|pending| pending.finish(stream, uploaded))

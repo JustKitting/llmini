@@ -62,15 +62,15 @@ fn candidate(
     batch_size: usize,
     n_layer: usize,
     n_embd: usize,
-    aurora_phases: usize,
-    aurora_blocks: usize,
+    muon_phases: usize,
+    muon_blocks: usize,
     lr_scale: f64,
 ) -> Candidate {
     Candidate {
         n_embd,
         n_head: if n_embd >= 2048 { 32 } else { 16 },
-        aurora_phases,
-        aurora_blocks,
+        muon_phases,
+        muon_blocks,
         lr_scale,
         ..basic_candidate(batch_size, n_layer)
     }

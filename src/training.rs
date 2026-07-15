@@ -23,7 +23,7 @@ mod next_latent;
 mod numeric_metric;
 mod optimizer;
 mod optimizer_apply;
-mod optimizer_aurora;
+mod optimizer_muon;
 mod optimizer_state;
 mod optimizer_tc_scratch;
 pub(crate) mod runtime;

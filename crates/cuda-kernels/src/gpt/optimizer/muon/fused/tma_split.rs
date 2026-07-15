@@ -1,13 +1,13 @@
 use cuda_device::{DisjointSlice, SharedArray, cooperative_launch, cuda_module, grid, kernel};
 
-use crate::optimizer::AuroraSlotDescriptor;
+use crate::optimizer::MuonSlotDescriptor;
 
 use super::super::super::threads::WARPS_PER_BLOCK;
 use super::super::super::work_grid::WorkGrid;
 use super::super::polar::fused::normalize_source_to_x;
 use super::momentum::momentum_orient;
 use super::quant::quantize_updated_master;
-use super::types::{AuroraMatrixShape, AuroraUpdateScalars};
+use super::types::{MuonMatrixShape, MuonUpdateScalars};
 use super::update::update_master_chunks;
 
 #[cuda_module]
@@ -16,8 +16,8 @@ pub(crate) mod module {
 
     #[kernel]
     #[cooperative_launch]
-    pub fn aurora_tma_prepare_polar_kernel(
-        slots: &[AuroraSlotDescriptor],
+    pub fn muon_tma_prepare_polar_kernel(
+        slots: &[MuonSlotDescriptor],
         mut oriented: DisjointSlice<f32>,
         mut polar_x: DisjointSlice<f32>,
         mut polar_chunks: DisjointSlice<f32>,
@@ -28,7 +28,7 @@ pub(crate) mod module {
         static mut WARP_SUMS: SharedArray<f32, { WARPS_PER_BLOCK as usize }> = SharedArray::UNINIT;
 
         let desc = slots[slot_index as usize];
-        let shape = AuroraMatrixShape {
+        let shape = MuonMatrixShape {
             rows: desc.rows,
             cols: desc.cols,
         };
@@ -67,8 +67,8 @@ pub(crate) mod module {
 
     #[kernel]
     #[cooperative_launch]
-    pub fn aurora_tma_finish_update_kernel(
-        slots: &[AuroraSlotDescriptor],
+    pub fn muon_tma_finish_update_kernel(
+        slots: &[MuonSlotDescriptor],
         polar_update: &[f32],
         mut polar_chunks: DisjointSlice<f32>,
         slot_index: u32,
@@ -79,13 +79,13 @@ pub(crate) mod module {
         static mut WARP_SUMS: SharedArray<f32, { WARPS_PER_BLOCK as usize }> = SharedArray::UNINIT;
 
         let desc = slots[slot_index as usize];
-        let shape = AuroraMatrixShape {
+        let shape = MuonMatrixShape {
             rows: desc.rows,
             cols: desc.cols,
         };
         let len = shape.len();
         let work = WorkGrid::x_axis();
-        let scalars = AuroraUpdateScalars {
+        let scalars = MuonUpdateScalars {
             mu: 0.0,
             grad_scale: 1.0,
             learning_rate: learning_rate * desc.learning_rate_multiplier,

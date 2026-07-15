@@ -1,4 +1,4 @@
-status	val_loss	completed_steps	batch_size	n_layer	n_embd	n_head	aurora_phases	aurora_blocks	lr_scale	adam_lr_scale	nextlat_lr_scale	warmup_steps	start_ratio	amuse_beta1	amuse_rho	log_path
+status	val_loss	completed_steps	batch_size	n_layer	n_embd	n_head	muon_phases	muon_blocks	lr_scale	adam_lr_scale	nextlat_lr_scale	warmup_steps	start_ratio	amuse_beta1	amuse_rho	log_path
 success	5.346710	2755	8	4	1024	16	8	120	1.040728	0.671306	5	0.200000	0.200000	0.800000	target/sweeps/synth_900_multi_20260619T080010Z/trial_0000/train.log
 success	4.805441	2750	8	4	1024	16	8	120	1.844459	0.925681	5	0.000000	0.400000	0.500000	target/sweeps/synth_900_multi_20260619T080010Z/trial_0001/train.log
 success	4.895197	2881	8	4	1024	16	8	160	2.116410	0.503505	5	0.000000	0.400000	0.500000	target/sweeps/synth_900_multi_20260619T080010Z/trial_0002/train.log

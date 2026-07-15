@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use super::super::{
-    candidate::{Candidate, valid_aurora_phases},
+    candidate::{Candidate, valid_muon_phases},
     candidate_space as space,
     rng::SweepRng,
 };
@@ -24,9 +24,9 @@ pub fn candidates(
             candidate.batch_size = nearby_batch(center.batch_size, rng);
         }
         if attempts % 8 == 7 {
-            let blocks = space::valid_aurora_blocks(candidate.n_layer);
-            candidate.aurora_blocks = rng.choose(&blocks);
-            candidate.aurora_phases = nearby_phase(&candidate, rng);
+            let blocks = space::valid_muon_blocks(candidate.n_layer);
+            candidate.muon_blocks = rng.choose(&blocks);
+            candidate.muon_phases = nearby_phase(&candidate, rng);
         }
         candidate.lr_scale = jitter_log(center.lr_scale, rng, 0.35);
         candidate.adam_lr_scale = jitter_log(center.adam_lr_scale, rng, 0.35);
@@ -49,8 +49,8 @@ fn nearby_batch(center: usize, rng: &mut SweepRng) -> usize {
 }
 
 fn nearby_phase(candidate: &Candidate, rng: &mut SweepRng) -> usize {
-    let phases = valid_aurora_phases(candidate.n_layer * 4, candidate.aurora_blocks);
-    nearby_value(&phases, candidate.aurora_phases, rng).unwrap_or(candidate.aurora_phases)
+    let phases = valid_muon_phases(candidate.n_layer * 4, candidate.muon_blocks);
+    nearby_value(&phases, candidate.muon_phases, rng).unwrap_or(candidate.muon_phases)
 }
 
 fn nearby_value(values: &[usize], center: usize, rng: &mut SweepRng) -> Option<usize> {

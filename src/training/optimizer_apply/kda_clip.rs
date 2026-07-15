@@ -1,6 +1,6 @@
 use cuda_core::{CudaStream, DriverError};
 use gpt2_nvfp4::{AttentionDims, GPT2_TOKEN_ROWS_U32, uses_full_attention};
-use rust_kernels_cuda::optimizer::KdaAuroraClipArgs;
+use rust_kernels_cuda::optimizer::KdaMuonClipArgs;
 
 use crate::training::runtime::Runtime;
 use crate::upload::UploadedModel;
@@ -13,7 +13,7 @@ use super::timed_ms;
 
 const KDA_QK_CLIP_TAU: f32 = 100.0;
 
-pub(super) fn apply_kda_aurora_clip(
+pub(super) fn apply_kda_muon_clip(
     stream: &CudaStream,
     runtime: &Runtime,
     uploaded: &mut UploadedModel,
@@ -27,8 +27,8 @@ pub(super) fn apply_kda_aurora_clip(
             let full_attention = uses_full_attention(block_index);
             let dims = AttentionDims::new(full_attention);
             let block = &mut uploaded.blocks[block_index];
-            let qkv_state = &mut state.blocks[block_index].attn_qkv.weight_aurora;
-            runtime.optimizer.apply_kda_aurora_clip(KdaAuroraClipArgs {
+            let qkv_state = &mut state.blocks[block_index].attn_qkv.weight_muon;
+            runtime.optimizer.apply_kda_muon_clip(KdaMuonClipArgs {
                 stream,
                 qkv: tape.block_qkv(block_index),
                 bytes: &mut block.attn_qkv.weight.bytes,
