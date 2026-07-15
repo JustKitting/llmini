@@ -135,6 +135,70 @@ decision:
 
 ```text
 date: 2026-07-15
+commit: rejection record only; candidate source reverted
+experiment: Re-evaluate direct SM120 packed-scale output after four-six speedups.
+status: rejected_profile_gate
+change:
+  Four exact Muon four-six producers wrote scale bytes directly into the
+  block-major SM120 TMA layout and skipped their following scale-pack launch.
+  Non-transposed trials used both a row/K-group grid and a native 16-byte
+  scale-tile grid. Transposed trials used tile coordinates to form the packed
+  offset directly. Exact shapes whose MN extent was not a multiple of 128
+  retained the accepted quantize-then-pack path.
+numerics:
+  FP4 payloads, packed scale planes, global scales, bounded values, and lazy-
+  bounded values matched the accepted quantizer followed by
+  pack_sm120_scale_plane_compact bit-for-bit in all six focused NVFP4 tests.
+memory:
+  Existing packed-scale buffers were targeted directly while the unpacked
+  fallback scratch remained allocated. Peak VRAM and capacity headroom were
+  unchanged.
+minimum_impact_gate:
+  The promoted baseline averages 900.149 / 1548 = 581.491602ms per step and
+  requires 2.907458ms per step. Its 17550 pack launches occupied
+  52.881815 / 53.016761ms over 10 steps. The four exact paths accounted for
+  13400 launches, so the previously measured candidate had a credible ceiling
+  near the aggregate floor and warranted a current-source re-evaluation.
+focused_profile:
+  Committed baseline samples:
+    target/nsys/20260715_backward_producer_redux_batch_candidate.nsys-rep
+    target/nsys/20260715_backward_producer_redux_batch_candidate_reciprocal.nsys-rep
+    total GPU kernels: 5795.352623 and 5809.654954ms.
+    train elapsed: 5.691 and 5.705 seconds.
+  Best current direct-layout samples:
+    target/nsys/20260715_direct_packed_scales_specialized_candidate.nsys-rep
+    target/nsys/20260715_direct_packed_scales_specialized_candidate_reciprocal.nsys-rep
+    total GPU kernels: 5801.851113 and 5819.669805ms,
+      regressing 0.649849 / 1.001485ms per step.
+    train elapsed: 5.691 and 5.709 seconds, flat-to-slower.
+    held-out val_loss: 8.665985 and 8.666340 versus 8.665930 and
+      8.665089; all differences are immaterial because speed failed.
+    kernel launches: 91781 -> 78381 in both samples, removing 13400 launches
+      over 10 steps, or 1340 launches per step.
+  Directly affected work in the two corresponding samples:
+    four producer families: 584.856650 -> 619.936742ms and
+      586.769104 -> 622.428785ms, regressing 3.508009 / 3.565968ms per step.
+    remaining scale-pack work: 52.881815 -> 23.056187ms and
+      53.016761 -> 23.115162ms, saving 2.982563 / 2.990160ms per step.
+    affected producer-plus-pack total therefore regressed
+      0.525446 / 0.575808ms per step.
+  A native scale-tile scheduling variant made transposed shared-memory access
+  pathological and regressed total kernels to 6070.906276 / 6089.112036ms;
+  it is not a viable refinement.
+verification:
+  cargo fmt --all, git diff --check, cargo check --workspace --lib --bins,
+  and fresh cargo oxide build --arch sm_120a: pass for each measured layout.
+  All six focused NVFP4 GPU comparisons and three Muon TMA comparisons pass.
+decision:
+  Reject before either fixed-wall gate. After the accepted reciprocal, payload,
+  and error-reduction speedups, scattered packed-scale stores now cost more
+  than the separate pack kernels they replace. Both reciprocal whole-step
+  profiles and wall samples fail the 0.5% gate. Candidate source and tests are
+  reverted; this record prevents relying on the older pre-speedup result.
+```
+
+```text
+date: 2026-07-15
 commit: accepted local jj commit after full gate
 experiment: Reuse MS-EDEN payloads and batch nonnegative warp maxima onto hardware redux.
 status: accepted_900s
