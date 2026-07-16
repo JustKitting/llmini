@@ -46,6 +46,86 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-16
 commit: accepted local jj commit after full gate
+experiment: Remove the MS-EDEN least-squares local-scale correction pass.
+status: accepted_450s_within_quality_tolerance
+change:
+  Retained the initial amax-derived E4M3 local scale for each MS-EDEN group and
+  removed the subsequent E2M1 decode, paired numerator/denominator reduction,
+  correction reciprocal, and second E4M3 conversion. The payload is already
+  encoded against that initial scale, so the stored scale byte now matches it
+  directly. Hadamard transforms, random signs, global scales, scale overrides,
+  and E2M1 conversion remain unchanged.
+numerics:
+  This removes the least-squares adjustment that reduced reconstruction error
+  after the initial FP4 encoding. Fusion and decoded-output consistency tests
+  still pass because every route uses the same quantizer, but the fixed-wall
+  held-out comparison is the quality authority. The 450-second endpoint
+  regresses by 0.542%, inside the user's explicit roughly +1% acceptance band.
+memory:
+  No persistent allocation, scratch capacity, or buffer lifetime changes. The
+  shorter payload path may reduce transient register pressure but does not
+  create a VRAM-capacity win.
+minimum_impact_gate:
+  The promoted floor was 23.88059ms over a ten-step profile. MS-EDEN occupied
+  521.175906ms/profile in the accepted reciprocal mean. Removing correction
+  saves 42.550365ms/profile, clearing the floor by 1.78x.
+focused_profile:
+  Accepted reciprocal samples:
+    target/nsys/20260716_ms_eden_deterministic_scale_candidate.nsys-rep
+    target/nsys/20260716_ms_eden_deterministic_scale_candidate_reciprocal.nsys-rep
+    total GPU kernels 4791.266811 and 4796.070282ms; mean 4793.668547ms.
+    MS-EDEN 520.932664 and 521.419148ms; mean 521.175906ms.
+  Candidate reciprocal samples:
+    target/nsys/20260716_ms_eden_no_correction_candidate.nsys-rep
+    target/nsys/20260716_ms_eden_no_correction_candidate_reciprocal.nsys-rep
+    total GPU kernels 4758.250812 and 4759.771015ms; mean 4759.010914ms,
+      saving 34.657633ms / 0.723%.
+    MS-EDEN 478.639256 and 478.611826ms; mean 478.625541ms,
+      saving 42.550365ms / 8.164%.
+verification:
+  cargo fmt --all and a fresh
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass. After that
+  exact rebuild, all five ignored MS-EDEN transpose tests, all nine ignored
+  nvfp4_quant tests, both ignored linear-backward tests, the ignored
+  QKV-backward test, and the ignored block-attention backward test pass.
+  Required 30-second screen with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260716_113609Z_fineweb_30s
+    stdout: target/gates/20260716_ms_eden_no_correction_30s.log
+    completed_steps=65, train_elapsed_s=30.029, val_loss=6.561170.
+  Required 450-second gate with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260716_113651Z_fineweb_450s
+    stdout: target/gates/20260716_ms_eden_no_correction_450s.log
+    completed_steps=951, train_elapsed_s=450.220, val_loss=5.270691.
+    All 20 high-fidelity samples are finite and nonzero, with zero skipped
+    updates, loss-spike skips, grad-norm-spike skips, or nonfinite skips. Grad
+    norm ranges from 1.159188986 to 16.900184631. Every sample retains batch 4,
+    sequence 2048, and 8192 tokens per step.
+measured_effect:
+  Against the matched 30-second parent:
+    completed steps remain 65.
+    average step time 464.707692 -> 461.984615ms
+      (-2.723077ms, -0.586%).
+    held-out val_loss 6.556823 -> 6.561170
+      (+0.004347, +0.066%).
+  Against the matched 450-second parent:
+    completed steps 943 -> 951 (+8, +0.848%).
+    average step time 477.611877 -> 473.417455ms
+      (-4.194422ms, -0.878%).
+    training tokens 7725056 -> 7790592 (+65536, +0.848%).
+    held-out val_loss 5.242274 -> 5.270691
+      (+0.028417, +0.542%).
+decision:
+  Keep and promote under the explicit rule to commit real speed wins whose
+  held-out loss remains within roughly +1%. Both reciprocal profiles and both
+  fixed-wall gates show a speed win, the quality regression is +0.542%, and
+  the sustained run is stable. The next 0.5% threshold is
+  (450.220 / 951) * 0.005 = 2.367087ms per step, or 23.67087ms over a ten-step
+  profile.
+```
+
+```text
+date: 2026-07-16
+commit: accepted local jj commit after full gate
 experiment: Deterministically round corrected MS-EDEN scales.
 status: accepted_450s
 change:
