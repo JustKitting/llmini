@@ -7,7 +7,7 @@ use super::{TokenBatch, TrainStats, Trainer};
 use crate::AppResult;
 
 impl Trainer {
-    pub fn train_step(&mut self, batch: &TokenBatch, sync_loss: bool) -> AppResult<TrainStats> {
+    pub(in crate::training) fn materialize_training_weights(&mut self) -> AppResult<()> {
         super::schedule_free::materialize_training_weights(
             self.runtime.stream.as_ref(),
             &self.runtime,
@@ -15,6 +15,11 @@ impl Trainer {
             &mut self.buffers.optimizer,
             &self.buffers.optimizer_state,
         )?;
+        Ok(())
+    }
+
+    pub fn train_step(&mut self, batch: &TokenBatch, sync_loss: bool) -> AppResult<TrainStats> {
+        self.materialize_training_weights()?;
 
         let forward_start = Instant::now();
         let mut stats = self.forward_step(batch)?;

@@ -6,7 +6,31 @@ use super::OptimizerModule;
 use crate::launch::grid_x_config;
 
 impl OptimizerModule {
-    pub fn apply_kda_muon_clip(&self, args: KdaMuonClipArgs<'_>) -> Result<(), DriverError> {
+    pub fn apply_kda_muon_clip(&self, mut args: KdaMuonClipArgs<'_>) -> Result<(), DriverError> {
+        let len = self.apply_kda_muon_clip_master(&mut args)?;
+        self.requantize(
+            args.stream,
+            args.bytes,
+            args.scales,
+            args.global_scale,
+            &*args.x_master,
+            args.amax,
+            args.chunk_amax,
+            len,
+        )
+    }
+
+    pub fn apply_kda_muon_clip_deferred_quantization(
+        &self,
+        mut args: KdaMuonClipArgs<'_>,
+    ) -> Result<(), DriverError> {
+        self.apply_kda_muon_clip_master(&mut args).map(|_| ())
+    }
+
+    fn apply_kda_muon_clip_master(
+        &self,
+        args: &mut KdaMuonClipArgs<'_>,
+    ) -> Result<u32, DriverError> {
         let len = args.input_dim * args.qkv_dim;
         assert_eq!(len as usize % 16, 0);
         assert!(args.qkv.len() >= args.row_count as usize * args.qkv_dim as usize);
@@ -23,10 +47,10 @@ impl OptimizerModule {
             grid_x_config(args.head_count, KDA_CLIP_THREADS_PER_BLOCK),
             args.qkv,
             args.qk_norm_max,
-            args.z_master,
-            args.x_master,
-            args.momentum,
-            args.scores,
+            &mut *args.z_master,
+            &mut *args.x_master,
+            &mut *args.momentum,
+            &mut *args.scores,
             args.row_count,
             args.qkv_dim,
             args.input_dim,
@@ -38,16 +62,6 @@ impl OptimizerModule {
             args.norm_offset,
             args.precomputed_qk_norms,
         )?;
-
-        self.requantize(
-            args.stream,
-            args.bytes,
-            args.scales,
-            args.global_scale,
-            &*args.x_master,
-            args.amax,
-            args.chunk_amax,
-            len,
-        )
+        Ok(len)
     }
 }

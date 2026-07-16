@@ -114,7 +114,36 @@ impl OptimizerModule {
         )
     }
 
-    pub fn muon_tma_finish_update(&self, args: MuonTmaFinishArgs<'_>) -> Result<(), DriverError> {
+    pub fn muon_tma_finish_update(
+        &self,
+        mut args: MuonTmaFinishArgs<'_>,
+    ) -> Result<(), DriverError> {
+        self.muon_tma_update_master_and_amax(&mut args)?;
+
+        let groups_per_block = CTA_THREADS / MUON_NVFP4_GROUP_SIZE;
+        let group_count = args.matrix_len / MUON_NVFP4_GROUP_SIZE;
+        self.apply
+            .muon
+            .tma_split
+            .muon_tma_encode_updated_master_kernel(
+                args.stream,
+                grid_x_config(group_count.div_ceil(groups_per_block), CTA_THREADS),
+                args.slots,
+                args.slot_index,
+            )
+    }
+
+    pub fn muon_tma_finish_update_deferred_quantization(
+        &self,
+        mut args: MuonTmaFinishArgs<'_>,
+    ) -> Result<(), DriverError> {
+        self.muon_tma_update_master_and_amax(&mut args)
+    }
+
+    fn muon_tma_update_master_and_amax(
+        &self,
+        args: &mut MuonTmaFinishArgs<'_>,
+    ) -> Result<(), DriverError> {
         assert!(args.slot_index < args.slots.len() as u32);
         assert!(args.matrix_len > 0);
         assert_eq!(args.matrix_len % MUON_NVFP4_GROUP_SIZE, 0);
@@ -151,18 +180,6 @@ impl OptimizerModule {
                 &*args.polar_chunks,
                 args.slot_index,
                 chunk_count,
-            )?;
-
-        let groups_per_block = CTA_THREADS / MUON_NVFP4_GROUP_SIZE;
-        let group_count = args.matrix_len / MUON_NVFP4_GROUP_SIZE;
-        self.apply
-            .muon
-            .tma_split
-            .muon_tma_encode_updated_master_kernel(
-                args.stream,
-                grid_x_config(group_count.div_ceil(groups_per_block), CTA_THREADS),
-                args.slots,
-                args.slot_index,
             )
     }
 

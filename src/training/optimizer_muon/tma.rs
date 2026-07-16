@@ -90,7 +90,7 @@ pub(in crate::training) fn apply_muon_tma(args: MuonTmaArgs<'_>) -> Result<(), D
         if POLAR_ITERATIONS & 1 == 0 {
             args.runtime
                 .optimizer
-                .muon_tma_finish_update(MuonTmaFinishArgs {
+                .muon_tma_finish_update_deferred_quantization(MuonTmaFinishArgs {
                     stream,
                     slots: &args.table.slots,
                     polar_update: &args.scratch.polar_x,
@@ -107,7 +107,7 @@ pub(in crate::training) fn apply_muon_tma(args: MuonTmaArgs<'_>) -> Result<(), D
         } else {
             args.runtime
                 .optimizer
-                .muon_tma_finish_update(MuonTmaFinishArgs {
+                .muon_tma_finish_update_deferred_quantization(MuonTmaFinishArgs {
                     stream,
                     slots: &args.table.slots,
                     polar_update: &args.scratch.polar_next,

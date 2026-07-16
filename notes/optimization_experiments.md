@@ -46,6 +46,108 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-16
 commit: accepted local jj commit after full gate
+experiment: Defer dead optimizer requantization and pack FP16 tensor-core staging.
+status: accepted_450s_by_explicit_quality_override
+change:
+  AdamW, KDA clipping, and the Muon TMA finish path previously requantized their
+  updated FP32 master tensors at the end of every optimizer step. The next
+  training step always materializes schedule-free weights and overwrites those
+  bytes before the forward pass, so training now defers that dead end-of-step
+  encode. Existing public eager methods remain available and retain their old
+  behavior for callers and reference tests. Validation and TRAIN_TRACE
+  diagnostics explicitly materialize coherent schedule-free weights before
+  reading quantized tensors.
+  The compatible FP16 tensor-core batch stages half-precision RHS tiles in
+  K-major physical order with contiguous packed global loads, consumes them
+  with transposed ldmatrix fragments, and uses a single aligned u32 shared load
+  for each packed pair. A-transposed FP32 inputs use the corresponding K-major
+  shared layout and fragment path. Half-RHS, A-transposed, and causal kernels
+  route through the matching layout-specific MMA bodies.
+numerics:
+  Optimizer master weights, moments, clipping, Muon polar iterations, learning
+  rates, and quantization formulas are unchanged. Only an intermediate encode
+  whose output was overwritten before the next training forward is omitted.
+  Endpoint validation now explicitly observes the same schedule-free
+  materialization that the next forward would consume rather than relying on
+  transient bytes left by the last optimizer launcher. FP16 shared-memory
+  layouts and fragment loads are index-preserving rearrangements; the focused
+  matmul, tiled-matmul, causal-attention-backward, and all 18 ignored optimizer
+  GPU tests pass after the exact rebuild.
+memory:
+  Persistent allocations and scratch capacities are unchanged. Deferring the
+  redundant encodes reduces transient kernel work and launches but does not
+  claim a peak-VRAM reduction. Packed FP16 staging retains the existing tile
+  storage sizes and changes only physical layout and load granularity.
+minimum_impact_gate:
+  The accepted parent averaged 514.552000ms per sustained step, so the active
+  aggregate 0.5% floor was 2.572760ms/step. Reciprocal whole-workload profiles
+  measure 4.858956ms/step saved, clearing the floor by 1.89x before either
+  fixed-wall gate.
+focused_profile:
+  Matched parent samples:
+    target/nsys/20260716_four_six_eight_lane_exact_grid_candidate.nsys-rep
+    target/nsys/20260716_four_six_eight_lane_exact_grid_candidate_reciprocal.nsys-rep
+    total GPU kernels: 5135.283670 and 5146.597204ms.
+  Final candidate samples:
+    target/nsys/20260716_deferred_optimizer_quant_f16_batch_candidate.nsys-rep
+    target/nsys/20260716_deferred_optimizer_quant_f16_batch_candidate_reciprocal.nsys-rep
+    total GPU kernels: 5086.752284 and 5097.949480ms.
+  Average GPU-kernel time over the same ten training steps plus endpoint
+  validation falls from 5140.940437 to 5092.350882ms, or 4.858956ms/step
+  (0.945%). Candidate launch count is 81098, 4723 fewer launches/profile even
+  after the explicit final validation materialization. Candidate reciprocal
+  held-out losses are 8.147103 and 8.143567; the lower absolute value partly
+  reflects the now-explicit schedule-free validation materialization and is
+  not used as a cross-convention quality claim.
+  The FP16-only staging layout measured 5123.884288ms, and adding K-major
+  A-transposed fragments measured 5119.630653ms. Precomputing a bound scale on
+  top measured 5118.861290ms, only another 0.076936ms/step, so that sub-floor
+  side change was reverted. A two-column MS-EDEN fragment variant regressed to
+  5215.177126ms and was also reverted.
+verification:
+  cargo fmt --all --check, git diff --check, cargo check --workspace -q, and a
+  fresh TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass. The
+  explicitly enabled f16_tc_matmul, f16_tc_matmul_tiled, and
+  causal_attention_backward_tc GPU tests pass, as do all 18 ignored optimizer
+  tests after the exact rebuild.
+  Required clean 30-second screen with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260716_080756Z_fineweb_30s
+    completed_steps=61, train_elapsed_s=30.221, val_loss=6.579741.
+  Required 450-second gate with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260716_080912Z_fineweb_450s
+    completed_steps=880, train_elapsed_s=450.283, val_loss=5.263548.
+    All 18 high-fidelity loss and grad-norm samples are finite and nonzero,
+    with zero skipped updates, loss-spike skips, grad-norm-spike skips, or
+    nonfinite skips. Loss ranges from 5.376987457 to 10.864430428 and grad norm
+    from 1.243449330 to 18.958026886. Every sample retains batch 4, sequence
+    2048, and 8192 tokens/step. Evaluation and plotting complete normally.
+measured_effect:
+  Against the matched 30-second parent:
+    completed_steps: 60 -> 61 (+1, +1.667%).
+    average step time: 500.200000ms -> 495.426230ms
+      (-4.773770ms, -0.954%).
+    held-out val_loss: 6.660975 -> 6.579741 (-1.220%).
+  Against the matched 450-second parent:
+    completed_steps: 875 -> 880 (+5, +0.571%).
+    average step time: 514.552000ms -> 511.685227ms
+      (-2.866773ms, -0.557%; +0.560% steps/s).
+    training tokens: 7168000 -> 7208960 (+40960, +0.571%).
+    held-out val_loss: 5.108639 -> 5.263548 (+3.032%).
+decision:
+  Keep and promote by explicit user override of the usual roughly +1% quality
+  tolerance. The 450-second trace is numerically stable and its sparse endpoint
+  lands beside visible local loss bumps; the user classifies this endpoint as
+  an unlucky bump rather than a causal regression. This exception is recorded
+  without relabeling the measured +3.032% endpoint. Reciprocal profiles and
+  both fixed-wall gates retain the throughput signal. Future candidates compare
+  against this exact code and validation convention. notes/sweep_baseline.env
+  points to this run. The next aggregate 0.5% floor is
+  (450.283 / 880) * 0.005 = 2.558426ms/step.
+```
+
+```text
+date: 2026-07-16
+commit: accepted local jj commit after full gate
 experiment: Encode each 16-value Four-Six group with eight two-value lanes.
 status: accepted_450s
 change:

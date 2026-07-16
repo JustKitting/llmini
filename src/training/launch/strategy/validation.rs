@@ -17,6 +17,7 @@ pub(super) fn process_validation(
     completed_steps: usize,
 ) -> AppResult<CudaValidOutput> {
     let eval_start = Instant::now();
+    trainer.materialize_training_weights()?;
     let val_loss = trainer.eval_loss_windows(&validation.tokens, validation.window_count)?;
     let output = CudaValidOutput {
         val_loss,

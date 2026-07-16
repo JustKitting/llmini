@@ -69,29 +69,30 @@ impl<'a, 'scratch> AdamUpdate<'a, 'scratch> {
         grad: &DeviceBuffer<f32>,
         state: &mut AdamState,
     ) -> Result<(), DriverError> {
-        self.optimizer.apply_adamw_update(AdamWUpdateArgs {
-            stream: self.stream,
-            bytes: &mut tensor.bytes,
-            scales: &mut tensor.scales,
-            global_scale: &mut tensor.global_scale,
-            z_master: &mut state.z_master,
-            x_master: &mut state.x_master,
-            grad,
-            grad_scale: self.grad_scale,
-            first_moment: &mut state.first,
-            second_moment: &mut state.second,
-            amax: &mut self.scratch.amax,
-            chunk_amax: &mut self.scratch.chunk_amax,
-            len: tensor.len as u32,
-            learning_rate: self.learning_rate,
-            weight_decay: ADAM_WEIGHT_DECAY,
-            beta1: ADAM_BETA1,
-            beta2: ADAM_BETA2,
-            beta1_correction: 1.0 - ADAM_BETA1.powi(self.step as i32),
-            beta2_correction: 1.0 - ADAM_BETA2.powi(self.step as i32),
-            eps: ADAM_EPS,
-            average_coefficient: self.average_coefficient,
-        })
+        self.optimizer
+            .apply_adamw_update_deferred_quantization(AdamWUpdateArgs {
+                stream: self.stream,
+                bytes: &mut tensor.bytes,
+                scales: &mut tensor.scales,
+                global_scale: &mut tensor.global_scale,
+                z_master: &mut state.z_master,
+                x_master: &mut state.x_master,
+                grad,
+                grad_scale: self.grad_scale,
+                first_moment: &mut state.first,
+                second_moment: &mut state.second,
+                amax: &mut self.scratch.amax,
+                chunk_amax: &mut self.scratch.chunk_amax,
+                len: tensor.len as u32,
+                learning_rate: self.learning_rate,
+                weight_decay: ADAM_WEIGHT_DECAY,
+                beta1: ADAM_BETA1,
+                beta2: ADAM_BETA2,
+                beta1_correction: 1.0 - ADAM_BETA1.powi(self.step as i32),
+                beta2_correction: 1.0 - ADAM_BETA2.powi(self.step as i32),
+                eps: ADAM_EPS,
+                average_coefficient: self.average_coefficient,
+            })
     }
 
     pub(super) fn update_timed(

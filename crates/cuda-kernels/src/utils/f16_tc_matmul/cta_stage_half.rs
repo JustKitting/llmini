@@ -2,7 +2,9 @@ use cuda_device::thread;
 
 use super::convert::{load_f16x2_global_bits, store_f16x2_shared};
 use super::cta_stage::stage_coords;
-use super::cta_tile::{CTA_A_ELEMS, CTA_B_ELEMS, CTA_THREADS, CtaMatmulDims, CtaTile};
+use super::cta_tile::{
+    CTA_A_ELEMS, CTA_B_ELEMS, CTA_M, CTA_N, CTA_THREADS, CtaMatmulDims, CtaTile,
+};
 
 pub(super) fn stage_tiles_half_rhs_lower_a(
     a: &[u16],
@@ -63,23 +65,28 @@ fn stage_a_transposed_lower(
 ) {
     let mut pair = thread::threadIdx_x() * 2;
     while pair < CTA_A_ELEMS as u32 {
-        let (global_row, global_col) = stage_coords(pair, tile.row_base, k_base);
-        let lo = if global_row < dims.m && global_col < dims.k && global_col >= global_row {
-            src[((tile.batch * dims.k + global_col) * dims.m + global_row) as usize]
+        let local_k = pair / CTA_M;
+        let local_row = pair - local_k * CTA_M;
+        let global_k = k_base + local_k;
+        let global_row = tile.row_base + local_row;
+        let packed = if global_k < dims.k && global_row + 1 < dims.m && global_k >= global_row + 1 {
+            let index = ((tile.batch * dims.k + global_k) * dims.m + global_row) as usize;
+            load_f16x2_global_bits(src.as_ptr(), index)
         } else {
-            0
+            let lo = if global_k < dims.k && global_row < dims.m && global_k >= global_row {
+                src[((tile.batch * dims.k + global_k) * dims.m + global_row) as usize]
+            } else {
+                0
+            };
+            let hi_row = global_row + 1;
+            let hi = if global_k < dims.k && hi_row < dims.m && global_k >= hi_row {
+                src[((tile.batch * dims.k + global_k) * dims.m + hi_row) as usize]
+            } else {
+                0
+            };
+            lo as u32 | ((hi as u32) << 16)
         };
-        let hi_col = global_col + 1;
-        let hi = if global_row < dims.m && hi_col < dims.k && hi_col >= global_row {
-            src[((tile.batch * dims.k + hi_col) * dims.m + global_row) as usize]
-        } else {
-            0
-        };
-        store_f16x2_shared(
-            dst.as_mut_ptr(),
-            pair as usize,
-            lo as u32 | ((hi as u32) << 16),
-        );
+        store_f16x2_shared(dst.as_mut_ptr(), pair as usize, packed);
         pair += CTA_THREADS * 2;
     }
 }
@@ -93,23 +100,19 @@ fn stage_rhs(
 ) {
     let mut pair = thread::threadIdx_x() * 2;
     while pair < CTA_B_ELEMS as u32 {
-        let (global_row, global_col) = stage_coords(pair, tile.col_base, k_base);
-        let lo = if global_row < dims.n && global_col < dims.k {
-            src[((tile.batch * dims.k + global_col) * dims.n + global_row) as usize]
+        let local_k = pair / CTA_N;
+        let local_col = pair - local_k * CTA_N;
+        let global_k = k_base + local_k;
+        let global_col = tile.col_base + local_col;
+        let packed = if global_k < dims.k && global_col + 1 < dims.n {
+            let index = ((tile.batch * dims.k + global_k) * dims.n + global_col) as usize;
+            load_f16x2_global_bits(src.as_ptr(), index)
+        } else if global_k < dims.k && global_col < dims.n {
+            src[((tile.batch * dims.k + global_k) * dims.n + global_col) as usize] as u32
         } else {
             0
         };
-        let hi_col = global_col + 1;
-        let hi = if global_row < dims.n && hi_col < dims.k {
-            src[((tile.batch * dims.k + hi_col) * dims.n + global_row) as usize]
-        } else {
-            0
-        };
-        store_f16x2_shared(
-            dst.as_mut_ptr(),
-            pair as usize,
-            lo as u32 | ((hi as u32) << 16),
-        );
+        store_f16x2_shared(dst.as_mut_ptr(), pair as usize, packed);
         pair += CTA_THREADS * 2;
     }
 }

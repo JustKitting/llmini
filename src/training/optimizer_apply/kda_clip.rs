@@ -29,30 +29,32 @@ pub(super) fn apply_kda_muon_clip(
             let dims = AttentionDims::new(full_attention);
             let block = &mut uploaded.blocks[block_index];
             let qkv_state = &mut state.blocks[block_index].attn_qkv.weight_muon;
-            runtime.optimizer.apply_kda_muon_clip(KdaMuonClipArgs {
-                stream,
-                qkv: tape.block_qkv(block_index),
-                qk_norm_max,
-                bytes: &mut block.attn_qkv.weight.bytes,
-                scales: &mut block.attn_qkv.weight.scales,
-                global_scale: &mut block.attn_qkv.weight.global_scale,
-                z_master: &mut qkv_state.z_master,
-                x_master: &mut qkv_state.x_master,
-                momentum: &mut qkv_state.momentum,
-                scores: &mut scratch.kda_clip_scores,
-                amax: &mut scratch.amax,
-                chunk_amax: &mut scratch.chunk_amax,
-                row_count: GPT2_TOKEN_ROWS_U32,
-                qkv_dim: dims.qkv_dim,
-                input_dim: dims.embedding_dim,
-                embedding_dim: dims.embedding_dim,
-                head_count: dims.head_count,
-                head_dim: dims.head_dim,
-                tau: KDA_QK_CLIP_TAU,
-                silu_qk: (!full_attention) as u32,
-                norm_offset: (block_index as u32) * 2 * dims.head_count,
-                precomputed_qk_norms: (!full_attention) as u32,
-            })?;
+            runtime
+                .optimizer
+                .apply_kda_muon_clip_deferred_quantization(KdaMuonClipArgs {
+                    stream,
+                    qkv: tape.block_qkv(block_index),
+                    qk_norm_max,
+                    bytes: &mut block.attn_qkv.weight.bytes,
+                    scales: &mut block.attn_qkv.weight.scales,
+                    global_scale: &mut block.attn_qkv.weight.global_scale,
+                    z_master: &mut qkv_state.z_master,
+                    x_master: &mut qkv_state.x_master,
+                    momentum: &mut qkv_state.momentum,
+                    scores: &mut scratch.kda_clip_scores,
+                    amax: &mut scratch.amax,
+                    chunk_amax: &mut scratch.chunk_amax,
+                    row_count: GPT2_TOKEN_ROWS_U32,
+                    qkv_dim: dims.qkv_dim,
+                    input_dim: dims.embedding_dim,
+                    embedding_dim: dims.embedding_dim,
+                    head_count: dims.head_count,
+                    head_dim: dims.head_dim,
+                    tau: KDA_QK_CLIP_TAU,
+                    silu_qk: (!full_attention) as u32,
+                    norm_offset: (block_index as u32) * 2 * dims.head_count,
+                    precomputed_qk_norms: (!full_attention) as u32,
+                })?;
         }
         Ok(())
     })?;

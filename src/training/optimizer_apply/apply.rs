@@ -121,6 +121,12 @@ pub fn apply_weight_updates(args: WeightUpdateArgs<'_>) -> AppResult<WeightUpdat
         &mut trace,
     )?;
 
+    if diagnostics.is_some() {
+        super::super::schedule_free::materialize_training_weights(
+            stream, runtime, uploaded, scratch, state,
+        )?;
+    }
+
     let diagnostics = diagnostics
         .map(|pending| pending.finish(stream, uploaded))
         .transpose()?;
