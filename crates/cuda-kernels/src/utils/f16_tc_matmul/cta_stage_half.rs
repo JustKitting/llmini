@@ -2,9 +2,7 @@ use cuda_device::thread;
 
 use super::convert::{load_f16x2_global_bits, store_f16x2_shared};
 use super::cta_stage::stage_coords;
-use super::cta_tile::{
-    CTA_A_ELEMS, CTA_B_ELEMS, CTA_M, CTA_N, CTA_THREADS, CtaMatmulDims, CtaTile,
-};
+use super::cta_tile::{CTA_A_ELEMS, CTA_B_ELEMS, CTA_M, CTA_N, CtaMatmulDims, CtaTile};
 
 pub(super) fn stage_tiles_half_rhs_lower_a(
     a: &[u16],
@@ -52,7 +50,7 @@ fn stage_a_lower(
                 0
             };
         store_f16x2_shared(dst.as_mut_ptr(), pair as usize, packed);
-        pair += CTA_THREADS * 2;
+        pair += thread::blockDim_x() * 2;
     }
 }
 
@@ -87,7 +85,7 @@ fn stage_a_transposed_lower(
             lo as u32 | ((hi as u32) << 16)
         };
         store_f16x2_shared(dst.as_mut_ptr(), pair as usize, packed);
-        pair += CTA_THREADS * 2;
+        pair += thread::blockDim_x() * 2;
     }
 }
 
@@ -113,6 +111,6 @@ fn stage_rhs(
             0
         };
         store_f16x2_shared(dst.as_mut_ptr(), pair as usize, packed);
-        pair += CTA_THREADS * 2;
+        pair += thread::blockDim_x() * 2;
     }
 }

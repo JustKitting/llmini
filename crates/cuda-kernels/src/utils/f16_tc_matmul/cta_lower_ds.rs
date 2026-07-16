@@ -16,11 +16,11 @@ pub(super) fn cta_matmul_lower_ds_body(
     if thread::blockIdx_x() > thread::blockIdx_y() {
         return;
     }
-    let Some(tile) = super::cta_tile::active_tile(dims.batch_count) else {
+    let Some(tile) = super::cta_tile::active_wide_tile(dims.batch_count) else {
         return;
     };
     let aligned = dims.aligned();
-    cta_accumulate_k_loop4!(tile, a_tile, b_tile, dims.k, k_base, [acc0, acc1, acc2, acc3]; {
+    cta_accumulate_k_loop2!(tile, a_tile, b_tile, dims.k, k_base, [acc0, acc1]; {
         if aligned {
             super::cta_stage::stage_tiles_aligned(a, b_t, a_tile, b_tile, tile, dims, k_base);
         } else {
@@ -32,24 +32,6 @@ pub(super) fn cta_matmul_lower_ds_body(
         acc1,
         tile,
         tile.warp_n0 + 1,
-        probs,
-        softmax_d,
-        &mut out,
-        dims,
-    );
-    store_ds(
-        acc2,
-        tile,
-        tile.warp_n0 + 2,
-        probs,
-        softmax_d,
-        &mut out,
-        dims,
-    );
-    store_ds(
-        acc3,
-        tile,
-        tile.warp_n0 + 3,
         probs,
         softmax_d,
         &mut out,

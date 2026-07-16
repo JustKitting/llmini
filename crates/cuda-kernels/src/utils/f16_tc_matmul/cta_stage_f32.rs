@@ -2,7 +2,7 @@ use cuda_device::{SharedArray, convert::cvt_f16x2_f32, thread};
 
 use super::convert::{load_f32x2_global, store_f16x2_shared};
 use super::cta_stage::stage_coords;
-use super::cta_tile::{CTA_A_ELEMS, CTA_B_ELEMS, CTA_THREADS, CtaMatmulDims, CtaTile};
+use super::cta_tile::{CTA_A_ELEMS, CTA_B_ELEMS, CtaMatmulDims, CtaTile};
 
 macro_rules! stage_tiles_f32_fn {
     ($name:ident, $lhs:ident: $lhs_ty:ty, $rhs:ident: $rhs_ty:ty, $stage_lhs:path, $stage_rhs:path) => {
@@ -109,7 +109,7 @@ fn stage_a_lower(
             0
         };
         store_f16x2_shared(dst.as_mut_ptr(), pair as usize, packed);
-        pair += CTA_THREADS * 2;
+        pair += thread::blockDim_x() * 2;
     }
 }
 
@@ -138,7 +138,7 @@ fn stage_row_major_f32<const CHECK_BOUNDS: bool, const TILE_ELEMS: usize>(
             0
         };
         store_f16x2_shared(dst.as_mut_ptr(), pair as usize, packed);
-        pair += CTA_THREADS * 2;
+        pair += thread::blockDim_x() * 2;
     }
 }
 

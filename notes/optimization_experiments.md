@@ -46,6 +46,72 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-16
 commit: accepted local jj commit after full gate
+experiment: Widen generic 64x64 FP16 tensor-core matmul CTAs selectively.
+status: accepted_450s_loss_and_throughput_improved
+change:
+  Generic FP16 tensor-core matmuls now launch 512-thread, 16-warp CTAs instead
+  of 256-thread, 8-warp CTAs. Four warps share each 16-row group and each warp
+  owns two adjacent N fragments instead of four. Total MMA count, ordered
+  K-stage accumulation, shared tiles, grids, operands, and output addresses are
+  unchanged. The FP32-accumulate variant stays at 256 threads because an
+  intermediate profile measured a repeatable regression from about 23.44ms to
+  32.14ms/profile when widened; all other active variants improved.
+numerics:
+  Fragment ownership changes between warps but every fragment retains the same
+  FP16 operands and ordered MMA sequence. Dedicated base-matmul and both tiled
+  add/reference tests pass, as does the tensor-core causal-attention backward
+  reference comparison. Every sustained finite sample is one and all skip
+  metrics are zero.
+memory:
+  Persistent allocations and peak logical VRAM are unchanged. Static shared
+  memory remains 4096 bytes per matmul CTA. The active widened variants use
+  36-40 registers/thread versus 40-48 in the parent; the retained narrow
+  FP32-accumulate variant remains at 48. This is a scheduling win rather than a
+  batch-capacity change.
+minimum_impact_gate:
+  The accepted parent required 2.149518ms saved per step, or 21.495177ms per
+  ten-step profile. The active generic FP16 matmul family occupied
+  637.943454ms/profile, so the proven KDA wide-CTA mapping gave a credible
+  ceiling well above the floor before implementation.
+verification:
+  cargo fmt --all, cargo check --workspace, a fresh exact
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a, dedicated ignored
+  f16_tc_matmul and f16_tc_matmul_tiled tests, and the ignored tensor-core
+  causal-attention backward reference comparison: pass.
+profiles:
+  target/nsys/20260716_f16_matmul_wide_cta_selective.nsys-rep
+  target/nsys/20260716_f16_matmul_wide_cta_selective.sqlite
+    total GPU kernels 4256.354657ms; touched family 593.205168ms; ten-step
+    held-out val_loss=8.138013.
+  target/nsys/20260716_f16_matmul_wide_cta_selective_recip.nsys-rep
+  target/nsys/20260716_f16_matmul_wide_cta_selective_recip.sqlite
+    total GPU kernels 4260.487231ms; touched family 593.849630ms; ten-step
+    held-out val_loss=8.133088.
+  Candidate mean is 4258.420944ms, saving 43.913043ms/profile or 1.021%
+  versus the accepted 4302.333987ms mean. The touched family saves
+  44.416055ms directly, fully explaining the whole-profile movement.
+  Broad-map diagnostics before the selective exception are retained as
+  target/nsys/20260716_f16_matmul_wide_cta_candidate{,_recip}; their repeatable
+  FP32-accumulate regression is why that variant remains narrow.
+gates:
+  30s screen target/runs/20260716_161042Z_fineweb_30s:
+    heldout val_loss=6.466071, completed_steps=73, train_elapsed_s=30.224.
+  450s sustained target/runs/20260716_161124Z_fineweb_450s:
+    heldout val_loss=5.212610, completed_steps=1061, train_elapsed_s=450.289.
+  The parent completed 72 steps in 30.135s at loss 6.488047 and 1047 steps
+  in 450.109s at loss 5.254172. Sustained time per completed step falls by
+  1.280%, while held-out loss improves by 0.791%.
+decision:
+  Accept and promote as the FineWeb/Llama-2 fixed-1B baseline. Reciprocal
+  profiles directly attribute the speedup, all reference tests pass, and the
+  required fixed-time gate improves both throughput and held-out quality. The
+  next aggregate 0.5% floor is 2.122003ms per step, or 21.220028ms per ten-step
+  profile.
+```
+
+```text
+date: 2026-07-16
+commit: accepted local jj commit after full gate
 experiment: Extend the 16-warp CTA mapping to KDA chunk-grid tensor-core kernels.
 status: accepted_450s_within_quality_tolerance
 change:

@@ -6,7 +6,7 @@ use super::args::{
     F16ConvertArgs, F16TcMatmulArgs, F16TcMatmulHalfArgs, F16TcMatmulHalfDsArgs,
     F16TcMatmulHalfRhsArgs,
 };
-use super::cta_tile::{CTA_M, CTA_N, CTA_THREADS, CtaMatmulDims};
+use super::cta_tile::{CTA_M, CTA_N, CTA_THREADS, CTA_WIDE_THREADS, CtaMatmulDims};
 use super::kernels;
 use super::launch_ops::convert;
 use super::prepare::prepare_halves;
@@ -173,6 +173,13 @@ impl F16TcMatmulModule {
 }
 
 pub(super) fn cta_config(m: u32, n: u32, batch_count: u32) -> LaunchConfig {
+    launch_config(
+        (n.div_ceil(CTA_N), m.div_ceil(CTA_M), batch_count),
+        CTA_WIDE_THREADS,
+    )
+}
+
+pub(super) fn cta_narrow_config(m: u32, n: u32, batch_count: u32) -> LaunchConfig {
     launch_config(
         (n.div_ceil(CTA_N), m.div_ceil(CTA_M), batch_count),
         CTA_THREADS,

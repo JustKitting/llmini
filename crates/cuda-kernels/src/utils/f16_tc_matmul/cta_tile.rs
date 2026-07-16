@@ -4,6 +4,7 @@ pub(crate) const CTA_M: u32 = 64;
 pub(crate) const CTA_N: u32 = 64;
 pub(crate) const CTA_K: u32 = 16;
 pub(crate) const CTA_THREADS: u32 = 256;
+pub(crate) const CTA_WIDE_THREADS: u32 = 512;
 pub(crate) const CTA_A_ELEMS: usize = CTA_M as usize * CTA_K as usize;
 pub(crate) const CTA_B_ELEMS: usize = CTA_N as usize * CTA_K as usize;
 
@@ -39,6 +40,20 @@ pub(super) fn active_tile(batch_count: u32) -> Option<CtaTile> {
         return None;
     }
     Some(CtaTile::new(thread_id))
+}
+
+#[inline(always)]
+pub(super) fn active_wide_tile(batch_count: u32) -> Option<CtaTile> {
+    let thread_id = thread::threadIdx_x();
+    if thread_id >= CTA_WIDE_THREADS || thread::blockIdx_z() >= batch_count {
+        return None;
+    }
+    Some(CtaTile::from_wide_tile(
+        thread_id,
+        thread::blockIdx_y(),
+        thread::blockIdx_x(),
+        thread::blockIdx_z(),
+    ))
 }
 
 #[derive(Clone, Copy)]

@@ -28,7 +28,7 @@ macro_rules! cta_stage_transposed_rhs_fn {
                     pair as usize,
                     $packed,
                 );
-                pair += $crate::f16_tc_matmul::cta_tile::CTA_THREADS * 2;
+                pair += cuda_device::thread::blockDim_x() * 2;
             }
         }
     };

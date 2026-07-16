@@ -1,7 +1,7 @@
 use cuda_device::{SharedArray, ptx_asm, thread};
 
 use super::convert::{load_f16x2_global_bits, store_f16x2_shared};
-use super::cta_tile::{CTA_A_ELEMS, CTA_B_ELEMS, CTA_K, CTA_THREADS, CtaMatmulDims, CtaTile};
+use super::cta_tile::{CTA_A_ELEMS, CTA_B_ELEMS, CTA_K, CtaMatmulDims, CtaTile};
 
 macro_rules! stage_tiles_fn {
     ($name:ident, $check_bounds:expr) => {
@@ -72,7 +72,7 @@ fn stage_matrix_tile<const CHECK_BOUNDS: bool, const TILE_ELEMS: usize>(
             0
         };
         store_f16x2_shared(dst.as_mut_ptr(), pair as usize, packed);
-        pair += CTA_THREADS * 2;
+        pair += thread::blockDim_x() * 2;
     }
 }
 

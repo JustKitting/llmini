@@ -1,7 +1,7 @@
 use cuda_device::{convert::cvt_f16x2_f32, thread};
 
 use super::convert::{load_f32x2_global, store_f16x2_shared};
-use super::cta_tile::{CTA_A_ELEMS, CTA_M, CTA_THREADS, CtaMatmulDims, CtaTile};
+use super::cta_tile::{CTA_A_ELEMS, CTA_M, CtaMatmulDims, CtaTile};
 
 macro_rules! stage_tiles_a_transposed_fn {
     ($name:ident, $rhs:ident: $rhs_ty:ty, $stage_rhs:path) => {
@@ -66,7 +66,7 @@ fn stage_a_transposed(
             0
         };
         store_f16x2_shared(a_tile.as_mut_ptr(), pair as usize, packed);
-        pair += CTA_THREADS * 2;
+        pair += thread::blockDim_x() * 2;
     }
 }
 
@@ -102,7 +102,7 @@ fn stage_a_transposed_lower(
             cvt_f16x2_f32(lo, hi)
         };
         store_f16x2_shared(a_tile.as_mut_ptr(), pair as usize, packed);
-        pair += CTA_THREADS * 2;
+        pair += thread::blockDim_x() * 2;
     }
 }
 

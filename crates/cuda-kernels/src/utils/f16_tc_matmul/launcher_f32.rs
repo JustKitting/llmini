@@ -4,7 +4,7 @@ use super::args::{
     F16TcMatmulF32ATransposedHalfRhsArgs, F16TcMatmulF32ATransposedRhsArgs, F16TcMatmulF32Args,
     F16TcMatmulF32HalfRhsArgs, F16TcMatmulF32RhsArgs,
 };
-use super::launcher::{F16TcMatmulModule, cta_config, elements};
+use super::launcher::{F16TcMatmulModule, cta_config, cta_narrow_config, elements};
 
 macro_rules! f32_matmul_launcher {
     ($method:ident, $args:ty, $rhs:ident, $kernel:ident, a($a_rows:ident, $a_cols:ident), rhs($rhs_rows:ident, $rhs_cols:ident)) => {
@@ -36,14 +36,25 @@ impl F16TcMatmulModule {
         a(m, k),
         rhs(n, k)
     );
-    f32_matmul_launcher!(
-        batched_matmul_f32_input_accumulate,
-        F16TcMatmulF32Args<'_, '_>,
-        b_t,
-        f16_cta_tc_matmul_f32_accumulate_kernel,
-        a(m, k),
-        rhs(n, k)
-    );
+    pub fn batched_matmul_f32_input_accumulate(
+        &self,
+        args: F16TcMatmulF32Args<'_, '_>,
+    ) -> Result<(), DriverError> {
+        assert!(args.a.len() >= elements(args.batch_count, args.m, args.k));
+        assert!(args.b_t.len() >= elements(args.batch_count, args.n, args.k));
+        assert!(args.out.len() >= elements(args.batch_count, args.m, args.n));
+        self.module.f16_cta_tc_matmul_f32_accumulate_kernel(
+            args.stream,
+            cta_narrow_config(args.m, args.n, args.batch_count),
+            args.a,
+            args.b_t,
+            args.out,
+            args.batch_count,
+            args.m,
+            args.n,
+            args.k,
+        )
+    }
     f32_matmul_launcher!(
         batched_matmul_f32_input_causal,
         F16TcMatmulF32Args<'_, '_>,

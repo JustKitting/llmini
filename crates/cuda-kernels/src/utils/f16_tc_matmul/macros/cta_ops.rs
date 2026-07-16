@@ -21,8 +21,14 @@ macro_rules! cta_mma4 {
     }};
 }
 
-macro_rules! cta_mma4_k_major_b {
-    ($a_tile:expr, $b_tile:expr, $tile:expr, $acc0:ident, $acc1:ident, $acc2:ident, $acc3:ident) => {{
+macro_rules! cta_mma2 {
+    ($a_tile:expr, $b_tile:expr, $tile:expr, $acc0:ident, $acc1:ident) => {
+        cta_mma4!($a_tile, $b_tile, $tile, $acc0 => 0, $acc1 => 1)
+    };
+}
+
+macro_rules! cta_mma2_k_major_b {
+    ($a_tile:expr, $b_tile:expr, $tile:expr, $acc0:ident, $acc1:ident) => {{
         let tile = $tile;
         let a_fragments = $crate::f16_tc_matmul::cta_stage::load_a_fragments($a_tile, tile);
         $crate::mma::mma_m16n8k16_f16_f16_f32(
@@ -39,29 +45,11 @@ macro_rules! cta_mma4_k_major_b {
             ),
             &mut $acc1,
         );
-        $crate::mma::mma_m16n8k16_f16_f16_f32(
-            a_fragments,
-            $crate::f16_tc_matmul::cta_stage::load_b_fragments_k_major(
-                $b_tile,
-                tile,
-                tile.warp_n0 + 2,
-            ),
-            &mut $acc2,
-        );
-        $crate::mma::mma_m16n8k16_f16_f16_f32(
-            a_fragments,
-            $crate::f16_tc_matmul::cta_stage::load_b_fragments_k_major(
-                $b_tile,
-                tile,
-                tile.warp_n0 + 3,
-            ),
-            &mut $acc3,
-        );
     }};
 }
 
-macro_rules! cta_mma4_k_major_a {
-    ($a_tile:expr, $b_tile:expr, $tile:expr, $acc0:ident, $acc1:ident, $acc2:ident, $acc3:ident) => {{
+macro_rules! cta_mma2_k_major_a {
+    ($a_tile:expr, $b_tile:expr, $tile:expr, $acc0:ident, $acc1:ident) => {{
         let tile = $tile;
         let a_fragments = $crate::f16_tc_matmul::cta_stage::load_a_fragments_k_major($a_tile, tile);
         $crate::mma::mma_m16n8k16_f16_f16_f32(
@@ -74,21 +62,11 @@ macro_rules! cta_mma4_k_major_a {
             $crate::f16_tc_matmul::cta_stage::load_b_fragments($b_tile, tile, tile.warp_n0 + 1),
             &mut $acc1,
         );
-        $crate::mma::mma_m16n8k16_f16_f16_f32(
-            a_fragments,
-            $crate::f16_tc_matmul::cta_stage::load_b_fragments($b_tile, tile, tile.warp_n0 + 2),
-            &mut $acc2,
-        );
-        $crate::mma::mma_m16n8k16_f16_f16_f32(
-            a_fragments,
-            $crate::f16_tc_matmul::cta_stage::load_b_fragments($b_tile, tile, tile.warp_n0 + 3),
-            &mut $acc3,
-        );
     }};
 }
 
-macro_rules! cta_mma4_k_major_ab {
-    ($a_tile:expr, $b_tile:expr, $tile:expr, $acc0:ident, $acc1:ident, $acc2:ident, $acc3:ident) => {{
+macro_rules! cta_mma2_k_major_ab {
+    ($a_tile:expr, $b_tile:expr, $tile:expr, $acc0:ident, $acc1:ident) => {{
         let tile = $tile;
         let a_fragments = $crate::f16_tc_matmul::cta_stage::load_a_fragments_k_major($a_tile, tile);
         $crate::mma::mma_m16n8k16_f16_f16_f32(
@@ -105,25 +83,22 @@ macro_rules! cta_mma4_k_major_ab {
             ),
             &mut $acc1,
         );
-        $crate::mma::mma_m16n8k16_f16_f16_f32(
-            a_fragments,
-            $crate::f16_tc_matmul::cta_stage::load_b_fragments_k_major(
-                $b_tile,
-                tile,
-                tile.warp_n0 + 2,
-            ),
-            &mut $acc2,
-        );
-        $crate::mma::mma_m16n8k16_f16_f16_f32(
-            a_fragments,
-            $crate::f16_tc_matmul::cta_stage::load_b_fragments_k_major(
-                $b_tile,
-                tile,
-                tile.warp_n0 + 3,
-            ),
-            &mut $acc3,
-        );
     }};
+}
+
+macro_rules! cta_accumulate_k_loop2 {
+    ($tile:expr, $a_tile:expr, $b_tile:expr, $k:expr, $k_base:ident,
+     [$acc0:ident, $acc1:ident]; $stage:block) => {
+        cta_accumulators!($acc0, $acc1);
+        let mut $k_base = 0;
+        while $k_base < $k {
+            $stage
+            cuda_device::thread::sync_threads();
+            cta_mma2!($a_tile, $b_tile, $tile, $acc0, $acc1);
+            $crate::f16_tc_matmul::cta_sync::sync_before_next_k($k_base, $k);
+            $k_base += $crate::f16_tc_matmul::cta_tile::CTA_K;
+        }
+    };
 }
 
 macro_rules! cta_accumulate_k_loop4 {
@@ -139,6 +114,14 @@ macro_rules! cta_accumulate_k_loop4 {
             $k_base += $crate::f16_tc_matmul::cta_tile::CTA_K;
         }
     };
+}
+
+macro_rules! cta_store2 {
+    ($store:path, $tile:expr, $out:expr, $dims:expr, $acc0:ident, $acc1:ident) => {{
+        let tile = $tile;
+        $store($acc0, tile, tile.warp_n0, $out, $dims.m, $dims.n);
+        $store($acc1, tile, tile.warp_n0 + 1, $out, $dims.m, $dims.n);
+    }};
 }
 
 macro_rules! cta_store4 {
