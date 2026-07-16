@@ -79,9 +79,9 @@ threshold from the active baseline whenever that baseline changes:
 minimum_step_saving = (TRAIN_ELAPSED_S / COMPLETED_STEPS) * 0.005
 ```
 
-For the accepted code awaiting its matched 450-second control,
-`900.096 / 1668 = 0.539625899` seconds per step, so a candidate batch must
-credibly be able to save at least `2.698129 ms/step`
+For the current matched 450-second baseline,
+`450.064 / 841 = 0.535153389` seconds per step, so a candidate batch must
+credibly be able to save at least `2.675767 ms/step`
 before a rebuild, GPU test, or training screen. Multiply a per-launch saving by
 the launch count per step and compare that aggregate saving with the threshold.
 
@@ -124,11 +124,9 @@ width-2048, 32-head, batch-4, 2K-pretraining-context NextLat model, current
 dataset, and current tokenizer, not a result from an older or smaller
 architecture.
 
-The paired Four-Six source/transpose candidate was already near completion when
-the gate changed and therefore used its stronger 900-second result for its own
-acceptance. Establish a matched 450-second control on that accepted code before
-screening the next candidate; do not compare future 450-second results with the
-historical 900-second endpoint.
+The paired Four-Six source/transpose commit is the first matched 450-second
+control: 841 steps in 450.064 seconds with held-out loss 5.128476. Do not
+compare future 450-second candidates with historical 900-second endpoints.
 
 ## Sweep Rule
 

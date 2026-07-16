@@ -115,6 +115,14 @@ verification:
     ranges from 1.150223255 to 18.951820374. Every sample retains batch 4,
     sequence 2048, and 8192 tokens/step. Held-out evaluation, generation, and
     plotting complete normally.
+  Matched post-acceptance 450-second control for subsequent candidates:
+    target/runs/20260716_061649Z_fineweb_450s
+    stdout: target/gates/20260716_muon_paired_four_six_450s_baseline.log
+    completed_steps=841, train_elapsed_s=450.064, val_loss=5.128476.
+    All 17 high-fidelity loss and grad-norm samples are finite and nonzero,
+    with zero skipped updates or spike/nonfinite skips. Loss ranges from
+    5.345281601 to 10.864430428 and grad norm from 1.159397483 to
+    18.951820374. Batch 4, sequence 2048, and 8192 tokens/step are unchanged.
 measured_effect:
   Against the accepted 30-second parent:
     completed_steps: 58 -> 58.
@@ -132,9 +140,9 @@ decision:
   show the same speed direction, the full run completes seven additional
   steps, held-out loss improves, and every stability signal is clean. The
   smaller fixed-wall effect remains a real accepted win under the explicit
-  speed-plus-within-1%-loss rule. Subsequent candidates use the new 450-second
-  sustained gate, after first establishing a matched control on this accepted
-  code.
+  speed-plus-within-1%-loss rule. Subsequent candidates use the matched
+  841-step, 450.064-second, 5.128476-loss control recorded above and an
+  aggregate 0.5% floor of 2.675767ms/step.
 ```
 
 ```text
