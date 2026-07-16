@@ -45,6 +45,61 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 
 ```text
 date: 2026-07-16
+commit: rejection record only; candidate source fully restored
+experiment: Eagerly materialize exact schedule-free Muon and Adam weights after updates.
+status: rejected_450s_throughput_gate
+change:
+  Muon used its retained next-step schedule amax to encode the exact z/x
+  schedule-free blend immediately after each master update, in reverse block
+  order, and a host step marker skipped the redundant next-step materializer.
+  Adam similarly encoded each exact next-step blend immediately after its
+  update. The final variant accumulated schedule amax inside the original
+  256-value Adam CTA, used a 256-block cooperative compactor for the large
+  embedding reduction, and then encoded from the precomputed scalar. This
+  added 1836032 bytes (1.751 MiB) of temporary optimizer amax scratch.
+explored_subcandidates:
+  Exact Muon-only eager ordering saved 18.396282ms of directly replaced work
+  per ten-step profile, below the 20.826688ms floor. Staging the schedule in
+  FP16 reduced its encoder by 10.799ms but enlarged the master-update family
+  by 16.302ms, a net regression. Exact Adam cache ordering added only about
+  1ms/profile. Adam amax CTAs covering 2048 and 512 values regressed their
+  update family; retaining the original 256-value geometry was fastest.
+minimum_impact_gate:
+  Accepted-parent affected families average 201.544610ms in
+  target/nsys/20260716_restore_fp16_staging_{a,b}.nsys-rep. Final-candidate
+  affected families average 180.022251ms in
+  target/nsys/20260716_muon_adam_eager_amax256_compact_{a,b}.nsys-rep,
+  saving 21.522359ms/profile and clearing the 20.826688ms floor by
+  0.695671ms. Whole-profile time instead moves 4171.440212 -> 4193.945553ms
+  (+22.505341ms, +0.540%), so the fixed-wall gate is the throughput authority.
+verification:
+  cargo fmt --all, cargo check --workspace, git diff --check, and a fresh
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a pass. All nine Muon
+  GPU tests pass. Four Adam GPU tests pass, including bitwise equality of
+  fused/precomputed versus standard schedule-free materialization for both a
+  small tensor and a 524304-element tensor that exercises the cooperative
+  large-reduction branch. The final 450s run has 22 finite/nonzero samples,
+  grad norm 0.996709..16.910271, and all four skip metrics identically zero.
+gates:
+  30s target/runs/20260716_211137Z_fineweb_30s:
+    heldout val_loss=6.511506, completed_steps=74, train_elapsed_s=30.101.
+    Control is 6.508593 / 74 / 30.039; loss moves +0.045% and the short
+    integer-step boundary is timing-inconclusive.
+  450s target/runs/20260716_211235Z_fineweb_450s:
+    heldout val_loss=5.031384, completed_steps=1076, train_elapsed_s=450.096.
+    Control is 5.017801 / 1081 / 450.273. Loss moves only +0.271%, inside the
+    active noise band, but average step time regresses 416.533765 ->
+    418.304833ms (+0.425%) and the candidate completes five fewer steps.
+decision:
+  Reject. The endpoint loss is not treated as a spike or instability; the
+  failure is sustained throughput. Direct-family locality savings do not
+  survive as whole-training speed, and the candidate neither improves loss
+  nor increases completed steps inside the +/-1% band. Restore all source,
+  tests, and scratch changes; retain only this factual rejection record.
+```
+
+```text
+date: 2026-07-16
 commit: rejected experiment; source fully restored before this record
 experiment: Widen tiled paired MS-EDEN quantization from 256 to 512 threads.
 status: rejected_profile_gate
