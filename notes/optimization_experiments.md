@@ -45,6 +45,38 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 
 ```text
 date: 2026-07-16
+commit: rejection record only; candidate source reverted
+experiment: Fuse taped KDA Akk construction, inverse solve, and two inverse products.
+status: rejected_profile_gate
+change:
+  Replaced the taped forward path's strict-causal Akk matmul, columnwise
+  inverse solve, and two Akk-inverse RHS matmuls with one per-chunk CTA. The
+  candidate retained the 64x64 Akk and inverse in shared memory, reused one
+  inverse staging pass for both RHS products, and removed three launches per
+  invocation plus intermediate matrix traffic. Untaped fallback and backward
+  recomputation paths were unchanged.
+minimum_impact_gate:
+  The four parent families occupied about 78.6ms per ten-step profile, giving
+  the fusion a credible pre-edit ceiling above the active 22.265727ms floor.
+verification:
+  cargo fmt --all, cargo check --workspace, a fresh exact
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a, and the ignored
+  tensor-core causal-attention backward reference comparison: pass. Profile:
+    target/nsys/20260716_kda_fused_akk_w_u_candidate.nsys-rep
+    target/nsys/20260716_kda_fused_akk_w_u_candidate.sqlite
+    total GPU kernels 4537.896247ms; 64688 launches; fused kernel
+    154.512587ms across 132 launches; 66 registers/thread and 20480 bytes
+    static shared memory; ten-step held-out val_loss=8.134086.
+decision:
+  Reject without a reciprocal profile or either fixed-wall gate and fully
+  revert. The accepted mean is 4471.650021ms, while the four separate parent
+  phases occupy only about 78.6ms/profile. The fused dependency chain more
+  than doubles directly affected time; removed launches and matrix traffic do
+  not repay the lower CTA scheduling freedom.
+```
+
+```text
+date: 2026-07-16
 commit: accepted local jj commit after full gate
 experiment: Solve KDA unit-lower triangular inverses independently by column.
 status: accepted_450s
