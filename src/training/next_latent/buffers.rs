@@ -1,7 +1,11 @@
 use cuda_core::{CudaStream, DeviceBuffer, DriverError};
 use gpt2_nvfp4::{
-    GPT2_TOKEN_ROWS, HiddenState, NextLatHiddenActivation, NextLatInputActivation,
-    RowwiseNvfp4Buffers, RowwiseNvfp4Scratch,
+    GPT2_TOKEN_ROWS, HiddenState, NEXTLAT_HIDDEN, NEXTLAT_INPUT, NextLatHiddenActivation,
+    NextLatInputActivation, RowwiseNvfp4Buffers, RowwiseNvfp4Scratch,
+};
+use rust_kernels_cuda::nvfp4_tma_matmul::{
+    scale_layout::{sm120_scale_packed_len, sm120_scale_padded_mn_extent},
+    tma::TmaNvfp4DeviceScaleDescriptors,
 };
 
 use super::super::device_buffer::zero;
@@ -24,6 +28,9 @@ pub struct NextLatBuffers {
     pub(super) predicted: DeviceBuffer<f32>,
     pub(super) losses: DeviceBuffer<f32>,
     pub(super) d_predicted: DeviceBuffer<f32>,
+    pub(super) tma_input_scale_packed: DeviceBuffer<u8>,
+    pub(super) tma_weight_scale_packed: DeviceBuffer<u8>,
+    pub(super) tma_descriptors: TmaNvfp4DeviceScaleDescriptors,
 }
 
 pub(super) struct RowwiseQuantizeBuffers<'a> {
@@ -52,6 +59,21 @@ impl NextLatBuffers {
             predicted: zero(stream, HiddenState::LEN)?,
             losses: zero(stream, GPT2_TOKEN_ROWS)?,
             d_predicted: zero(stream, HiddenState::LEN)?,
+            tma_input_scale_packed: DeviceBuffer::zeroed(
+                stream,
+                sm120_scale_packed_len(
+                    sm120_scale_padded_mn_extent(GPT2_TOKEN_ROWS),
+                    NEXTLAT_INPUT,
+                ),
+            )?,
+            tma_weight_scale_packed: DeviceBuffer::zeroed(
+                stream,
+                sm120_scale_packed_len(
+                    sm120_scale_padded_mn_extent(NEXTLAT_HIDDEN),
+                    NEXTLAT_HIDDEN,
+                ),
+            )?,
+            tma_descriptors: TmaNvfp4DeviceScaleDescriptors::new(stream)?,
         })
     }
 

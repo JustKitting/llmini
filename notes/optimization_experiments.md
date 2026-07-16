@@ -46,6 +46,95 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-16
 commit: accepted local jj commit after full gate
+experiment: Route NextLat affine projections through the NVFP4 TMA GEMM.
+status: accepted_450s_within_quality_tolerance
+change:
+  Replaced the three legacy NextLat forward projection launches with the
+  existing SM120 NVFP4 TMA affine GEMM: input projection, hidden transition,
+  and output projection. Each call packs its rowwise input and weight scales,
+  prepares cached TMA descriptors, and retains the existing GELU, residual,
+  smooth-L1 loss, backward, and optimizer paths. The legacy projection API
+  remains available but is no longer on the active training forward path.
+numerics:
+  FP4 payloads, logical scales, row/global scale factors, weights, and biases
+  are unchanged. The larger TMA tile uses a different tensor-core reduction
+  order than the legacy 32x64 projection CTA, so outputs need not be bitwise
+  identical. All six focused affine/raw/residual TMA equivalence tests pass,
+  and the fixed-wall held-out comparison remains the quality authority. The
+  sustained endpoint regresses by 0.573%, inside the user's explicit roughly
+  +1% acceptance band.
+memory:
+  NextLat now owns two reusable packed-scale buffers: 2 MiB for the 8192x4096
+  rowwise input scales and 1 MiB for the 4096x4096 weight scales. Its initial
+  device descriptor-cache chunk is 32 KiB, for a total persistent GPU increase
+  of 3.03125 MiB. This is a throughput win with a small capacity cost, not a
+  memory win.
+minimum_impact_gate:
+  The promoted floor was 23.570105ms over a ten-step profile. The directly
+  replaced projection plus existing affine and scale-pack families fall from
+  177.345849 to 114.323150ms/profile, saving 63.022699ms and clearing the
+  floor by 2.67x. Total GPU kernel time falls from 4727.753230 to
+  4655.971040ms, saving 71.782190ms / 1.518%.
+focused_profile:
+  Accepted reciprocal samples:
+    target/nsys/20260716_decode_f32ops64_lnpart16_batch_candidate.nsys-rep
+    target/nsys/20260716_decode_f32ops64_lnpart16_batch_candidate_reciprocal.nsys-rep
+    total GPU kernels 4725.692928 and 4729.813531ms;
+      mean 4727.753230ms.
+    legacy NextLat projection plus affine and scale packing 177.208925 and
+      177.482773ms; mean 177.345849ms.
+  Candidate reciprocal samples:
+    target/nsys/20260716_nextlat_tma_affine_candidate.nsys-rep
+    target/nsys/20260716_nextlat_tma_affine_candidate_reciprocal.nsys-rep
+    total GPU kernels 4655.201237 and 4656.740842ms;
+      mean 4655.971040ms.
+    directly corresponding affine and scale-pack work 114.269308 and
+      114.376992ms; mean 114.323150ms.
+verification:
+  cargo fmt --all, cargo check --workspace -q, git diff --check, and a fresh
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass. After that
+  exact rebuild, all six ignored projection-TMA tests and the ignored legacy
+  NextLat projection/GELU/residual test pass. A one-step FineWeb diagnostic
+  also launches cleanly; it is recorded only as a launch check, not promotion
+  evidence.
+  Required 30-second screen with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260716_130711Z_fineweb_30s
+    stdout: target/gates/20260716_nextlat_tma_affine_30s.log
+    completed_steps=67, train_elapsed_s=30.331, val_loss=6.536700.
+  Required 450-second gate with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260716_130800Z_fineweb_450s
+    stdout: target/gates/20260716_nextlat_tma_affine_450s.log
+    completed_steps=969, train_elapsed_s=450.356, val_loss=5.278974.
+    All 20 high-fidelity samples are finite and nonzero, with zero skipped
+    updates, loss-spike skips, grad-norm-spike skips, or nonfinite skips. Grad
+    norm ranges from 1.137217045 to 16.900184631. Every sample retains batch 4,
+    sequence 2048, and 8192 tokens per step.
+measured_effect:
+  Against the matched 30-second parent:
+    completed steps 66 -> 67 (+1, +1.515%).
+    average step time 458.984848 -> 452.701493ms
+      (-6.283356ms, -1.369%).
+    held-out val_loss 6.555990 -> 6.536700
+      (-0.019290, -0.294%).
+  Against the matched 450-second parent:
+    completed steps 955 -> 969 (+14, +1.466%).
+    average step time 471.402094 -> 464.763674ms
+      (-6.638420ms, -1.408%).
+    training tokens 7823360 -> 7938048 (+114688, +1.466%).
+    held-out val_loss 5.248910 -> 5.278974
+      (+0.030064, +0.573%).
+decision:
+  Keep and promote under the explicit rule to commit real speed wins whose
+  held-out loss remains within roughly +1%. Reciprocal profiles and both
+  fixed-wall gates preserve the speed signal, and the sustained run has clean
+  stability signals. The next 0.5% threshold is
+  (450.356 / 969) * 0.005 = 2.323818ms per step, or 23.238184ms over a
+  ten-step profile.
+```
+
+```text
+date: 2026-07-16
+commit: accepted local jj commit after full gate
 experiment: Pack adjacent NVFP4 decodes and retune reduction grids.
 status: accepted_450s
 change:

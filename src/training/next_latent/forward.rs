@@ -5,6 +5,9 @@ use rust_kernels_cuda::layer_norm::{GptLayerNormArgs, LayerNormModule};
 use rust_kernels_cuda::next_latent::{NextLatConcatArgs, NextLatModule};
 use rust_kernels_cuda::nvfp4::Nvfp4DeviceTensor;
 use rust_kernels_cuda::nvfp4_quant::Nvfp4QuantModule;
+use rust_kernels_cuda::nvfp4_tma_matmul::{
+    launcher::Nvfp4GemmModule, scale_pack::Sm120ScalePackModule,
+};
 
 use super::buffers::NextLatBuffers;
 use super::projection::{output_and_loss, projection_gelu1, projection_gelu2};
@@ -16,6 +19,8 @@ pub struct NextLatForwardArgs<'a, 'out> {
     pub embedding: &'a EmbeddingModule,
     pub layer_norm: &'a LayerNormModule,
     pub quant: &'a Nvfp4QuantModule,
+    pub tma: &'a Nvfp4GemmModule,
+    pub tma_scale_pack: &'a Sm120ScalePackModule,
     pub next_latent: &'a NextLatModule,
     pub token_embedding: Nvfp4DeviceTensor<'a>,
     pub weights: &'a UploadedNextLat,

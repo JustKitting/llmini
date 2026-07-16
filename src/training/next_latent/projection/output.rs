@@ -1,24 +1,28 @@
 use cuda_core::DriverError;
 use gpt2_nvfp4::{GPT2_EMBEDDING_DIM, NEXTLAT_HIDDEN_DIM};
-use rust_kernels_cuda::next_latent::{
-    NextLatProjectionArgs, NextLatResidualAddArgs, NextLatSmoothL1Args,
-};
+use rust_kernels_cuda::next_latent::{NextLatResidualAddArgs, NextLatSmoothL1Args};
 
 use super::super::forward::NextLatForwardArgs;
+use super::project_affine_tma;
 
 pub(in crate::training::next_latent) fn output_and_loss(
     args: NextLatForwardArgs<'_, '_>,
 ) -> Result<(), DriverError> {
-    args.next_latent.projection(NextLatProjectionArgs {
-        stream: args.stream,
-        input: args.buffers.act2_quant.rowwise(),
-        weight: args.weights.output_projection.weight.mma(),
-        bias: args.weights.output_projection.bias.device(),
-        out: &mut args.buffers.delta,
-        token_count: args.row_count,
-        input_dim: NEXTLAT_HIDDEN_DIM,
-        output_dim: GPT2_EMBEDDING_DIM,
-    })?;
+    project_affine_tma(
+        args.stream,
+        args.tma,
+        args.tma_scale_pack,
+        &mut args.buffers.tma_descriptors,
+        &mut args.buffers.tma_input_scale_packed,
+        &mut args.buffers.tma_weight_scale_packed,
+        args.buffers.act2_quant.rowwise(),
+        args.weights.output_projection.weight.device(),
+        args.weights.output_projection.bias.device(),
+        &mut args.buffers.delta,
+        args.row_count,
+        NEXTLAT_HIDDEN_DIM,
+        GPT2_EMBEDDING_DIM,
+    )?;
     args.next_latent.residual_add(NextLatResidualAddArgs {
         stream: args.stream,
         delta: &args.buffers.delta,

@@ -60,6 +60,8 @@ impl Trainer {
             embedding: &self.runtime.embedding,
             layer_norm: &self.runtime.layer_norm,
             quant: &self.runtime.quant,
+            tma: &self.runtime.tma_gemm,
+            tma_scale_pack: &self.runtime.tma_scale_pack,
             next_latent: &self.runtime.next_latent,
             token_embedding: uploaded.token_embedding.device(),
             weights: &uploaded.next_latent,
