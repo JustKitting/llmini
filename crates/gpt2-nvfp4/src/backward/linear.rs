@@ -78,6 +78,55 @@ pub(super) fn run_rowwise_linear_backward(
     })
 }
 
+pub(super) fn run_rowwise_linear_backward_relu2_backward_f16(
+    module: &LinearBackwardModule,
+    quant: &Nvfp4QuantModule,
+    stream: &CudaStream,
+    pass: RowwiseLinearBackwardPass<'_, '_, '_>,
+    pre_activation: &DeviceBuffer<u16>,
+    output_chunk_amax: &mut DeviceBuffer<f32>,
+) -> Result<u32, DriverError> {
+    let call = LinearBackwardCall {
+        stream,
+        module,
+        quant,
+        e: pass.e,
+        weight_t: nvfp4_weight_t(pass.weight),
+        input_t: LinearBackwardInputTranspose::RowwiseNvfp4(pass.saved_input),
+        scratch: pass.scratch,
+        dinput: pass.dinput,
+        dweight: pass.dweight,
+        dbias: Some(pass.dbias),
+        token_count: pass.row_count,
+        input_dim: pass.input_dim,
+        output_dim: pass.output_dim,
+        sign_seed: pass.sign_seed,
+        scale_seed: pass.scale_seed,
+        precomputed_e_amax_chunks: pass.precomputed_e_amax_chunks,
+    };
+    call.module.backward_ms_eden_relu2_backward_f16(
+        LinearBackwardMsEdenArgs {
+            stream: call.stream,
+            quant_module: call.quant,
+            e: call.e,
+            weight_t: call.weight_t,
+            input_t: call.input_t,
+            scratch: call.scratch,
+            dinput: call.dinput,
+            dweight: call.dweight,
+            dbias: call.dbias,
+            token_count: call.token_count,
+            input_dim: call.input_dim,
+            output_dim: call.output_dim,
+            sign_seed: call.sign_seed,
+            scale_seed: call.scale_seed,
+            precomputed_e_amax_chunks: call.precomputed_e_amax_chunks,
+        },
+        pre_activation,
+        output_chunk_amax,
+    )
+}
+
 pub(super) fn run_linear_backward(call: LinearBackwardCall<'_, '_, '_>) -> Result<(), DriverError> {
     call.module.backward_ms_eden(LinearBackwardMsEdenArgs {
         stream: call.stream,

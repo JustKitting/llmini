@@ -40,7 +40,6 @@ pub struct Gpt2BackwardScratch<'scratch> {
     pub d_hidden: &'scratch mut DeviceBuffer<f32>,
     pub d_qkv: &'scratch mut DeviceBuffer<f32>,
     pub d_mlp_up: &'scratch mut DeviceBuffer<f32>,
-    pub d_mlp_relu2: &'scratch mut DeviceBuffer<f32>,
 }
 
 #[derive(Clone, Copy)]

@@ -45,6 +45,76 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 
 ```text
 date: 2026-07-16
+commit: accepted local jj commit after full gate
+experiment: Fuse MLP down-projection with FP16 ReLU2 backward and amax.
+status: accepted_450s_within_quality_tolerance
+change:
+  Added a row-scaled NVFP4 TMA epilogue that reads the saved FP16 MLP
+  pre-activation, applies d_pre = d_out * 2 * relu(pre) while each GEMM result
+  is still in registers, stores d_mlp_up directly, and emits one maximum per
+  consumer warp. The active 8192x8192 result has 64x64 CTAs and eight consumer
+  warps per CTA, so its 32768 maxima fit the existing precomputed-amax scratch
+  exactly. MLP backward now routes the down-projection through this epilogue,
+  removes the standalone ReLU2-backward launch, and removes the obsolete full
+  d_mlp_relu2 FP32 scratch allocation.
+numerics:
+  Every GEMM accumulator retains the same ordered MMA reduction and row scale.
+  The fused epilogue then uses the same FP16 activation values and ordered
+  multiply sequence as the standalone derivative. A focused GPU comparison
+  requires bitwise-identical stored gradients and an exact output maximum.
+  All 22 sustained samples are finite and nonzero, and every skip metric is
+  zero.
+memory:
+  Matched TRAIN_REPORT_MEMORY one-step probes:
+    target/gates/20260716_tma_relu2_backward_fusion_memory_parent_probe.log
+      used_bytes=45326991360.
+    target/gates/20260716_tma_relu2_backward_fusion_memory_candidate.log
+      used_bytes=45058555904.
+  Used allocation falls by exactly 268435456 bytes = 256 MiB, the removed
+  8192*8192 FP32 gradient buffer. This is real batch/token capacity, although
+  a larger configuration still needs its own fit and throughput validation.
+minimum_impact_gate:
+  The accepted parent required 2.122003ms saved per step, or 21.220028ms per
+  ten-step profile. The replaced 64x64-grid TMA GEMM plus standalone ReLU2
+  backward occupied 116.716722ms/profile, giving the fusion a credible ceiling
+  above the floor before implementation.
+verification:
+  cargo fmt --all, cargo check --workspace, git diff --check, a fresh exact
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a, all 50 workspace
+  release lib/bin host tests, and all nine ignored projection-TMA GPU tests:
+  pass. The focused fused-epilogue test compares against the standalone FP16
+  ReLU2 backward path bitwise and verifies the emitted global maximum.
+profiles:
+  target/nsys/20260716_tma_relu2_backward_fusion_candidate.nsys-rep
+  target/nsys/20260716_tma_relu2_backward_fusion_candidate.sqlite
+    total GPU kernels 4200.636458ms; fused kernel 67.625276ms; 64924 launches;
+    ten-step held-out val_loss=8.134243.
+  target/nsys/20260716_tma_relu2_backward_fusion_candidate_recip.nsys-rep
+  target/nsys/20260716_tma_relu2_backward_fusion_candidate_recip.sqlite
+    total GPU kernels 4206.494764ms; fused kernel 67.715783ms; 64924 launches;
+    ten-step held-out val_loss=8.135710.
+  Candidate mean is 4203.565611ms, saving 54.855333ms/profile or 1.288%
+  versus the accepted 4258.420944ms mean. Directly replaced work falls from
+  116.716722 to 67.670530ms, saving 49.046192ms and explaining the movement.
+  Removing one launch per layer and step reduces launches by exactly 160.
+gates:
+  30s screen target/runs/20260716_164509Z_fineweb_30s:
+    heldout val_loss=6.464782, completed_steps=74, train_elapsed_s=30.248.
+  450s sustained target/runs/20260716_164606Z_fineweb_450s:
+    heldout val_loss=5.243308, completed_steps=1071, train_elapsed_s=450.214.
+  The parent completed 73 steps in 30.224s at loss 6.466071 and 1061 steps in
+  450.289s at loss 5.212610. Sustained time per completed step falls by 0.959%;
+  held-out loss moves +0.589%, inside the active roughly 1% tolerance.
+decision:
+  Accept and promote as the FineWeb/Llama-2 fixed-1B baseline. Reciprocal
+  profiles directly attribute the speedup, the required fixed-time gate
+  preserves the gain and stability within the quality tolerance, and the
+  allocation reduction is exact. The next aggregate 0.5% floor is 2.101839ms
+  per step, or 21.018394ms per ten-step profile.
+```
+
+```text
+date: 2026-07-16
 commit: rejection record only; candidate source reverted
 experiment: Split the fused KDA intra-backward tail into 64-thread kernels.
 status: rejected_profile_gate

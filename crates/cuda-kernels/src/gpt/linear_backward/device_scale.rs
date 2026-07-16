@@ -1,4 +1,4 @@
-use cuda_core::DriverError;
+use cuda_core::{DeviceBuffer, DriverError, sys::cudaError_enum_CUDA_ERROR_INVALID_VALUE};
 
 use crate::launch::{grid_x_config, launch_config};
 use crate::mma::{
@@ -40,10 +40,31 @@ impl LinearBackwardModule {
         args: LinearBackwardDeviceScaleArgs<'_, '_>,
         tma: LinearBackwardTmaScratch<'_>,
     ) -> Result<(), DriverError> {
+        self.backward_device_scale_tma_impl(args, tma, None)
+            .map(|_| ())
+    }
+
+    pub(crate) fn backward_device_scale_tma_relu2_backward_f16(
+        &self,
+        args: LinearBackwardDeviceScaleArgs<'_, '_>,
+        tma: LinearBackwardTmaScratch<'_>,
+        pre_activation: &DeviceBuffer<u16>,
+        output_chunk_amax: &mut DeviceBuffer<f32>,
+    ) -> Result<u32, DriverError> {
+        self.backward_device_scale_tma_impl(args, tma, Some((pre_activation, output_chunk_amax)))?
+            .ok_or(DriverError(cudaError_enum_CUDA_ERROR_INVALID_VALUE))
+    }
+
+    fn backward_device_scale_tma_impl(
+        &self,
+        args: LinearBackwardDeviceScaleArgs<'_, '_>,
+        tma: LinearBackwardTmaScratch<'_>,
+        relu2_backward_f16: Option<(&DeviceBuffer<u16>, &mut DeviceBuffer<f32>)>,
+    ) -> Result<Option<u32>, DriverError> {
         let dinput_k = nvfp4_tc_matmul_padded_k(args.output_dim);
         let dweight_k = nvfp4_tc_matmul_padded_k(args.token_count);
 
-        if tma_shape_aligned(args.token_count, dinput_k, args.input_dim) {
+        let dinput_chunk_count = if tma_shape_aligned(args.token_count, dinput_k, args.input_dim) {
             self.tma_scale_pack.pack(
                 args.stream,
                 args.e_h.scales,
@@ -69,20 +90,43 @@ impl LinearBackwardModule {
                 args.input_dim,
                 tma.descriptors,
             )?;
-            self.tma
-                .gemm_tma_nvfp4_rowwise_a_scale_and_global_scale_buffer(
-                    args.stream,
-                    &*tma.descriptors,
-                    args.dinput,
-                    args.token_count,
-                    dinput_k,
-                    args.input_dim,
-                    args.e_h.global_scales,
-                    args.weight_t_h.global_scale,
-                )?;
+            if let Some((pre_activation, output_chunk_amax)) = relu2_backward_f16 {
+                Some(
+                    self.tma
+                        .gemm_tma_nvfp4_rowwise_a_scale_relu2_backward_f16_with_output_amax(
+                            args.stream,
+                            &*tma.descriptors,
+                            pre_activation,
+                            args.dinput,
+                            output_chunk_amax,
+                            args.token_count,
+                            dinput_k,
+                            args.input_dim,
+                            args.e_h.global_scales,
+                            args.weight_t_h.global_scale,
+                        )?,
+                )
+            } else {
+                self.tma
+                    .gemm_tma_nvfp4_rowwise_a_scale_and_global_scale_buffer(
+                        args.stream,
+                        &*tma.descriptors,
+                        args.dinput,
+                        args.token_count,
+                        dinput_k,
+                        args.input_dim,
+                        args.e_h.global_scales,
+                        args.weight_t_h.global_scale,
+                    )?;
+                None
+            }
         } else {
+            if relu2_backward_f16.is_some() {
+                return Err(DriverError(cudaError_enum_CUDA_ERROR_INVALID_VALUE));
+            }
             device_scale_projection!(self, args, e_h, weight_t_h, dinput, rows: args.token_count, k: dinput_k)?;
-        }
+            None
+        };
 
         if tma_shape_aligned(args.output_dim, dweight_k, args.input_dim) {
             self.tma_scale_pack.pack(
@@ -120,10 +164,11 @@ impl LinearBackwardModule {
                     args.input_dim,
                     args.e_t_h.global_scales,
                     args.input_t_h.global_scale,
-                )
+                )?;
         } else {
-            device_scale_projection!(self, args, e_t_h, input_t_h, dweight, rows: args.output_dim, k: dweight_k)
+            device_scale_projection!(self, args, e_t_h, input_t_h, dweight, rows: args.output_dim, k: dweight_k)?;
         }
+        Ok(dinput_chunk_count)
     }
 
     pub fn backward_device_scale(

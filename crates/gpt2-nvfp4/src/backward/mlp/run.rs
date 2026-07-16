@@ -1,9 +1,10 @@
-use cuda_core::DriverError;
-use rust_kernels_cuda::mlp::Relu2BackwardF16Args;
-
 use super::args::{MlpBackwardArgs, MlpBackwardGrads, MlpBackwardScratch};
-use crate::backward::linear::{RowwiseLinearBackwardPass, run_rowwise_linear_backward};
+use crate::backward::linear::{
+    RowwiseLinearBackwardPass, run_rowwise_linear_backward,
+    run_rowwise_linear_backward_relu2_backward_f16,
+};
 use crate::{GPT2_EMBEDDING_DIM, GPT2_MLP_DIM};
+use cuda_core::DriverError;
 
 pub fn backward(args: MlpBackwardArgs<'_, '_, '_>) -> Result<(), DriverError> {
     let MlpBackwardArgs {
@@ -24,7 +25,6 @@ pub fn backward(args: MlpBackwardArgs<'_, '_, '_>) -> Result<(), DriverError> {
     } = scratch;
     let up_linear = up_linear;
     let MlpBackwardGrads {
-        d_mlp_relu2,
         d_mlp_up,
         d_ln_2_normalized,
         d_c_proj_weight,
@@ -33,7 +33,7 @@ pub fn backward(args: MlpBackwardArgs<'_, '_, '_>) -> Result<(), DriverError> {
         d_c_fc_bias,
     } = grads;
 
-    run_rowwise_linear_backward(
+    let d_mlp_up_amax_chunks = run_rowwise_linear_backward_relu2_backward_f16(
         modules.linear,
         modules.quant,
         stream,
@@ -42,7 +42,7 @@ pub fn backward(args: MlpBackwardArgs<'_, '_, '_>) -> Result<(), DriverError> {
             saved_input: saved.mlp_down_input_nvfp4,
             weight: projections.down.weight,
             scratch: down_linear,
-            dinput: d_mlp_relu2,
+            dinput: d_mlp_up,
             dweight: d_c_proj_weight,
             dbias: d_c_proj_bias,
             row_count: saved.row_count,
@@ -52,16 +52,9 @@ pub fn backward(args: MlpBackwardArgs<'_, '_, '_>) -> Result<(), DriverError> {
             scale_seed: seeds.down_scale,
             precomputed_e_amax_chunks: precomputed_d_residual_amax_chunks,
         },
+        saved.mlp_up,
+        &mut *up_linear.e_h.chunk_amax,
     )?;
-
-    let d_mlp_up_amax_chunks = modules.mlp.relu2_backward_f16(Relu2BackwardF16Args {
-        stream,
-        pre_activation: saved.mlp_up,
-        d_out: d_mlp_relu2,
-        d_pre_activation: d_mlp_up,
-        d_pre_activation_chunk_amax: &mut *up_linear.e_h.chunk_amax,
-        len: saved.row_count * GPT2_MLP_DIM,
-    })?;
 
     run_rowwise_linear_backward(
         modules.linear,

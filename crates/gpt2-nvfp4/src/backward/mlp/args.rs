@@ -33,7 +33,6 @@ impl<'scratch> MlpBackwardScratch<'scratch> {
 }
 
 pub struct MlpBackwardGrads<'out> {
-    pub d_mlp_relu2: &'out mut DeviceBuffer<f32>,
     pub d_mlp_up: &'out mut DeviceBuffer<f32>,
     pub d_ln_2_normalized: &'out mut DeviceBuffer<f32>,
     pub d_c_proj_weight: &'out mut DeviceBuffer<f32>,

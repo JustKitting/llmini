@@ -5,7 +5,10 @@ use rust_kernels_cuda::attention::{AttentionModule, CProjArgs, QkvProjectionArgs
 use rust_kernels_cuda::f16_tc_matmul::{F16ConvertArgs, F16TcMatmulModule};
 use rust_kernels_cuda::f32_matrix_ops::{F32Linear3SqrtBoundAmaxArgs, F32MatrixOpsModule};
 use rust_kernels_cuda::lm_head::{LmHeadArgs, LmHeadModule};
-use rust_kernels_cuda::mlp::{MlpDownResidualArgs, MlpModule, MlpUpRelu2Args};
+use rust_kernels_cuda::mlp::{
+    MlpDownResidualArgs, MlpModule, MlpUpRelu2Args, Relu2BackwardF16Args,
+    relu2_backward_amax_chunks,
+};
 use rust_kernels_cuda::mma::Nvfp4FourSixMmaWeightTensor;
 use rust_kernels_cuda::nvfp4::{Nvfp4DeviceTensor, Nvfp4RowwiseDeviceTensor};
 use rust_kernels_cuda::nvfp4_tma_matmul::{
@@ -63,6 +66,62 @@ fn tma_output_amax_matches_stored_output() -> Result<(), Box<dyn Error>> {
 
     let output_amax = fused.iter().copied().map(f32::abs).fold(0.0_f32, f32::max);
     let fused_amax = chunk_amax
+        .to_host_vec(&fixture.stream)?
+        .into_iter()
+        .fold(0.0_f32, f32::max);
+    assert_eq!(fused_amax, output_amax);
+    Ok(())
+}
+
+#[ignore = "requires generated sm_120a PTX"]
+#[test]
+fn tma_relu2_backward_f16_amax_matches_standalone_epilogue() -> Result<(), Box<dyn Error>> {
+    const DIM: usize = 128;
+    const LEN: usize = ROWS * DIM;
+    let fixture = Fixture::new(ROWS, K, DIM)?;
+    let pre_f32 = DeviceBuffer::from_host(&fixture.stream, &pre_activation_values(LEN))?;
+    let mut pre_f16 = DeviceBuffer::<u16>::zeroed(&fixture.stream, LEN)?;
+    let mut plain = DeviceBuffer::<f32>::zeroed(&fixture.stream, LEN)?;
+    let mut standalone = DeviceBuffer::<f32>::zeroed(&fixture.stream, LEN)?;
+    let mut fused = DeviceBuffer::<f32>::zeroed(&fixture.stream, LEN)?;
+    let standalone_chunk_count = relu2_backward_amax_chunks(LEN as u32);
+    let fused_chunk_count = tma_nvfp4_output_amax_chunks(ROWS as u32, DIM as u32);
+    assert_eq!(standalone_chunk_count, fused_chunk_count);
+    let mut standalone_chunks =
+        DeviceBuffer::<f32>::zeroed(&fixture.stream, standalone_chunk_count as usize)?;
+    let mut fused_chunks =
+        DeviceBuffer::<f32>::zeroed(&fixture.stream, fused_chunk_count as usize)?;
+
+    fixture.f16.fp32_to_f16(F16ConvertArgs {
+        stream: &fixture.stream,
+        src: &pre_f32,
+        dst: &mut pre_f16,
+        element_count: LEN as u32,
+    })?;
+    let launched_chunks = fixture.tma_relu2_backward_f16_with_output_amax(
+        &pre_f16,
+        &mut plain,
+        &mut fused,
+        &mut fused_chunks,
+    )?;
+    assert_eq!(launched_chunks, fused_chunk_count);
+    fixture.mlp.relu2_backward_f16(Relu2BackwardF16Args {
+        stream: &fixture.stream,
+        pre_activation: &pre_f16,
+        d_out: &plain,
+        d_pre_activation: &mut standalone,
+        d_pre_activation_chunk_amax: &mut standalone_chunks,
+        len: LEN as u32,
+    })?;
+
+    let standalone = standalone.to_host_vec(&fixture.stream)?;
+    let fused = fused.to_host_vec(&fixture.stream)?;
+    assert_eq!(
+        fused, standalone,
+        "fused ReLU2 backward epilogue changed the stored gradient"
+    );
+    let output_amax = fused.iter().copied().map(f32::abs).fold(0.0_f32, f32::max);
+    let fused_amax = fused_chunks
         .to_host_vec(&fixture.stream)?
         .into_iter()
         .fold(0.0_f32, f32::max);
@@ -479,6 +538,75 @@ impl Fixture {
             )?)
     }
 
+    fn tma_relu2_backward_f16_with_output_amax(
+        &self,
+        pre_activation: &DeviceBuffer<u16>,
+        plain: &mut DeviceBuffer<f32>,
+        fused: &mut DeviceBuffer<f32>,
+        chunk_amax: &mut DeviceBuffer<f32>,
+    ) -> Result<u32, Box<dyn Error>> {
+        let mut input_scale_packed = DeviceBuffer::zeroed(
+            &self.stream,
+            sm120_scale_packed_len(sm120_scale_padded_mn_extent(self.rows), self.k),
+        )?;
+        let mut weight_scale_packed = DeviceBuffer::zeroed(
+            &self.stream,
+            sm120_scale_packed_len(sm120_scale_padded_mn_extent(self.n), self.k),
+        )?;
+        let mut descriptors = TmaNvfp4DeviceScaleDescriptors::new(&self.stream)?;
+
+        self.scale_pack.pack(
+            &self.stream,
+            &self.input_scales,
+            &mut input_scale_packed,
+            self.rows as u32,
+            self.k as u32,
+        )?;
+        self.scale_pack.pack(
+            &self.stream,
+            &self.weight_scales,
+            &mut weight_scale_packed,
+            self.n as u32,
+            self.k as u32,
+        )?;
+        self.tma.prepare_tma_nvfp4_device_scales_into(
+            &self.stream,
+            &self.input_bytes,
+            &input_scale_packed,
+            &self.weight_bytes,
+            &weight_scale_packed,
+            self.rows as u32,
+            self.k as u32,
+            self.n as u32,
+            &mut descriptors,
+        )?;
+        self.tma
+            .gemm_tma_nvfp4_rowwise_a_scale_and_global_scale_buffer(
+                &self.stream,
+                &descriptors,
+                plain,
+                self.rows as u32,
+                self.k as u32,
+                self.n as u32,
+                &self.input_globals,
+                &self.weight_global,
+            )?;
+        Ok(self
+            .tma
+            .gemm_tma_nvfp4_rowwise_a_scale_relu2_backward_f16_with_output_amax(
+                &self.stream,
+                &descriptors,
+                pre_activation,
+                fused,
+                chunk_amax,
+                self.rows as u32,
+                self.k as u32,
+                self.n as u32,
+                &self.input_globals,
+                &self.weight_global,
+            )?)
+    }
+
     fn tma_self_symmetric_with_output_amax(
         &self,
         plain: &mut DeviceBuffer<f32>,
@@ -850,5 +978,11 @@ fn residual_values(len: usize) -> Vec<f32> {
 fn action_values(len: usize) -> Vec<f32> {
     (0..len)
         .map(|index| (index % 29) as f32 * -0.0234375 + 0.375)
+        .collect()
+}
+
+fn pre_activation_values(len: usize) -> Vec<f32> {
+    (0..len)
+        .map(|index| (index % 31) as f32 * 0.03125 - 0.4375)
         .collect()
 }

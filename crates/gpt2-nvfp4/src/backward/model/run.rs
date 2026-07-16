@@ -28,7 +28,6 @@ pub fn backward(args: Gpt2BackwardArgs<'_, '_, '_>) -> Result<(), DriverError> {
     let d_hidden = scratch.d_hidden;
     let d_qkv = scratch.d_qkv;
     let d_mlp_up = scratch.d_mlp_up;
-    let d_mlp_relu2 = scratch.d_mlp_relu2;
     let Gpt2BackwardGrads {
         dlogits,
         d_embedding_residual,
@@ -81,7 +80,6 @@ pub fn backward(args: Gpt2BackwardArgs<'_, '_, '_>) -> Result<(), DriverError> {
         d_hidden,
         d_qkv,
         d_mlp_up,
-        d_mlp_relu2,
         attention_scratch: &mut attention_scratch,
         mlp_scratch: &mut mlp_scratch,
         initial_d_residual_amax_chunks: d_embedding_residual_amax_chunks,

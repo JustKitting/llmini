@@ -80,8 +80,8 @@ minimum_step_saving = (TRAIN_ELAPSED_S / COMPLETED_STEPS) * 0.005
 ```
 
 For the current matched 450-second baseline,
-`450.289 / 1061 = 0.424400566` seconds per step, so a candidate batch must
-credibly be able to save at least `2.122003 ms/step`
+`450.214 / 1071 = 0.420367880` seconds per step, so a candidate batch must
+credibly be able to save at least `2.101839 ms/step`
 before a rebuild, GPU test, or training screen. Multiply a per-launch saving by
 the launch count per step and compare that aggregate saving with the threshold.
 
@@ -124,8 +124,8 @@ width-2048, 32-head, batch-4, 2K-pretraining-context NextLat model, current
 dataset, and current tokenizer, not a result from an older or smaller
 architecture.
 
-The selective wide generic-FP16-matmul CTA commit is the current matched
-450-second control: 1061 steps in 450.289 seconds with held-out loss 5.212610.
+The fused TMA down-projection/ReLU2-backward commit is the current matched
+450-second control: 1071 steps in 450.214 seconds with held-out loss 5.243308.
 Do not compare future 450-second candidates with historical 900-second
 endpoints.
 

@@ -18,7 +18,6 @@ pub struct BackwardScratchBuffers {
     d_hidden: DeviceBuffer<f32>,
     d_qkv: DeviceBuffer<f32>,
     d_mlp_up: DeviceBuffer<f32>,
-    d_mlp_relu2: DeviceBuffer<f32>,
 }
 
 impl BackwardScratchBuffers {
@@ -34,7 +33,6 @@ impl BackwardScratchBuffers {
             d_hidden: zero(stream, HiddenState::LEN)?,
             d_qkv: zero(stream, QkvActivation::LEN)?,
             d_mlp_up: zero(stream, MlpActivation::LEN)?,
-            d_mlp_relu2: zero(stream, MlpActivation::LEN)?,
         })
     }
 
@@ -56,7 +54,6 @@ impl BackwardScratchBuffers {
             d_hidden: &mut self.d_hidden,
             d_qkv: &mut self.d_qkv,
             d_mlp_up: &mut self.d_mlp_up,
-            d_mlp_relu2: &mut self.d_mlp_relu2,
         }
     }
 }
