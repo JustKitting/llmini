@@ -45,6 +45,110 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-16
 commit: accepted local jj commit after full gate
+experiment: Pack paired f16 tensor-core staging and output epilogues.
+status: accepted_900s
+change:
+  Compatible f16 tensor-core paths now stage adjacent MMA-column values as a
+  pair. Row-major FP16 sources issue one 32-bit global load, while row-major
+  FP32 sources issue one 64-bit global load before one packed FP32-to-FP16
+  conversion and one 32-bit shared store. Transposed and token-strided sources
+  retain their two noncontiguous global reads but share the packed conversion
+  and shared store. Generic, accumulate, and causal FP32 epilogues store
+  adjacent fragment values with vector operations. The lower-dS epilogue also
+  loads adjacent probabilities together, reuses their common d value, and
+  stores the two independently computed FP16 results together. Boundary and
+  diagonal cases retain scalar fallbacks.
+numerics:
+  Each pair is the same two adjacent columns previously handled by scalar
+  instructions. Packed conversion uses the same round-to-nearest FP16
+  operation for each half; vector stores preserve each independently computed
+  FP32 or FP16 bit pattern at the same address. Causal predicates, diagonal
+  handling, launch grids, synchronization, MMA fragments, and accumulation
+  order are unchanged.
+memory:
+  Persistent buffers, scratch sizes, and the 4096-byte shared-memory
+  allocation of every affected kernel are unchanged. Nsight Systems reports
+  zero local memory per thread. Registers change 40 -> 48 for A-transposed
+  RHS, A-transposed strict, accumulate, causal, RHS, strict, and the two half
+  lower variants; base, lower, and lower-dS change 48 -> 40. Every measured
+  target family is faster despite those mixed register changes. No peak-VRAM
+  or larger-batch capacity change is claimed.
+minimum_impact_gate:
+  The accepted parent averaged 549.814905ms per sustained step, so the
+  aggregate 0.5% screen floor was 2.749075ms. Packed staging alone measured a
+  real 2.490450ms per-step whole-profile saving, below that floor. It remained
+  staged as a known measured win while compatible paired epilogues were added.
+  The final batch measured a 6.815199ms per-step saving, clearing the floor by
+  2.48x before either fixed-wall gate.
+focused_profile:
+  Accepted parent samples:
+    target/nsys/20260716_kda_remaining_packed_transfers_candidate.nsys-rep
+    target/nsys/20260716_kda_remaining_packed_transfers_candidate_reciprocal.nsys-rep
+    total GPU kernels: 5457.128078 and 5462.712056ms.
+  Staging-only intermediate samples:
+    target/nsys/20260716_f16_packed_staging_candidate.nsys-rep
+    target/nsys/20260716_f16_packed_staging_candidate_reciprocal.nsys-rep
+    total GPU kernels: 5431.289086 and 5438.742044ms.
+  Final candidate samples:
+    target/nsys/20260716_f16_packed_staging_epilogues_candidate.nsys-rep
+    target/nsys/20260716_f16_packed_staging_epilogues_candidate_reciprocal.nsys-rep
+    total GPU kernels: 5388.811707 and 5394.724448ms.
+  Every sample has 85821 kernel launches over the same 10 training steps plus
+  endpoint validation. Average total GPU kernel time falls from 5459.920067 to
+  5391.768078ms, or 6.815199ms per training step. Lower-dS saves 2.354214ms per
+  step; half A-transposed RHS lower saves 1.479986; half RHS lower 0.978313;
+  FP32 A-transposed RHS 0.821795; FP32 RHS 0.533607; FP32 causal 0.262604;
+  FP32 base 0.212451; FP32 lower 0.192895; strict causal 0.170407;
+  A-transposed strict-negative 0.146664; and accumulate 0.115273. Profiled
+  training wall time improves from 5.367/5.373 to 5.300/5.306 seconds.
+  Candidate held-out loss is 8.665606/8.665271.
+verification:
+  cargo fmt --all --check, git diff --check, cargo check --workspace -q,
+  fresh TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a, and
+  cargo test --workspace --release --lib --bins: pass (50 host tests).
+  The f16 tensor-core matmul, tiled matmul, tensor-core causal-attention
+  backward, GPT causal-attention backward, and full block-attention backward
+  GPU comparisons pass after the final rebuild. The stale
+  gpt2-nvfp4::l2_attention test target does not compile because its
+  AttentionForwardArgs initializer lacks the newer TMA fields; it is not
+  counted as passing and was not used as promotion evidence.
+  Required clean 30-second screen with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260716_051556Z_fineweb_30s
+    stdout: target/gates/20260716_f16_packed_staging_epilogues_30s.log
+    completed_steps=58, train_elapsed_s=30.422, val_loss=6.683351.
+  Required 900-second gate with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260716_051636Z_fineweb_900s
+    stdout: target/gates/20260716_f16_packed_staging_epilogues_900s.log
+    completed_steps=1661, train_elapsed_s=900.098, val_loss=4.845352.
+    All 34 high-fidelity loss and grad-norm samples are finite and nonzero,
+    with zero skipped updates, loss-spike skips, grad-norm-spike skips, or
+    nonfinite skips. Loss ranges from 4.531339645 to 10.864430428 and grad norm
+    ranges from 1.173667312 to 18.951820374. Every sample retains batch 4,
+    sequence 2048, and 8192 tokens per step. Held-out evaluation, generation,
+    and plotting all complete normally.
+measured_effect:
+  Against the accepted 30-second baseline:
+    completed_steps: 57 -> 58 (+1, +1.754%).
+    average step time: 531.017544ms -> 524.517241ms
+      (-6.500302ms, -1.224%).
+    held-out val_loss: 6.698350 -> 6.683351 (-0.224%).
+  Against the accepted 900-second baseline:
+    completed_steps: 1637 -> 1661 (+24, +1.466%).
+    average step time: 549.814905ms -> 541.901264ms
+      (-7.913641ms, -1.439%).
+    training tokens: 13410304 -> 13606912 (+196608, +1.466%).
+    held-out val_loss: 4.863899 -> 4.845352 (-0.381%).
+decision:
+  Keep and promote. Reciprocal profiles and both fixed-wall gates show a clear
+  speed win; the full run trains 24 additional steps while also improving
+  held-out loss. Every recorded stability signal is clean.
+  notes/sweep_baseline.env points to this run. The next aggregate 0.5% floor is
+  (900.098 / 1661) * 0.005 = 2.709506ms per step.
+```
+
+```text
+date: 2026-07-16
+commit: accepted local jj commit after full gate
 experiment: Pack the remaining adjacent KDA tensor-core transfers and epilogues.
 status: accepted_900s
 change:

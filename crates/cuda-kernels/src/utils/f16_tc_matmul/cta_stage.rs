@@ -1,5 +1,6 @@
 use cuda_device::{SharedArray, thread};
 
+use super::convert::{load_f16x2_global_bits, store_f16x2_shared};
 use super::cta_tile::{CTA_A_ELEMS, CTA_B_ELEMS, CTA_K, CTA_THREADS, CtaMatmulDims, CtaTile};
 
 macro_rules! stage_tiles_fn {
@@ -59,16 +60,19 @@ fn stage_matrix_tile<const CHECK_BOUNDS: bool, const TILE_ELEMS: usize>(
     cols: u32,
     k_base: u32,
 ) {
-    let thread_id = thread::threadIdx_x();
-    let mut offset = thread_id;
-    while offset < TILE_ELEMS as u32 {
-        let (global_row, global_col) = stage_coords(offset, row_base, k_base);
-        dst[offset as usize] = if !CHECK_BOUNDS || (global_row < rows && global_col < cols) {
-            src[((tile.batch * rows + global_row) * cols + global_col) as usize]
+    let mut pair = thread::threadIdx_x() * 2;
+    while pair < TILE_ELEMS as u32 {
+        let (global_row, global_col) = stage_coords(pair, row_base, k_base);
+        let packed = if !CHECK_BOUNDS || (global_row < rows && global_col + 1 < cols) {
+            let index = ((tile.batch * rows + global_row) * cols + global_col) as usize;
+            load_f16x2_global_bits(src.as_ptr(), index)
+        } else if global_row < rows && global_col < cols {
+            src[((tile.batch * rows + global_row) * cols + global_col) as usize] as u32
         } else {
             0
         };
-        offset += CTA_THREADS;
+        store_f16x2_shared(dst.as_mut_ptr(), pair as usize, packed);
+        pair += CTA_THREADS * 2;
     }
 }
 

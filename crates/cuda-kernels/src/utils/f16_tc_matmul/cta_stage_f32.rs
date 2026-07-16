@@ -1,6 +1,6 @@
-use cuda_device::{SharedArray, thread};
+use cuda_device::{SharedArray, convert::cvt_f16x2_f32, thread};
 
-use super::convert::cvt_rn_f16_f32;
+use super::convert::{load_f32x2_global, store_f16x2_shared};
 use super::cta_stage::stage_coords;
 use super::cta_tile::{CTA_A_ELEMS, CTA_B_ELEMS, CTA_THREADS, CtaMatmulDims, CtaTile};
 
@@ -93,16 +93,23 @@ fn stage_a_lower(
     cols: u32,
     k_base: u32,
 ) {
-    let mut offset = thread::threadIdx_x();
-    while offset < CTA_A_ELEMS as u32 {
-        let (global_row, global_col) = stage_coords(offset, tile.row_base, k_base);
-        dst[offset as usize] = if global_row < rows && global_col < cols && global_col <= global_row
-        {
-            cvt_rn_f16_f32(src[((tile.batch * rows + global_row) * cols + global_col) as usize])
+    let mut pair = thread::threadIdx_x() * 2;
+    while pair < CTA_A_ELEMS as u32 {
+        let (global_row, global_col) = stage_coords(pair, tile.row_base, k_base);
+        let packed = if global_row < rows && global_col + 1 < cols && global_col + 1 <= global_row {
+            let index = ((tile.batch * rows + global_row) * cols + global_col) as usize;
+            let (lo, hi) = load_f32x2_global(src.as_ptr(), index);
+            cvt_f16x2_f32(lo, hi)
+        } else if global_row < rows && global_col < cols && global_col <= global_row {
+            cvt_f16x2_f32(
+                src[((tile.batch * rows + global_row) * cols + global_col) as usize],
+                0.0,
+            )
         } else {
             0
         };
-        offset += CTA_THREADS;
+        store_f16x2_shared(dst.as_mut_ptr(), pair as usize, packed);
+        pair += CTA_THREADS * 2;
     }
 }
 
@@ -115,19 +122,26 @@ fn stage_row_major_f32<const CHECK_BOUNDS: bool, const TILE_ELEMS: usize>(
     cols: u32,
     k_base: u32,
 ) {
-    let mut offset = thread::threadIdx_x();
-    while offset < TILE_ELEMS as u32 {
-        let (global_row, global_col) = stage_coords(offset, row_base, k_base);
-        dst[offset as usize] = if !CHECK_BOUNDS || (global_row < rows && global_col < cols) {
-            cvt_rn_f16_f32(src[((tile.batch * rows + global_row) * cols + global_col) as usize])
+    let mut pair = thread::threadIdx_x() * 2;
+    while pair < TILE_ELEMS as u32 {
+        let (global_row, global_col) = stage_coords(pair, row_base, k_base);
+        let packed = if !CHECK_BOUNDS || (global_row < rows && global_col + 1 < cols) {
+            let index = ((tile.batch * rows + global_row) * cols + global_col) as usize;
+            let (lo, hi) = load_f32x2_global(src.as_ptr(), index);
+            cvt_f16x2_f32(lo, hi)
+        } else if global_row < rows && global_col < cols {
+            cvt_f16x2_f32(
+                src[((tile.batch * rows + global_row) * cols + global_col) as usize],
+                0.0,
+            )
         } else {
             0
         };
-        offset += CTA_THREADS;
+        store_f16x2_shared(dst.as_mut_ptr(), pair as usize, packed);
+        pair += CTA_THREADS * 2;
     }
 }
 
-cta_stage_transposed_rhs_fn!(stage_rhs_transposed, f32, |rhs, index| cvt_rn_f16_f32(
-    rhs[index]
-));
-cta_stage_transposed_rhs_fn!(stage_half_rhs_transposed, u16, |rhs, index| rhs[index]);
+cta_stage_transposed_rhs_fn!(stage_rhs_transposed, f32, |lo, hi| cvt_f16x2_f32(lo, hi));
+cta_stage_transposed_rhs_fn!(stage_half_rhs_transposed, u16, |lo, hi| lo as u32
+    | ((hi as u32) << 16));

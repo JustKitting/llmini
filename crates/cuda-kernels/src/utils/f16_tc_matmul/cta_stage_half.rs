@@ -1,5 +1,6 @@
 use cuda_device::thread;
 
+use super::convert::{load_f16x2_global_bits, store_f16x2_shared};
 use super::cta_stage::stage_coords;
 use super::cta_tile::{CTA_A_ELEMS, CTA_B_ELEMS, CTA_THREADS, CtaMatmulDims, CtaTile};
 
@@ -36,16 +37,20 @@ fn stage_a_lower(
     dims: CtaMatmulDims,
     k_base: u32,
 ) {
-    let mut offset = thread::threadIdx_x();
-    while offset < CTA_A_ELEMS as u32 {
-        let (global_row, global_col) = stage_coords(offset, tile.row_base, k_base);
-        dst[offset as usize] =
-            if global_row < dims.m && global_col < dims.k && global_col <= global_row {
-                src[((tile.batch * dims.m + global_row) * dims.k + global_col) as usize]
+    let mut pair = thread::threadIdx_x() * 2;
+    while pair < CTA_A_ELEMS as u32 {
+        let (global_row, global_col) = stage_coords(pair, tile.row_base, k_base);
+        let packed =
+            if global_row < dims.m && global_col + 1 < dims.k && global_col + 1 <= global_row {
+                let index = ((tile.batch * dims.m + global_row) * dims.k + global_col) as usize;
+                load_f16x2_global_bits(src.as_ptr(), index)
+            } else if global_row < dims.m && global_col < dims.k && global_col <= global_row {
+                src[((tile.batch * dims.m + global_row) * dims.k + global_col) as usize] as u32
             } else {
                 0
             };
-        offset += CTA_THREADS;
+        store_f16x2_shared(dst.as_mut_ptr(), pair as usize, packed);
+        pair += CTA_THREADS * 2;
     }
 }
 
@@ -56,16 +61,26 @@ fn stage_a_transposed_lower(
     dims: CtaMatmulDims,
     k_base: u32,
 ) {
-    let mut offset = thread::threadIdx_x();
-    while offset < CTA_A_ELEMS as u32 {
-        let (global_row, global_col) = stage_coords(offset, tile.row_base, k_base);
-        dst[offset as usize] =
-            if global_row < dims.m && global_col < dims.k && global_col >= global_row {
-                src[((tile.batch * dims.k + global_col) * dims.m + global_row) as usize]
-            } else {
-                0
-            };
-        offset += CTA_THREADS;
+    let mut pair = thread::threadIdx_x() * 2;
+    while pair < CTA_A_ELEMS as u32 {
+        let (global_row, global_col) = stage_coords(pair, tile.row_base, k_base);
+        let lo = if global_row < dims.m && global_col < dims.k && global_col >= global_row {
+            src[((tile.batch * dims.k + global_col) * dims.m + global_row) as usize]
+        } else {
+            0
+        };
+        let hi_col = global_col + 1;
+        let hi = if global_row < dims.m && hi_col < dims.k && hi_col >= global_row {
+            src[((tile.batch * dims.k + hi_col) * dims.m + global_row) as usize]
+        } else {
+            0
+        };
+        store_f16x2_shared(
+            dst.as_mut_ptr(),
+            pair as usize,
+            lo as u32 | ((hi as u32) << 16),
+        );
+        pair += CTA_THREADS * 2;
     }
 }
 
@@ -76,14 +91,25 @@ fn stage_rhs(
     dims: CtaMatmulDims,
     k_base: u32,
 ) {
-    let mut offset = thread::threadIdx_x();
-    while offset < CTA_B_ELEMS as u32 {
-        let (global_row, global_col) = stage_coords(offset, tile.col_base, k_base);
-        dst[offset as usize] = if global_row < dims.n && global_col < dims.k {
+    let mut pair = thread::threadIdx_x() * 2;
+    while pair < CTA_B_ELEMS as u32 {
+        let (global_row, global_col) = stage_coords(pair, tile.col_base, k_base);
+        let lo = if global_row < dims.n && global_col < dims.k {
             src[((tile.batch * dims.k + global_col) * dims.n + global_row) as usize]
         } else {
             0
         };
-        offset += CTA_THREADS;
+        let hi_col = global_col + 1;
+        let hi = if global_row < dims.n && hi_col < dims.k {
+            src[((tile.batch * dims.k + hi_col) * dims.n + global_row) as usize]
+        } else {
+            0
+        };
+        store_f16x2_shared(
+            dst.as_mut_ptr(),
+            pair as usize,
+            lo as u32 | ((hi as u32) << 16),
+        );
+        pair += CTA_THREADS * 2;
     }
 }

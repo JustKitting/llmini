@@ -1,6 +1,6 @@
-use cuda_device::thread;
+use cuda_device::{convert::cvt_f16x2_f32, thread};
 
-use super::convert::cvt_rn_f16_f32;
+use super::convert::store_f16x2_shared;
 use super::cta_stage::stage_coords;
 use super::cta_tile::{CTA_A_ELEMS, CTA_THREADS, CtaMatmulDims, CtaTile};
 
@@ -48,16 +48,22 @@ fn stage_a_transposed(
     dims: CtaMatmulDims,
     k_base: u32,
 ) {
-    let mut offset = thread::threadIdx_x();
-    while offset < CTA_A_ELEMS as u32 {
-        let (global_row, global_col) = stage_coords(offset, tile.row_base, k_base);
-        a_tile[offset as usize] = if global_row < dims.m && global_col < dims.k {
-            let index = ((tile.batch * dims.k + global_col) * dims.m + global_row) as usize;
-            cvt_rn_f16_f32(a[index])
+    let mut pair = thread::threadIdx_x() * 2;
+    while pair < CTA_A_ELEMS as u32 {
+        let (global_row, global_col) = stage_coords(pair, tile.row_base, k_base);
+        let lo = if global_row < dims.m && global_col < dims.k {
+            a[((tile.batch * dims.k + global_col) * dims.m + global_row) as usize]
         } else {
-            0
+            0.0
         };
-        offset += CTA_THREADS;
+        let hi_col = global_col + 1;
+        let hi = if global_row < dims.m && hi_col < dims.k {
+            a[((tile.batch * dims.k + hi_col) * dims.m + global_row) as usize]
+        } else {
+            0.0
+        };
+        store_f16x2_shared(a_tile.as_mut_ptr(), pair as usize, cvt_f16x2_f32(lo, hi));
+        pair += CTA_THREADS * 2;
     }
 }
 
@@ -68,19 +74,25 @@ fn stage_a_transposed_lower(
     dims: CtaMatmulDims,
     k_base: u32,
 ) {
-    let mut offset = thread::threadIdx_x();
-    while offset < CTA_A_ELEMS as u32 {
-        let (global_row, global_col) = stage_coords(offset, tile.row_base, k_base);
-        a_tile[offset as usize] =
-            if global_row < dims.m && global_col < dims.k && global_col >= global_row {
-                let index = ((tile.batch * dims.k + global_col) * dims.m + global_row) as usize;
-                cvt_rn_f16_f32(a[index])
-            } else {
-                0
-            };
-        offset += CTA_THREADS;
+    let mut pair = thread::threadIdx_x() * 2;
+    while pair < CTA_A_ELEMS as u32 {
+        let (global_row, global_col) = stage_coords(pair, tile.row_base, k_base);
+        let lo = if global_row < dims.m && global_col < dims.k && global_col >= global_row {
+            a[((tile.batch * dims.k + global_col) * dims.m + global_row) as usize]
+        } else {
+            0.0
+        };
+        let hi_col = global_col + 1;
+        let hi = if global_row < dims.m && hi_col < dims.k && hi_col >= global_row {
+            a[((tile.batch * dims.k + hi_col) * dims.m + global_row) as usize]
+        } else {
+            0.0
+        };
+        store_f16x2_shared(a_tile.as_mut_ptr(), pair as usize, cvt_f16x2_f32(lo, hi));
+        pair += CTA_THREADS * 2;
     }
 }
 
-cta_stage_transposed_rhs_fn!(stage_rhs, f32, |rhs, index| cvt_rn_f16_f32(rhs[index]));
-cta_stage_transposed_rhs_fn!(stage_half_rhs, u16, |rhs, index| rhs[index]);
+cta_stage_transposed_rhs_fn!(stage_rhs, f32, |lo, hi| cvt_f16x2_f32(lo, hi));
+cta_stage_transposed_rhs_fn!(stage_half_rhs, u16, |lo, hi| lo as u32
+    | ((hi as u32) << 16));
