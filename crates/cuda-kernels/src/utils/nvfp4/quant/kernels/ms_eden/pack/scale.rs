@@ -1,3 +1,4 @@
+use crate::float_ptx::rcp_approx_f32;
 use crate::nvfp4_cast::e4m3_value;
 
 use super::super::super::convert::cvt_rn_satfinite_e4m3x2_f32;
@@ -19,7 +20,7 @@ pub(super) fn stochastic_e4m3_scale(value: f32, seed: u32, group: u32) -> u8 {
     let prob_up = if denom == 0.0 {
         0.0
     } else {
-        (value - down) / denom
+        (value - down) * rcp_approx_f32(denom)
     };
 
     if random_unit_f32(seed, group) < prob_up {

@@ -46,6 +46,88 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-16
 commit: accepted local jj commit after full gate
+experiment: Use approximate reciprocals for NVFP4 local scales.
+status: accepted_450s
+change:
+  Replaced the remaining positive scale divisions in the shared NVFP4
+  quantization path with SM120 approximate reciprocals. This covers MS-EDEN's
+  two inverse scales and stochastic E4M3 rounding probability, plus Four-Six's
+  leader-side candidate scale construction and inverse scales. Payload formats,
+  seeds, stochastic decisions, candidate-error comparisons, and all launch
+  shapes are unchanged.
+numerics:
+  Approximate reciprocal rounding can perturb local E4M3 scale selection near
+  a rounding boundary and can therefore change NVFP4 payloads. All existing
+  NVFP4, MS-EDEN decoded-output, optimizer, linear-backward, and QKV-backward
+  comparisons pass without tolerance changes. Both fixed-wall endpoints
+  improve held-out loss.
+memory:
+  No allocation, scratch capacity, or buffer lifetime changes. This is an
+  arithmetic-throughput win, not a VRAM-capacity win.
+minimum_impact_gate:
+  The promoted floor was 24.45147ms over a ten-step profile. MS-EDEN plus
+  Four-Six occupied 1004.994139ms/profile in the accepted reciprocal mean. The
+  directly affected candidate mean saves 58.896887ms, clearing the floor by
+  2.41x.
+focused_profile:
+  Accepted reciprocal samples:
+    target/nsys/20260716_ms_eden_half2_rcp_muon_pair_candidate.nsys-rep
+    target/nsys/20260716_ms_eden_half2_rcp_muon_pair_candidate_reciprocal.nsys-rep
+    total GPU kernels 4896.523008 and 4900.847556ms; mean 4898.685282ms.
+    MS-EDEN mean 603.665209ms; Four-Six mean 401.328931ms;
+      directly affected mean 1004.994139ms.
+  Candidate reciprocal samples:
+    target/nsys/20260716_quant_scale_rcp_candidate.nsys-rep
+    target/nsys/20260716_quant_scale_rcp_candidate_reciprocal.nsys-rep
+    total GPU kernels 4845.399265 and 4853.440714ms; mean 4849.419990ms,
+      saving 49.265293ms / 1.006%.
+    MS-EDEN mean 563.433544ms, saving 40.231665ms / 6.664%.
+    Four-Six mean 382.663709ms, saving 18.665222ms / 4.651%.
+    directly affected mean 946.097253ms, saving 58.896887ms / 5.861%.
+verification:
+  cargo fmt --all and a fresh
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass. After that
+  exact rebuild, all nine ignored nvfp4_quant tests, all five ignored MS-EDEN
+  transpose tests, both relevant ignored Adam tests, all seven relevant ignored
+  Muon tests, both ignored linear-backward tests, and the ignored QKV-backward
+  test pass.
+  Required 30-second screen with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260716_110524Z_fineweb_30s
+    stdout: target/gates/20260716_quant_scale_rcp_30s.log
+    completed_steps=64, train_elapsed_s=30.149, val_loss=6.547934.
+  Required 450-second gate with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260716_110609Z_fineweb_450s
+    stdout: target/gates/20260716_quant_scale_rcp_450s.log
+    completed_steps=932, train_elapsed_s=450.416, val_loss=5.257826.
+    All 19 high-fidelity samples are finite and nonzero, with zero skipped
+    updates, loss-spike skips, grad-norm-spike skips, or nonfinite skips. Grad
+    norm ranges from 1.202197552 to 18.960281372. Every sample retains batch 4,
+    sequence 2048, and 8192 tokens per step.
+measured_effect:
+  Against the matched 30-second parent:
+    completed steps 63 -> 64 (+1, +1.587%).
+    average step time 476.523810 -> 471.078125ms
+      (-5.445685ms, -1.143%).
+    held-out val_loss 6.558916 -> 6.547934
+      (-0.010982, -0.167%).
+  Against the matched 450-second parent:
+    completed steps 921 -> 932 (+11, +1.194%).
+    average step time 489.029316 -> 483.278970ms
+      (-5.750346ms, -1.176%).
+    training tokens 7544832 -> 7634944 (+90112, +1.194%).
+    held-out val_loss 5.266975 -> 5.257826
+      (-0.009149, -0.174%).
+decision:
+  Keep and promote. Both reciprocal profiles clear the mathematical screen,
+  both fixed-wall gates improve throughput and held-out loss, and the full run
+  is stable. The next 0.5% threshold is
+  (450.416 / 932) * 0.005 = 2.416395ms per step, or 24.16395ms over a ten-step
+  profile.
+```
+
+```text
+date: 2026-07-16
+commit: accepted local jj commit after full gate
 experiment: Pack MS-EDEN correction reductions and pair Muon normalization transfers.
 status: accepted_450s
 change:

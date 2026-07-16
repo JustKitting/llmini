@@ -1,5 +1,6 @@
 use cuda_device::ptx_asm;
 
+use crate::float_ptx::rcp_approx_f32;
 use crate::nvfp4_cast::{e2m1_value, e4m3_value};
 
 const NVFP4_DENOM_EPS: f32 = 1.0e-20;
@@ -20,7 +21,7 @@ pub(crate) fn nonzero_scale(scale: f32) -> f32 {
 
 #[inline(always)]
 pub(crate) fn nvfp4_inv_scale(scale: f32, global_scale: f32) -> f32 {
-    1.0 / (nonzero_scale(scale) * nonzero_global_scale(global_scale) + NVFP4_DENOM_EPS)
+    rcp_approx_f32(nonzero_scale(scale) * nonzero_global_scale(global_scale) + NVFP4_DENOM_EPS)
 }
 
 #[inline(always)]
@@ -49,7 +50,8 @@ pub(crate) fn local_scale_bits(
     grid_max: f32,
 ) -> u16 {
     let global_scale = nonzero_global_scale(global_scale);
-    let value = group_amax * scale_override / (grid_max * global_scale + NVFP4_DENOM_EPS);
+    let value =
+        group_amax * scale_override * rcp_approx_f32(grid_max * global_scale + NVFP4_DENOM_EPS);
     let packed: u16;
 
     unsafe {
