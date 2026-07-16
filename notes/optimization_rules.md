@@ -80,8 +80,8 @@ minimum_step_saving = (TRAIN_ELAPSED_S / COMPLETED_STEPS) * 0.005
 ```
 
 For the current matched 450-second baseline,
-`450.359 / 1029 = 0.437666667` seconds per step, so a candidate batch must
-credibly be able to save at least `2.188333 ms/step`
+`450.109 / 1047 = 0.429903534` seconds per step, so a candidate batch must
+credibly be able to save at least `2.149518 ms/step`
 before a rebuild, GPU test, or training screen. Multiply a per-launch saving by
 the launch count per step and compare that aggregate saving with the threshold.
 
@@ -124,9 +124,9 @@ width-2048, 32-head, batch-4, 2K-pretraining-context NextLat model, current
 dataset, and current tokenizer, not a result from an older or smaller
 architecture.
 
-The wide recurrent-KDA CTA commit is the current matched 450-second control:
-1029 steps in 450.359 seconds with held-out loss 5.240251. Do not compare
-future 450-second candidates with historical 900-second endpoints.
+The wide chunk-grid KDA CTA commit is the current matched 450-second control:
+1047 steps in 450.109 seconds with held-out loss 5.254172. Do not compare future
+450-second candidates with historical 900-second endpoints.
 
 ## Sweep Rule
 

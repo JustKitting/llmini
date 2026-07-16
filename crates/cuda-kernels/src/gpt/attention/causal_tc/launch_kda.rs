@@ -6,7 +6,7 @@ use crate::attention::AttentionModule;
 use crate::kda_launch::{self, KDA_HEAD_DIM};
 use crate::launch::{grid_x_config, linear_config};
 
-const KDA_RECURRENT_THREADS_PER_BLOCK: u32 = 512;
+const KDA_WIDE_THREADS_PER_BLOCK: u32 = 512;
 
 impl AttentionModule {
     pub fn kda_attention_tc(
@@ -31,8 +31,10 @@ impl AttentionModule {
         let stream = args.stream;
         let threads = TC_FORWARD_THREADS_PER_BLOCK;
         let linear = |n| linear_config(n, threads);
-        let batch_cfg = grid_x_config(dims.batch_head, KDA_RECURRENT_THREADS_PER_BLOCK);
+        let batch_cfg = grid_x_config(dims.batch_head, KDA_WIDE_THREADS_PER_BLOCK);
         let chunk_cfg = kda_launch::chunk_dim_config(dims.batch_head, dims.chunks, threads);
+        let tc_chunk_cfg =
+            kda_launch::chunk_dim_config(dims.batch_head, dims.chunks, KDA_WIDE_THREADS_PER_BLOCK);
         let matrix_cfg = grid_x_config(dims.chunk_batch, threads);
         macro_rules! kda_kernel {
             ($kernel:ident($config:expr; $($arg:expr),* $(,)?)) => {
@@ -103,7 +105,7 @@ impl AttentionModule {
         macro_rules! kda_output {
             ($chunk_states:expr) => {{
                 kda_kernel!(chunk_kda_state_save_kernel(batch_cfg; &*scratch.k, &mut *v_new, w, &*scratch.probs, &*args.log_sum_exp, &mut *$chunk_states));
-                kda_kernel!(chunk_kda_output_from_state_kernel(chunk_cfg; &*scratch.q, &*v_new, aqk, args.out, &*$chunk_states));
+                kda_kernel!(chunk_kda_output_from_state_kernel(tc_chunk_cfg; &*scratch.q, &*v_new, aqk, args.out, &*$chunk_states));
             }};
         }
         if let Some(chunk_states) = args.attention_out_f16 {

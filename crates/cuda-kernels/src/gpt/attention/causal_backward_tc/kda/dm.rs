@@ -2,7 +2,7 @@ use cuda_device::{DisjointSlice, convert::cvt_f16x2_f32, thread};
 
 use crate::attention::CausalAttentionParams;
 use crate::f16_tc_matmul::convert::{load_f32x2_global, store_f16x2_shared};
-use crate::f16_tc_matmul::cta_tile::{CTA_B_ELEMS, CTA_K, CTA_THREADS};
+use crate::f16_tc_matmul::cta_tile::{CTA_B_ELEMS, CTA_K};
 use crate::kda_common::{beta_compact_index, compact_index, kda_decay_exp};
 use crate::kda_tc::{
     CompactTileCtx, CtaBTile, CtaTiles, KdaChunkTileCtx, stage_compact_a as stage_dm_compact_a,
@@ -25,12 +25,12 @@ pub(crate) fn chunk_intra_kda_dm_body(
     params: CausalAttentionParams,
     tiles: CtaTiles<'_>,
 ) {
-    let Some(ctx) = KdaChunkTileCtx::from_block(&params) else {
+    let Some(ctx) = KdaChunkTileCtx::from_wide_block(&params) else {
         return;
     };
     let (a_tile, b_tile) = tiles;
     let compact_ctx = ctx.compact;
-    let mut acc = [[0.0_f32; 4]; 4];
+    let mut acc = [[0.0_f32; 4]; 2];
 
     tc_stage_loop!(compact_ctx.tile, a_tile, b_tile, acc; k_base < params.head_dim; {
         stage_dm_compact_a(inputs.d_w, a_tile, compact_ctx, k_base);
@@ -85,6 +85,6 @@ fn stage_dm_kpos_b_t(
             0
         };
         store_f16x2_shared(b_tile.as_mut_ptr(), pair as usize, packed);
-        pair += CTA_THREADS * 2;
+        pair += thread::blockDim_x() * 2;
     }
 }

@@ -46,6 +46,69 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-16
 commit: accepted local jj commit after full gate
+experiment: Extend the 16-warp CTA mapping to KDA chunk-grid tensor-core kernels.
+status: accepted_450s_within_quality_tolerance
+change:
+  KDA output-from-state, dKG-from-state, fused dW/dQg-from-state, and intra-dM
+  now launch 512-thread, 16-warp CTAs instead of 256-thread, 8-warp CTAs.
+  Four warps share each 16-row MMA group and each warp owns two adjacent N
+  fragments instead of four. The total MMA count, K-stage order, shared tiles,
+  grids, operands, and output addresses are unchanged. Elementwise KDA chunk
+  kernels remain at 256 threads.
+numerics:
+  Every output fragment retains the same FP16 operands and ordered K-stage MMA
+  accumulation; only independent fragment ownership moves between warps. The
+  tensor-core causal-attention backward reference comparison passes after the
+  exact rebuild. Every sustained-run finite sample is one, every skip metric
+  is zero, and no update is skipped.
+memory:
+  Persistent allocations and peak logical VRAM are unchanged. Static shared
+  memory remains 4096 bytes for all four kernels. Registers/thread fall from
+  48 to 46 for output, 49 to 40 for dKG, 60 to 56 for fused dW/dQg, and 54 to
+  40 for intra-dM. This is a scheduling win, not a batch-capacity change.
+minimum_impact_gate:
+  The accepted parent required 2.188333ms saved per step, or 21.883333ms per
+  ten-step profile. These four active tensor-core families occupied
+  298.532772ms/profile, giving the batched mapping a credible ceiling above
+  the floor before implementation.
+verification:
+  cargo fmt --all, cargo check --workspace, a fresh exact
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a, and the ignored
+  tensor-core causal-attention backward reference comparison: pass.
+profiles:
+  target/nsys/20260716_kda_chunk_wide_cta_candidate.nsys-rep
+  target/nsys/20260716_kda_chunk_wide_cta_candidate.sqlite
+    total GPU kernels 4298.723535ms; output 54.040424ms; dKG 39.698946ms;
+    fused dW/dQg 74.838198ms; intra-dM 54.373243ms; ten-step held-out
+    val_loss=8.135277.
+  target/nsys/20260716_kda_chunk_wide_cta_candidate_recip.nsys-rep
+  target/nsys/20260716_kda_chunk_wide_cta_candidate_recip.sqlite
+    total GPU kernels 4305.944438ms; output 54.111548ms; dKG 39.726542ms;
+    fused dW/dQg 74.880151ms; intra-dM 54.385721ms; ten-step held-out
+    val_loss=8.133170.
+  Candidate mean is 4302.333987ms, saving 73.057066ms/profile or 1.670%
+  versus the accepted 4375.391052ms mean. The four touched families save
+  75.505385ms directly, explaining the whole-profile movement within
+  reciprocal noise.
+gates:
+  30s screen target/runs/20260716_154938Z_fineweb_30s:
+    heldout val_loss=6.488047, completed_steps=72, train_elapsed_s=30.135.
+  450s sustained target/runs/20260716_155034Z_fineweb_450s:
+    heldout val_loss=5.254172, completed_steps=1047, train_elapsed_s=450.109.
+  The parent completed 71 steps in 30.002s at loss 6.514285 and 1029 steps
+  in 450.359s at loss 5.240251. Sustained time per completed step falls by
+  1.774%; held-out loss moves +0.266%, inside the active roughly 1% tolerance.
+decision:
+  Accept and promote as the FineWeb/Llama-2 fixed-1B baseline. Reciprocal
+  profiles directly attribute the speedup, the reference test passes, and the
+  required fixed-time gate preserves the gain and numerical stability within
+  the quality tolerance. The next aggregate 0.5% floor is 2.149518ms per step,
+  or 21.495177ms per ten-step profile.
+```
+
+```text
+date: 2026-07-16
+commit: accepted local jj commit after full gate
 experiment: Double recurrent KDA CTA warps and halve each warp's N ownership.
 status: accepted_450s_within_quality_tolerance
 change:

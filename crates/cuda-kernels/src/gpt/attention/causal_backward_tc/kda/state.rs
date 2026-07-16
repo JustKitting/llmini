@@ -14,13 +14,13 @@ pub(crate) fn chunk_kda_dkg_from_vnew_dh_body(
     params: CausalAttentionParams,
     tiles: CtaTiles<'_>,
 ) {
-    let Some(ctx) = KdaChunkTileCtx::from_block(&params) else {
+    let Some(ctx) = KdaChunkTileCtx::from_wide_block(&params) else {
         return;
     };
     let (a_tile, b_tile) = tiles;
     let compact_ctx = ctx.compact;
 
-    let mut acc = [[0.0_f32; 4]; 4];
+    let mut acc = [[0.0_f32; 4]; 2];
     tc_stage_loop!(compact_ctx.tile, a_tile, b_tile, acc; k_base < params.head_dim; {
         stage_dm_compact_a(v_new, a_tile, compact_ctx, k_base);
     } {
@@ -46,13 +46,13 @@ pub(crate) fn chunk_state_matmul_body(
     tiles: CtaTiles<'_>,
     mode: ChunkStateMatmulMode,
 ) {
-    let Some(ctx) = KdaChunkTileCtx::from_block(&params) else {
+    let Some(ctx) = KdaChunkTileCtx::from_wide_block(&params) else {
         return;
     };
     let (a_tile, b_tile) = tiles;
     let compact_ctx = ctx.compact;
 
-    let mut acc = [[0.0_f32; 4]; 4];
+    let mut acc = [[0.0_f32; 4]; 2];
     tc_stage_loop!(compact_ctx.tile, a_tile, b_tile, acc; k_base < params.head_dim; {
         stage_dm_compact_a(a_src, a_tile, compact_ctx, k_base);
     } {
@@ -86,14 +86,14 @@ pub(crate) fn chunk_state_dw_dqg_matmul_body(
     params: CausalAttentionParams,
     tiles: CtaTiles<'_>,
 ) {
-    let Some(ctx) = KdaChunkTileCtx::from_block(&params) else {
+    let Some(ctx) = KdaChunkTileCtx::from_wide_block(&params) else {
         return;
     };
     let (a_tile, b_tile) = tiles;
     let compact_ctx = ctx.compact;
 
-    let mut dw_acc = [[0.0_f32; 4]; 4];
-    let mut dqg_acc = [[0.0_f32; 4]; 4];
+    let mut dw_acc = [[0.0_f32; 4]; 2];
+    let mut dqg_acc = [[0.0_f32; 4]; 2];
     let mut k_base = 0;
     while k_base < params.head_dim {
         stage_state_b_t(

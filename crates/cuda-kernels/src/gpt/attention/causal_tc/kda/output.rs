@@ -2,7 +2,7 @@ use cuda_device::{DisjointSlice, convert::cvt_f16x2_f32, thread};
 
 use crate::attention::CausalAttentionParams;
 use crate::f16_tc_matmul::convert::{load_f32x2_global, store_f16x2_shared};
-use crate::f16_tc_matmul::cta_tile::{CTA_A_ELEMS, CTA_K, CTA_THREADS};
+use crate::f16_tc_matmul::cta_tile::{CTA_A_ELEMS, CTA_K};
 use crate::kda_common::chunk_matrix_index;
 use crate::kda_tc::{
     CtaATile, CtaTiles, KdaChunkTileCtx, MatrixTileCtx, StateTileLayout, StateTileSource,
@@ -19,13 +19,13 @@ pub(in super::super) fn chunk_kda_output_from_state_body(
     params: CausalAttentionParams,
     tiles: CtaTiles<'_>,
 ) {
-    let Some(ctx) = KdaChunkTileCtx::from_block(&params) else {
+    let Some(ctx) = KdaChunkTileCtx::from_wide_block(&params) else {
         return;
     };
     let (a_tile, b_tile) = tiles;
     let compact_ctx = ctx.compact;
 
-    let mut acc = [[0.0_f32; 4]; 4];
+    let mut acc = [[0.0_f32; 4]; 2];
     tc_stage_loop!(compact_ctx.tile, a_tile, b_tile, acc; k_base < params.head_dim; {
         stage_compact_a(q, a_tile, compact_ctx, k_base);
     } {
@@ -59,6 +59,6 @@ fn stage_chunk_matrix_a(src: &[f32], a_tile: &mut CtaATile, ctx: MatrixTileCtx<'
             0
         };
         store_f16x2_shared(a_tile.as_mut_ptr(), pair as usize, packed);
-        pair += CTA_THREADS * 2;
+        pair += thread::blockDim_x() * 2;
     }
 }

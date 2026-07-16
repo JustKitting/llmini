@@ -6,7 +6,7 @@ use crate::attention::AttentionModule;
 use crate::kda_launch::{self, KDA_HEAD_DIM};
 use crate::launch::{grid_x_config, linear_config};
 
-const KDA_RECURRENT_THREADS_PER_BLOCK: u32 = 512;
+const KDA_WIDE_THREADS_PER_BLOCK: u32 = 512;
 
 use super::kernels::KDA_NORM_REDUCE_THREADS_PER_BLOCK;
 
@@ -83,8 +83,10 @@ impl AttentionModule {
         let bwd_tc = &self.causal_attention_backward_tc.kda_tc;
         let fwd = &self.causal_attention_tc.kda;
         let threads = TC_BACKWARD_THREADS_PER_BLOCK;
-        let batch_cfg = grid_x_config(dims.batch_head, KDA_RECURRENT_THREADS_PER_BLOCK);
+        let batch_cfg = grid_x_config(dims.batch_head, KDA_WIDE_THREADS_PER_BLOCK);
         let chunk_cfg = kda_launch::chunk_dim_config(dims.batch_head, dims.chunks, threads);
+        let tc_chunk_cfg =
+            kda_launch::chunk_dim_config(dims.batch_head, dims.chunks, KDA_WIDE_THREADS_PER_BLOCK);
         let matrix_cfg = grid_x_config(dims.chunk_batch, threads);
         let finish_element_count = dims.batch_head * seq_len * 32;
         let finish_chunk_count = finish_element_count.div_ceil(threads);
@@ -129,7 +131,7 @@ impl AttentionModule {
         if kda_v_new.is_none() {
             let akk_inv = kda_akk_inv.unwrap_or(&*chunk_matrix);
             mm!(f32_rhs(akk_inv, vbeta, kpos_u_dw, dims.chc()));
-            launch!(bwd_tc.chunk_kda_vnew_from_state_kernel(chunk_cfg; w, kpos_u_dw, chunk_states, kneg_vnew_dqg_dv));
+            launch!(bwd_tc.chunk_kda_vnew_from_state_kernel(tc_chunk_cfg; w, kpos_u_dw, chunk_states, kneg_vnew_dqg_dv));
         }
         let aqk = match kda_aqk {
             Some(aqk) => aqk,
@@ -162,9 +164,9 @@ impl AttentionModule {
         launch!(bwd_tc.chunkwise_kda_backward_kernel(batch_cfg; qg, kg, kpos_u_dw, w, aqk, g, chunk_states, d_out, dh_states_or_kneg, local_grad));
         {
             let v_new = kda_v_new.unwrap_or(&*kneg_vnew_dqg_dv);
-            launch!(bwd_tc.chunk_kda_dkg_from_vnew_dh_kernel(chunk_cfg; v_new, dh_states_or_kneg, dkg_from_state));
+            launch!(bwd_tc.chunk_kda_dkg_from_vnew_dh_kernel(tc_chunk_cfg; v_new, dh_states_or_kneg, dkg_from_state));
         }
-        launch!(bwd_tc.chunk_kda_dw_dqg_from_state_kernel(chunk_cfg; kpos_u_dw, dout_daqk_dvbeta, chunk_states, w_du_dq, kneg_vnew_dqg_dv));
+        launch!(bwd_tc.chunk_kda_dw_dqg_from_state_kernel(tc_chunk_cfg; kpos_u_dw, dout_daqk_dvbeta, chunk_states, w_du_dq, kneg_vnew_dqg_dv));
         launch!(bwd_elementwise.make_kda_backward_kneg_from_kg_kernel(linear_config(dims.compact_elems, threads); kg, g, dh_states_or_kneg));
         mm!(f32_input_accumulate(
             local_grad,
@@ -188,7 +190,7 @@ impl AttentionModule {
                 dims.chc()
             ));
         }
-        launch!(bwd_tc.chunk_intra_kda_dm_kernel(chunk_cfg; kg, vbeta, g, beta, kpos_u_dw, w_du_dq, aqk_or_dm));
+        launch!(bwd_tc.chunk_intra_kda_dm_kernel(tc_chunk_cfg; kg, vbeta, g, beta, kpos_u_dw, w_du_dq, aqk_or_dm));
         match kda_akk_inv {
             Some(akk_inv) => {
                 mm!(f32_input(aqk_or_dm, akk_inv, local_grad, dims.ccc()));

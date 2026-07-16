@@ -53,9 +53,19 @@ pub(crate) struct KdaChunkTileCtx<'a> {
 
 impl<'a> KdaChunkTileCtx<'a> {
     pub(crate) fn from_block(params: &'a CausalAttentionParams) -> Option<Self> {
+        Self::from_block_tile(params, CtaTile::from_tile(thread::threadIdx_x(), 0, 0, 0))
+    }
+
+    pub(crate) fn from_wide_block(params: &'a CausalAttentionParams) -> Option<Self> {
+        Self::from_block_tile(
+            params,
+            CtaTile::from_wide_tile(thread::threadIdx_x(), 0, 0, 0),
+        )
+    }
+
+    fn from_block_tile(params: &'a CausalAttentionParams, tile: CtaTile) -> Option<Self> {
         let bh = thread::blockIdx_x();
         let chunk = thread::blockIdx_y();
-        let tid = thread::threadIdx_x();
         let chunks = chunk_count(params);
         if bh >= batch_head(params) || chunk >= chunks || !kda_tc_shape(params) {
             return None;
@@ -64,7 +74,6 @@ impl<'a> KdaChunkTileCtx<'a> {
         let head = bh - batch * params.head_count;
         let start = chunk * params.chunk_size;
         let end = params.seq_len.min(start + params.chunk_size);
-        let tile = CtaTile::from_tile(tid, 0, 0, 0);
         Some(Self {
             bh,
             chunk,
