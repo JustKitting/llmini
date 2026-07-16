@@ -28,6 +28,11 @@ pub fn sqrt_f32(x: f32) -> f32 {
 }
 
 #[inline(always)]
+pub fn rcp_approx_f32(x: f32) -> f32 {
+    ptx_f32!("rcp.approx.ftz.f32 %0, %1;", in("f") x,)
+}
+
+#[inline(always)]
 pub fn fma_f32(a: f32, b: f32, c: f32) -> f32 {
     ptx_f32!(
         "fma.rn.f32 %0, %1, %2, %3;",

@@ -4,6 +4,7 @@ use cuda_device::{
 
 use crate::block_reduce::block_max_store_f32;
 use crate::device_ptr::read_f32;
+use crate::f16_tc_matmul::convert::{load_f32x2_global, store_f32x2_global};
 use crate::float_ptx::{abs_f32, max_f32, sqrt_f32};
 use crate::nvfp4_quant::kernels::four_six::helpers::four_six_global_scale;
 use crate::nvfp4_quant::kernels::row_amax::TENSOR_AMAX_VALUES_PER_BLOCK;
@@ -148,19 +149,25 @@ pub(crate) mod module {
         let lane = thread & (WARP_SIZE - 1);
         let warp = thread / WARP_SIZE;
         let base = chunk * TENSOR_AMAX_VALUES_PER_BLOCK;
-        let mut offset = thread;
+        let mut offset = thread * 2;
         let mut local_amax = 0.0;
         let out = polar_x.as_mut_ptr();
         while offset < TENSOR_AMAX_VALUES_PER_BLOCK {
             let index = base + offset;
-            if index < matrix_len {
+            if index + 1 < matrix_len {
+                let i = index as usize;
+                let (source0, source1) = load_f32x2_global(source.as_ptr(), i);
+                let value0 = source0 * inv_norm;
+                let value1 = source1 * inv_norm;
+                store_f32x2_global(out, i, value0, value1);
+                local_amax = max_f32(local_amax, abs_f32(value0));
+                local_amax = max_f32(local_amax, abs_f32(value1));
+            } else if index < matrix_len {
                 let value = source[index as usize] * inv_norm;
-                unsafe {
-                    *out.add(index as usize) = value;
-                }
+                unsafe { *out.add(index as usize) = value };
                 local_amax = max_f32(local_amax, abs_f32(value));
             }
-            offset += thread::blockDim_x();
+            offset += thread::blockDim_x() * 2;
         }
         block_max_store_f32!(
             CHUNK_AMAX,

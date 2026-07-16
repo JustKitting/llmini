@@ -1,8 +1,9 @@
-use cuda_device::{DisjointSlice, warp};
+use cuda_device::{DisjointSlice, convert::cvt_f16x2_f32, ptx_asm, warp};
 
-use crate::float_ptx::abs_f32;
+use crate::f16_tc_matmul::convert::cvt_f32_f16;
+use crate::float_ptx::{abs_f32, rcp_approx_f32};
 use crate::nvfp4_cast::{e2m1_value, e4m3_value};
-use crate::warp_reduce::{half_warp_max_nonnegative_f32, half_warp_sum_f32};
+use crate::warp_reduce::half_warp_max_nonnegative_f32;
 
 use super::super::super::convert::{
     cvt_rn_satfinite_e2m1x2_f32, cvt_rn_satfinite_e4m3x2_f32, nonzero_global_scale, nonzero_scale,
@@ -43,9 +44,12 @@ pub(super) fn ms_eden_pack_payload(
     let payload = cvt_rn_satfinite_e2m1x2_f32(0.0, x_scaled) & 0x0f;
     let fp4_value = e2m1_value(payload);
 
-    let num = half_warp_sum_f32(x_scaled * x_scaled, group_mask);
-    let denom = half_warp_sum_f32(x_scaled * fp4_value, group_mask);
-    let correction = if denom == 0.0 { 1.0 } else { num / denom };
+    let (num, denom) = half_warp_sum_f16x2(x_scaled * x_scaled, x_scaled * fp4_value, group_mask);
+    let correction = if denom == 0.0 {
+        1.0
+    } else {
+        num * rcp_approx_f32(denom)
+    };
     let corrected_scale = nonzero_scale(scale * correction);
     let rounded_scale_bits = stochastic_e4m3_scale(corrected_scale, scale_seed, group);
 
@@ -62,4 +66,29 @@ pub(super) fn ms_eden_pack_payload(
             *out_fp4.get_unchecked_mut(byte as usize) = payload | (peer_payload << 4);
         }
     }
+}
+
+#[inline(always)]
+fn half_warp_sum_f16x2(lo: f32, hi: f32, mask: u32) -> (f32, f32) {
+    let mut pair = cvt_f16x2_f32(lo, hi);
+    pair = add_f16x2(pair, warp::shuffle_xor_sync(mask, pair, 8));
+    pair = add_f16x2(pair, warp::shuffle_xor_sync(mask, pair, 4));
+    pair = add_f16x2(pair, warp::shuffle_xor_sync(mask, pair, 2));
+    pair = add_f16x2(pair, warp::shuffle_xor_sync(mask, pair, 1));
+    (cvt_f32_f16(pair as u16), cvt_f32_f16((pair >> 16) as u16))
+}
+
+#[inline(always)]
+fn add_f16x2(a: u32, b: u32) -> u32 {
+    let sum: u32;
+    unsafe {
+        ptx_asm!(
+            "add.rn.f16x2 %0, %1, %2;",
+            out("=r") sum,
+            in("r") a,
+            in("r") b,
+            options(register_only),
+        );
+    }
+    sum
 }

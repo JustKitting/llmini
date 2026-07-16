@@ -46,6 +46,181 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-16
 commit: accepted local jj commit after full gate
+experiment: Pack MS-EDEN correction reductions and pair Muon normalization transfers.
+status: accepted_450s
+change:
+  Packed the MS-EDEN least-squares correction numerator and denominator into
+  one FP16x2 register and reduced them together through four half-warp
+  shuffles, replacing two independent four-stage FP32 shuffle trees. The final
+  correction division now uses one SM120 approximate reciprocal and multiply.
+  In the same batch, Muon's source-to-Polar-X normalization loads and stores
+  adjacent aligned FP32 values as pairs.
+numerics:
+  The MS-EDEN correction sums now accumulate in FP16 instead of FP32 and the
+  final reciprocal is approximate. The Hadamard transform, E2M1 payload,
+  stochastic E4M3 scale rounding, seeds, global scales, and optimizer math are
+  otherwise unchanged. All existing quantization, decoded-output,
+  linear-backward, QKV-backward, and optimizer comparisons pass without
+  tolerance changes. The sustained gate improves held-out loss.
+memory:
+  No persistent allocation, scratch capacity, or buffer lifetime changes. The
+  packed sums reduce register-width traffic inside the payload but do not
+  create a VRAM-capacity win.
+minimum_impact_gate:
+  The promoted floor was 24.61328ms over a ten-step profile. MS-EDEN occupied
+  640.752745ms/profile in the accepted reciprocal mean, and the Muon
+  source-to-X kernel occupied 13.179247ms. The combined directly affected
+  family saves 38.044218ms/profile, clearing the floor by 1.55x.
+focused_profile:
+  Accepted reciprocal samples:
+    target/nsys/20260716_kda_muon_linear_batch_candidate.nsys-rep
+    target/nsys/20260716_kda_muon_linear_batch_candidate_reciprocal.nsys-rep
+    total GPU kernels 4944.046429 and 4947.171011ms; mean 4945.608720ms.
+    MS-EDEN 640.227669 and 641.277820ms; mean 640.752745ms.
+    Muon source-to-X 13.175235 and 13.183259ms; mean 13.179247ms.
+  Candidate reciprocal samples:
+    target/nsys/20260716_ms_eden_half2_rcp_muon_pair_candidate.nsys-rep
+    target/nsys/20260716_ms_eden_half2_rcp_muon_pair_candidate_reciprocal.nsys-rep
+    total GPU kernels 4896.523008 and 4900.847556ms; mean 4898.685282ms,
+      saving 46.923438ms / 0.949%.
+    MS-EDEN 603.195966 and 604.134451ms; mean 603.665209ms,
+      saving 37.087536ms / 5.788%.
+    Muon source-to-X 12.218937 and 12.226194ms; mean 12.222566ms,
+      saving 0.956681ms / 7.259%.
+    directly affected combined mean 615.887774ms, saving 38.044218ms.
+verification:
+  cargo fmt --all and a fresh
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass. After that
+  exact rebuild, all five ignored MS-EDEN transpose tests, all nine ignored
+  nvfp4_quant tests, both ignored linear-backward tests, the ignored
+  QKV-backward test, and all 18 ignored optimizer tests pass.
+  Required 30-second screen with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260716_105208Z_fineweb_30s
+    stdout: target/gates/20260716_ms_eden_half2_rcp_muon_pair_30s.log
+    completed_steps=63, train_elapsed_s=30.021, val_loss=6.558916.
+  Required 450-second gate with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260716_105312Z_fineweb_450s
+    stdout: target/gates/20260716_ms_eden_half2_rcp_muon_pair_450s.log
+    completed_steps=921, train_elapsed_s=450.396, val_loss=5.266975.
+    All 19 high-fidelity samples are finite and nonzero, with zero skipped
+    updates, loss-spike skips, grad-norm-spike skips, or nonfinite skips. Grad
+    norm ranges from 1.183646560 to 18.931690216. Every sample retains batch 4,
+    sequence 2048, and 8192 tokens per step.
+measured_effect:
+  Against the matched 30-second parent:
+    completed steps remain 63.
+    average step time 479.777778 -> 476.523810ms
+      (-3.253968ms, -0.678%).
+    held-out val_loss 6.558680 -> 6.558916
+      (+0.000236, +0.0036%).
+  Against the matched 450-second parent:
+    completed steps 915 -> 921 (+6, +0.656%).
+    average step time 492.265574 -> 489.029316ms
+      (-3.236258ms, -0.657%).
+    training tokens 7495680 -> 7544832 (+49152, +0.656%).
+    held-out val_loss 5.272758 -> 5.266975
+      (-0.005783, -0.110%).
+decision:
+  Keep and promote. Reciprocal profiles clear the mathematical screen, both
+  fixed-wall gates preserve the speed signal, held-out loss improves, and the
+  full run is stable. The next 0.5% threshold is
+  (450.396 / 921) * 0.005 = 2.445147ms per step, or 24.45147ms over a ten-step
+  profile.
+```
+
+```text
+date: 2026-07-16
+commit: rejection record only; candidate source reverted
+experiment: Broadcast approximate reciprocals through KDA preparation and backward.
+status: rejected_subthreshold
+change:
+  Tested lane-zero approximate reciprocal broadcasts for KDA Q/K norms,
+  hoisted one beta reciprocal from the intra-backward inner dimension loop,
+  reused broadcast finish-kernel norm reciprocals, and used approximate
+  reciprocal sigmoid evaluation. The retained Muon pair-load candidate was
+  present in the same profile but measured separately.
+verification:
+  Fresh exact build and the ignored causal-attention TC backward test pass.
+  Profile:
+    target/nsys/20260716_kda_rcp_broadcast_muon_pair_candidate.nsys-rep
+measured_effect:
+  Direct KDA savings were only about 1.9ms/profile, and the independent Muon
+  pair load added about 0.9ms. The 2.8ms directly attributable aggregate is far
+  below the 24.61328ms floor. The apparent whole-profile movement from
+  4945.608720 to 4925.606324ms is unsupported by the touched families and is
+  treated as profiler noise.
+decision:
+  Reject without either fixed-wall gate and fully revert the KDA reciprocal
+  changes. Retain the independently repeatable Muon pair load only for a
+  larger compatible batch.
+```
+
+```text
+date: 2026-07-16
+commit: rejection record only; candidate source reverted
+experiment: Store KDA dH snapshots in unused FP16 scratch.
+status: rejected_subthreshold
+change:
+  Stored intermediate KDA dH snapshots in the unused half-precision scratch
+  plane and reread them as FP16 for the following dK/dG tensor-core matmul.
+verification:
+  The focused KDA backward comparison passes. Profile:
+    target/nsys/20260716_kda_dh_f16_muon_pair_candidate.nsys-rep
+measured_effect:
+  Chunkwise KDA backward saves 1.791522ms/profile, dK/dG saves
+  0.325422ms/profile, and the independent Muon pair load saves
+  0.932155ms/profile. The 3.049099ms direct aggregate is far below the
+  24.61328ms floor, while total GPU kernels regress from the 4945.608720ms
+  accepted mean to 4953.979474ms.
+decision:
+  Reject without a fixed-wall gate. The precision trade is unjustified at this
+  size; fully revert the KDA FP16-scratch path and retain only the independent
+  Muon pair load for batching.
+```
+
+```text
+date: 2026-07-16
+commit: rejection record only; candidate source reverted
+experiment: Give each NVFP4 TMA consumer warp sixteen output columns.
+status: rejected_launch_contract
+change:
+  Tested M_REPEAT=2, N_REPEAT=4 with a 544-thread launch bound so each consumer
+  warp owned sixteen output columns instead of eight.
+verification:
+  The exact SM120 build passes, but the first ignored projection_tma
+  correctness test hangs with GPU0 at full utilization and produces no result
+  after more than 90 seconds. The test was interrupted.
+decision:
+  Reject and fully revert. This shape violates the kernel's implicit
+  barrier/progress contract and is not a runnable candidate.
+```
+
+```text
+date: 2026-07-16
+commit: rejection record only; candidate source partially retained for batching
+experiment: Pair small reductions and widen layer-norm row ownership.
+status: rejected_subthreshold_batch
+change:
+  Tested paired FP32 loads in gradient-clip sumsq, schedule-free amax, and Muon
+  source-to-X normalization together with a 64-column tiled layer-norm
+  reduction.
+verification:
+  Profile:
+    target/nsys/20260716_pair_reductions_ln64_batch_candidate.nsys-rep
+measured_effect:
+  Gradient clip is flat, saving 0.002503ms/profile. Schedule-free is flat,
+  saving 0.032271ms. Muon source-to-X is a repeatable 1.015376ms win. The
+  widened layer norm regresses by 1.293118ms. Direct aggregate regresses by
+  0.242969ms/profile despite a noisy total-kernel movement.
+decision:
+  Revert gradient clip, schedule-free, and layer norm without fixed-wall
+  gates. Retain only the direct Muon pair-load win for a larger compatible
+  batch; it is far below the whole-step floor by itself.
+```
+
+```text
+date: 2026-07-16
+commit: accepted local jj commit after full gate
 experiment: Reuse KDA decays and pair Muon/linear reduction input loads.
 status: accepted_450s
 change:
