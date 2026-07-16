@@ -4,12 +4,10 @@ use gpt2_nvfp4::{GPT2_N_EMBD, HiddenState, NEXTLAT_HIDDEN, NEXTLAT_INPUT};
 use super::super::device_buffer::zero;
 
 pub struct NextLatGradBuffers {
+    // Ping buffer: d_act2 -> d_act1 -> d_normalized.
     pub d_act2: DeviceBuffer<f32>,
+    // Pong buffer: d_pre2 -> d_pre1 -> d_concat.
     pub d_pre2: DeviceBuffer<f32>,
-    pub d_act1: DeviceBuffer<f32>,
-    pub d_pre1: DeviceBuffer<f32>,
-    pub d_normalized: DeviceBuffer<f32>,
-    pub d_concat: DeviceBuffer<f32>,
     pub d_next_token_embeddings: DeviceBuffer<f32>,
     pub d_current_states: DeviceBuffer<f32>,
     pub d_norm_weight: DeviceBuffer<f32>,
@@ -27,10 +25,6 @@ impl NextLatGradBuffers {
         Ok(Self {
             d_act2: zero(stream, gpt2_nvfp4::NextLatHiddenActivation::LEN)?,
             d_pre2: zero(stream, gpt2_nvfp4::NextLatHiddenActivation::LEN)?,
-            d_act1: zero(stream, gpt2_nvfp4::NextLatHiddenActivation::LEN)?,
-            d_pre1: zero(stream, gpt2_nvfp4::NextLatHiddenActivation::LEN)?,
-            d_normalized: zero(stream, gpt2_nvfp4::NextLatInputActivation::LEN)?,
-            d_concat: zero(stream, gpt2_nvfp4::NextLatInputActivation::LEN)?,
             d_next_token_embeddings: zero(stream, HiddenState::LEN)?,
             d_current_states: zero(stream, HiddenState::LEN)?,
             d_norm_weight: zero(stream, NEXTLAT_INPUT)?,

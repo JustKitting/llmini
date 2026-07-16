@@ -18,21 +18,21 @@ pub(in crate::training::next_latent) fn output_and_loss(
         args.buffers.act2_quant.rowwise(),
         args.weights.output_projection.weight.device(),
         args.weights.output_projection.bias.device(),
-        &mut args.buffers.delta,
+        &mut args.buffers.act2,
         args.row_count,
         NEXTLAT_HIDDEN_DIM,
         GPT2_EMBEDDING_DIM,
     )?;
     args.next_latent.residual_add(NextLatResidualAddArgs {
         stream: args.stream,
-        delta: &args.buffers.delta,
+        delta: &args.buffers.act2,
         residual: args.current_states,
-        out: &mut args.buffers.predicted,
+        out: &mut args.buffers.next_token_embeddings,
         len: args.row_count * GPT2_EMBEDDING_DIM,
     })?;
     args.next_latent.smooth_l1(NextLatSmoothL1Args {
         stream: args.stream,
-        predicted_next_states: &args.buffers.predicted,
+        predicted_next_states: &args.buffers.next_token_embeddings,
         target_states: args.current_states,
         losses: &mut args.buffers.losses,
         d_predicted_next_states: &mut args.buffers.d_predicted,

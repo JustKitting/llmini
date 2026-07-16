@@ -11,21 +11,21 @@ use rust_kernels_cuda::nvfp4_tma_matmul::{
 use super::super::device_buffer::zero;
 
 pub struct NextLatBuffers {
+    // Reused for the final predicted state after concat consumes the embedding.
     pub(super) next_token_embeddings: DeviceBuffer<f32>,
     pub(super) concat: DeviceBuffer<f32>,
+    // Reused for the first pre-GELU tape after input quantization consumes it.
     pub(super) normalized: DeviceBuffer<f32>,
     pub(super) normalized_amax: DeviceBuffer<f32>,
     pub(super) mean: DeviceBuffer<f32>,
     pub(super) inv_std: DeviceBuffer<f32>,
     pub(super) input_quant: RowwiseNvfp4Buffers,
-    pub(super) pre1: DeviceBuffer<f32>,
+    // Reused for the second pre-GELU tape after act1 quantization consumes it.
     pub(super) act1: DeviceBuffer<f32>,
     pub(super) act1_quant: RowwiseNvfp4Buffers,
-    pub(super) pre2: DeviceBuffer<f32>,
+    // Reused for the output delta after act2 quantization consumes it.
     pub(super) act2: DeviceBuffer<f32>,
     pub(super) act2_quant: RowwiseNvfp4Buffers,
-    pub(super) delta: DeviceBuffer<f32>,
-    pub(super) predicted: DeviceBuffer<f32>,
     pub(super) losses: DeviceBuffer<f32>,
     pub(super) d_predicted: DeviceBuffer<f32>,
     pub(super) tma_input_scale_packed: DeviceBuffer<u8>,
@@ -49,14 +49,10 @@ impl NextLatBuffers {
             mean: zero(stream, GPT2_TOKEN_ROWS)?,
             inv_std: zero(stream, GPT2_TOKEN_ROWS)?,
             input_quant: RowwiseNvfp4Buffers::gpt2_rows(stream, NextLatInputActivation::LEN)?,
-            pre1: zero(stream, NextLatHiddenActivation::LEN)?,
             act1: zero(stream, NextLatHiddenActivation::LEN)?,
             act1_quant: RowwiseNvfp4Buffers::gpt2_rows(stream, NextLatHiddenActivation::LEN)?,
-            pre2: zero(stream, NextLatHiddenActivation::LEN)?,
             act2: zero(stream, NextLatHiddenActivation::LEN)?,
             act2_quant: RowwiseNvfp4Buffers::gpt2_rows(stream, NextLatHiddenActivation::LEN)?,
-            delta: zero(stream, HiddenState::LEN)?,
-            predicted: zero(stream, HiddenState::LEN)?,
             losses: zero(stream, GPT2_TOKEN_ROWS)?,
             d_predicted: zero(stream, HiddenState::LEN)?,
             tma_input_scale_packed: DeviceBuffer::zeroed(

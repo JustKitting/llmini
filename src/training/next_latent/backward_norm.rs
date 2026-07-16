@@ -13,7 +13,7 @@ pub(super) fn layer_norm_backward(
         .backward_params_f32(LayerNormBackwardParamF32Args {
             stream: args.stream,
             residual: &args.forward.concat,
-            d_normalized: &args.grads.d_normalized,
+            d_normalized: &args.grads.d_act2,
             mean: &args.forward.mean,
             inv_std: &args.forward.inv_std,
             d_weight: &mut args.grads.d_norm_weight,
@@ -25,11 +25,11 @@ pub(super) fn layer_norm_backward(
         .backward_input_f32(LayerNormBackwardInputF32Args {
             stream: args.stream,
             residual: &args.forward.concat,
-            d_normalized: &args.grads.d_normalized,
+            d_normalized: &args.grads.d_act2,
             mean: &args.forward.mean,
             inv_std: &args.forward.inv_std,
             weight: args.weights.norm.weight.device(),
-            d_residual: &mut args.grads.d_concat,
+            d_residual: &mut args.grads.d_pre2,
             row_count: args.row_count,
             embedding_dim: NEXTLAT_INPUT_DIM,
         })

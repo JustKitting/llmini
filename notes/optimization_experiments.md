@@ -45,6 +45,70 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 
 ```text
 date: 2026-07-16
+commit: accepted local jj commit after full gate
+experiment: Reuse non-overlapping NextLat forward and backward activation buffers.
+status: accepted_450s_memory_capacity_win
+change:
+  Forward now reuses normalized storage for the first pre-GELU tape, act1 for
+  the second pre-GELU tape, act2 for the output delta, and the consumed next
+  token embedding buffer for the predicted state. Backward ping-pongs the six
+  4096-wide activation gradients through the existing d_act2 and d_pre2
+  buffers in stream order: d_act2 -> d_act1 -> d_normalized and
+  d_pre2 -> d_pre1 -> d_concat. Four forward and four backward allocations are
+  removed; kernels, arithmetic, launch order, and NVFP4 tapes are unchanged.
+numerics:
+  Each reused destination is written only after its previous value's final
+  consumer has been enqueued on the same CUDA stream. No launch aliases an
+  input with its output. The 30-second and 450-second gates preserve held-out
+  quality and all stability metrics.
+memory:
+  Matched TRAIN_REPORT_MEMORY probes:
+    target/gates/20260716_tma_relu2_compact_memory_candidate.log
+      accepted parent used_bytes=44790120448.
+    target/gates/20260716_nextlat_buffer_reuse_memory_candidate.log
+      candidate used_bytes=43850596352.
+  Used allocation falls by exactly 939524096 bytes = 896 MiB. Together with
+  the two preceding 256 MiB MLP scratch removals, this optimization round has
+  removed 1476395008 bytes = 1408 MiB = 1.375 GiB from the active allocation.
+minimum_impact_gate:
+  This candidate is accepted through the separate measured memory-capacity
+  rule. Launch count is unchanged and reciprocal profiles are timing-neutral;
+  no standalone 0.5% speed claim is made.
+profiles:
+  Accepted compact-ReLU2 parent mean:
+    target/nsys/20260716_tma_relu2_compact_evalfix_a.nsys-rep: 4187.942458ms.
+    target/nsys/20260716_tma_relu2_compact_evalfix_b.nsys-rep: 4195.717656ms.
+  Candidate:
+    target/nsys/20260716_nextlat_buffer_reuse_a.nsys-rep: 4182.476640ms.
+    target/nsys/20260716_nextlat_buffer_reuse_b.nsys-rep: 4193.734158ms.
+  Mean total kernel time is 4191.830057 -> 4188.105399ms, a small 3.724658ms
+  (0.089%) favorable movement treated as noise. Both paths launch exactly
+  65026 kernels.
+verification:
+  cargo fmt --all --check, cargo check --workspace, git diff --check, a fresh
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a, all 50 workspace
+  release lib/bin host tests, and the four ignored release NextLat concat,
+  GELU, residual/loss, and backward GPU tests: pass.
+gates:
+  30s screen target/runs/20260716_175419Z_fineweb_30s:
+    heldout val_loss=6.513792, completed_steps=74, train_elapsed_s=30.178.
+    Parent is 6.513063 / 74 / 30.186; held-out loss moves +0.011%.
+  450s sustained target/runs/20260716_175507Z_fineweb_450s:
+    heldout val_loss=5.159012, completed_steps=1077, train_elapsed_s=450.364.
+    Parent is 5.155224 / 1075 / 450.168; held-out loss moves +0.073%,
+    completed steps increase by two, and average step time moves from
+    418.760930 to 418.165274ms. All 22 high-fidelity samples are finite and
+    nonzero, every skip metric is zero, batch is 4, sequence length is 2048,
+    and tokens per step are 8192.
+decision:
+  Accept and promote as a large exact capacity win with unchanged model math,
+  effectively identical held-out quality, and clean sustained stability. The
+  next aggregate 0.5% floor is 2.090826ms per step, or 20.908264ms per
+  ten-step profile.
+```
+
+```text
+date: 2026-07-16
 commit: rejection record only; candidate source reverted
 experiment: Compute each MS-EDEN group scale once and pair E2M1 payload conversion.
 status: rejected_profile_gate

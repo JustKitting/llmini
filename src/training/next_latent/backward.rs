@@ -18,7 +18,7 @@ pub fn backward(mut args: NextLatBackwardArgs<'_, '_, '_>) -> Result<(), DriverE
     gelu_backward(
         args.next_latent,
         args.stream,
-        &args.forward.pre2,
+        &args.forward.act1,
         &args.grads.d_act2,
         &mut args.grads.d_pre2,
         args.row_count * NEXTLAT_HIDDEN_DIM,
@@ -27,16 +27,16 @@ pub fn backward(mut args: NextLatBackwardArgs<'_, '_, '_>) -> Result<(), DriverE
     gelu_backward(
         args.next_latent,
         args.stream,
-        &args.forward.pre1,
-        &args.grads.d_act1,
-        &mut args.grads.d_pre1,
+        &args.forward.normalized,
+        &args.grads.d_act2,
+        &mut args.grads.d_pre2,
         args.row_count * NEXTLAT_HIDDEN_DIM,
     )?;
     input_projection_backward(&mut args)?;
     layer_norm_backward(&mut args)?;
     args.next_latent.concat_backward(NextLatConcatBackwardArgs {
         stream: args.stream,
-        d_concat: &args.grads.d_concat,
+        d_concat: &args.grads.d_pre2,
         d_predicted: &args.forward.d_predicted,
         d_next_token_embeddings: &mut args.grads.d_next_token_embeddings,
         d_current_states: &mut args.grads.d_current_states,

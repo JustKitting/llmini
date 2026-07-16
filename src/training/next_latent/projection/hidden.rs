@@ -19,14 +19,14 @@ pub(in crate::training::next_latent) fn projection_gelu1(
         args.buffers.input_quant.rowwise(),
         args.weights.input_projection.weight.device(),
         args.weights.input_projection.bias.device(),
-        &mut args.buffers.pre1,
+        &mut args.buffers.normalized,
         args.row_count,
         NEXTLAT_INPUT_DIM,
         NEXTLAT_HIDDEN_DIM,
     )?;
     args.next_latent.gelu(NextLatGeluArgs {
         stream: args.stream,
-        input: &args.buffers.pre1,
+        input: &args.buffers.normalized,
         out: &mut args.buffers.act1,
         len: args.row_count * NEXTLAT_HIDDEN_DIM,
     })?;
@@ -52,14 +52,14 @@ pub(in crate::training::next_latent) fn projection_gelu2(
         args.buffers.act1_quant.rowwise(),
         args.weights.transition.weight.device(),
         args.weights.transition.bias.device(),
-        &mut args.buffers.pre2,
+        &mut args.buffers.act1,
         args.row_count,
         NEXTLAT_HIDDEN_DIM,
         NEXTLAT_HIDDEN_DIM,
     )?;
     args.next_latent.gelu(NextLatGeluArgs {
         stream: args.stream,
-        input: &args.buffers.pre2,
+        input: &args.buffers.act1,
         out: &mut args.buffers.act2,
         len: args.row_count * NEXTLAT_HIDDEN_DIM,
     })?;
