@@ -21,7 +21,7 @@ pub(crate) use tc_stage_loop;
 macro_rules! for_acc_fragments {
     ($acc:expr, $tile:expr, |$warp_n:ident, $frag:ident, $value:ident| $body:block) => {{
         let mut i = 0;
-        while i < 4 {
+        while i < $acc.len() {
             let $warp_n = $tile.warp_n0 + i as u32;
             let mut $frag = 0;
             while $frag < 4 {
@@ -37,7 +37,7 @@ macro_rules! for_acc_fragments {
 macro_rules! for_acc_fragment_pairs {
     ($acc:expr, $tile:expr, |$warp_n:ident, $frag:ident, $lo:ident, $hi:ident| $body:block) => {{
         let mut i = 0;
-        while i < 4 {
+        while i < $acc.len() {
             let $warp_n = $tile.warp_n0 + i as u32;
             let mut $frag = 0;
             while $frag < 4 {

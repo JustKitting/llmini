@@ -1,7 +1,7 @@
 use cuda_device::{DisjointSlice, SharedArray, convert::cvt_f16x2_f32, thread};
 
 use crate::f16_tc_matmul::convert::{load_f32x2_global, store_f16x2_shared};
-use crate::f16_tc_matmul::cta_tile::{CTA_A_ELEMS, CTA_B_ELEMS, CTA_K, CTA_THREADS};
+use crate::f16_tc_matmul::cta_tile::{CTA_A_ELEMS, CTA_B_ELEMS, CTA_K};
 use crate::kda_common::compact_index;
 use crate::kda_tc::CompactTileCtx;
 
@@ -25,7 +25,7 @@ pub(crate) fn stage_compact_a(
             0
         };
         store_f16x2_shared(a_tile.as_mut_ptr(), pair as usize, packed);
-        pair += CTA_THREADS * 2;
+        pair += thread::blockDim_x() * 2;
     }
 }
 
@@ -53,7 +53,7 @@ pub(crate) fn stage_compact_b_t(
             0.0
         };
         store_f16x2_shared(b_tile.as_mut_ptr(), pair as usize, cvt_f16x2_f32(lo, hi));
-        pair += CTA_THREADS * 2;
+        pair += thread::blockDim_x() * 2;
     }
 }
 
@@ -82,7 +82,7 @@ pub(crate) fn stage_compact_token_dim_b_t(
             0
         };
         store_f16x2_shared(b_tile.as_mut_ptr(), pair as usize, packed);
-        pair += CTA_THREADS * 2;
+        pair += thread::blockDim_x() * 2;
     }
 }
 
@@ -112,6 +112,6 @@ pub(crate) fn stage_compact_b_t_disjoint(
             0.0
         };
         store_f16x2_shared(b_tile.as_mut_ptr(), pair as usize, cvt_f16x2_f32(lo, hi));
-        pair += CTA_THREADS * 2;
+        pair += thread::blockDim_x() * 2;
     }
 }

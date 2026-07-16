@@ -4,7 +4,7 @@ use crate::attention::CausalAttentionParams;
 use crate::f16_tc_matmul::convert::{
     load_f16x2_global, load_f32x2_shared, store_f16x2_shared, store_f32x2_shared,
 };
-use crate::f16_tc_matmul::cta_tile::{CTA_A_ELEMS, CTA_B_ELEMS, CTA_K, CTA_THREADS};
+use crate::f16_tc_matmul::cta_tile::{CTA_A_ELEMS, CTA_B_ELEMS, CTA_K};
 use crate::kda_common::{chunk_state_index, compact_index, hidden_index, kda_decay_exp};
 use crate::kda_tc::{CompactTileCtx, CtaATile, CtaBTile, KdaStateTile, compact_fragment_coords};
 
@@ -33,7 +33,7 @@ pub(crate) fn stage_compact_t_a(
             0.0
         };
         store_f16x2_shared(a_tile.as_mut_ptr(), pair as usize, cvt_f16x2_f32(lo, hi));
-        pair += CTA_THREADS * 2;
+        pair += thread::blockDim_x() * 2;
     }
 }
 
@@ -61,7 +61,7 @@ pub(crate) fn stage_hidden_dout_b_t(
             0.0
         };
         store_f16x2_shared(b_tile.as_mut_ptr(), pair as usize, cvt_f16x2_f32(lo, hi));
-        pair += CTA_THREADS * 2;
+        pair += thread::blockDim_x() * 2;
     }
 }
 
@@ -85,8 +85,8 @@ pub(crate) fn load_chunk_state(
     thread::sync_threads();
 }
 
-pub(crate) fn store_dh_quads(
-    acc: [[f32; 4]; 4],
+pub(crate) fn store_dh_quads<const N_REPEATS: usize>(
+    acc: [[f32; 4]; N_REPEATS],
     d_h_next: &KdaStateTile,
     d_h: &mut KdaStateTile,
     g: &[f32],
@@ -101,7 +101,7 @@ pub(crate) fn store_dh_quads(
         kda_decay_exp(g[compact_index(ctx.batch, last_token, ctx.head, k_dim_1, ctx.params)]);
 
     let mut i = 0;
-    while i < 4 {
+    while i < N_REPEATS {
         let warp_n = ctx.tile.warp_n0 + i as u32;
         let (_, v_dim_0) = compact_fragment_coords(ctx.tile, warp_n, 0);
         let index_0 = (k_dim_0 * ctx.params.head_dim + v_dim_0) as usize;

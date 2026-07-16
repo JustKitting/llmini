@@ -6,6 +6,8 @@ use crate::attention::AttentionModule;
 use crate::kda_launch::{self, KDA_HEAD_DIM};
 use crate::launch::{grid_x_config, linear_config};
 
+const KDA_RECURRENT_THREADS_PER_BLOCK: u32 = 512;
+
 use super::kernels::KDA_NORM_REDUCE_THREADS_PER_BLOCK;
 
 impl AttentionModule {
@@ -81,7 +83,7 @@ impl AttentionModule {
         let bwd_tc = &self.causal_attention_backward_tc.kda_tc;
         let fwd = &self.causal_attention_tc.kda;
         let threads = TC_BACKWARD_THREADS_PER_BLOCK;
-        let batch_cfg = grid_x_config(dims.batch_head, threads);
+        let batch_cfg = grid_x_config(dims.batch_head, KDA_RECURRENT_THREADS_PER_BLOCK);
         let chunk_cfg = kda_launch::chunk_dim_config(dims.batch_head, dims.chunks, threads);
         let matrix_cfg = grid_x_config(dims.chunk_batch, threads);
         let finish_element_count = dims.batch_head * seq_len * 32;

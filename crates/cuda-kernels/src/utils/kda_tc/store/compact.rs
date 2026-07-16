@@ -5,8 +5,8 @@ use crate::f16_tc_matmul::convert::{load_f32x2_global, store_f32x2_global};
 use crate::kda_common::{compact_index, hidden_index};
 use crate::kda_tc::CompactTileCtx;
 
-pub(crate) fn store_vnew_quads(
-    acc: [[f32; 4]; 4],
+pub(crate) fn store_vnew_quads<const N_REPEATS: usize>(
+    acc: [[f32; 4]; N_REPEATS],
     u: &[f32],
     v_new: &mut DisjointSlice<f32>,
     ctx: CompactTileCtx<'_>,
@@ -48,8 +48,8 @@ pub(crate) enum CompactStore {
     Add,
 }
 
-pub(crate) fn store_compact_quads(
-    acc: [[f32; 4]; 4],
+pub(crate) fn store_compact_quads<const N_REPEATS: usize>(
+    acc: [[f32; 4]; N_REPEATS],
     dst: &mut DisjointSlice<f32>,
     ctx: CompactTileCtx<'_>,
     mode: CompactStore,
@@ -98,8 +98,8 @@ pub(crate) fn store_compact_quads(
     });
 }
 
-pub(crate) fn store_hidden_output_quads(
-    acc: [[f32; 4]; 4],
+pub(crate) fn store_hidden_output_quads<const N_REPEATS: usize>(
+    acc: [[f32; 4]; N_REPEATS],
     out: &mut DisjointSlice<f32>,
     ctx: CompactTileCtx<'_>,
 ) {

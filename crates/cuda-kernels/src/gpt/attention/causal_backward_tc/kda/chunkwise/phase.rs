@@ -17,7 +17,7 @@ pub(super) fn add_kg_dh_to_du_tc(
     b_tile: &mut CtaBTile,
     ctx: CompactTileCtx<'_>,
 ) {
-    let mut acc = [[0.0_f32; 4]; 4];
+    let mut acc = [[0.0_f32; 4]; 2];
     tc_stage_loop!(ctx.tile, a_tile, b_tile, acc; k_base < ctx.params.head_dim; {
         stage_dm_compact_a(kg, a_tile, ctx, k_base);
     } {
@@ -36,7 +36,7 @@ pub(super) fn compute_prev_dh_tc(
 ) {
     let (d_h_next, d_h) = states;
     let (a_tile, b_tile) = tiles;
-    let mut acc = [[0.0_f32; 4]; 4];
+    let mut acc = [[0.0_f32; 4]; 2];
 
     tc_stage_loop!(compact_ctx.tile, a_tile, b_tile, acc; k_base < compact_ctx.params.chunk_size; {
         stage_compact_t_a(inputs.qg, a_tile, compact_ctx, k_base, 1.0);

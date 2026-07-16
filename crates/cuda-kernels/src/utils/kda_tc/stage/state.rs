@@ -3,7 +3,7 @@ use cuda_device::{SharedArray, convert::cvt_f16x2_f32, thread};
 use crate::f16_tc_matmul::convert::{
     cvt_rn_f16_f32, load_f16x2_global_bits, load_f32x2_global, store_f16x2_shared,
 };
-use crate::f16_tc_matmul::cta_tile::{CTA_B_ELEMS, CTA_K, CTA_THREADS};
+use crate::f16_tc_matmul::cta_tile::{CTA_B_ELEMS, CTA_K};
 use crate::kda_common::chunk_state_index;
 use crate::kda_tc::{CompactTileCtx, KdaChunkTileCtx};
 
@@ -28,7 +28,7 @@ pub(crate) fn stage_shared_state_b_t<const STATE_ELEMS: usize>(
             0
         };
         store_f16x2_shared(b_tile.as_mut_ptr(), pair as usize, packed);
-        pair += CTA_THREADS * 2;
+        pair += thread::blockDim_x() * 2;
     }
 }
 
@@ -78,7 +78,7 @@ pub(crate) fn stage_state_b_t(
                 0
             };
             store_f16x2_shared(b_tile.as_mut_ptr(), pair as usize, packed);
-            pair += CTA_THREADS * 2;
+            pair += thread::blockDim_x() * 2;
         }
         return;
     }
@@ -106,6 +106,6 @@ pub(crate) fn stage_state_b_t(
             } else {
                 0
             };
-        offset += CTA_THREADS;
+        offset += thread::blockDim_x();
     }
 }

@@ -2,7 +2,6 @@ mod phase;
 
 use cuda_device::{DisjointSlice, thread};
 
-use super::super::gather::TC_FORWARD_THREADS_PER_BLOCK;
 use crate::attention::CausalAttentionParams;
 use crate::f16_tc_matmul::convert::cvt_rn_f16_f32;
 use crate::f16_tc_matmul::cta_tile::CtaTile;
@@ -49,11 +48,11 @@ pub(in super::super) fn chunk_kda_state_save_body(
         unsafe {
             *chunk_states.get_unchecked_mut(first_state_base + linear as usize) = 0;
         }
-        linear += TC_FORWARD_THREADS_PER_BLOCK;
+        linear += thread::blockDim_x();
     }
     thread::sync_threads();
 
-    let tile = CtaTile::from_tile(tid, 0, 0, 0);
+    let tile = CtaTile::from_wide_tile(tid, 0, 0, 0);
     let mut chunk = 0;
     while chunk < chunks {
         let start = chunk * params.chunk_size;
@@ -68,7 +67,7 @@ pub(in super::super) fn chunk_kda_state_save_body(
                     *chunk_states.get_unchecked_mut(base + linear as usize) =
                         cvt_rn_f16_f32(state[linear as usize]);
                 }
-                linear += TC_FORWARD_THREADS_PER_BLOCK;
+                linear += thread::blockDim_x();
             }
             thread::sync_threads();
         }

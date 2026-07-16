@@ -2,7 +2,7 @@ use cuda_device::{DisjointSlice, convert::cvt_f16x2_f32, thread};
 
 use super::super::super::gather::TC_FORWARD_THREADS_PER_BLOCK;
 use crate::f16_tc_matmul::convert::store_f16x2_shared;
-use crate::f16_tc_matmul::cta_tile::{CTA_A_ELEMS, CTA_K, CTA_THREADS};
+use crate::f16_tc_matmul::cta_tile::{CTA_A_ELEMS, CTA_K};
 use crate::kda_common::{chunk_g_last_index, compact_index, kda_decay_exp, state_elems};
 use crate::kda_tc::KdaDecayTile;
 use crate::kda_tc::{
@@ -20,7 +20,7 @@ pub(super) fn compute_ws_to_vnew(
     b_tile: &mut CtaBTile,
     ctx: CompactTileCtx<'_>,
 ) {
-    let mut acc = [[0.0_f32; 4]; 4];
+    let mut acc = [[0.0_f32; 4]; 2];
     tc_stage_loop!(ctx.tile, a_tile, b_tile, acc; k_base < ctx.params.head_dim; {
         stage_compact_a(w, a_tile, ctx, k_base);
     } {
@@ -37,7 +37,7 @@ pub(super) fn compute_kg_vnew_add_state(
     b_tile: &mut CtaBTile,
     ctx: CompactTileCtx<'_>,
 ) {
-    let mut acc = [[0.0_f32; 4]; 4];
+    let mut acc = [[0.0_f32; 4]; 2];
     tc_stage_loop!(ctx.tile, a_tile, b_tile, acc; k_base < ctx.params.chunk_size; {
         stage_kg_t_a(k, a_tile, ctx, k_base);
     } {
@@ -89,6 +89,6 @@ fn stage_kg_t_a(src: &[f32], a_tile: &mut CtaATile, ctx: CompactTileCtx<'_>, k_b
             0.0
         };
         store_f16x2_shared(a_tile.as_mut_ptr(), pair as usize, cvt_f16x2_f32(lo, hi));
-        pair += CTA_THREADS * 2;
+        pair += thread::blockDim_x() * 2;
     }
 }

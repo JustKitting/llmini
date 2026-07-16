@@ -4,8 +4,8 @@ use super::coords::compact_fragment_coords;
 use crate::attention::CausalAttentionParams;
 use crate::f16_tc_matmul::cta_tile::CtaTile;
 
-pub(crate) fn add_shared_state_quads<const STATE_ELEMS: usize>(
-    acc: [[f32; 4]; 4],
+pub(crate) fn add_shared_state_quads<const STATE_ELEMS: usize, const N_REPEATS: usize>(
+    acc: [[f32; 4]; N_REPEATS],
     tile: CtaTile,
     state: &mut SharedArray<f32, STATE_ELEMS>,
     params: &CausalAttentionParams,

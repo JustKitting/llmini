@@ -5,8 +5,8 @@ use crate::f16_tc_matmul::convert::store_f32x2_global;
 use crate::kda_common::chunk_matrix_index;
 use crate::kda_tc::MatrixTileCtx;
 
-pub(crate) fn store_chunk_matrix_quads(
-    acc: [[f32; 4]; 4],
+pub(crate) fn store_chunk_matrix_quads<const N_REPEATS: usize>(
+    acc: [[f32; 4]; N_REPEATS],
     dst: &mut DisjointSlice<f32>,
     ctx: MatrixTileCtx<'_>,
 ) {

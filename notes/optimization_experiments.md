@@ -45,6 +45,74 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 
 ```text
 date: 2026-07-16
+commit: accepted local jj commit after full gate
+experiment: Double recurrent KDA CTA warps and halve each warp's N ownership.
+status: accepted_450s_within_quality_tolerance
+change:
+  Forward KDA state-save and chunkwise KDA backward now launch 512-thread,
+  16-warp CTAs instead of 256-thread, 8-warp CTAs. Four warps share each
+  16-row MMA group and each warp owns two adjacent N fragments; the parent
+  used two warps per row group with four N fragments each. Total MMA count,
+  K-stage order, shared tiles, recurrence order, grids, and output addresses
+  are unchanged. KDA staging strides now follow the actual block dimension,
+  and accumulator/store helpers accept either two or four N fragments so the
+  512-thread mapping is limited to the two recurrent, batch-head-grid kernels.
+numerics:
+  Every output fragment retains the same FP16 operands and ordered K-stage MMA
+  accumulation. Only independent fragment ownership moves between warps.
+  The tensor-core causal-attention backward reference comparison passes after
+  the exact rebuild; both fixed-time runs remain finite with zero skipped
+  updates.
+memory:
+  Persistent allocations and peak logical VRAM are unchanged. Static shared
+  memory stays 20736 bytes for state-save and 53248 bytes for chunkwise
+  backward. Registers fall from 60 to 45 and from 48 to 46 respectively, so
+  this is a scheduling win rather than a batch-capacity change.
+minimum_impact_gate:
+  The active baseline required 2.226573ms saved per step, or 22.265727ms per
+  ten-step profile. The two recurrent families occupied 294.478099ms/profile,
+  and their 128-CTA grids used only 128 of 188 SMs. Sharing staging within a
+  wider CTA avoided the duplicated-A cost of the previously rejected two-CTA
+  column split and gave a credible ceiling well above the floor.
+verification:
+  cargo fmt --all, cargo check --workspace, a fresh exact
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a, and the ignored
+  tensor-core causal-attention backward reference comparison: pass.
+profiles:
+  target/nsys/20260716_kda_recurrent_wide_cta_candidate.nsys-rep
+  target/nsys/20260716_kda_recurrent_wide_cta_candidate.sqlite
+    total GPU kernels 4372.489306ms; state-save 87.237824ms; chunkwise
+    backward 113.465598ms; ten-step held-out val_loss=8.134080; launches
+    65084.
+  target/nsys/20260716_kda_recurrent_wide_cta_candidate_reciprocal.nsys-rep
+  target/nsys/20260716_kda_recurrent_wide_cta_candidate_reciprocal.sqlite
+    total GPU kernels 4378.292798ms; state-save 87.437645ms; chunkwise
+    backward 113.620806ms; ten-step held-out val_loss=8.133691; launches
+    65084.
+  Candidate mean is 4375.391052ms, saving 96.258969ms/profile or 2.153%
+  versus the accepted 4471.650021ms mean. State-save saves 49.178170ms and
+  chunkwise backward saves 44.418993ms; the two touched families directly
+  explain 93.597162ms of the whole-profile movement. Other KDA families are
+  flat or slightly favorable within reciprocal noise.
+gates:
+  30s screen target/runs/20260716_153450Z_fineweb_30s:
+    heldout val_loss=6.514285, completed_steps=71, train_elapsed_s=30.002.
+  450s sustained target/runs/20260716_153539Z_fineweb_450s:
+    heldout val_loss=5.240251, completed_steps=1029, train_elapsed_s=450.359.
+  The parent completed 70 steps in 30.000s at loss 6.515830 and 1011 steps
+  in 450.213s at loss 5.226843. Sustained time per completed step falls by
+  1.717%; held-out loss moves +0.257%, inside the active roughly 1% tolerance.
+  All sampled finite flags are one and no updates are skipped.
+decision:
+  Accept and promote as the FineWeb/Llama-2 fixed-1B baseline. Reciprocal
+  profiles directly attribute the speedup, the reference test passes, and the
+  required fixed-time gate preserves the gain and numerical stability within
+  the quality tolerance. The next aggregate 0.5% floor is 2.188333ms per step,
+  or 21.883333ms per ten-step profile.
+```
+
+```text
+date: 2026-07-16
 commit: rejection record only; candidate source reverted
 experiment: Widen and interleave the final Muon linear3 row-sumsq pass.
 status: rejected_profile_gate

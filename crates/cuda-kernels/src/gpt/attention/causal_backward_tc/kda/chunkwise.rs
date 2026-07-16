@@ -2,7 +2,6 @@ mod phase;
 
 use cuda_device::{DisjointSlice, thread};
 
-use super::super::gather::TC_BACKWARD_THREADS_PER_BLOCK;
 use crate::attention::CausalAttentionParams;
 use crate::f16_tc_matmul::convert::store_f32x2_global;
 use crate::f16_tc_matmul::cta_tile::CtaTile;
@@ -48,7 +47,7 @@ pub(crate) fn chunkwise_kda_backward_body(
     let mut idx = tid;
     while idx < state_elems {
         d_h_next[idx as usize] = 0.0;
-        idx += TC_BACKWARD_THREADS_PER_BLOCK;
+        idx += thread::blockDim_x();
     }
     thread::sync_threads();
 
@@ -64,7 +63,7 @@ pub(crate) fn chunkwise_kda_backward_body(
             chunk,
             state_elems,
             &params,
-            TC_BACKWARD_THREADS_PER_BLOCK,
+            thread::blockDim_x(),
         );
 
         let mut pair = tid * 2;
@@ -77,10 +76,10 @@ pub(crate) fn chunkwise_kda_backward_body(
                 d_h_next[pair as usize],
                 d_h_next[pair as usize + 1],
             );
-            pair += TC_BACKWARD_THREADS_PER_BLOCK * 2;
+            pair += thread::blockDim_x() * 2;
         }
 
-        let tile = CtaTile::from_tile(tid, 0, 0, 0);
+        let tile = CtaTile::from_wide_tile(tid, 0, 0, 0);
         let ctx = CompactTileCtx::new(tile, (batch, head), (start, end), &params);
         add_kg_dh_to_du_tc(inputs.kg, &mut grads.u_to_du, d_h_next, a_tile, b_tile, ctx);
         thread::sync_threads();

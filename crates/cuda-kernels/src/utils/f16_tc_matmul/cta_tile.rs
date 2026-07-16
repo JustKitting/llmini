@@ -76,6 +76,20 @@ impl CtaTile {
         }
     }
 
+    pub(crate) fn from_wide_tile(thread_id: u32, tile_row: u32, tile_col: u32, batch: u32) -> Self {
+        let lane = thread_id & 31;
+        let warp = thread_id >> 5;
+        Self {
+            batch,
+            row_base: tile_row * CTA_M,
+            col_base: tile_col * CTA_N,
+            warp_m: warp >> 2,
+            warp_n0: (warp & 0x3) << 1,
+            group: lane >> 2,
+            thread_in_group: lane & 0x3,
+        }
+    }
+
     #[inline(always)]
     pub(crate) fn accumulator_coords(self, warp_n: u32, acc_index: usize) -> (u32, u32) {
         let row = self.row_base + self.warp_m * 16 + self.group + if acc_index < 2 { 0 } else { 8 };
