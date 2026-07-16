@@ -163,6 +163,7 @@ impl OptimizerModule {
                 args.polar_update,
                 args.polar_bound_amax,
                 &mut *args.polar_chunks,
+                args.qk_clip_factors,
                 args.slot_index,
                 args.learning_rate,
                 args.weight_decay,

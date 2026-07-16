@@ -78,6 +78,8 @@ pub fn descriptors(slots: &Slots, rows: usize, cols: usize) -> Vec<MuonSlotDescr
             rows: rows as u32,
             cols: cols as u32,
             learning_rate_multiplier: 1.0,
+            qk_clip_factor_offset: u32::MAX,
+            qk_clip_head_dim: 0,
         })
         .collect()
 }

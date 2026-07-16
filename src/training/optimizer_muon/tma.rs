@@ -25,6 +25,7 @@ pub(in crate::training) struct MuonTmaArgs<'a> {
     pub(in crate::training) runtime: &'a Runtime,
     pub(in crate::training) table: &'a MuonGroupTable,
     pub(in crate::training) scratch: &'a mut MuonScratchBuffers,
+    pub(in crate::training) qk_clip_factors: &'a DeviceBuffer<f32>,
     pub(in crate::training) slot_count: usize,
     pub(in crate::training) step: u32,
     pub(in crate::training) average_coefficient: f32,
@@ -96,6 +97,7 @@ pub(in crate::training) fn apply_muon_tma(args: MuonTmaArgs<'_>) -> Result<(), D
                     polar_update: &args.scratch.polar_x,
                     polar_bound_amax: &args.scratch.tma.bound_amax,
                     polar_chunks: &mut args.scratch.polar_chunks,
+                    qk_clip_factors: args.qk_clip_factors,
                     slot_index: slot_index as u32,
                     matrix_len: desc.rows * desc.cols,
                     learning_rate,
@@ -113,6 +115,7 @@ pub(in crate::training) fn apply_muon_tma(args: MuonTmaArgs<'_>) -> Result<(), D
                     polar_update: &args.scratch.polar_next,
                     polar_bound_amax: &args.scratch.tma.bound_amax,
                     polar_chunks: &mut args.scratch.polar_chunks,
+                    qk_clip_factors: args.qk_clip_factors,
                     slot_index: slot_index as u32,
                     matrix_len: desc.rows * desc.cols,
                     learning_rate,
@@ -310,8 +313,22 @@ fn run_tma_polar_iteration(
     )?;
     let final_iteration = iter + 1 == POLAR_ITERATIONS;
     let fused_linear3 = defer_bounds && !final_iteration && !trace.enabled;
+    let fused_final_row_sumsq = defer_bounds && final_iteration && !trace.enabled;
     if fused_linear3 {
         run_tma_gemm_prepared_linear3_amax(
+            stream,
+            runtime,
+            source,
+            ax,
+            target,
+            &mut tma,
+            action_dims,
+            coeffs.a,
+            coeffs.b,
+            coeffs.c,
+        )?;
+    } else if fused_final_row_sumsq {
+        run_tma_gemm_prepared_linear3_row_sumsq(
             stream,
             runtime,
             source,
@@ -803,6 +820,63 @@ fn run_tma_gemm_prepared_linear3_amax(
     runtime
         .quant
         .tensor_amax_from_chunks_f32(stream, &*tma.a.chunk_amax, tma.a.amax, chunk_count)
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "fused Muon action uses explicit operands and coefficients"
+)]
+fn run_tma_gemm_prepared_linear3_row_sumsq(
+    stream: &CudaStream,
+    runtime: &Runtime,
+    source: &DeviceBuffer<f32>,
+    action: &DeviceBuffer<f32>,
+    out: &mut DeviceBuffer<f32>,
+    tma: &mut TmaScratchRefs<'_>,
+    dims: TmaDims,
+    a_scale: f32,
+    b_scale: f32,
+    c_scale: f32,
+) -> Result<(), DriverError> {
+    debug_assert!(dims.is_exact());
+    runtime
+        .optimizer
+        .tma_gemm()
+        .prepare_tma_nvfp4_device_scales_into(
+            stream,
+            &*tma.a.bytes,
+            &*tma.a.scale_packed,
+            &*tma.b.bytes,
+            &*tma.b.scale_packed,
+            dims.m,
+            dims.k,
+            dims.n,
+            tma.descriptors,
+        )?;
+    runtime
+        .optimizer
+        .tma_gemm()
+        .gemm_tma_nvfp4_device_scales_and_global_scale_buffers_linear3_with_row_sumsq(
+            stream,
+            &*tma.descriptors,
+            source,
+            action,
+            out,
+            &*tma.bound_amax,
+            tma.out_padded,
+            tma.b.chunk_amax,
+            dims.m,
+            dims.k,
+            dims.n,
+            &*tma.a.global_scale,
+            &*tma.b.global_scale,
+            a_scale,
+            b_scale,
+            c_scale,
+        )?;
+    runtime
+        .quant
+        .tensor_amax_from_chunks_f32(stream, &*tma.b.chunk_amax, tma.bound_amax, dims.m)
 }
 
 fn run_tma_gemm_prepared_and_b_amax(

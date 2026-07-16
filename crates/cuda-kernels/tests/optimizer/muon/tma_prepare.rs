@@ -78,6 +78,8 @@ fn run_prepare(
         rows: rows as u32,
         cols: cols as u32,
         learning_rate_multiplier: 1.0,
+        qk_clip_factor_offset: u32::MAX,
+        qk_clip_head_dim: 0,
     };
     let slots = DeviceBuffer::from_host(stream, &[descriptor])?;
     let mut oriented = DeviceBuffer::<f32>::zeroed(stream, len)?;

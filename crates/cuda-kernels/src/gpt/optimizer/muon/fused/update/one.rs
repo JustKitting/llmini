@@ -13,6 +13,7 @@ pub(super) fn update_one(
     u: *const f32,
     z_master: *mut f32,
     x_master: *mut f32,
+    momentum: *mut f32,
     rows: u32,
     cols: u32,
     len: u32,
@@ -23,6 +24,7 @@ pub(super) fn update_one(
     weight_decay: f32,
     average_coefficient: f32,
     schedule_beta: f32,
+    qk_clip_factor: f32,
     index: u32,
 ) -> UpdateAmax {
     if index >= len {
@@ -41,8 +43,13 @@ pub(super) fn update_one(
     unsafe {
         let z = z_master.add(index as usize);
         let x = x_master.add(index as usize);
-        let next_z = *z * decay - learning_rate * muon_update;
-        let next_x = *x + average_coefficient * (next_z - *x);
+        let mut next_z = *z * decay - learning_rate * muon_update;
+        let mut next_x = *x + average_coefficient * (next_z - *x);
+        if qk_clip_factor != 1.0 {
+            next_z *= qk_clip_factor;
+            next_x *= qk_clip_factor;
+            *momentum.add(index as usize) *= qk_clip_factor;
+        }
         *z = next_z;
         *x = next_x;
         UpdateAmax {

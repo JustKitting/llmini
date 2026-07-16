@@ -1,6 +1,7 @@
 use cuda_core::DriverError;
 
 use super::gather::TC_BACKWARD_THREADS_PER_BLOCK;
+use super::kernels::KDA_NORM_REDUCE_THREADS_PER_BLOCK;
 use super::launch_config::attention_config;
 use super::launch_grads::run_grad_matmuls;
 use super::launch_scores::{run_ds_scores, run_pair_scores};
@@ -29,7 +30,7 @@ impl AttentionModule {
             d_out,
             log_sum_exp,
             softmax_d,
-            qk_norm_max: _,
+            qk_norm_max,
             d_qkv,
             d_qkv_chunk_amax,
             scratch,
@@ -40,7 +41,7 @@ impl AttentionModule {
             qkv_dim: _,
             head_count,
             head_dim,
-            qk_norm_offset: _,
+            qk_norm_offset,
         } = args;
         let batch_head = batch_size * head_count;
         let tc_ctx = AttentionTcMatmulContext {
@@ -62,17 +63,45 @@ impl AttentionModule {
             softmax_d,
             params,
         )?;
-        kernels.gather_qkv_dout_kernel(
-            stream,
-            linear(batch_head * seq_len * head_dim),
-            qkv,
-            d_out,
-            scratch.q,
-            scratch.k,
-            scratch.v,
-            scratch.d_out,
-            params,
-        )?;
+        if head_dim == 64 {
+            kernels.gather_qkv_dout_norms_kernel(
+                stream,
+                linear(batch_head * seq_len * head_dim),
+                qkv,
+                d_out,
+                scratch.q,
+                scratch.k,
+                scratch.v,
+                scratch.d_out,
+                scratch.q_f32,
+                scratch.k_f32,
+                params,
+            )?;
+            self.causal_attention_backward_tc
+                .kda_elementwise
+                .reduce_kda_qk_norm_max_kernel(
+                    stream,
+                    grid_x_config(head_count, KDA_NORM_REDUCE_THREADS_PER_BLOCK),
+                    &*scratch.q_f32,
+                    &*scratch.k_f32,
+                    qk_norm_max,
+                    qk_norm_offset,
+                    params.row_count,
+                    head_count,
+                )?;
+        } else {
+            kernels.gather_qkv_dout_kernel(
+                stream,
+                linear(batch_head * seq_len * head_dim),
+                qkv,
+                d_out,
+                scratch.q,
+                scratch.k,
+                scratch.v,
+                scratch.d_out,
+                params,
+            )?;
+        }
         if reuse_forward_probs {
             match forward_probs_f16 {
                 Some(probs_half) => {

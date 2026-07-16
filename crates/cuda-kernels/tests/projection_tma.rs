@@ -3,7 +3,9 @@ use std::error::Error;
 use cuda_core::{CudaStream, DeviceBuffer};
 use rust_kernels_cuda::attention::{AttentionModule, CProjArgs, QkvProjectionArgs};
 use rust_kernels_cuda::f16_tc_matmul::{F16ConvertArgs, F16TcMatmulModule};
-use rust_kernels_cuda::f32_matrix_ops::{F32Linear3SqrtBoundAmaxArgs, F32MatrixOpsModule};
+use rust_kernels_cuda::f32_matrix_ops::{
+    F32Linear3SqrtBoundAmaxArgs, F32Linear3SqrtBoundRowSumsqArgs, F32MatrixOpsModule,
+};
 use rust_kernels_cuda::lm_head::{LmHeadArgs, LmHeadModule};
 use rust_kernels_cuda::mlp::{
     MlpDownResidualArgs, MlpModule, MlpUpRelu2Args, Relu2BackwardF16Args,
@@ -15,7 +17,9 @@ use rust_kernels_cuda::nvfp4_tma_matmul::{
     kernels::{tma_nvfp4_output_amax_chunks, tma_nvfp4_symmetric_output_amax_chunks},
     launcher::Nvfp4GemmModule,
     pad::{TmaMatrixPadModule, U4RowPadArgs},
-    scale_layout::{sm120_scale_packed_len, sm120_scale_padded_mn_extent},
+    scale_layout::{
+        pack_sm120_scale_plane_compact_padded, sm120_scale_packed_len, sm120_scale_padded_mn_extent,
+    },
     scale_pack::Sm120ScalePackModule,
     tma::TmaNvfp4DeviceScaleDescriptors,
 };
@@ -28,6 +32,24 @@ const ROWS: usize = 128;
 const K: usize = 128;
 const N: usize = 160;
 const TOLERANCE: f32 = 1.0e-5;
+
+#[ignore = "requires generated sm_120a PTX"]
+#[test]
+fn tma_scale_pack_u32_matches_cpu_layout() -> Result<(), Box<dyn Error>> {
+    const MN: usize = 160;
+    const K_DIM: usize = 256;
+    let logical = (0..MN * K_DIM / 16)
+        .map(|index| (index.wrapping_mul(37).wrapping_add(11) & 0xff) as u8)
+        .collect::<Vec<_>>();
+    let expected = pack_sm120_scale_plane_compact_padded(&logical, MN, K_DIM);
+    let (_, stream, ptx) = common::cuda_test_context()?;
+    let scale_pack = Sm120ScalePackModule::from_module(ptx)?;
+    let logical = DeviceBuffer::from_host(&stream, &logical)?;
+    let mut packed = DeviceBuffer::<u8>::zeroed(&stream, expected.len())?;
+    scale_pack.pack(&stream, &logical, &mut packed, MN as u32, K_DIM as u32)?;
+    assert_eq!(packed.to_host_vec(&stream)?, expected);
+    Ok(())
+}
 
 #[ignore = "requires generated sm_120a PTX"]
 #[test]
@@ -207,6 +229,58 @@ fn tma_linear3_amax_epilogue_matches_standalone_update() -> Result<(), Box<dyn E
         .into_iter()
         .fold(0.0_f32, f32::max);
     assert_eq!(fused_amax, output_amax);
+    Ok(())
+}
+
+#[ignore = "requires generated sm_120a PTX"]
+#[test]
+fn tma_linear3_row_sumsq_epilogue_matches_standalone_update() -> Result<(), Box<dyn Error>> {
+    const DIM: usize = 256;
+    const LEN: usize = ROWS * DIM;
+    const A_SCALE: f32 = 3.4445;
+    const B_SCALE: f32 = -4.775;
+    const C_SCALE: f32 = 2.0315;
+    let fixture = Fixture::new(ROWS, K, DIM)?;
+    let source = DeviceBuffer::from_host(&fixture.stream, &residual_values(LEN))?;
+    let action = DeviceBuffer::from_host(&fixture.stream, &action_values(LEN))?;
+    let bound_amax = DeviceBuffer::from_host(&fixture.stream, &[1.5625_f32])?;
+    let mut standalone = DeviceBuffer::<f32>::zeroed(&fixture.stream, LEN)?;
+    let mut fused = DeviceBuffer::<f32>::zeroed(&fixture.stream, LEN)?;
+    let mut standalone_rows = DeviceBuffer::<f32>::zeroed(&fixture.stream, ROWS)?;
+    let mut fused_partials = DeviceBuffer::<f32>::zeroed(&fixture.stream, LEN)?;
+    let mut fused_rows = DeviceBuffer::<f32>::zeroed(&fixture.stream, ROWS)?;
+
+    fixture.tma_linear3_with_row_sumsq(
+        &source,
+        &action,
+        &bound_amax,
+        &mut standalone,
+        &mut standalone_rows,
+        &mut fused,
+        &mut fused_partials,
+        &mut fused_rows,
+        A_SCALE,
+        B_SCALE,
+        C_SCALE,
+    )?;
+
+    let standalone = standalone.to_host_vec(&fixture.stream)?;
+    let fused = fused.to_host_vec(&fixture.stream)?;
+    assert_eq!(
+        fused, standalone,
+        "fused row-sumsq epilogue changed the Muon update"
+    );
+    let standalone_rows = standalone_rows.to_host_vec(&fixture.stream)?;
+    let fused_rows = fused_rows.to_host_vec(&fixture.stream)?;
+    for row in 0..ROWS {
+        let expected = standalone_rows[row];
+        let error = (fused_rows[row] - expected).abs();
+        assert!(
+            error <= expected.abs().max(1.0) * 2.0e-6,
+            "row {row}: got {}, expected {expected}, error {error}",
+            fused_rows[row]
+        );
+    }
     Ok(())
 }
 
@@ -770,6 +844,106 @@ impl Fixture {
                 b_scale,
                 c_scale,
             )?)
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "test compares explicit standalone and fused operands"
+    )]
+    fn tma_linear3_with_row_sumsq(
+        &self,
+        source: &DeviceBuffer<f32>,
+        action: &DeviceBuffer<f32>,
+        bound_amax: &DeviceBuffer<f32>,
+        standalone: &mut DeviceBuffer<f32>,
+        standalone_rows: &mut DeviceBuffer<f32>,
+        fused: &mut DeviceBuffer<f32>,
+        fused_partials: &mut DeviceBuffer<f32>,
+        fused_rows: &mut DeviceBuffer<f32>,
+        a_scale: f32,
+        b_scale: f32,
+        c_scale: f32,
+    ) -> Result<(), Box<dyn Error>> {
+        let mut input_scale_packed = DeviceBuffer::zeroed(
+            &self.stream,
+            sm120_scale_packed_len(sm120_scale_padded_mn_extent(self.rows), self.k),
+        )?;
+        let mut weight_scale_packed = DeviceBuffer::zeroed(
+            &self.stream,
+            sm120_scale_packed_len(sm120_scale_padded_mn_extent(self.n), self.k),
+        )?;
+        let mut descriptors = TmaNvfp4DeviceScaleDescriptors::new(&self.stream)?;
+
+        self.scale_pack.pack(
+            &self.stream,
+            &self.input_scales,
+            &mut input_scale_packed,
+            self.rows as u32,
+            self.k as u32,
+        )?;
+        self.scale_pack.pack(
+            &self.stream,
+            &self.weight_scales,
+            &mut weight_scale_packed,
+            self.n as u32,
+            self.k as u32,
+        )?;
+        self.tma.prepare_tma_nvfp4_device_scales_into(
+            &self.stream,
+            &self.input_bytes,
+            &input_scale_packed,
+            &self.weight_bytes,
+            &weight_scale_packed,
+            self.rows as u32,
+            self.k as u32,
+            self.n as u32,
+            &mut descriptors,
+        )?;
+        self.tma
+            .gemm_tma_nvfp4_device_scales_and_global_scale_buffers(
+                &self.stream,
+                &descriptors,
+                standalone,
+                self.rows as u32,
+                self.k as u32,
+                self.n as u32,
+                &self.input_globals,
+                &self.weight_global,
+            )?;
+        self.f32
+            .linear3_sqrt_bound_a_row_sumsq(F32Linear3SqrtBoundRowSumsqArgs {
+                stream: &self.stream,
+                a: source,
+                b: action,
+                c_out: standalone,
+                bound_amax,
+                row_sumsq: standalone_rows,
+                rows: self.rows as u32,
+                cols: self.n as u32,
+                a_scale,
+                b_scale,
+                c_scale,
+            })?;
+        self.tma
+            .gemm_tma_nvfp4_device_scales_and_global_scale_buffers_linear3_with_row_sumsq(
+                &self.stream,
+                &descriptors,
+                source,
+                action,
+                fused,
+                bound_amax,
+                fused_partials,
+                fused_rows,
+                self.rows as u32,
+                self.k as u32,
+                self.n as u32,
+                &self.input_globals,
+                &self.weight_global,
+                a_scale,
+                b_scale,
+                c_scale,
+            )?;
+        Ok(())
     }
 
     fn tma_affine(&self, out: &mut DeviceBuffer<f32>) -> Result<(), Box<dyn Error>> {

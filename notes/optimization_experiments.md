@@ -46,6 +46,134 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-16
 commit: accepted local jj commit after full gate
+experiment: Batch Muon epilogue, scale-pack, schedule-amax, and Q/K norm reuse.
+status: accepted_450s
+change:
+  The final Muon Polar TMA action now applies its existing linear3 recurrence
+  while accumulating exact output-row sums of squares, then reduces those row
+  sums through the existing scratch instead of launching the standalone final
+  recurrence and source scan. The generic SM120 scale pack moves one aligned
+  u32 word per thread, covering four adjacent logical scale bytes at once.
+  QKV now reuses Muon's retained next-step schedule amax like every other Muon
+  matrix. To make that scalar exact after KDA clipping, full-attention backward
+  accumulates Q/K row norms while its gather already reads the same FP16 Q/K,
+  and all blocks prepare their clip factors before Muon. Q/K z, x, and
+  momentum scaling is applied inside the existing Muon master-update pass;
+  the later standalone clipping pass is removed. Non-64-wide library shapes
+  retain the original gather path.
+numerics:
+  The fused TMA test matches every stored output bit-for-bit and its reduced
+  row sums within 2e-6 of the standalone reference. The u32 packer matches CPU
+  block-major packing bit-for-bit. Clip factors still use the same saved FP16
+  Q/K values, tau, epsilon, square root, and per-head maximum; only the FP32
+  sum reduction grouping changes for full attention. A focused Muon test
+  verifies post-update factor application to z, x, and momentum and verifies
+  the retained schedule amax after clipping. Ten-step held-out samples remain
+  in the parent range, and the fixed-wall gates below are the trajectory and
+  quality authority.
+memory:
+  One 16-layer by 32-head FP32 factor table adds 2048 bytes. Two u32 clip
+  metadata fields enlarge each of the 80 padded Muon descriptors by 8 bytes,
+  adding 640 device bytes. Total persistent growth is 2688 bytes; no large
+  activation, optimizer, or TMA scratch allocation changes.
+minimum_impact_gate:
+  The accepted parent requires 20.889750ms per ten-step profile. Reciprocal
+  candidate profiles average 4154.954429ms versus the parent's 4186.084532ms,
+  saving 31.130104ms (0.744%) and clearing the floor by 1.49x.
+focused_profile:
+  Accepted parent reciprocal mean:
+    target/nsys/20260716_normalized_mlp_forward_buffer_reuse_a.nsys-rep
+    target/nsys/20260716_normalized_mlp_forward_buffer_reuse_b.nsys-rep
+    total GPU kernels 4186.084532ms; 65026 launches.
+  Candidate reciprocal samples:
+    target/nsys/20260716_qk_norm_gather_fused_batch_a.nsys-rep:
+      total GPU kernels 4152.356348ms; held-out val_loss=8.649385.
+    target/nsys/20260716_qk_norm_gather_fused_batch_b.nsys-rep:
+      total GPU kernels 4157.552509ms; held-out val_loss=8.642826.
+    Both contain 64778 launches. The standalone clip family falls from
+    16.617ms to 0.144ms; fused full-attention gather plus all Q/K max reducers
+    costs 7.82ms. The final Muon epilogue's directly replaced work saves
+    5.642ms, u32 scale packing saves about 2.92ms, and QKV schedule-amax reuse
+    removes 144 scans plus 144 scalar reducers after the first step.
+  A post-review profile with the non-64 fallback guard was broadly clock-noisy
+  at 4192.639864ms even though its directly changed families retained the same
+  savings. The exact guarded fixed-wall gates below resolve the objective-
+  facing throughput result.
+verification:
+  cargo fmt --all --check, cargo check --workspace, git diff --check, a fresh
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a, all 50 workspace
+  release lib/bin host tests, all 11 projection-TMA GPU tests, the full
+  causal-attention backward comparison, and all eight Muon GPU tests: pass.
+  The projection suite includes new bitwise u32 scale-pack and fused final
+  row-sumsq checks; the Muon suite includes post-update Q/K clipping.
+gates:
+  Exact guarded 30s screen target/runs/20260716_193235Z_fineweb_30s:
+    heldout val_loss=6.503541, completed_steps=75, train_elapsed_s=30.384.
+    Parent is 6.513461 / 74 / 30.097. The candidate completes one more step,
+    average step time moves 406.716216 -> 405.120000ms (-0.392%), and held-out
+    loss improves 0.152%. A pre-guard active-shape-equivalent screen also
+    completed 75 steps in 30.304s, a 0.655% average-step improvement.
+  Exact guarded 450s gate target/runs/20260716_193335Z_fineweb_450s:
+    heldout val_loss=5.186601, completed_steps=1085, train_elapsed_s=450.159.
+    Parent is 5.174783 / 1078 / 450.383. Completed steps increase by seven
+    (+0.649%), average step time moves 417.794991 -> 414.893088ms
+    (-2.901903ms / -0.695%), and held-out loss moves +0.228%, inside the
+    explicit roughly +1% tolerance. All 22 high-fidelity samples are finite
+    and nonzero, every skip metric is zero, grad norm ranges 1.137827 to
+    16.867437, batch is 4, sequence length is 2048, and tokens/step are 8192.
+decision:
+  Accept and promote. Reciprocal profiles clear the aggregate floor, both
+  short screens gain one completed step, the exact sustained gate preserves a
+  0.695% throughput win, held-out quality stays within tolerance, and all
+  stability checks pass. The next 0.5% floor is 2.074465ms per step, or
+  20.744654ms over a ten-step profile.
+```
+
+```text
+date: 2026-07-16
+commit: rejection record only; candidate source reverted
+experiment: Emit SM120 packed scale planes directly from backward MS-EDEN quantizers.
+status: rejected_profile_gate
+change:
+  The paired FP32, NVFP4-transpose, and rowwise-NVFP4-transpose MS-EDEN
+  producers wrote their existing logical scale bytes and the corresponding
+  SM120 block-major packed bytes in the same launch. Their following 2720
+  scale-pack launches over ten steps were skipped. No quantization formula,
+  payload byte, scale value, global scale, or optimizer update changed.
+minimum_impact_gate:
+  The active floor is 20.889750ms per ten-step profile. Removing 2720 of 4216
+  standalone pack launches had a credible direct ceiling above the remaining
+  gap in the compatible optimization batch, so the implementation was built
+  and profiled before either fixed-wall gate.
+verification:
+  cargo fmt --all, cargo check --workspace, git diff --check, a fresh
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a, all five ignored
+  MS-EDEN transpose comparisons, and both ignored linear-backward GPU
+  comparisons: pass. Focused tests compare payload bytes, logical scales,
+  packed scales, and global scales bit-for-bit against the old producer plus
+  standalone pack sequence.
+profiles:
+  target/nsys/20260716_muon_rowsumsq_scale_pack_mseden_direct_a.nsys-rep:
+    total GPU kernels 4206.822292ms; remaining pack work 5.975511ms over 1496
+    launches; held-out val_loss=8.646572.
+  target/nsys/20260716_muon_rowsumsq_scale_pack_mseden_direct_b.nsys-rep:
+    total GPU kernels 4211.120916ms; remaining pack work 5.970348ms over 1496
+    launches; held-out val_loss=8.647511.
+  Candidate mean total is 4208.971604ms versus the accepted parent mean
+  4186.084532ms, a 22.887072ms (0.547%) regression. Standalone pack work
+  falls by about 14.36ms, but the scattered extra producer stores slow the
+  directly modified MS-EDEN producers by about 45ms, making the combined
+  producer-plus-pack path decisively worse.
+decision:
+  Reject without either fixed-wall gate and restore every direct-store source
+  change. Do not repeat scattered packed-scale stores in these producers; a
+  future direct path would need coalesced producer writes that avoid the
+  measured 45ms penalty.
+```
+
+```text
+date: 2026-07-16
+commit: accepted local jj commit after full gate
 experiment: Reuse safe main-forward activation storage for backward gradients.
 status: accepted_450s_memory_capacity_win
 change:

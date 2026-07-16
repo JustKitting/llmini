@@ -1,4 +1,4 @@
-use cuda_core::{CudaStream, DriverError};
+use cuda_core::{CudaStream, DeviceBuffer, DriverError};
 
 use crate::training::runtime::Runtime;
 
@@ -12,6 +12,7 @@ pub(super) fn update_muon_groups(
     runtime: &Runtime,
     tables: &MuonPointerTables,
     scratch: &mut MuonScratchBuffers,
+    qk_clip_factors: &DeviceBuffer<f32>,
     step: u32,
     average_coefficient: f32,
     grad_scale: f32,
@@ -22,6 +23,7 @@ pub(super) fn update_muon_groups(
             runtime,
             table: &tables.all,
             scratch,
+            qk_clip_factors,
             slot_count: tables.slot_count,
             step,
             average_coefficient,

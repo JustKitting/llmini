@@ -16,24 +16,29 @@ pub(crate) mod module {
         mut packed: DisjointSlice<u8>,
         mn_extent: u32,
         padded_mn_extent: u32,
-        k_groups: u32,
+        k_atoms: u32,
     ) {
         let stride = thread::blockDim_x() * thread::gridDim_x();
         let mut index = thread::blockIdx_x() * thread::blockDim_x() + thread::threadIdx_x();
-        let packed_groups = padded_mn_extent * k_groups;
-        let k_dim = k_groups * Sm120ScaleLayout::VECTOR_SIZE;
-        while index < packed_groups {
-            let mn = index / k_groups;
-            let k_group = index - mn * k_groups;
-            let dst =
-                Sm120ScaleLayout::block_major_byte_offset(mn, k_group, padded_mn_extent, k_dim);
+        let packed_words = padded_mn_extent * k_atoms;
+        let k_dim = k_atoms * Sm120ScaleLayout::K_ATOM;
+        while index < packed_words {
+            let mn = index / k_atoms;
+            let k_atom = index - mn * k_atoms;
             let value = if mn < mn_extent {
-                logical[(mn * k_groups + k_group) as usize]
+                let src = ((mn * k_atoms + k_atom) * Sm120ScaleLayout::GROUPS_PER_K_ATOM) as usize;
+                unsafe { *(logical.as_ptr().add(src) as *const u32) }
             } else {
-                Sm120ScaleLayout::PAD_BYTE
+                u32::from_le_bytes([Sm120ScaleLayout::PAD_BYTE; 4])
             };
+            let dst = Sm120ScaleLayout::block_major_byte_offset(
+                mn,
+                k_atom * Sm120ScaleLayout::GROUPS_PER_K_ATOM,
+                padded_mn_extent,
+                k_dim,
+            );
             unsafe {
-                *packed.get_unchecked_mut(dst) = value;
+                *(packed.as_mut_ptr().add(dst) as *mut u32) = value;
             }
             index += stride;
         }
@@ -62,8 +67,9 @@ impl Sm120ScalePackModule {
         assert!(k_dim.is_multiple_of(Sm120ScaleLayout::VECTOR_SIZE));
         let k_groups = Sm120ScaleLayout::k_groups(k_dim);
         assert!(k_groups.is_multiple_of(Sm120ScaleLayout::GROUPS_PER_K_ATOM));
+        let k_atoms = k_groups / Sm120ScaleLayout::GROUPS_PER_K_ATOM;
         let padded_mn_extent = Sm120ScaleLayout::padded_mn_extent(mn_extent);
-        let active = padded_mn_extent * k_groups;
+        let active = padded_mn_extent * k_atoms;
         assert!(logical.len() >= (mn_extent * k_groups) as usize);
         assert!(packed.len() >= Sm120ScaleLayout::packed_len(padded_mn_extent, k_dim));
         self.module.pack_sm120_scale_plane_kernel(
@@ -73,7 +79,7 @@ impl Sm120ScalePackModule {
             packed,
             mn_extent,
             padded_mn_extent,
-            k_groups,
+            k_atoms,
         )
     }
 }

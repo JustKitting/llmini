@@ -12,7 +12,10 @@ use cuda_device::{
 use crate::f16_tc_matmul::convert::{load_f16x2_global, load_f32x2_global};
 use crate::float_ptx::{abs_f32, fma_f32, max_f32, sqrt_f32};
 use crate::nvfp4::nvfp4_values2;
-use crate::warp_reduce::warp_max_nonnegative_f32;
+use crate::{
+    block_reduce::block_sum_shared_f32,
+    warp_reduce::{eighth_warp_sum_f32, thread_lane_warp, warp_max_nonnegative_f32},
+};
 
 use super::cute::{
     KMajorU4, N_LAYOUT_WARP_CONTIGUOUS, Sm120KMajorSwizzle, Sm120Nvfp4MmaAtom, Sm120Nvfp4WarpMma,
@@ -84,6 +87,8 @@ pub const TILE_M: u32 = WARP_TILES_M * M_PER_WARP;
 pub const TILE_N: u32 = WARP_TILES_N * N_PER_WARP;
 const WARPS_PER_BLOCK: u32 = WARP_TILES_M * WARP_TILES_N;
 const MMA_THREADS_PER_BLOCK: u32 = WARPS_PER_BLOCK * 32;
+const LINEAR3_ROW_SUMS_PER_THREAD: usize = (M_REPEAT * 2) as usize;
+const LINEAR3_ROW_SUMS_PER_CTA: usize = (TILE_M * WARP_TILES_N) as usize;
 const TMA_PRODUCER_THREADS: u32 = 32;
 const TMA_PRODUCER_THREAD: u32 = MMA_THREADS_PER_BLOCK;
 const TMA_PIPELINE_STAGES: u32 = NVFP4_TMA_STAGES;
@@ -764,6 +769,72 @@ fn store_acc_linear3_scaled_amax(
 }
 
 #[inline(always)]
+fn store_acc_linear3_scaled_row_sumsq(
+    acc: [f32; 4],
+    tile: CtaTile,
+    m_repeat: u32,
+    n_repeat: u32,
+    params: Nvfp4GemmParams,
+    scale0: f32,
+    scale1: f32,
+    source: &[f32],
+    action: &[f32],
+    out: &mut DisjointSlice<f32>,
+    bound_scale: f32,
+    a_scale: f32,
+    b_scale: f32,
+    c_scale: f32,
+    local_row_sums: &mut [f32; LINEAR3_ROW_SUMS_PER_THREAD],
+) {
+    let row0 = tile.mma_row_base(m_repeat) + tile.group;
+    let row1 = row0 + 8;
+    let col0 = tile.mma_col_base(n_repeat) + tile.thread_in_group * 2;
+    let output_dim = params.output_dim;
+    if col0 + 1 >= output_dim {
+        return;
+    }
+
+    let index0 = row0 * output_dim + col0;
+    let index1 = row1 * output_dim + col0;
+    let (source00, source01) = load_f32x2_global(source.as_ptr(), index0 as usize);
+    let (source10, source11) = load_f32x2_global(source.as_ptr(), index1 as usize);
+    let (action00, action01) = load_f32x2_global(action.as_ptr(), index0 as usize);
+    let (action10, action11) = load_f32x2_global(action.as_ptr(), index1 as usize);
+    let current00 = acc[0] * scale0;
+    let current01 = acc[1] * scale0;
+    let current10 = acc[2] * scale1;
+    let current11 = acc[3] * scale1;
+    let value00 = fma_f32(
+        a_scale,
+        source00 * bound_scale,
+        fma_f32(b_scale, action00, c_scale * current00),
+    );
+    let value01 = fma_f32(
+        a_scale,
+        source01 * bound_scale,
+        fma_f32(b_scale, action01, c_scale * current01),
+    );
+    let value10 = fma_f32(
+        a_scale,
+        source10 * bound_scale,
+        fma_f32(b_scale, action10, c_scale * current10),
+    );
+    let value11 = fma_f32(
+        a_scale,
+        source11 * bound_scale,
+        fma_f32(b_scale, action11, c_scale * current11),
+    );
+    let sum0 = &mut local_row_sums[(m_repeat * 2) as usize];
+    *sum0 = fma_f32(value00, value00, *sum0);
+    *sum0 = fma_f32(value01, value01, *sum0);
+    let sum1 = &mut local_row_sums[(m_repeat * 2 + 1) as usize];
+    *sum1 = fma_f32(value10, value10, *sum1);
+    *sum1 = fma_f32(value11, value11, *sum1);
+    store_f32x2_global(out, index0, value00, value01);
+    store_f32x2_global(out, index1, value10, value11);
+}
+
+#[inline(always)]
 fn store_acc_scaled_symmetric_amax(
     acc: [f32; 4],
     tile: CtaTile,
@@ -1220,6 +1291,47 @@ macro_rules! store_accumulator_linear3_amax_rows {
             $params,
             $output_scale,
             ($source, $action, $out, $bound_scale, $a_scale, $b_scale, $c_scale, $local_amax)
+        );
+    }};
+}
+
+macro_rules! store_accumulator_linear3_row_sumsq_rows {
+    ([], $tile:expr, $params:expr, $output_scale:expr, $args:tt) => {};
+    (
+        [($m_repeat:tt, [$(($n_repeat:tt, $acc:ident)),+ $(,)?]) $(, $rest:tt)* $(,)?],
+        $tile:expr,
+        $params:expr,
+        $output_scale:expr,
+        ($source:expr, $action:expr, $out:expr, $bound_scale:expr, $a_scale:expr, $b_scale:expr, $c_scale:expr, $local_row_sums:expr)
+    ) => {{
+        let row0 = $tile.mma_row_base($m_repeat) + $tile.group;
+        let scale0 = $output_scale.row(row0);
+        let scale1 = $output_scale.row(row0 + 8);
+        $(
+            store_acc_linear3_scaled_row_sumsq(
+                $acc,
+                $tile,
+                $m_repeat,
+                $n_repeat,
+                $params,
+                scale0,
+                scale1,
+                $source,
+                $action,
+                $out,
+                $bound_scale,
+                $a_scale,
+                $b_scale,
+                $c_scale,
+                $local_row_sums,
+            );
+        )+
+        store_accumulator_linear3_row_sumsq_rows!(
+            [$($rest),*],
+            $tile,
+            $params,
+            $output_scale,
+            ($source, $action, $out, $bound_scale, $a_scale, $b_scale, $c_scale, $local_row_sums)
         );
     }};
 }
@@ -2325,6 +2437,54 @@ macro_rules! run_tma_nvfp4_full_tile_linear3_amax_shape {
     }};
 }
 
+macro_rules! run_tma_nvfp4_full_tile_linear3_row_sumsq_shape {
+    (
+        [$($m_axis:tt),+],
+        [$($n_axis:tt),+],
+        [$(($m_repeat:tt, [$(($n_repeat:tt, $acc:ident)),+ $(,)?])),+ $(,)?],
+        $a_tma:expr,
+        $b_tma:expr,
+        $a_scale_tma:expr,
+        $b_scale_tma:expr,
+        $tile:expr,
+        $params:expr,
+        $a_packs_base:expr,
+        $b_packs_base:expr,
+        $a_scales_base:expr,
+        $b_scales_base:expr,
+        $tma_bars:expr,
+        $empty_bars:expr,
+        $source:expr,
+        $action:expr,
+        $out:expr,
+        $bound_scale:expr,
+        $a_scale:expr,
+        $b_scale:expr,
+        $c_scale:expr,
+        $local_row_sums:expr $(,)?
+    ) => {{
+        run_tma_nvfp4_full_tile_shape_body!(
+            [$($m_axis),+],
+            [$($n_axis),+],
+            [$(($m_repeat, [$(($n_repeat, $acc)),+])),+],
+            $a_tma,
+            $b_tma,
+            $a_scale_tma,
+            $b_scale_tma,
+            $tile,
+            $params,
+            $a_packs_base,
+            $b_packs_base,
+            $a_scales_base,
+            $b_scales_base,
+            $tma_bars,
+            $empty_bars,
+            store_accumulator_linear3_row_sumsq_rows,
+            ($source, $action, $out, $bound_scale, $a_scale, $b_scale, $c_scale, $local_row_sums),
+        );
+    }};
+}
+
 macro_rules! run_tma_nvfp4_full_tile_affine_shape {
     (
         [$($m_axis:tt),+],
@@ -2598,6 +2758,12 @@ macro_rules! run_tma_nvfp4_full_tile_symmetric_amax {
 macro_rules! run_tma_nvfp4_full_tile_linear3_amax {
     ($($arg:expr),+ $(,)?) => {{
         dispatch_accumulator_shape!(run_tma_nvfp4_full_tile_linear3_amax_shape, $($arg),+);
+    }};
+}
+
+macro_rules! run_tma_nvfp4_full_tile_linear3_row_sumsq {
+    ($($arg:expr),+ $(,)?) => {{
+        dispatch_accumulator_shape!(run_tma_nvfp4_full_tile_linear3_row_sumsq_shape, $($arg),+);
     }};
 }
 
@@ -3074,6 +3240,163 @@ pub mod module {
                 unsafe {
                     *output_chunk_amax.get_unchecked_mut(chunk as usize) = warp_amax;
                 }
+            }
+        }
+    }
+
+    #[kernel]
+    #[cfg_attr(nvfp4_launch_bounds_64, launch_bounds(64, 1))]
+    #[cfg_attr(nvfp4_launch_bounds_96, launch_bounds(96, 1))]
+    #[cfg_attr(nvfp4_launch_bounds_128, launch_bounds(128, 1))]
+    #[cfg_attr(nvfp4_launch_bounds_160, launch_bounds(160, 1))]
+    #[cfg_attr(nvfp4_launch_bounds_192, launch_bounds(192, 1))]
+    #[cfg_attr(nvfp4_launch_bounds_224, launch_bounds(224, 1))]
+    #[cfg_attr(nvfp4_launch_bounds_256, launch_bounds(256, 1))]
+    #[cfg_attr(nvfp4_launch_bounds_288, launch_bounds(288, 1))]
+    #[cfg_attr(nvfp4_launch_bounds_384, launch_bounds(384, 1))]
+    #[allow(unused_variables)]
+    pub fn nvfp4_gemm_tma_linear3_row_sumsq_kernel(
+        a_tma: *const TmaDescriptor,
+        b_tma: *const TmaDescriptor,
+        a_scale_tma: *const TmaDescriptor,
+        b_scale_tma: *const TmaDescriptor,
+        source: &[f32],
+        action: &[f32],
+        mut out: DisjointSlice<f32>,
+        bound_amax: &[f32],
+        mut row_sumsq_partials: DisjointSlice<f32>,
+        params: Nvfp4GemmParams,
+        a_scale: f32,
+        b_scale: f32,
+        c_scale: f32,
+    ) {
+        let thread_id = thread::threadIdx_x();
+
+        static mut TMA_BARS: BarrierSmemStages = SharedArray::UNINIT;
+        static mut EMPTY_BARS: BarrierSmemStages = SharedArray::UNINIT;
+        static mut A_SCALES_SM: AScalesSmemStages = SharedArray::UNINIT;
+        static mut B_SCALES_SM: BScalesSmemStages = SharedArray::UNINIT;
+        static mut A_PACKS_SM: APacksSmemStages = SharedArray::UNINIT;
+        static mut B_PACKS_SM: BPacksSmemStages = SharedArray::UNINIT;
+        static mut ROW_SUMS: SharedArray<f32, LINEAR3_ROW_SUMS_PER_CTA> = SharedArray::UNINIT;
+
+        let tile = CtaTile::new(thread_id);
+        let tma_bars = unsafe { (&mut *(&raw mut TMA_BARS)).as_mut_ptr() };
+        let empty_bars = unsafe { (&mut *(&raw mut EMPTY_BARS)).as_mut_ptr() };
+        let a_scales_base = unsafe { (&mut *(&raw mut A_SCALES_SM)).as_mut_ptr() };
+        let b_scales_base = unsafe { (&mut *(&raw mut B_SCALES_SM)).as_mut_ptr() };
+        let a_packs_base = unsafe { (&mut *(&raw mut A_PACKS_SM)).as_mut_ptr() };
+        let b_packs_base = unsafe { (&mut *(&raw mut B_PACKS_SM)).as_mut_ptr() };
+        let row_sums = unsafe { (&mut *(&raw mut ROW_SUMS)).as_mut_ptr() };
+
+        if thread_id == 0 {
+            prefetch_tma_descriptor(a_tma);
+            prefetch_tma_descriptor(b_tma);
+            prefetch_tma_descriptor(a_scale_tma);
+            prefetch_tma_descriptor(b_scale_tma);
+            unsafe {
+                let mut stage = 0;
+                while stage < TMA_PIPELINE_STAGES {
+                    mbarrier_init(stage_barrier(tma_bars, stage), 1);
+                    mbarrier_init(stage_barrier(empty_bars, stage), MMA_THREADS_PER_BLOCK);
+                    stage += 1;
+                }
+                fence_proxy_async_shared_cta();
+            }
+        }
+        thread::sync_threads();
+
+        let bound = bound_amax[0];
+        let bound_scale = if bound > 1.0 {
+            1.0 / sqrt_f32(bound)
+        } else {
+            1.0
+        };
+        let mut local_row_sums = [0.0_f32; LINEAR3_ROW_SUMS_PER_THREAD];
+        run_tma_nvfp4_full_tile_linear3_row_sumsq!(
+            a_tma,
+            b_tma,
+            a_scale_tma,
+            b_scale_tma,
+            tile,
+            params,
+            a_packs_base,
+            b_packs_base,
+            a_scales_base,
+            b_scales_base,
+            tma_bars,
+            empty_bars,
+            source,
+            action,
+            &mut out,
+            bound_scale,
+            a_scale,
+            b_scale,
+            c_scale,
+            &mut local_row_sums,
+        );
+
+        if thread_id < MMA_THREADS_PER_BLOCK {
+            let lane = thread_id & 31;
+            let group_mask = 0x0f_u32 << (lane & !3);
+            let mut m_repeat = 0;
+            while m_repeat < M_REPEAT {
+                let sum0 = eighth_warp_sum_f32(local_row_sums[(m_repeat * 2) as usize], group_mask);
+                let sum1 =
+                    eighth_warp_sum_f32(local_row_sums[(m_repeat * 2 + 1) as usize], group_mask);
+                if tile.thread_in_group == 0 {
+                    let local_row0 = tile.warp_m * M_PER_WARP + m_repeat * MMA_M + tile.group;
+                    let local_row1 = local_row0 + 8;
+                    unsafe {
+                        *row_sums.add((local_row0 * WARP_TILES_N + tile.warp_n) as usize) = sum0;
+                        *row_sums.add((local_row1 * WARP_TILES_N + tile.warp_n) as usize) = sum1;
+                    }
+                }
+                m_repeat += 1;
+            }
+        }
+        thread::sync_threads();
+
+        if thread_id < TILE_M {
+            let mut sum = 0.0_f32;
+            let mut warp_n = 0;
+            while warp_n < WARP_TILES_N {
+                sum += unsafe { *row_sums.add((thread_id * WARP_TILES_N + warp_n) as usize) };
+                warp_n += 1;
+            }
+            let row = thread::blockIdx_y() * TILE_M + thread_id;
+            let partial = row * thread::gridDim_x() + thread::blockIdx_x();
+            unsafe {
+                *row_sumsq_partials.get_unchecked_mut(partial as usize) = sum;
+            }
+        }
+    }
+
+    #[kernel]
+    pub fn nvfp4_gemm_tma_row_sumsq_reduce_kernel(
+        row_sumsq_partials: &[f32],
+        mut row_sumsq: DisjointSlice<f32>,
+        rows: u32,
+        partials_per_row: u32,
+    ) {
+        static mut WARP_SUMS: SharedArray<f32, 2> = SharedArray::UNINIT;
+
+        let row = thread::blockIdx_x();
+        if row >= rows {
+            return;
+        }
+        let (thread_id, lane, warp) = thread_lane_warp();
+        let base = row * partials_per_row;
+        let mut local = 0.0_f32;
+        let mut partial = thread_id;
+        while partial < partials_per_row {
+            local += row_sumsq_partials[(base + partial) as usize];
+            partial += thread::blockDim_x();
+        }
+        let sum = unsafe { block_sum_shared_f32(&mut WARP_SUMS, local, lane, warp) };
+        if thread_id == 0 {
+            unsafe {
+                *row_sumsq.get_unchecked_mut(row as usize) = sum;
             }
         }
     }

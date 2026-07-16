@@ -1,11 +1,39 @@
 use cuda_core::DriverError;
 
-use super::super::args::KdaMuonClipArgs;
+use super::super::args::{KdaMuonClipArgs, KdaMuonClipFactorArgs};
 use super::super::kda_clip::KDA_CLIP_THREADS_PER_BLOCK;
 use super::OptimizerModule;
 use crate::launch::grid_x_config;
 
 impl OptimizerModule {
+    pub fn prepare_kda_muon_clip_factor(
+        &self,
+        args: KdaMuonClipFactorArgs<'_>,
+    ) -> Result<(), DriverError> {
+        assert!(args.qkv.len() >= args.row_count as usize * args.qkv_dim as usize);
+        assert!(args.qk_norm_max.len() >= (args.norm_offset + 2 * args.head_count) as usize);
+        assert!(args.scores.len() >= args.head_count as usize);
+        assert!(args.factors.len() >= (args.factor_offset + args.head_count) as usize);
+        self.apply.kda_clip.kda_muon_qk_clip_factor_kernel(
+            args.stream,
+            grid_x_config(args.head_count, KDA_CLIP_THREADS_PER_BLOCK),
+            args.qkv,
+            args.qk_norm_max,
+            args.scores,
+            args.factors,
+            args.row_count,
+            args.qkv_dim,
+            args.embedding_dim,
+            args.head_count,
+            args.head_dim,
+            args.tau,
+            args.silu_qk,
+            args.norm_offset,
+            args.factor_offset,
+            args.precomputed_qk_norms,
+        )
+    }
+
     pub fn apply_kda_muon_clip(&self, mut args: KdaMuonClipArgs<'_>) -> Result<(), DriverError> {
         let len = self.apply_kda_muon_clip_master(&mut args)?;
         self.materialize_master(

@@ -1,6 +1,6 @@
 use cuda_device::{DisjointSlice, SharedArray, cuda_module, kernel, thread};
 
-use super::super::gather::gather_body;
+use super::super::gather::{gather_body, gather_norms_body};
 use super::super::probs::{ds_from_probs_f16_body, prob_ds_body, prob_ds_f16_body};
 use super::super::scatter::{scatter_amax_body, scatter_body};
 use super::super::softmax_d::softmax_d_f16_body;
@@ -34,6 +34,35 @@ pub(super) mod module {
         params: CausalAttentionParams,
     ) {
         gather_body(qkv, d_out_src, q, k, v, d_out, params);
+    }
+
+    #[kernel]
+    pub fn gather_qkv_dout_norms_kernel(
+        qkv: &[u16],
+        d_out_src: &[f32],
+        q: DisjointSlice<u16>,
+        k: DisjointSlice<u16>,
+        v: DisjointSlice<u16>,
+        d_out: DisjointSlice<u16>,
+        q_norms: DisjointSlice<f32>,
+        k_norms: DisjointSlice<f32>,
+        params: CausalAttentionParams,
+    ) {
+        static mut Q_WARP_SUMS: SharedArray<f32, 8> = SharedArray::UNINIT;
+        static mut K_WARP_SUMS: SharedArray<f32, 8> = SharedArray::UNINIT;
+        gather_norms_body(
+            qkv,
+            d_out_src,
+            q,
+            k,
+            v,
+            d_out,
+            q_norms,
+            k_norms,
+            params,
+            unsafe { &mut Q_WARP_SUMS },
+            unsafe { &mut K_WARP_SUMS },
+        );
     }
 
     #[kernel]

@@ -16,7 +16,11 @@ pub(super) fn update_master_chunks(
     u: *const f32,
     z_master: *mut f32,
     x_master: *mut f32,
+    momentum: *mut f32,
     block_amax: *mut f32,
+    qk_clip_factors: *const f32,
+    qk_clip_factor_offset: u32,
+    qk_clip_head_dim: u32,
     rows: u32,
     cols: u32,
     len: u32,
@@ -41,10 +45,19 @@ pub(super) fn update_master_chunks(
 
     while chunk < chunk_count {
         let base = chunk * UPDATE_VALUES_PER_CHUNK;
+        let qk_clip_factor = if qk_clip_factor_offset != u32::MAX && chunk < 2 * rows {
+            debug_assert_eq!(rows, UPDATE_VALUES_PER_CHUNK);
+            debug_assert!(qk_clip_head_dim > 0);
+            let head = (chunk % rows) / qk_clip_head_dim;
+            unsafe { *qk_clip_factors.add((qk_clip_factor_offset + head) as usize) }
+        } else {
+            1.0
+        };
         let local_amax = chunk::update_eight_amax(
             u,
             z_master,
             x_master,
+            momentum,
             rows,
             cols,
             len,
@@ -55,6 +68,7 @@ pub(super) fn update_master_chunks(
             weight_decay,
             average_coefficient,
             schedule_beta,
+            qk_clip_factor,
             base,
             tid,
         );

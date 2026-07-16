@@ -24,3 +24,21 @@ pub struct KdaMuonClipArgs<'a> {
     pub norm_offset: u32,
     pub precomputed_qk_norms: u32,
 }
+
+pub struct KdaMuonClipFactorArgs<'a> {
+    pub stream: &'a CudaStream,
+    pub qkv: &'a DeviceBuffer<u16>,
+    pub qk_norm_max: &'a DeviceBuffer<f32>,
+    pub scores: &'a mut DeviceBuffer<f32>,
+    pub factors: &'a mut DeviceBuffer<f32>,
+    pub row_count: u32,
+    pub qkv_dim: u32,
+    pub embedding_dim: u32,
+    pub head_count: u32,
+    pub head_dim: u32,
+    pub tau: f32,
+    pub silu_qk: u32,
+    pub norm_offset: u32,
+    pub factor_offset: u32,
+    pub precomputed_qk_norms: u32,
+}

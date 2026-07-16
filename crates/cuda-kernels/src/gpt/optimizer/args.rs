@@ -8,6 +8,6 @@ mod schedule_free;
 pub use adam::AdamWUpdateArgs;
 pub use embedding::EmbeddingLookupGradArgs;
 pub use grad_clip::GradientClipArgs;
-pub use kda_clip::KdaMuonClipArgs;
+pub use kda_clip::{KdaMuonClipArgs, KdaMuonClipFactorArgs};
 pub use muon::{MuonMegaUpdateArgs, MuonSlotDescriptor, MuonTmaFinishArgs, MuonTmaPrepareArgs};
 pub use schedule_free::{ScheduleFreeMaterializeArgs, ScheduleFreeMaterializePrecomputedArgs};

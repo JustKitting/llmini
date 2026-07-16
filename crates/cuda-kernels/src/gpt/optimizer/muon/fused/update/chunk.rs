@@ -8,6 +8,7 @@ struct UpdateChunk {
     u: *const f32,
     z_master: *mut f32,
     x_master: *mut f32,
+    momentum: *mut f32,
     rows: u32,
     cols: u32,
     len: u32,
@@ -18,6 +19,7 @@ struct UpdateChunk {
     weight_decay: f32,
     average_coefficient: f32,
     schedule_beta: f32,
+    qk_clip_factor: f32,
     base: u32,
     tid: u32,
 }
@@ -28,6 +30,7 @@ impl UpdateChunk {
             self.u,
             self.z_master,
             self.x_master,
+            self.momentum,
             self.rows,
             self.cols,
             self.len,
@@ -38,6 +41,7 @@ impl UpdateChunk {
             self.weight_decay,
             self.average_coefficient,
             self.schedule_beta,
+            self.qk_clip_factor,
             self.base + self.tid + CTA_THREADS * mul,
         )
     }
@@ -48,6 +52,7 @@ pub(super) fn update_eight_amax(
     u: *const f32,
     z_master: *mut f32,
     x_master: *mut f32,
+    momentum: *mut f32,
     rows: u32,
     cols: u32,
     len: u32,
@@ -58,6 +63,7 @@ pub(super) fn update_eight_amax(
     weight_decay: f32,
     average_coefficient: f32,
     schedule_beta: f32,
+    qk_clip_factor: f32,
     base: u32,
     tid: u32,
 ) -> UpdateAmax {
@@ -65,6 +71,7 @@ pub(super) fn update_eight_amax(
         u,
         z_master,
         x_master,
+        momentum,
         rows,
         cols,
         len,
@@ -75,6 +82,7 @@ pub(super) fn update_eight_amax(
         weight_decay,
         average_coefficient,
         schedule_beta,
+        qk_clip_factor,
         base,
         tid,
     };

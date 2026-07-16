@@ -70,5 +70,7 @@ fn linear(weight: &UploadedNvfp4, grad: &DeviceBuffer<f32>, state: &MuonState) -
         rows: 0,
         cols: 0,
         learning_rate_multiplier: 1.0,
+        qk_clip_factor_offset: u32::MAX,
+        qk_clip_head_dim: 0,
     }
 }

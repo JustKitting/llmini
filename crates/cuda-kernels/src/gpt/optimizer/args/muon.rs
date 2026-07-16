@@ -14,6 +14,8 @@ pub struct MuonSlotDescriptor {
     pub rows: u32,
     pub cols: u32,
     pub learning_rate_multiplier: f32,
+    pub qk_clip_factor_offset: u32,
+    pub qk_clip_head_dim: u32,
 }
 
 unsafe impl DeviceCopy for MuonSlotDescriptor {}
@@ -58,6 +60,7 @@ pub struct MuonTmaFinishArgs<'a> {
     pub polar_update: &'a DeviceBuffer<f32>,
     pub polar_bound_amax: &'a DeviceBuffer<f32>,
     pub polar_chunks: &'a mut DeviceBuffer<f32>,
+    pub qk_clip_factors: &'a DeviceBuffer<f32>,
     pub slot_index: u32,
     pub matrix_len: u32,
     pub learning_rate: f32,

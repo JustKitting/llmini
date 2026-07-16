@@ -43,6 +43,12 @@ fn muon_tma_finish_retains_next_schedule_amax() -> Result<(), Box<dyn Error>> {
 
 #[ignore = "requires generated sm_120a PTX"]
 #[test]
+fn muon_tma_finish_applies_qk_clip_inside_master_update() -> Result<(), Box<dyn Error>> {
+    tma_finish::run_qk_clip_case()
+}
+
+#[ignore = "requires generated sm_120a PTX"]
+#[test]
 fn muon_tma_split_finish_matches_cooperative_reference() -> Result<(), Box<dyn Error>> {
     tma_finish::run_split_matches_reference_case()
 }

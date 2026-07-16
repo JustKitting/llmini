@@ -5,7 +5,7 @@ use super::adam::adam_learning_rate;
 use super::base::{BaseAdamUpdateArgs, update_base_adam};
 use super::block::{BlockUpdateArgs, update_blocks};
 use super::embedding::add_embedding_lookup_grad;
-use super::kda_clip::apply_kda_muon_clip;
+use super::kda_clip::prepare_kda_muon_clip_factors;
 use super::muon::update_muon_groups;
 use super::skip::record_skip_decision;
 use super::timed_ms;
@@ -100,27 +100,18 @@ pub fn apply_weight_updates(args: WeightUpdateArgs<'_>) -> AppResult<WeightUpdat
         trace: &mut trace,
     })?;
 
+    prepare_kda_muon_clip_factors(stream, runtime, tape, qk_norm_max, scratch, &mut trace)?;
     update_muon_groups(
         stream,
         runtime,
         muon_tables,
         muon,
+        &scratch.kda_clip_factors,
         step,
         average_coefficient,
         grad_clip.scale,
         &mut trace,
     )?;
-    apply_kda_muon_clip(
-        stream,
-        runtime,
-        uploaded,
-        tape,
-        qk_norm_max,
-        scratch,
-        state,
-        &mut trace,
-    )?;
-
     if diagnostics.is_some() {
         super::super::schedule_free::materialize_training_weights(
             stream, runtime, uploaded, scratch, state,

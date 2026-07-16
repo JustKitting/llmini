@@ -100,7 +100,12 @@ fn materialize_block(
     reuse_muon_amax: bool,
 ) -> Result<(), DriverError> {
     materialize_layer_norm(materializer, &mut block.ln_1, &state.ln_1)?;
-    materialize_linear(materializer, &mut block.attn_qkv, &state.attn_qkv, false)?;
+    materialize_linear(
+        materializer,
+        &mut block.attn_qkv,
+        &state.attn_qkv,
+        reuse_muon_amax,
+    )?;
     materialize_linear(
         materializer,
         &mut block.attn_c_proj,

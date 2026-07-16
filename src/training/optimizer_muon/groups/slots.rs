@@ -37,8 +37,12 @@ fn all_slots(
 ) -> Vec<HostPtrs> {
     let mut rows = Vec::with_capacity(MUON_MATRIX_SLOTS);
     for i in 0..GPT2_N_LAYER {
-        let qkv_dim = AttentionDims::new(uses_full_attention(i)).qkv_dim as usize;
-        rows.push(ptrs::qkv(uploaded, grads, state, i).shape(GPT2_N_EMBD, qkv_dim));
+        let dims = AttentionDims::new(uses_full_attention(i));
+        rows.push(
+            ptrs::qkv(uploaded, grads, state, i)
+                .shape(GPT2_N_EMBD, dims.qkv_dim as usize)
+                .qk_clip(i * dims.head_count as usize, dims.head_dim as usize),
+        );
     }
     append(&mut rows, GPT2_N_EMBD, GPT2_N_EMBD, |i| {
         ptrs::c_proj(uploaded, grads, state, i)
