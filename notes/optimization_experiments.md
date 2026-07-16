@@ -45,6 +45,37 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 
 ```text
 date: 2026-07-16
+commit: rejection record only; candidate source reverted
+experiment: Explicitly sink the KDA dG-last reduction under its final-token use.
+status: rejected_profile_gate
+change:
+  Moved the 64-source dKG-times-KG reduction in update_compact_grad inside the
+  existing final-token conditional because only the final token consumes it.
+  Mathematical operations and the surviving reduction order were unchanged.
+minimum_impact_gate:
+  chunk_intra_kda_backward occupied 102.780ms/profile and the source appeared
+  to repeat a 64-element reduction for every token/dimension pair, giving a
+  credible ceiling above the active 21.220028ms profile floor.
+verification:
+  cargo fmt --all, cargo check --workspace, a fresh exact
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a, and the ignored
+  tensor-core causal-attention backward reference comparison: pass. Profile:
+    target/nsys/20260716_kda_intra_sink_dglast_candidate.nsys-rep
+    target/nsys/20260716_kda_intra_sink_dglast_candidate.sqlite
+    total GPU kernels 4272.478706ms; target kernel 117.483341ms across 120
+    launches; 256 threads and 40 registers/thread; ten-step held-out
+    val_loss=8.133328.
+decision:
+  Reject without reciprocal or fixed-wall gates and fully revert. The target
+  family regresses by 14.703ms (14.31%) versus its 102.780ms parent mean, and
+  total GPU time regresses by 14.058ms versus the accepted 4258.421ms mean.
+  The original generated control flow evidently handles the condition more
+  efficiently; do not retry source-level loop sinking without PTX evidence of
+  actual redundant execution.
+```
+
+```text
+date: 2026-07-16
 commit: accepted local jj commit after full gate
 experiment: Widen generic 64x64 FP16 tensor-core matmul CTAs selectively.
 status: accepted_450s_loss_and_throughput_improved
