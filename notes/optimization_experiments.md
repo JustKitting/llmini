@@ -140,6 +140,65 @@ decision:
 
 ```text
 date: 2026-07-16
+commit: rejected uncommitted candidate, code reverted
+experiment: Broadcast warp-uniform exact square roots and reciprocals.
+status: rejected_profile_gate
+change:
+  Moved exact sqrt.rn/reciprocal sequences from every lane into each warp
+  leader for tensor-wide bound scalars, KDA warp norms, and Muon descriptor
+  scalars, then broadcast the exact result bits. The batch covered the bounded
+  linear3 update/amax kernels, Muon master update, KDA prepare/finish, and the
+  bounded Four-Six producer. A layer-norm variant was removed before the final
+  profile and is not part of these measurements.
+numerics:
+  Each retained site consumed a warp-uniform scalar and the leader executed
+  the former exact operation sequence before broadcasting its result. Nine
+  NVFP4 quant tests, seven focused Muon tests, and the causal-attention
+  backward test passed after a fresh SM120a rebuild. The real FineWeb profile
+  completed ten steps and endpoint validation at loss 8.661098. The existing
+  GPT block-layer-norm reference test fails identically after restoring its
+  untouched source, so it is recorded as a separate baseline test issue and
+  is not evidence for or against this candidate.
+memory:
+  No allocation or buffer lifetime changed. The main bounded linear3 amax
+  kernel changed 22 -> 23 registers, row-sumsq 16 -> 18, bounded Four-Six
+  25 -> 27, KDA finish 54 -> 52, and Muon update remained at 40 registers.
+  Static shared and local memory were unchanged.
+minimum_impact_gate:
+  The accepted 450-second baseline averages 514.552000ms per step and requires
+  a 2.572760ms/step aggregate saving. The parent profile pair averages
+  5140.940437ms over ten steps plus endpoint validation. The candidate instead
+  measured 5142.068853ms, a 1.128416ms/profile regression rather than the
+  required 25.727600ms/profile saving.
+focused_profile:
+  Accepted parent samples:
+    target/nsys/20260716_four_six_eight_lane_exact_grid_candidate.nsys-rep
+    target/nsys/20260716_four_six_eight_lane_exact_grid_candidate_reciprocal.nsys-rep
+    total GPU kernels: 5135.283670 and 5146.597204ms.
+  Candidate:
+    target/nsys/20260716_uniform_scalar_sqrt_batch_candidate.nsys-rep
+    total GPU kernels: 5142.068853ms.
+  The largest directly affected families are also flat: bounded linear3 amax
+  averages 233.778766 -> 233.810775ms, Muon master update 99.798226 ->
+  99.648688ms, KDA prepare 61.168398 -> 61.169284ms, bounded linear3 row-sumsq
+  57.074111 -> 56.963755ms, KDA finish 50.864511 -> 50.975593ms, and bounded
+  Four-Six 41.310528 -> 40.781500ms. Their small mixed movements do not sum to
+  a meaningful whole-step signal.
+verification:
+  cargo fmt --all, cargo check --workspace -q, and fresh
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass. Focused GPU
+  tests listed above pass. The exact 1B FineWeb ten-step profile completes
+  normally at target/runs/20260716_070700Z_fineweb_900s.
+decision:
+  Reject before reciprocal profiling or either fixed-wall gate. Exact scalar
+  square-root latency is hidden behind the surrounding memory and reduction
+  work, while the added leader dependency and shuffle provide no whole-step
+  saving. Restore accepted source and do not retry per-warp uniform-scalar
+  broadcasts without a materially different surrounding kernel schedule.
+```
+
+```text
+date: 2026-07-16
 commit: accepted local jj commit after full gate
 experiment: Pair exact Four-Six source and transpose quantization for Muon.
 status: accepted_900s_before_450s_gate_transition
