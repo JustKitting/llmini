@@ -1,6 +1,7 @@
 use cuda_device::{DisjointSlice, SharedArray, cuda_module, kernel, thread};
 
 use crate::block_reduce::{block_max_store_f32, block_sum_shared_f32};
+use crate::f16_tc_matmul::convert::{load_f32x2_global, store_f32x2_global};
 use crate::float_ptx::{abs_f32, fma_f32, max_f32, sqrt_f32};
 use crate::nvfp4_quant::kernels::row_amax::TENSOR_AMAX_VALUES_PER_BLOCK;
 use crate::warp_reduce::thread_lane_warp;
@@ -109,12 +110,30 @@ pub(super) mod module {
         let chunk = thread::blockIdx_x();
         let (thread, lane, warp) = thread_lane_warp();
         let base = chunk * TENSOR_AMAX_VALUES_PER_BLOCK;
-        let mut offset = thread;
+        let mut offset = thread * 2;
         let mut local_amax = 0.0;
         let c_ptr = c_out.as_mut_ptr();
         while offset < TENSOR_AMAX_VALUES_PER_BLOCK {
             let index = base + offset;
-            if index < len {
+            if index + 1 < len {
+                let i = index as usize;
+                let (a0, a1) = load_f32x2_global(a.as_ptr(), i);
+                let (b0, b1) = load_f32x2_global(b.as_ptr(), i);
+                let (c0, c1) = load_f32x2_global(c_ptr, i);
+                let value0 = fma_f32(
+                    a_scale,
+                    a0 * bound_scale,
+                    fma_f32(b_scale, b0, c_scale * c0),
+                );
+                let value1 = fma_f32(
+                    a_scale,
+                    a1 * bound_scale,
+                    fma_f32(b_scale, b1, c_scale * c1),
+                );
+                store_f32x2_global(c_ptr, i, value0, value1);
+                local_amax = max_f32(local_amax, abs_f32(value0));
+                local_amax = max_f32(local_amax, abs_f32(value1));
+            } else if index < len {
                 let i = index as usize;
                 unsafe {
                     let current = *c_ptr.add(i);
@@ -124,7 +143,7 @@ pub(super) mod module {
                     local_amax = max_f32(local_amax, abs_f32(value));
                 }
             }
-            offset += thread::blockDim_x();
+            offset += thread::blockDim_x() * 2;
         }
         block_max_store_f32!(CHUNK_AMAX, chunk_amax[chunk], local_amax, lane, warp);
     }
@@ -158,17 +177,36 @@ pub(super) mod module {
         let row_base = row as usize * cols as usize;
         let c_ptr = c_out.as_mut_ptr();
         let mut local_sumsq = 0.0;
-        let mut col = thread;
+        let mut col = thread * 2;
         while col < cols {
             let i = row_base + col as usize;
-            unsafe {
-                let current = *c_ptr.add(i);
-                let bc = fma_f32(b_scale, b[i], c_scale * current);
-                let value = fma_f32(a_scale, a[i] * bound_scale, bc);
-                *c_ptr.add(i) = value;
-                local_sumsq = fma_f32(value, value, local_sumsq);
+            if col + 1 < cols {
+                let (a0, a1) = load_f32x2_global(a.as_ptr(), i);
+                let (b0, b1) = load_f32x2_global(b.as_ptr(), i);
+                let (c0, c1) = load_f32x2_global(c_ptr, i);
+                let value0 = fma_f32(
+                    a_scale,
+                    a0 * bound_scale,
+                    fma_f32(b_scale, b0, c_scale * c0),
+                );
+                let value1 = fma_f32(
+                    a_scale,
+                    a1 * bound_scale,
+                    fma_f32(b_scale, b1, c_scale * c1),
+                );
+                store_f32x2_global(c_ptr, i, value0, value1);
+                local_sumsq = fma_f32(value0, value0, local_sumsq);
+                local_sumsq = fma_f32(value1, value1, local_sumsq);
+            } else {
+                unsafe {
+                    let current = *c_ptr.add(i);
+                    let bc = fma_f32(b_scale, b[i], c_scale * current);
+                    let value = fma_f32(a_scale, a[i] * bound_scale, bc);
+                    *c_ptr.add(i) = value;
+                    local_sumsq = fma_f32(value, value, local_sumsq);
+                }
             }
-            col += thread::blockDim_x();
+            col += thread::blockDim_x() * 2;
         }
         let sumsq = unsafe { block_sum_shared_f32(&mut ROW_SUMS, local_sumsq, lane, warp) };
         if thread == 0 {

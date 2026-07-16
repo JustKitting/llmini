@@ -6,10 +6,7 @@ use crate::f16_tc_matmul::convert::{
 };
 use crate::f16_tc_matmul::cta_tile::{CTA_A_ELEMS, CTA_B_ELEMS, CTA_K, CTA_THREADS};
 use crate::kda_common::{chunk_state_index, compact_index, hidden_index, kda_decay_exp};
-use crate::kda_tc::{
-    CompactTileCtx, CtaATile, CtaBTile, KdaStateTile, compact_fragment_coords,
-    for_acc_fragment_pairs,
-};
+use crate::kda_tc::{CompactTileCtx, CtaATile, CtaBTile, KdaStateTile, compact_fragment_coords};
 
 pub(crate) fn stage_compact_t_a(
     src: &[f32],
@@ -95,35 +92,36 @@ pub(crate) fn store_dh_quads(
     g: &[f32],
     ctx: CompactTileCtx<'_>,
 ) {
-    for_acc_fragment_pairs!(acc, ctx.tile, |warp_n, frag, lo, hi| {
-        let (k_dim0, v_dim0) = compact_fragment_coords(ctx.tile, warp_n, frag);
-        let (k_dim1, v_dim1) = compact_fragment_coords(ctx.tile, warp_n, frag + 1);
-        if k_dim0 < ctx.params.head_dim
-            && k_dim1 == k_dim0
-            && v_dim0 + 1 == v_dim1
-            && v_dim1 < ctx.params.head_dim
-        {
-            let index = (k_dim0 * ctx.params.head_dim + v_dim0) as usize;
-            let g_last = g[compact_index(ctx.batch, ctx.end - 1, ctx.head, k_dim0, ctx.params)];
-            let decay = kda_decay_exp(g_last);
-            let (next_lo, next_hi) = load_f32x2_shared(d_h_next.as_ptr(), index);
-            store_f32x2_shared(
-                d_h.as_mut_ptr(),
-                index,
-                decay * next_lo + lo,
-                decay * next_hi + hi,
-            );
-        } else {
-            if k_dim0 < ctx.params.head_dim && v_dim0 < ctx.params.head_dim {
-                let index = (k_dim0 * ctx.params.head_dim + v_dim0) as usize;
-                let g_last = g[compact_index(ctx.batch, ctx.end - 1, ctx.head, k_dim0, ctx.params)];
-                d_h[index] = kda_decay_exp(g_last) * d_h_next[index] + lo;
-            }
-            if k_dim1 < ctx.params.head_dim && v_dim1 < ctx.params.head_dim {
-                let index = (k_dim1 * ctx.params.head_dim + v_dim1) as usize;
-                let g_last = g[compact_index(ctx.batch, ctx.end - 1, ctx.head, k_dim1, ctx.params)];
-                d_h[index] = kda_decay_exp(g_last) * d_h_next[index] + hi;
-            }
-        }
-    });
+    let (k_dim_0, _) = compact_fragment_coords(ctx.tile, ctx.tile.warp_n0, 0);
+    let (k_dim_1, _) = compact_fragment_coords(ctx.tile, ctx.tile.warp_n0, 2);
+    let last_token = ctx.end - 1;
+    let decay_0 =
+        kda_decay_exp(g[compact_index(ctx.batch, last_token, ctx.head, k_dim_0, ctx.params)]);
+    let decay_1 =
+        kda_decay_exp(g[compact_index(ctx.batch, last_token, ctx.head, k_dim_1, ctx.params)]);
+
+    let mut i = 0;
+    while i < 4 {
+        let warp_n = ctx.tile.warp_n0 + i as u32;
+        let (_, v_dim_0) = compact_fragment_coords(ctx.tile, warp_n, 0);
+        let index_0 = (k_dim_0 * ctx.params.head_dim + v_dim_0) as usize;
+        let (next_0_lo, next_0_hi) = load_f32x2_shared(d_h_next.as_ptr(), index_0);
+        store_f32x2_shared(
+            d_h.as_mut_ptr(),
+            index_0,
+            decay_0 * next_0_lo + acc[i][0],
+            decay_0 * next_0_hi + acc[i][1],
+        );
+
+        let (_, v_dim_1) = compact_fragment_coords(ctx.tile, warp_n, 2);
+        let index_1 = (k_dim_1 * ctx.params.head_dim + v_dim_1) as usize;
+        let (next_1_lo, next_1_hi) = load_f32x2_shared(d_h_next.as_ptr(), index_1);
+        store_f32x2_shared(
+            d_h.as_mut_ptr(),
+            index_1,
+            decay_1 * next_1_lo + acc[i][2],
+            decay_1 * next_1_hi + acc[i][3],
+        );
+        i += 1;
+    }
 }

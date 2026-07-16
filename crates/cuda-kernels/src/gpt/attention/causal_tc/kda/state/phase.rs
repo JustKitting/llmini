@@ -4,6 +4,7 @@ use super::super::super::gather::TC_FORWARD_THREADS_PER_BLOCK;
 use crate::f16_tc_matmul::convert::store_f16x2_shared;
 use crate::f16_tc_matmul::cta_tile::{CTA_A_ELEMS, CTA_K, CTA_THREADS};
 use crate::kda_common::{chunk_g_last_index, compact_index, kda_decay_exp, state_elems};
+use crate::kda_tc::KdaDecayTile;
 use crate::kda_tc::{
     CompactTileCtx, CtaATile, CtaBTile, KdaStateTile, add_shared_state_quads, stage_compact_a,
     stage_compact_b_t_disjoint as stage_vnew_b_t_disjoint, stage_shared_state_b_t,
@@ -47,6 +48,7 @@ pub(super) fn compute_kg_vnew_add_state(
 
 pub(super) fn decay_state(
     state: &mut KdaStateTile,
+    decay: &mut KdaDecayTile,
     chunk_g_last: &[f32],
     bh: u32,
     chunk: u32,
@@ -54,11 +56,16 @@ pub(super) fn decay_state(
     ctx: CompactTileCtx<'_>,
 ) {
     let state_elems = state_elems(ctx.params);
+    if tid < ctx.params.head_dim {
+        let g_last = chunk_g_last[chunk_g_last_index(bh, chunk, tid, ctx.params)];
+        decay[tid as usize] = kda_decay_exp(g_last);
+    }
+    thread::sync_threads();
+
     let mut linear = tid;
     while linear < state_elems {
         let k_dim = linear / ctx.params.head_dim;
-        let g_last = chunk_g_last[chunk_g_last_index(bh, chunk, k_dim, ctx.params)];
-        state[linear as usize] *= kda_decay_exp(g_last);
+        state[linear as usize] *= decay[k_dim as usize];
         linear += TC_FORWARD_THREADS_PER_BLOCK;
     }
 }

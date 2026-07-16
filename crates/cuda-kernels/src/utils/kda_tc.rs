@@ -51,13 +51,12 @@ macro_rules! for_acc_fragment_pairs {
     }};
 }
 
-pub(crate) use for_acc_fragment_pairs;
-
 pub(crate) type CtaATile = cuda_device::SharedArray<u16, CTA_A_ELEMS>;
 pub(crate) type CtaBTile = cuda_device::SharedArray<u16, CTA_B_ELEMS>;
 pub(crate) type CtaTiles<'a> = (&'a mut CtaATile, &'a mut CtaBTile);
 pub(crate) type KdaMatrixTile = cuda_device::SharedArray<f32, KDA_MATRIX_ELEMS>;
 pub(crate) type KdaStateTile = cuda_device::SharedArray<f32, KDA_STATE_ELEMS>;
+pub(crate) type KdaDecayTile = cuda_device::SharedArray<f32, 64>;
 
 macro_rules! with_tc_ab_tiles {
     ($body:ident; $($arg:expr),* $(,)?) => { with_tc_ab_tiles!(@call $body; [$($arg),*]; []) };
@@ -77,9 +76,10 @@ macro_rules! with_kda_tiles {
     }};
     (state $body:ident; $($arg:expr),* $(,)?) => {{
         static mut STATE: $crate::kda_tc::KdaStateTile = cuda_device::SharedArray::UNINIT;
+        static mut DECAY: $crate::kda_tc::KdaDecayTile = cuda_device::SharedArray::UNINIT;
         static mut A_TILE: $crate::kda_tc::CtaATile = cuda_device::SharedArray::UNINIT;
         static mut B_TILE: $crate::kda_tc::CtaBTile = cuda_device::SharedArray::UNINIT;
-        $body($($arg,)* unsafe { &mut STATE }, (unsafe { &mut A_TILE }, unsafe { &mut B_TILE }));
+        $body($($arg,)* unsafe { &mut STATE }, unsafe { &mut DECAY }, (unsafe { &mut A_TILE }, unsafe { &mut B_TILE }));
     }};
     (backward $body:ident; $($arg:expr),* $(,)?) => {{
         static mut STATE: $crate::kda_tc::KdaStateTile = cuda_device::SharedArray::UNINIT;

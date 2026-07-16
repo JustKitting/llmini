@@ -46,6 +46,410 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-16
 commit: accepted local jj commit after full gate
+experiment: Reuse KDA decays and pair Muon/linear reduction input loads.
+status: accepted_450s
+change:
+  Hoisted the two row-decay exponentials used by each exact 64x64 KDA backward
+  fragment out of its four warp-N stores. Forward KDA now computes its 64
+  per-row decay exponentials once into a 256-byte shared table before applying
+  them across the state matrix. Muon's source Frobenius-norm pass and the two
+  active bounded linear3 update kernels load adjacent FP32 values as aligned
+  pairs; the linear3 kernels also store the paired outputs together.
+numerics:
+  KDA reuses the same exponential result for values that previously recomputed
+  it from the same row input. Linear3 retains the same per-element FMA sequence
+  and amax values. Pairing the Muon source sumsq and linear3 row-sumsq paths
+  reassociates their finite FP32 reductions. All focused GPU tests pass and the
+  sustained run has no nonfinite values or skipped updates.
+memory:
+  Forward KDA adds only 64 shared FP32 values per CTA. Persistent allocations,
+  optimizer scratch capacities, and peak logical VRAM are unchanged; this is
+  not a batch-capacity win.
+minimum_impact_gate:
+  The promoted profile floor was 24.82889ms over the ten-step profile. The five
+  directly affected families save 46.639680ms in the reciprocal candidate
+  mean, clearing that floor by 1.88x. A companion paired momentum-orientation
+  implementation was removed because its own kernel regressed from
+  93.296738ms to 93.982840ms/profile.
+focused_profile:
+  Promoted reciprocal mean:
+    total GPU kernels 4968.951418ms.
+    chunkwise KDA backward 163.816301ms.
+    KDA state save 144.216377ms.
+    bounded linear3 amax 233.772904ms.
+    bounded linear3 row sumsq 56.912886ms.
+    Muon source sumsq 67.717456ms.
+  Candidate samples:
+    target/nsys/20260716_kda_muon_linear_batch_candidate.nsys-rep
+    target/nsys/20260716_kda_muon_linear_batch_candidate_reciprocal.nsys-rep
+    total GPU kernels 4944.046429 and 4947.171011ms; mean 4945.608720ms.
+    train elapsed 4.856 and 4.859 seconds; held-out losses 8.144359 and
+      8.146506; launches remain 81098 in both.
+    directly affected reciprocal means:
+      chunkwise KDA backward 159.106626ms, saving 4.709676ms.
+      KDA state save 136.713337ms, saving 7.503041ms.
+      bounded linear3 amax 229.208758ms, saving 4.564147ms.
+      bounded linear3 row sumsq 55.504493ms, saving 1.408393ms.
+      Muon source sumsq 39.263032ms, saving 28.454424ms / 42.0%.
+  Whole-profile mean improves by 23.342698ms, or 0.4698%; the two noisy total
+  samples are 0.5012% and 0.4383% faster while every touched-family comparison
+  points in the same direction. The fixed-wall gates below provide the
+  objective-facing throughput result.
+verification:
+  cargo fmt --all, git diff --check, cargo check --workspace -q, and a fresh
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass. After that
+  exact rebuild, all 18 ignored optimizer tests, all nine ignored nvfp4_quant
+  tests, and the ignored causal-attention TC backward test pass.
+  Required 30-second screen with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260716_101128Z_fineweb_30s
+    stdout: target/gates/20260716_kda_muon_linear_batch_30s.log
+    completed_steps=63, train_elapsed_s=30.226, val_loss=6.558680.
+  Required 450-second gate with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260716_101217Z_fineweb_450s
+    stdout: target/gates/20260716_kda_muon_linear_batch_450s.log
+    completed_steps=915, train_elapsed_s=450.423, val_loss=5.272758.
+    All 19 high-fidelity samples are finite and nonzero, with zero skipped
+    updates, loss-spike skips, grad-norm-spike skips, or nonfinite skips. Grad
+    norm ranges from 1.235260963 to 18.924032211. Every sample retains batch 4,
+    sequence 2048, and 8192 tokens per step.
+measured_effect:
+  Against the matched 30-second baseline:
+    completed steps remain 63.
+    average step time 482.936508 -> 479.777778ms
+      (-3.158730ms, -0.654%).
+    held-out val_loss 6.558953 -> 6.558680 (-0.000273, -0.004%).
+  Against the matched 450-second baseline:
+    completed steps 907 -> 915 (+8, +0.882%).
+    average step time 496.577729 -> 492.265574ms
+      (-4.312155ms, -0.868%).
+    training tokens 7430144 -> 7495680 (+65536, +0.882%).
+    held-out val_loss 5.272459 -> 5.272758
+      (+0.000299, +0.0057%).
+decision:
+  Keep and promote. Direct kernel evidence clears the mathematical screen,
+  both fixed-wall gates preserve the speed signal, held-out loss is effectively
+  unchanged and far inside the 1% tolerance, and the full run is stable. The
+  next 0.5% threshold is (450.423 / 915) * 0.005 = 2.461328ms per step, or
+  24.61328ms over a ten-step profile.
+```
+
+```text
+date: 2026-07-16
+commit: rejection record only; candidate source reverted
+experiment: Cache the final KDA gate derivative in intra-chunk backward.
+status: rejected_profile_gate
+change:
+  Tested both a branch that computed the final-token gate derivative once per
+  thread and a 64-value shared table populated before the intra-chunk loop.
+  Both were intended to remove repeated sigmoid/derivative work at dg_last.
+minimum_impact_gate:
+  The 102.565416ms/profile intra-backward family had enough arithmetic ceiling
+  to contribute materially to the active aggregate batch.
+verification:
+  Fresh exact builds and ten-step FineWeb profiles:
+    target/nsys/20260716_kda_dead_dglast_batch_candidate.nsys-rep
+      total 4978.437362ms; intra backward 117.825478ms.
+    target/nsys/20260716_kda_dglast_shared_batch_candidate.nsys-rep
+      total 4978.249047ms; intra backward 115.820099ms.
+decision:
+  Reject and fully revert. Both forms make the target kernel substantially
+  slower; the compiler schedules the original final-token expression better
+  than either explicit lifetime or shared-memory scheme.
+```
+
+```text
+date: 2026-07-16
+commit: rejection record only; candidate source reverted
+experiment: Double-buffer the KDA fused dW/dQG A tile.
+status: rejected_profile_gate
+change:
+  Added a second shared A tile so the fused dW/dQG kernel could stage two
+  operands per synchronization phase and halve its repeated tile barriers.
+minimum_impact_gate:
+  The target family occupied 104.490524ms/profile, so halving a meaningful
+  barrier component had enough mathematical ceiling to join the active batch.
+verification:
+  Fresh exact build and profile:
+    target/nsys/20260716_kda_dual_a_tile_batch_candidate.nsys-rep
+    total GPU kernels 4966.501138ms; target kernel 104.840636ms.
+decision:
+  Reject and fully revert. The target kernel regresses by 0.350112ms/profile;
+  the favorable total-profile fluctuation is unrelated noise.
+```
+
+```text
+date: 2026-07-16
+commit: rejection record only; candidate source reverted
+experiment: Emit the saved KDA state snapshot from the update epilogue.
+status: rejected_profile_gate
+change:
+  Moved the snapshot write into the state-update epilogue so the already-live
+  state value could be stored without a later standalone traversal.
+minimum_impact_gate:
+  KDA state save occupied 144.216377ms/profile, leaving enough direct ceiling
+  for a fused traversal removal to clear the aggregate floor.
+verification:
+  Fresh exact build and profile:
+    target/nsys/20260716_kda_state_snapshot_epilogue_batch_candidate.nsys-rep
+    total GPU kernels 4979.442659ms; KDA state save 149.556412ms.
+decision:
+  Reject and fully revert. Extending the update epilogue's store path makes the
+  directly affected family 5.340035ms/profile slower.
+```
+
+```text
+date: 2026-07-16
+commit: rejection record only; candidate source reverted
+experiment: Reuse the KDA finish sigmoid result.
+status: rejected_subthreshold
+change:
+  Kept the gate sigmoid live across the two finish expressions that consumed
+  it instead of evaluating it independently.
+verification:
+  Fresh exact build and profile:
+    target/nsys/20260716_kda_finish_sigmoid_reuse_batch_candidate.nsys-rep
+    total GPU kernels 4964.394841ms; finish KDA 50.370270ms versus
+    50.698680ms in the promoted profile, saving 0.328410ms/profile.
+decision:
+  The local change is positive but is only 0.013% of the active whole-step
+  floor. Revert rather than retain an immaterial lifetime change.
+```
+
+```text
+date: 2026-07-16
+commit: rejection record only; candidate source reverted
+experiment: Stage complete aligned lower-A matmul tiles.
+status: rejected_profile_gate
+change:
+  Specialized the active full-tile lower-A cases to remove partial-tile staging
+  checks and issue their aligned shared-memory copies directly.
+verification:
+  Fresh exact build and profile:
+    target/nsys/20260716_lower_a_full_stage_batch_candidate.nsys-rep
+    total GPU kernels 4965.497640ms. Half-RHS lower-A moves
+    120.421027 -> 120.973436ms, while transposed-half-RHS lower-A moves
+    107.691040 -> 106.964747ms; the net direct saving is only 0.173884ms.
+decision:
+  Reject and fully revert. The mixed target-family result is far below the
+  aggregate floor and does not justify a separate specialized path.
+```
+
+```text
+date: 2026-07-16
+commit: rejection record only; candidate source reverted
+experiment: Pair ReLU2 backward FP32 stores.
+status: rejected_subthreshold
+change:
+  Assigned adjacent ReLU2 gradients to each lane, loaded FP16 activations and
+  FP32 output gradients as pairs, and wrote each FP32 result pair together.
+verification:
+  Fresh exact build and profile:
+    target/nsys/20260716_relu2_f32x2_batch_candidate.nsys-rep
+    total GPU kernels 4959.336187ms; ReLU2 backward 68.217002ms versus
+    68.516400ms in the promoted profile, saving 0.299398ms/profile.
+decision:
+  The directly measured win is real but far below the active floor and does
+  not materially strengthen the compatible batch. Revert it rather than carry
+  extra register lifetime and indexing complexity.
+```
+
+```text
+date: 2026-07-16
+commit: rejected uncommitted candidate, code reverted
+experiment: Process two MS-EDEN transpose+bias chunks per shared-memory phase.
+status: rejected_profile_gate
+change:
+  Expanded the fused transpose+bias tile from 32x8 to 64x8 values. Each CTA
+  loaded, packed, and accumulated two consecutive 32-value MS-EDEN chunks
+  between block barriers, halving the number of shared-memory phases for the
+  active even-chunk shapes. The double-buffered tile grew from 2304 to 4608
+  bytes; launch geometry and persistent allocations were unchanged.
+minimum_impact_gate:
+  The two active fused bias variants occupy 351.903483ms in the promoted
+  profile. Eliminating half of their repeated CTA barriers had enough direct
+  ceiling to clear the active 24.82889ms/profile whole-workload floor if the
+  barrier cost dominated at least 7.1% of the family.
+verification:
+  cargo fmt --all, git diff --check, cargo check --workspace -q, a fresh
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a, all five ignored
+  ms_eden_transpose GPU tests, and both ignored linear_backward GPU tests:
+  pass. Profile:
+    target/nsys/20260716_ms_eden_bias_two_chunk_candidate.nsys-rep
+    total GPU kernels: 5020.055149ms; affected fused bias kernels:
+    401.282009ms; train_elapsed_s=4.931; held-out val_loss=8.146277;
+    launches=81098.
+  The promoted reciprocal mean is 4968.951418ms total, with 351.903483ms in
+  the same bias kernels. The candidate regresses the family by 49.378526ms and
+  total time by 51.103731ms/profile.
+decision:
+  Reject without a 30-second or 450-second gate and fully revert. Serializing
+  two complete pack bodies per lane and retaining the second chunk outweighs
+  the saved barriers; keep one 32-row chunk per pipelined phase.
+```
+
+```text
+date: 2026-07-16
+commit: rejected build-time tuning sweep, default binary restored
+experiment: Retune NVFP4 TMA per-warp shape and N-tile placement.
+status: rejected_profile_sweep
+change:
+  Screened the two remaining factor pairs for the fixed 128x128 CTA tile
+  (`M_REPEAT=4,N_REPEAT=4` and `M_REPEAT=1,N_REPEAT=16`) and all four
+  nondefault N-lane mappings (`WarpContiguous`, `RepeatInterleaved`,
+  `PairReverseGroups`, and `PairOuterGroups`). These are build-time scheduling
+  changes only; tensor shapes, math, launch count, and persistent memory remain
+  unchanged.
+minimum_impact_gate:
+  NVFP4 TMA kernels average 1142.798320ms in the promoted reciprocal profile,
+  so a small family-level scheduling improvement had enough mathematical
+  ceiling to clear the active 24.82889ms/profile aggregate floor.
+verification:
+  Every configuration received a fresh
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a and passed all six
+  ignored projection_tma GPU tests before profiling. Ten-step FineWeb profiles
+  all retain 81098 launches:
+    promoted PairInterleaved M2N8 reciprocal mean:
+      total GPU kernels 4968.951418ms; TMA kernels 1142.798320ms.
+    M4N4:
+      target/nsys/20260716_nvfp4_tma_warp_m4n4_candidate.nsys-rep
+      total 5005.134277ms; TMA 1178.967084ms.
+    M1N16:
+      target/nsys/20260716_nvfp4_tma_warp_m1n16_candidate.nsys-rep
+      total 5041.908589ms; TMA 1207.792977ms.
+    WarpContiguous:
+      target/nsys/20260716_nvfp4_tma_nlayout1_candidate.nsys-rep
+      total 4988.882171ms; TMA 1154.977798ms.
+    RepeatInterleaved:
+      target/nsys/20260716_nvfp4_tma_nlayout2_candidate.nsys-rep
+      total 5065.531402ms; TMA 1230.220092ms.
+    PairReverseGroups:
+      target/nsys/20260716_nvfp4_tma_nlayout3_candidate.nsys-rep
+      total 4985.744982ms; TMA 1151.349961ms.
+    PairOuterGroups:
+      target/nsys/20260716_nvfp4_tma_nlayout4_candidate.nsys-rep
+      total 4987.700656ms; TMA 1153.101060ms.
+decision:
+  Reject without a 30-second or 450-second gate. Every alternate schedule is
+  slower both in the directly affected TMA family and across the whole profile;
+  retain the promoted PairInterleaved M2N8 mapping and restore an exact default
+  build with no NVFP4 tuning environment variables.
+```
+
+```text
+date: 2026-07-16
+commit: rejected build-time tuning sweep, default binary restored
+experiment: Retune NVFP4 TMA MMA issue order.
+status: rejected_profile_sweep
+change:
+  Reordered the two K atoms, the two M repeats, and each locality-preserving
+  ordering of the eight N repeats independently. This changes only the fully
+  unrolled MMA instruction order; tensor layouts, math, launch geometry, and
+  persistent memory remain unchanged.
+minimum_impact_gate:
+  The affected TMA family averages 1142.798320ms/profile, leaving enough direct
+  ceiling for an instruction schedule win to clear the active
+  24.82889ms/profile whole-workload floor.
+verification:
+  Every configuration received a fresh exact sm_120a build and passed all six
+  ignored projection_tma GPU tests. Ten-step FineWeb profiles all retain 81098
+  launches:
+    promoted normal-order reciprocal mean:
+      total GPU kernels 4968.951418ms; TMA kernels 1142.798320ms.
+    reverse K atoms:
+      target/nsys/20260716_nvfp4_tma_kreverse_candidate.nsys-rep
+      total 4981.460414ms; TMA 1148.560481ms.
+    reverse M repeats:
+      target/nsys/20260716_nvfp4_tma_mreverse_candidate.nsys-rep
+      total 4981.587980ms; TMA 1148.481360ms.
+    reverse N repeats:
+      target/nsys/20260716_nvfp4_tma_naxis_reverse_candidate.nsys-rep
+      total 5017.730050ms; TMA 1182.662093ms.
+    reverse N pair groups:
+      target/nsys/20260716_nvfp4_tma_naxis_pair_reverse_candidate.nsys-rep
+      total 4984.854302ms; TMA 1150.680196ms.
+    outer N pair groups:
+      target/nsys/20260716_nvfp4_tma_naxis_pair_outer_candidate.nsys-rep
+      total 4988.018422ms; TMA 1153.374508ms.
+    reverse within each N pair:
+      target/nsys/20260716_nvfp4_tma_naxis_within_pair_reverse_candidate.nsys-rep
+      total 5017.428816ms; TMA 1182.939649ms.
+decision:
+  Reject without a 30-second or 450-second gate. Every independent
+  locality-preserving alternative regresses both the target family and total
+  time. Do not spend builds on even/odd or alternating-outer N orders: unlike
+  the already slower candidates, those also break adjacent-pair issue locality.
+  Retain normal M/N/K issue order and restore the exact default binary.
+```
+
+```text
+date: 2026-07-16
+commit: rejected uncommitted candidate, code reverted
+experiment: Shorten Four-Six candidate-error register lifetimes per scale.
+status: rejected_profile_gate
+change:
+  Reassociated each four-value lane's errors into a scale-local helper so the
+  six-scale error and packed payload could be completed before evaluating the
+  four-scale candidate. The intended benefit was lower live state and higher
+  occupancy in the 40-register paired and fused-row quantizers.
+minimum_impact_gate:
+  Those two 40-register families alone occupy more than 200ms/profile, so
+  crossing a 32-register occupancy boundary had a credible ceiling above the
+  active 24.82889ms/profile aggregate floor. Generated resource usage moved in
+  the opposite direction.
+verification:
+  cargo fmt --all, git diff --check, cargo check --workspace -q, a fresh
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a, and all nine ignored
+  nvfp4_quant tests: pass.
+  Profile:
+    target/nsys/20260716_four_six_quad_lifetime_candidate.nsys-rep
+    total GPU kernels: 4975.544761ms; Four-Six kernels: 400.844512ms;
+    train_elapsed_s=4.886; held-out val_loss=8.150002; launches=81098.
+  The promoted four-lane reciprocal mean is 4968.951418ms total and
+  400.552911ms in Four-Six kernels. Registers did not fall: bounded exact moved
+  29 -> 30, rowwise 36 -> 38, and tiled transpose 30 -> 32, while the existing
+  40-register paired and derived-row kernels remained at 40.
+decision:
+  Reject and fully revert without a 30-second or 450-second gate. LLVM already
+  schedules the explicit pair computations at least as well as this helper
+  decomposition.
+```
+
+```text
+date: 2026-07-16
+commit: rejected uncommitted candidate, code reverted
+experiment: Encode each 16-value Four-Six group with two eight-value lanes.
+status: rejected_profile_gate
+change:
+  Extended the accepted four-lane mapping to two lanes per group. Each lane
+  loaded eight adjacent values, evaluated four E2M1 pairs per candidate scale,
+  reduced the scale error across one peer, and wrote four payload bytes with an
+  aligned u32 store. Generic, transposed, schedule-free, and Muon launch grids
+  were adjusted to two threads per group.
+minimum_impact_gate:
+  The direction could mathematically remove another subgroup stage and more
+  per-lane control overhead, so its direct Four-Six ceiling exceeded the active
+  2.482889ms/step floor. Profiling showed that the added live conversion state
+  instead outweighed those savings.
+verification:
+  cargo fmt --all, git diff --check, cargo check --workspace -q, a fresh
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a, all nine ignored
+  nvfp4_quant tests, both Adam tests, and all seven Muon tests: pass.
+  Profile:
+    target/nsys/20260716_four_six_two_lane_candidate.nsys-rep
+    total GPU kernels: 4983.555004ms; Four-Six kernels: 419.492192ms;
+    train_elapsed_s=4.894; held-out val_loss=8.142257; launches=81098.
+  The promoted four-lane reciprocal mean is 4968.951418ms total and
+  400.552911ms in Four-Six kernels. The two-lane candidate directly regresses
+  the target family by 18.939281ms/profile and total time by 14.603586ms.
+decision:
+  Reject and fully revert without a 30-second or 450-second gate. Four lanes
+  are the measured granularity optimum among the 16-, 8-, 4-, and 2-lane
+  mappings tried so far.
+```
+
+```text
+date: 2026-07-16
+commit: accepted local jj commit after full gate
 experiment: Encode each 16-value Four-Six group with four adjacent-value lanes.
 status: accepted_450s
 change:

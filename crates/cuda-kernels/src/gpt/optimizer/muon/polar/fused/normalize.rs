@@ -1,6 +1,7 @@
 use super::super::super::super::threads::{WARP_SIZE, WARPS_PER_BLOCK};
 use super::super::super::super::work_grid::WorkGrid;
 use crate::device_ptr::{read_f32, write_f32};
+use crate::f16_tc_matmul::convert::load_f32x2_global;
 use crate::f16_tc_matmul::cta_tile::CTA_THREADS;
 use crate::float_ptx::{fma_f32, sqrt_f32};
 use cuda_device::{SharedArray, grid, thread};
@@ -43,11 +44,17 @@ pub(crate) fn source_sumsq_chunks(
     let lane = tid & (WARP_SIZE - 1);
     let warp_in_block = tid / WARP_SIZE;
     let mut local = 0.0;
-    let mut index = work.thread();
+    let mut index = work.thread() * 2;
     while index < len {
-        let value = read_f32(source, index);
-        local = fma_f32(value, value, local);
-        index += work.stride();
+        if index + 1 < len {
+            let (value0, value1) = load_f32x2_global(source, index as usize);
+            local = fma_f32(value0, value0, local);
+            local = fma_f32(value1, value1, local);
+        } else {
+            let value = read_f32(source, index);
+            local = fma_f32(value, value, local);
+        }
+        index += work.stride() * 2;
     }
     let local_sum =
         crate::block_reduce::block_sum_shared_f32(warp_sums, local, lane, warp_in_block);

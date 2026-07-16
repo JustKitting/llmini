@@ -7,7 +7,7 @@ use crate::attention::CausalAttentionParams;
 use crate::f16_tc_matmul::convert::cvt_rn_f16_f32;
 use crate::f16_tc_matmul::cta_tile::CtaTile;
 use crate::kda_common::{batch_head, chunk_count, kda_tc_shape, state_elems};
-use crate::kda_tc::{CompactTileCtx, CtaTiles, KdaStateTile};
+use crate::kda_tc::{CompactTileCtx, CtaTiles, KdaDecayTile, KdaStateTile};
 
 use phase::{compute_kg_vnew_add_state, compute_ws_to_vnew, decay_state};
 
@@ -25,6 +25,7 @@ pub(in super::super) fn chunk_kda_state_save_body(
     mut chunk_states: DisjointSlice<u16>,
     params: CausalAttentionParams,
     state: &mut KdaStateTile,
+    decay: &mut KdaDecayTile,
     tiles: CtaTiles<'_>,
 ) {
     let (a_tile, b_tile) = tiles;
@@ -75,7 +76,7 @@ pub(in super::super) fn chunk_kda_state_save_body(
         compute_ws_to_vnew(inputs.w, inputs.u, &mut v_new, state, a_tile, b_tile, ctx);
         thread::sync_threads();
 
-        decay_state(state, inputs.chunk_g_last, bh, chunk, tid, ctx);
+        decay_state(state, decay, inputs.chunk_g_last, bh, chunk, tid, ctx);
         thread::sync_threads();
         compute_kg_vnew_add_state(inputs.kg, &mut v_new, state, a_tile, b_tile, ctx);
         thread::sync_threads();
