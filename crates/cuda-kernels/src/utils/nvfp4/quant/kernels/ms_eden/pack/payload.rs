@@ -10,7 +10,6 @@ use super::super::super::convert::{
     nvfp4_inv_scale,
 };
 use super::super::{FP4_MAX, GROUP_SIZE, HADAMARD_DIM};
-use super::scale::stochastic_e4m3_scale;
 
 #[inline(always)]
 pub(super) fn ms_eden_pack_payload(
@@ -20,7 +19,7 @@ pub(super) fn ms_eden_pack_payload(
     chunk: u32,
     global_scale: f32,
     scale_override: f32,
-    scale_seed: u32,
+    _scale_seed: u32,
 ) {
     let lane = warp::lane_id();
     let chunk_base = chunk * HADAMARD_DIM;
@@ -51,9 +50,9 @@ pub(super) fn ms_eden_pack_payload(
         num * rcp_approx_f32(denom)
     };
     let corrected_scale = nonzero_scale(scale * correction);
-    let rounded_scale_bits = stochastic_e4m3_scale(corrected_scale, scale_seed, group);
 
     if lane == group_leader {
+        let rounded_scale_bits = cvt_rn_satfinite_e4m3x2_f32(0.0, corrected_scale);
         unsafe {
             *out_scales.get_unchecked_mut(group as usize) = rounded_scale_bits;
         }

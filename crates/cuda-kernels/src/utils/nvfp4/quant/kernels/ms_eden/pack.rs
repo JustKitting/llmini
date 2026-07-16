@@ -4,8 +4,6 @@ mod chunk;
 mod hadamard;
 #[path = "pack/payload.rs"]
 mod payload;
-#[path = "pack/scale.rs"]
-mod scale;
 
 pub(super) use self::chunk::{
     ms_eden_pack_chunk, ms_eden_pack_chunk_no_chunk_amax, ms_eden_pack_chunk_no_chunk_amax_row,

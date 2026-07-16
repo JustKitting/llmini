@@ -46,6 +46,119 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-16
 commit: accepted local jj commit after full gate
+experiment: Deterministically round corrected MS-EDEN scales.
+status: accepted_450s
+change:
+  Replaced stochastic E4M3 rounding of each corrected MS-EDEN local scale with
+  one round-to-nearest E4M3 conversion in the half-warp leader. The Hadamard
+  transform, FP16x2 least-squares correction reduction, approximate correction
+  reciprocal, E2M1 payload, global scale, and random sign transform remain.
+  Removed the now-dead scale-rounding helper and random-unit generator.
+numerics:
+  The corrected scale is still represented in E4M3, but nearest rounding
+  removes stochastic unbiasedness and ignores the former scale seed. This can
+  change scale bytes and payload dequantization. All fusion and decoded-output
+  comparisons pass without tolerance changes. The 30-second endpoint regresses
+  by 0.136%, inside the active tolerance; the 450-second endpoint improves by
+  0.296% because the candidate completes more training.
+memory:
+  No allocation, scratch capacity, or buffer lifetime changes. Removing the
+  stochastic helper is an instruction-throughput win, not a VRAM-capacity win.
+minimum_impact_gate:
+  The promoted floor was 24.16395ms over a ten-step profile. MS-EDEN occupied
+  563.433544ms/profile in the accepted reciprocal mean. Deterministic rounding
+  saves 42.257638ms/profile, clearing the floor by 1.75x. Merely sinking the
+  unchanged stochastic computation into the leader branch saved only about
+  6.35ms/profile in
+  target/nsys/20260716_ms_eden_stochastic_leader_candidate.nsys-rep and was not
+  gated on its own.
+focused_profile:
+  Accepted reciprocal samples:
+    target/nsys/20260716_quant_scale_rcp_candidate.nsys-rep
+    target/nsys/20260716_quant_scale_rcp_candidate_reciprocal.nsys-rep
+    total GPU kernels 4845.399265 and 4853.440714ms; mean 4849.419990ms.
+    MS-EDEN 563.031227 and 563.835860ms; mean 563.433544ms.
+  Candidate reciprocal samples:
+    target/nsys/20260716_ms_eden_deterministic_scale_candidate.nsys-rep
+    target/nsys/20260716_ms_eden_deterministic_scale_candidate_reciprocal.nsys-rep
+    total GPU kernels 4791.266811 and 4796.070282ms; mean 4793.668547ms,
+      saving 55.751443ms / 1.150%.
+    MS-EDEN 520.932664 and 521.419148ms; mean 521.175906ms,
+      saving 42.257638ms / 7.500%.
+verification:
+  cargo fmt --all and a fresh
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass. After that
+  exact rebuild, all five ignored MS-EDEN transpose tests, all nine ignored
+  nvfp4_quant tests, both ignored linear-backward tests, the ignored
+  QKV-backward test, and the ignored block-attention backward test pass.
+  The unrelated l3_mlp test target does not currently compile because its
+  fixture omits six required TMA fields; this candidate does not touch that
+  fixture or either affected argument struct.
+  Required 30-second screen with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260716_112424Z_fineweb_30s
+    stdout: target/gates/20260716_ms_eden_deterministic_scale_30s.log
+    completed_steps=65, train_elapsed_s=30.206, val_loss=6.556823.
+  Required 450-second gate with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260716_112510Z_fineweb_450s
+    stdout: target/gates/20260716_ms_eden_deterministic_scale_450s.log
+    completed_steps=943, train_elapsed_s=450.388, val_loss=5.242274.
+    All 19 high-fidelity samples are finite and nonzero, with zero skipped
+    updates, loss-spike skips, grad-norm-spike skips, or nonfinite skips. Grad
+    norm ranges from 1.177430630 to 18.296579361. Every sample retains batch 4,
+    sequence 2048, and 8192 tokens per step.
+measured_effect:
+  Against the matched 30-second parent:
+    completed steps 64 -> 65 (+1, +1.563%).
+    average step time 471.078125 -> 464.707692ms
+      (-6.370433ms, -1.352%).
+    held-out val_loss 6.547934 -> 6.556823
+      (+0.008889, +0.136%).
+  Against the matched 450-second parent:
+    completed steps 932 -> 943 (+11, +1.180%).
+    average step time 483.278970 -> 477.611877ms
+      (-5.667093ms, -1.173%).
+    training tokens 7634944 -> 7725056 (+90112, +1.180%).
+    held-out val_loss 5.257826 -> 5.242274
+      (-0.015552, -0.296%).
+decision:
+  Keep and promote. Reciprocal profiles clear the mathematical screen, the
+  short-run loss trade remains far inside tolerance, and the sustained run
+  improves both throughput and held-out loss with clean stability signals. The
+  next 0.5% threshold is (450.388 / 943) * 0.005 = 2.388059ms per step, or
+  23.88059ms over a ten-step profile.
+```
+
+```text
+date: 2026-07-16
+commit: rejection record only; candidate source reverted
+experiment: Use native approximate reciprocal square roots for deferred bounds.
+status: rejected_subthreshold
+change:
+  Replaced per-lane exact sqrt-plus-divide magnitude-bound scaling with native
+  rsqrt.approx in bounded linear3 consumers, Muon master update, and the
+  matching Four-Six bound helpers. Unlike the earlier rejected leader
+  broadcast, this added no branch, shuffle, or cross-lane dependency.
+minimum_impact_gate:
+  Directly affected active kernels occupied 387.361794ms/profile in the
+  accepted reciprocal mean, giving the arithmetic change a credible pre-edit
+  ceiling above the 24.16395ms floor.
+verification:
+  Fresh exact build, all nine ignored nvfp4_quant tests, and all seven relevant
+  ignored Muon tests pass. Profile:
+    target/nsys/20260716_bound_rsqrt_candidate.nsys-rep
+measured_effect:
+  Directly affected work falls only to 386.351490ms, saving
+  1.010304ms/profile. Total GPU kernels move from the 4849.419990ms accepted
+  mean to 4840.802101ms, also far below the floor and not sufficient evidence
+  for an unrelated whole-step effect.
+decision:
+  Reject without either fixed-wall gate and fully revert. The exact scalar
+  latency remains hidden behind surrounding memory and reduction work.
+```
+
+```text
+date: 2026-07-16
+commit: accepted local jj commit after full gate
 experiment: Use approximate reciprocals for NVFP4 local scales.
 status: accepted_450s
 change:
