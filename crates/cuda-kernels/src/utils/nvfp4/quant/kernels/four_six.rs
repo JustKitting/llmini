@@ -1,6 +1,7 @@
 use cuda_device::{DisjointSlice, SharedArray, cuda_module, kernel, thread};
 
 use crate::block_reduce::block_max_shared_f32_for_warps;
+use crate::f16_tc_matmul::convert::load_f32x2_global;
 use crate::float_ptx::{abs_f32, max_f32, sqrt_f32};
 use crate::warp_reduce::thread_lane_warp;
 
@@ -15,7 +16,7 @@ const TRANSPOSE_TILE_LOAD_ELEMS: usize = TRANSPOSE_TILE_ROWS * TRANSPOSE_TILE_CO
 const TRANSPOSE_GROUPS_PER_ROUND: usize = 256 / helpers::GROUP_THREADS;
 const TRANSPOSE_TILE_GROUPS: usize = TRANSPOSE_TILE_LOAD_ELEMS / helpers::GROUP_SIZE;
 const ROWWISE_WARPS_PER_BLOCK: usize = 8;
-const ROWWISE_GROUPS_PER_BLOCK: u32 = 32;
+const ROWWISE_GROUPS_PER_BLOCK: u32 = 256 / helpers::GROUP_THREADS as u32;
 
 #[cuda_module]
 pub(crate) mod module {
@@ -169,27 +170,30 @@ pub(crate) mod module {
         while group_in_row < groups_per_row {
             let group = row * groups_per_row + group_in_row;
             let base = group as usize * GROUP_SIZE;
-            let value_lo = x[base + lane_in_group];
-            let value_hi = x[base + lane_in_group + GROUP_THREADS];
-            let (scale_bits, payload_pair) = four_six_group_scale(
-                value_lo,
-                value_hi,
+            let value_base = base + 4 * lane_in_group;
+            let (value_0, value_1) = load_f32x2_global(x.as_ptr(), value_base);
+            let (value_2, value_3) = load_f32x2_global(x.as_ptr(), value_base + 2);
+            let (scale_bits, payload_word) = four_six_group_scale(
+                value_0,
+                value_1,
+                value_2,
+                value_3,
                 global_scale,
                 scale_override,
                 group_mask,
                 group_leader,
                 lane_in_group,
             );
-            let (payload_lo, payload_hi) = four_six_payload_bytes(payload_pair, group_mask);
             unsafe {
                 if lane_in_group == 0 {
                     *out_scales.get_unchecked_mut(group as usize) = scale_bits;
                 }
-                if lane_in_group.is_multiple_of(2) {
-                    *out_fp4.get_unchecked_mut(base / 2 + lane_in_group / 2) = payload_lo;
-                    *out_fp4.get_unchecked_mut(base / 2 + GROUP_THREADS / 2 + lane_in_group / 2) =
-                        payload_hi;
-                }
+                store_four_six_payload_word(
+                    out_fp4.as_mut_ptr(),
+                    base,
+                    lane_in_group,
+                    payload_word,
+                );
             }
             group_in_row += ROWWISE_GROUPS_PER_BLOCK;
         }
@@ -211,14 +215,11 @@ pub(crate) mod module {
 
         if group_ctx.group < out_scales.len() {
             let base = group_ctx.base as u32;
-            let value_lo = padded_value(x, base + group_ctx.lane as u32, rows, cols, padded_cols);
-            let value_hi = padded_value(
-                x,
-                base + group_ctx.lane as u32 + GROUP_THREADS as u32,
-                rows,
-                cols,
-                padded_cols,
-            );
+            let lane_base = 4 * group_ctx.lane as u32;
+            let value_0 = padded_value(x, base + lane_base, rows, cols, padded_cols);
+            let value_1 = padded_value(x, base + lane_base + 1, rows, cols, padded_cols);
+            let value_2 = padded_value(x, base + lane_base + 2, rows, cols, padded_cols);
+            let value_3 = padded_value(x, base + lane_base + 3, rows, cols, padded_cols);
             let out = FourSixOutputs {
                 fp4: out_fp4,
                 scales: out_scales,
@@ -231,8 +232,10 @@ pub(crate) mod module {
                 0,
                 group_ctx.group == 0,
                 scale_override,
-                value_lo,
-                value_hi,
+                value_0,
+                value_1,
+                value_2,
+                value_3,
             );
         }
     }
@@ -315,33 +318,31 @@ pub(crate) mod module {
         while row_group < TRANSPOSE_TILE_GROUPS {
             let tile_row = row_group / groups_per_tile_row;
             let row_col = (row_group - tile_row * groups_per_tile_row) * GROUP_SIZE;
-            let value_lo = unsafe { TILE[tile_row * TRANSPOSE_TILE_STRIDE + row_col + lane] };
-            let value_hi =
-                unsafe { TILE[tile_row * TRANSPOSE_TILE_STRIDE + row_col + lane + GROUP_THREADS] };
+            let lane_col = row_col + 4 * lane;
+            let value_0 = unsafe { TILE[tile_row * TRANSPOSE_TILE_STRIDE + lane_col] };
+            let value_1 = unsafe { TILE[tile_row * TRANSPOSE_TILE_STRIDE + lane_col + 1] };
+            let value_2 = unsafe { TILE[tile_row * TRANSPOSE_TILE_STRIDE + lane_col + 2] };
+            let value_3 = unsafe { TILE[tile_row * TRANSPOSE_TILE_STRIDE + lane_col + 3] };
             let source_row = source_row_base + tile_row;
             let group =
                 source_row * groups_per_source_row + (source_col_base + row_col) / GROUP_SIZE;
             let base = group * GROUP_SIZE;
-            let (scale_bits, payload_pair) = four_six_group_scale(
-                value_lo,
-                value_hi,
+            let (scale_bits, payload_word) = four_six_group_scale(
+                value_0,
+                value_1,
+                value_2,
+                value_3,
                 global_scale,
                 scale_override,
                 mask,
                 leader,
                 lane,
             );
-            let (payload_lo, payload_hi) = four_six_payload_bytes(payload_pair, mask);
-
             unsafe {
                 if lane == 0 {
                     *out_scales.get_unchecked_mut(group) = scale_bits;
                 }
-                if lane.is_multiple_of(2) {
-                    *out_fp4.get_unchecked_mut(base / 2 + lane / 2) = payload_lo;
-                    *out_fp4.get_unchecked_mut(base / 2 + GROUP_THREADS / 2 + lane / 2) =
-                        payload_hi;
-                }
+                store_four_six_payload_word(out_fp4.as_mut_ptr(), base, lane, payload_word);
             }
             row_group += TRANSPOSE_GROUPS_PER_ROUND;
         }
@@ -350,32 +351,35 @@ pub(crate) mod module {
         let group_in_output_row = source_row_base / GROUP_SIZE;
         let mut transpose_col = thread_group;
         while transpose_col < TRANSPOSE_TILE_COLS {
-            let value_lo = unsafe { TILE[lane * TRANSPOSE_TILE_STRIDE + transpose_col] };
-            let value_hi =
-                unsafe { TILE[(lane + GROUP_THREADS) * TRANSPOSE_TILE_STRIDE + transpose_col] };
+            let lane_row = 4 * lane;
+            let value_0 = unsafe { TILE[lane_row * TRANSPOSE_TILE_STRIDE + transpose_col] };
+            let value_1 = unsafe { TILE[(lane_row + 1) * TRANSPOSE_TILE_STRIDE + transpose_col] };
+            let value_2 = unsafe { TILE[(lane_row + 2) * TRANSPOSE_TILE_STRIDE + transpose_col] };
+            let value_3 = unsafe { TILE[(lane_row + 3) * TRANSPOSE_TILE_STRIDE + transpose_col] };
             let group =
                 (source_col_base + transpose_col) * groups_per_output_row + group_in_output_row;
             let base = group * GROUP_SIZE;
-            let (scale_bits, payload_pair) = four_six_group_scale(
-                value_lo,
-                value_hi,
+            let (scale_bits, payload_word) = four_six_group_scale(
+                value_0,
+                value_1,
+                value_2,
+                value_3,
                 global_scale,
                 scale_override,
                 mask,
                 leader,
                 lane,
             );
-            let (payload_lo, payload_hi) = four_six_payload_bytes(payload_pair, mask);
-
             unsafe {
                 if lane == 0 {
                     *transpose_out_scales.get_unchecked_mut(group) = scale_bits;
                 }
-                if lane.is_multiple_of(2) {
-                    *transpose_out_fp4.get_unchecked_mut(base / 2 + lane / 2) = payload_lo;
-                    *transpose_out_fp4.get_unchecked_mut(base / 2 + GROUP_THREADS / 2 + lane / 2) =
-                        payload_hi;
-                }
+                store_four_six_payload_word(
+                    transpose_out_fp4.as_mut_ptr(),
+                    base,
+                    lane,
+                    payload_word,
+                );
             }
             transpose_col += TRANSPOSE_GROUPS_PER_ROUND;
         }
@@ -429,6 +433,9 @@ pub(crate) mod module {
                 scales: out_scales,
                 global_scale: out_global_scale,
             };
+            let value_base = group_ctx.base + 4 * group_ctx.lane;
+            let (value_0, value_1) = load_f32x2_global(x.as_ptr(), value_base);
+            let (value_2, value_3) = load_f32x2_global(x.as_ptr(), value_base + 2);
             pack_four_six_group_values(
                 bounded_amax,
                 out,
@@ -436,8 +443,10 @@ pub(crate) mod module {
                 0,
                 group_ctx.group == 0,
                 1.0,
-                x[group_ctx.base + group_ctx.lane] * bound_scale,
-                x[group_ctx.base + group_ctx.lane + GROUP_THREADS] * bound_scale,
+                value_0 * bound_scale,
+                value_1 * bound_scale,
+                value_2 * bound_scale,
+                value_3 * bound_scale,
             );
         }
     }
@@ -458,16 +467,26 @@ pub(crate) mod module {
 
         if group_ctx.group < out_scales.len() {
             let base = group_ctx.base as u32;
-            let value_lo = transposed_padded_value(
+            let lane_base = 4 * group_ctx.lane as u32;
+            let value_0 =
+                transposed_padded_value(x, base + lane_base, source_rows, source_cols, padded_cols);
+            let value_1 = transposed_padded_value(
                 x,
-                base + group_ctx.lane as u32,
+                base + lane_base + 1,
                 source_rows,
                 source_cols,
                 padded_cols,
             );
-            let value_hi = transposed_padded_value(
+            let value_2 = transposed_padded_value(
                 x,
-                base + group_ctx.lane as u32 + GROUP_THREADS as u32,
+                base + lane_base + 2,
+                source_rows,
+                source_cols,
+                padded_cols,
+            );
+            let value_3 = transposed_padded_value(
+                x,
+                base + lane_base + 3,
                 source_rows,
                 source_cols,
                 padded_cols,
@@ -484,8 +503,10 @@ pub(crate) mod module {
                 0,
                 group_ctx.group == 0,
                 scale_override,
-                value_lo,
-                value_hi,
+                value_0,
+                value_1,
+                value_2,
+                value_3,
             );
         }
     }
@@ -505,14 +526,11 @@ pub(crate) mod module {
 
         if group_ctx.group < out_scales.len() {
             let base = group_ctx.base as u32;
-            let value_lo =
-                transposed_exact_value(x, base + group_ctx.lane as u32, source_rows, source_cols);
-            let value_hi = transposed_exact_value(
-                x,
-                base + group_ctx.lane as u32 + GROUP_THREADS as u32,
-                source_rows,
-                source_cols,
-            );
+            let lane_base = 4 * group_ctx.lane as u32;
+            let value_0 = transposed_exact_value(x, base + lane_base, source_rows, source_cols);
+            let value_1 = transposed_exact_value(x, base + lane_base + 1, source_rows, source_cols);
+            let value_2 = transposed_exact_value(x, base + lane_base + 2, source_rows, source_cols);
+            let value_3 = transposed_exact_value(x, base + lane_base + 3, source_rows, source_cols);
             let out = FourSixOutputs {
                 fp4: out_fp4,
                 scales: out_scales,
@@ -525,8 +543,10 @@ pub(crate) mod module {
                 0,
                 group_ctx.group == 0,
                 scale_override,
-                value_lo,
-                value_hi,
+                value_0,
+                value_1,
+                value_2,
+                value_3,
             );
         }
     }
@@ -547,16 +567,31 @@ pub(crate) mod module {
 
         if group_ctx.group < out_scales.len() {
             let base = group_ctx.base as u32;
-            let value_lo = transposed_exact_value_pow2(
+            let lane_base = 4 * group_ctx.lane as u32;
+            let value_0 = transposed_exact_value_pow2(
                 x,
-                base + group_ctx.lane as u32,
+                base + lane_base,
                 source_rows_shift,
                 source_rows_mask,
                 source_cols,
             );
-            let value_hi = transposed_exact_value_pow2(
+            let value_1 = transposed_exact_value_pow2(
                 x,
-                base + group_ctx.lane as u32 + GROUP_THREADS as u32,
+                base + lane_base + 1,
+                source_rows_shift,
+                source_rows_mask,
+                source_cols,
+            );
+            let value_2 = transposed_exact_value_pow2(
+                x,
+                base + lane_base + 2,
+                source_rows_shift,
+                source_rows_mask,
+                source_cols,
+            );
+            let value_3 = transposed_exact_value_pow2(
+                x,
+                base + lane_base + 3,
                 source_rows_shift,
                 source_rows_mask,
                 source_cols,
@@ -573,8 +608,10 @@ pub(crate) mod module {
                 0,
                 group_ctx.group == 0,
                 scale_override,
-                value_lo,
-                value_hi,
+                value_0,
+                value_1,
+                value_2,
+                value_3,
             );
         }
     }
@@ -617,21 +654,24 @@ pub(crate) mod module {
         let mut col = thread_group;
 
         while col < TRANSPOSE_TILE_COLS {
-            let value_lo = unsafe { TILE[lane * TRANSPOSE_TILE_STRIDE + col] };
-            let value_hi = unsafe { TILE[(lane + GROUP_THREADS) * TRANSPOSE_TILE_STRIDE + col] };
+            let lane_row = 4 * lane;
+            let value_0 = unsafe { TILE[lane_row * TRANSPOSE_TILE_STRIDE + col] };
+            let value_1 = unsafe { TILE[(lane_row + 1) * TRANSPOSE_TILE_STRIDE + col] };
+            let value_2 = unsafe { TILE[(lane_row + 2) * TRANSPOSE_TILE_STRIDE + col] };
+            let value_3 = unsafe { TILE[(lane_row + 3) * TRANSPOSE_TILE_STRIDE + col] };
             let group = (source_col_base + col) * groups_per_output_row + group_in_output_row;
             let base = group * GROUP_SIZE;
-            let (scale_bits, payload_pair) = four_six_group_scale(
-                value_lo,
-                value_hi,
+            let (scale_bits, payload_word) = four_six_group_scale(
+                value_0,
+                value_1,
+                value_2,
+                value_3,
                 global_scale,
                 scale_override,
                 mask,
                 leader,
                 lane,
             );
-            let (payload_lo, payload_hi) = four_six_payload_bytes(payload_pair, mask);
-
             unsafe {
                 if group == 0 && lane == 0 {
                     *out_global_scale.get_unchecked_mut(0) = global_scale;
@@ -639,11 +679,7 @@ pub(crate) mod module {
                 if lane == 0 {
                     *out_scales.get_unchecked_mut(group) = scale_bits;
                 }
-                if lane.is_multiple_of(2) {
-                    *out_fp4.get_unchecked_mut(base / 2 + lane / 2) = payload_lo;
-                    *out_fp4.get_unchecked_mut(base / 2 + GROUP_THREADS / 2 + lane / 2) =
-                        payload_hi;
-                }
+                store_four_six_payload_word(out_fp4.as_mut_ptr(), base, lane, payload_word);
             }
 
             col += TRANSPOSE_GROUPS_PER_ROUND;
@@ -695,19 +731,30 @@ pub(crate) mod module {
         let mut col = thread_group;
 
         while col < TRANSPOSE_TILE_COLS {
-            let mut value_lo = unsafe { TILE[lane * TRANSPOSE_TILE_STRIDE + col] };
-            let mut value_hi =
-                unsafe { TILE[(lane + GROUP_THREADS) * TRANSPOSE_TILE_STRIDE + col] };
+            let lane_row = 4 * lane;
+            let mut value_0 = unsafe { TILE[lane_row * TRANSPOSE_TILE_STRIDE + col] };
+            let mut value_1 = unsafe { TILE[(lane_row + 1) * TRANSPOSE_TILE_STRIDE + col] };
+            let mut value_2 = unsafe { TILE[(lane_row + 2) * TRANSPOSE_TILE_STRIDE + col] };
+            let mut value_3 = unsafe { TILE[(lane_row + 3) * TRANSPOSE_TILE_STRIDE + col] };
             if apply_bound != 0 {
-                value_lo *= scale;
-                value_hi *= scale;
+                value_0 *= scale;
+                value_1 *= scale;
+                value_2 *= scale;
+                value_3 *= scale;
             }
             let group = (source_col_base + col) * groups_per_output_row + group_in_output_row;
             let base = group * GROUP_SIZE;
-            let (scale_bits, payload_pair) =
-                four_six_group_scale(value_lo, value_hi, global_scale, 1.0, mask, leader, lane);
-            let (payload_lo, payload_hi) = four_six_payload_bytes(payload_pair, mask);
-
+            let (scale_bits, payload_word) = four_six_group_scale(
+                value_0,
+                value_1,
+                value_2,
+                value_3,
+                global_scale,
+                1.0,
+                mask,
+                leader,
+                lane,
+            );
             unsafe {
                 if group == 0 && lane == 0 {
                     *out_global_scale.get_unchecked_mut(0) = global_scale;
@@ -715,11 +762,7 @@ pub(crate) mod module {
                 if lane == 0 {
                     *out_scales.get_unchecked_mut(group) = scale_bits;
                 }
-                if lane.is_multiple_of(2) {
-                    *out_fp4.get_unchecked_mut(base / 2 + lane / 2) = payload_lo;
-                    *out_fp4.get_unchecked_mut(base / 2 + GROUP_THREADS / 2 + lane / 2) =
-                        payload_hi;
-                }
+                store_four_six_payload_word(out_fp4.as_mut_ptr(), base, lane, payload_word);
             }
 
             col += TRANSPOSE_GROUPS_PER_ROUND;
@@ -735,8 +778,9 @@ pub(crate) mod module {
         writes_global_scale: bool,
         scale_override: f32,
     ) {
-        let value_lo = x[group_ctx.base + group_ctx.lane];
-        let value_hi = x[group_ctx.base + group_ctx.lane + GROUP_THREADS];
+        let value_base = group_ctx.base + 4 * group_ctx.lane;
+        let (value_0, value_1) = load_f32x2_global(x.as_ptr(), value_base);
+        let (value_2, value_3) = load_f32x2_global(x.as_ptr(), value_base + 2);
         pack_four_six_group_values(
             amax[row],
             out,
@@ -744,8 +788,10 @@ pub(crate) mod module {
             row,
             writes_global_scale,
             scale_override,
-            value_lo,
-            value_hi,
+            value_0,
+            value_1,
+            value_2,
+            value_3,
         );
     }
 
@@ -757,21 +803,23 @@ pub(crate) mod module {
         scale_row: usize,
         writes_global_scale: bool,
         scale_override: f32,
-        value_lo: f32,
-        value_hi: f32,
+        value_0: f32,
+        value_1: f32,
+        value_2: f32,
+        value_3: f32,
     ) {
         let global_scale = four_six_global_scale(tensor_amax, scale_override);
-        let (scale_bits, payload_pair) = four_six_group_scale(
-            value_lo,
-            value_hi,
+        let (scale_bits, payload_word) = four_six_group_scale(
+            value_0,
+            value_1,
+            value_2,
+            value_3,
             global_scale,
             scale_override,
             group_ctx.mask,
             group_ctx.leader,
             group_ctx.lane,
         );
-        let (payload_lo, payload_hi) = four_six_payload_bytes(payload_pair, group_ctx.mask);
-
         unsafe {
             if writes_global_scale && group_ctx.lane == 0 {
                 *out.global_scale.get_unchecked_mut(scale_row) = global_scale;
@@ -779,13 +827,12 @@ pub(crate) mod module {
             if group_ctx.lane == 0 {
                 *out.scales.get_unchecked_mut(group_ctx.group) = scale_bits;
             }
-            if group_ctx.lane.is_multiple_of(2) {
-                *out.fp4
-                    .get_unchecked_mut(group_ctx.base / 2 + group_ctx.lane / 2) = payload_lo;
-                *out.fp4.get_unchecked_mut(
-                    group_ctx.base / 2 + GROUP_THREADS / 2 + group_ctx.lane / 2,
-                ) = payload_hi;
-            }
+            store_four_six_payload_word(
+                out.fp4.as_mut_ptr(),
+                group_ctx.base,
+                group_ctx.lane,
+                payload_word,
+            );
         }
     }
 

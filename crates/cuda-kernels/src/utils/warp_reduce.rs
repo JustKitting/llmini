@@ -61,6 +61,12 @@ pub fn quarter_warp_sum_f32(mut value: f32, mask: u32) -> f32 {
 }
 
 #[inline(always)]
+pub fn eighth_warp_sum_f32(mut value: f32, mask: u32) -> f32 {
+    value += shuffle::xor_f32_sync(mask, value, 2);
+    value + shuffle::xor_f32_sync(mask, value, 1)
+}
+
+#[inline(always)]
 pub fn half_warp_max_f32(mut value: f32, mask: u32) -> f32 {
     value = max_f32(value, shuffle::xor_f32_sync(mask, value, 8));
     value = max_f32(value, shuffle::xor_f32_sync(mask, value, 4));

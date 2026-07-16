@@ -1,9 +1,9 @@
 use cuda_device::thread;
 
-use crate::device_ptr::read_f32;
+use crate::f16_tc_matmul::convert::load_f32x2_global;
 use crate::f16_tc_matmul::cta_tile::CTA_THREADS;
 use crate::nvfp4_quant::kernels::four_six::helpers::{
-    GROUP_SIZE, GROUP_THREADS, four_six_group_scale, four_six_lane, four_six_payload_bytes,
+    GROUP_SIZE, GROUP_THREADS, four_six_group_scale, four_six_lane, store_four_six_payload_word,
 };
 
 use super::super::super::super::work_grid::WorkGrid;
@@ -39,28 +39,24 @@ fn encode_group(
 ) {
     let (lane_in_group, group_mask, group_leader) = four_six_lane();
     let base = group * GROUP_SIZE as u32;
-    let value_lo = read_f32(x, base + lane_in_group as u32);
-    let value_hi = read_f32(x, base + lane_in_group as u32 + GROUP_THREADS as u32);
-    let (scale_bits, payload_pair) = four_six_group_scale(
-        value_lo,
-        value_hi,
+    let value_base = (base + 4 * lane_in_group as u32) as usize;
+    let (value_0, value_1) = load_f32x2_global(x, value_base);
+    let (value_2, value_3) = load_f32x2_global(x, value_base + 2);
+    let (scale_bits, payload_word) = four_six_group_scale(
+        value_0,
+        value_1,
+        value_2,
+        value_3,
         global_scale,
         SCALE_OVERRIDE,
         group_mask,
         group_leader,
         lane_in_group,
     );
-    let (payload_lo, payload_hi) = four_six_payload_bytes(payload_pair, group_mask);
-
     unsafe {
         if lane_in_group == 0 {
             *out_scales.add(group as usize) = scale_bits;
         }
-        if lane_in_group.is_multiple_of(2) {
-            *out_fp4.add((base / 2 + lane_in_group as u32 / 2) as usize) = payload_lo;
-            *out_fp4
-                .add((base / 2 + GROUP_THREADS as u32 / 2 + lane_in_group as u32 / 2) as usize) =
-                payload_hi;
-        }
+        store_four_six_payload_word(out_fp4, base as usize, lane_in_group, payload_word);
     }
 }

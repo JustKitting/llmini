@@ -46,6 +46,95 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-16
 commit: accepted local jj commit after full gate
+experiment: Encode each 16-value Four-Six group with four adjacent-value lanes.
+status: accepted_450s
+change:
+  Four-Six previously assigned two adjacent values to each of eight lanes. Each
+  lane now owns four adjacent values, loaded as two packed f32x2 words and
+  converted as two E2M1 pairs. Four-lane subgroups select the shared local
+  scale with one fewer shuffle-reduction stage, then each lane writes its two
+  payload bytes with one aligned u16 store. Ordinary, rowwise, padded,
+  transposed, paired source/transpose, schedule-free, and Muon encoders all use
+  the same mapping. Generic quantizer, schedule-free, and Muon host launch
+  geometry now matches four threads per 16-value group.
+numerics:
+  Global-scale formulas, local 4-versus-6 candidate scales, E2M1 conversion,
+  and per-value squared errors are unchanged. Adjacent ownership reassociates
+  the floating-point error-delta sum into four-value lane partials before the
+  four-lane reduction, so a scale decision exactly at a rounding tie may
+  differ. All nine ignored quantizer tests, both Adam tests, and all seven Muon
+  tests pass after the exact rebuild. Both fixed-wall gates remain finite and
+  preserve held-out quality.
+memory:
+  Persistent allocations and scratch capacities are unchanged. The u16 payload
+  stores use the naturally aligned eight-byte output region for each logical
+  group; no peak-VRAM reduction is claimed.
+minimum_impact_gate:
+  The accepted baseline averages 511.685227ms per sustained step, so the 0.5%
+  floor was 2.558426ms/step. Reciprocal whole-workload profiles measure
+  12.339946ms/step saved, clearing the floor by 4.82x.
+focused_profile:
+  Accepted samples:
+    target/nsys/20260716_deferred_optimizer_quant_f16_batch_candidate.nsys-rep
+    target/nsys/20260716_deferred_optimizer_quant_f16_batch_candidate_reciprocal.nsys-rep
+    total GPU kernels: 5086.752284 and 5097.949480ms.
+  Candidate samples:
+    target/nsys/20260716_four_six_four_lane_candidate.nsys-rep
+    target/nsys/20260716_four_six_four_lane_candidate_reciprocal.nsys-rep
+    total GPU kernels: 4966.476317 and 4971.426519ms.
+  Average GPU-kernel time over the same ten training steps plus endpoint
+  validation falls from 5092.350882 to 4968.951418ms, or 12.339946ms/step
+  (2.423%). Launch count remains exactly 81098. Four-Six kernel time falls from
+  509.235306 to 400.552911ms/profile, directly saving 10.868240ms/step and
+  accounting for 88.1% of the whole-workload reduction. Candidate held-out
+  losses are 8.146759 and 8.153057.
+  The preceding adjacent-pair-only sample measured 5071.535830ms, a real but
+  sub-floor 2.081505ms/step aggregate saving. A deferred-schedule amax variant
+  made its affected update-plus-reduction work 0.128313ms/profile slower and
+  was reverted. Packed f32x2 shared-tile staging also regressed the paired
+  source/transpose producers from 203.036300/122.999321 to
+  205.108842/125.813248ms/profile and was reverted.
+verification:
+  cargo fmt --all --check, git diff --check, cargo check --workspace -q, and a
+  fresh TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass. Focused
+  ignored GPU suites pass: nvfp4_quant 9/9, optimizer adam 2/2, optimizer muon
+  7/7.
+  Required clean 30-second screen with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260716_084935Z_fineweb_30s
+    stdout: target/gates/20260716_four_six_four_lane_30s.log
+    completed_steps=63, train_elapsed_s=30.425, val_loss=6.558953.
+  Required 450-second gate with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260716_085040Z_fineweb_450s
+    stdout: target/gates/20260716_four_six_four_lane_450s.log
+    completed_steps=907, train_elapsed_s=450.396, val_loss=5.272459.
+    All 19 high-fidelity loss and grad-norm samples are finite and nonzero,
+    with zero skipped updates, loss-spike skips, grad-norm-spike skips, or
+    nonfinite skips. Loss ranges from 5.394413948 to 10.864563942 and grad norm
+    from 1.219623685 to 18.924032211. Every sample retains batch 4, sequence
+    2048, and 8192 tokens/step. Evaluation and plotting complete normally.
+measured_effect:
+  Against the accepted 30-second screen:
+    completed_steps: 61 -> 63 (+2, +3.279%).
+    average step time: 495.426230ms -> 482.936508ms
+      (-12.489722ms, -2.521%; +2.586% steps/s).
+    held-out val_loss: 6.579741 -> 6.558953 (-0.316%).
+  Against the accepted 450-second gate:
+    completed_steps: 880 -> 907 (+27, +3.068%).
+    average step time: 511.685227ms -> 496.577729ms
+      (-15.107498ms, -2.952%; +3.042% steps/s).
+    training tokens: 7208960 -> 7430144 (+221184, +3.068%).
+    held-out val_loss: 5.263548 -> 5.272459 (+0.169%).
+decision:
+  Keep and promote. Reciprocal profiles, the clean 30-second screen, and the
+  450-second sustained gate all retain the throughput signal, while held-out
+  loss stays inside the roughly +1% tolerance and all stability metrics remain
+  clean. notes/sweep_baseline.env points to this gate. The next aggregate 0.5%
+  floor is (450.396 / 907) * 0.005 = 2.482889ms/step.
+```
+
+```text
+date: 2026-07-16
+commit: accepted local jj commit after full gate
 experiment: Defer dead optimizer requantization and pack FP16 tensor-core staging.
 status: accepted_450s_by_explicit_quality_override
 change:

@@ -8,7 +8,8 @@ use super::super::args::{MuonMegaUpdateArgs, MuonTmaFinishArgs, MuonTmaPrepareAr
 use super::super::{MUON_COOPERATIVE_BLOCKS, MUON_MATRIX_PHASES};
 use super::OptimizerModule;
 
-const MUON_NVFP4_GROUP_SIZE: u32 = 16;
+const MUON_NVFP4_VALUES_PER_GROUP: u32 = 16;
+const MUON_NVFP4_THREADS_PER_GROUP: u32 = 4;
 
 impl OptimizerModule {
     pub fn muon_mega_update(&self, args: MuonMegaUpdateArgs<'_>) -> Result<(), DriverError> {
@@ -120,8 +121,8 @@ impl OptimizerModule {
     ) -> Result<(), DriverError> {
         self.muon_tma_update_master_and_amax(&mut args)?;
 
-        let groups_per_block = CTA_THREADS / MUON_NVFP4_GROUP_SIZE;
-        let group_count = args.matrix_len / MUON_NVFP4_GROUP_SIZE;
+        let groups_per_block = CTA_THREADS / MUON_NVFP4_THREADS_PER_GROUP;
+        let group_count = args.matrix_len / MUON_NVFP4_VALUES_PER_GROUP;
         self.apply
             .muon
             .tma_split
@@ -146,7 +147,7 @@ impl OptimizerModule {
     ) -> Result<(), DriverError> {
         assert!(args.slot_index < args.slots.len() as u32);
         assert!(args.matrix_len > 0);
-        assert_eq!(args.matrix_len % MUON_NVFP4_GROUP_SIZE, 0);
+        assert_eq!(args.matrix_len % MUON_NVFP4_VALUES_PER_GROUP, 0);
         let chunk_count = args
             .matrix_len
             .div_ceil(NVFP4_TENSOR_AMAX_VALUES_PER_BLOCK as u32);
