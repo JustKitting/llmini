@@ -24,19 +24,21 @@ pub(crate) fn nvfp4_inv_scale(scale: f32, global_scale: f32) -> f32 {
 }
 
 #[inline(always)]
-pub(crate) fn candidate_error_and_payload_with_inv_scale(
-    value: f32,
+pub(crate) fn candidate_pair_errors_and_payload_with_inv_scale(
+    value_lo: f32,
+    value_hi: f32,
     scale: f32,
     global_scale: f32,
     inv_scale: f32,
-) -> (f32, u8) {
+) -> (f32, f32, u8) {
     let global_scale = nonzero_global_scale(global_scale);
     let dequant_scale = scale * global_scale;
-    let packed = cvt_rn_satfinite_e2m1x2_f32(0.0, value * inv_scale);
-    let payload = packed & 0x0f;
-    let dequant = e2m1_value(payload) * dequant_scale;
-    let diff = value - dequant;
-    (diff * diff, payload)
+    let packed = cvt_rn_satfinite_e2m1x2_f32(value_hi * inv_scale, value_lo * inv_scale);
+    let payload_lo = packed & 0x0f;
+    let payload_hi = packed >> 4;
+    let diff_lo = value_lo - e2m1_value(payload_lo) * dequant_scale;
+    let diff_hi = value_hi - e2m1_value(payload_hi) * dequant_scale;
+    (diff_lo * diff_lo, diff_hi * diff_hi, packed)
 }
 
 #[inline(always)]

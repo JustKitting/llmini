@@ -46,6 +46,101 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-16
 commit: accepted local jj commit after full gate
+experiment: Encode each 16-value Four-Six group with eight two-value lanes.
+status: accepted_450s
+change:
+  Four-Six previously assigned one CUDA lane to each value even though the
+  SM120 E2M1 conversion instruction accepts two FP32 inputs. Each logical
+  16-value group now uses one eight-lane subgroup. Lane i owns values i and
+  i+8, converts both with one packed instruction, and emits the two payload
+  halves. Ordinary Four-Six launch grids therefore handle 32 rather than 16
+  groups per 256-thread CTA. Tiled transpose and paired row/transpose kernels
+  retain their existing 16x64 tile grids but process twice as many logical
+  groups per thread subgroup. Schedule-free launch sizing uses the same new
+  32-group CTA contract instead of launching an unused second half-grid.
+numerics:
+  Pair-local maximum followed by an eight-lane redux produces the same finite
+  group maximum. For scale selection, lane i first adds the error deltas for
+  values i and i+8; this is exactly the former XOR-8 reduction stage, followed
+  by the same XOR-4, XOR-2, and XOR-1 additions. Packed E2M1 conversion rounds
+  each component independently, and one XOR-neighbor exchange reconstructs
+  the same adjacent output bytes. Scale grids, payload rounding, tensor global
+  scales, and optimizer math are unchanged.
+memory:
+  No persistent allocation, scratch size, or buffer lifetime changes. Static
+  shared memory is unchanged and every affected kernel retains zero local
+  memory/thread. Registers stay 40 for the paired producer, 25 for bounded
+  exact, and 37 for Muon encode; tiled transpose changes 35 -> 36, fused row
+  amax 30 -> 34, schedule-free 25 -> 27, rowwise 29 -> 31, and generic 27 ->
+  29. The measured speedup survives those small register increases. No peak-
+  VRAM or batch-capacity win is claimed.
+minimum_impact_gate:
+  The matched parent averaged 535.153389ms per sustained step, so the active
+  aggregate 0.5% floor was 2.675767ms/step. Reciprocal whole-workload profiles
+  measure 21.573003ms/step saved, clearing the floor by 8.06x before either
+  fixed-wall gate.
+focused_profile:
+  Matched parent samples:
+    target/nsys/20260716_muon_paired_four_six_candidate.nsys-rep
+    target/nsys/20260716_muon_paired_four_six_candidate_reciprocal.nsys-rep
+    total GPU kernels: 5350.107980 and 5363.232959ms.
+  Final candidate samples:
+    target/nsys/20260716_four_six_eight_lane_exact_grid_candidate.nsys-rep
+    target/nsys/20260716_four_six_eight_lane_exact_grid_candidate_reciprocal.nsys-rep
+    total GPU kernels: 5135.283670 and 5146.597204ms.
+  Every sample has 85821 launches over the same ten training steps plus
+  endpoint validation. Average GPU-kernel time falls from 5356.670469 to
+  5140.940437ms, or 21.573003ms/step (4.027%). The paired source/transpose
+  producer saves 10.048803ms/step, standalone tiled transpose 4.762212,
+  bounded exact 2.438192, fused row-amax 1.234345, rowwise 1.035250, generic
+  0.784889, Muon encode 0.657185, and schedule-free 0.432192. The tiny rebase
+  kernel regresses 0.021716ms/step; directly affected work still accounts for
+  21.371352ms/step of the whole-profile saving. Candidate held-out loss is
+  8.662669/8.663188 versus the parent's 8.662946/8.658190.
+verification:
+  cargo fmt --all --check, git diff --check, cargo check --workspace -q,
+  fresh TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a, and
+  cargo test --workspace --release --lib --bins: pass (50 host tests).
+  All nine NVFP4 quant, two schedule-free Adam, seven focused Muon, and five
+  MS-EDEN transpose GPU tests pass after the exact rebuild. The real FineWeb
+  path completes both reciprocal ten-step profiles normally.
+  Required clean 30-second screen with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260716_063830Z_fineweb_30s
+    stdout: target/gates/20260716_four_six_eight_lane_30s.log
+    completed_steps=60, train_elapsed_s=30.012, val_loss=6.660975.
+  Required 450-second gate with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260716_063912Z_fineweb_450s
+    stdout: target/gates/20260716_four_six_eight_lane_450s.log
+    completed_steps=875, train_elapsed_s=450.233, val_loss=5.108639.
+    All 18 high-fidelity loss and grad-norm samples are finite and nonzero,
+    with zero skipped updates, loss-spike skips, grad-norm-spike skips, or
+    nonfinite skips. Loss ranges from 5.241618156 to 10.864430428 and grad norm
+    ranges from 1.198789597 to 18.951820374. Every sample retains batch 4,
+    sequence 2048, and 8192 tokens/step. Held-out evaluation and plotting
+    complete normally.
+measured_effect:
+  Against the matched 30-second parent:
+    completed_steps: 58 -> 60 (+2, +3.448%).
+    average step time: 522.224138ms -> 500.200000ms
+      (-22.024138ms, -4.217%).
+    held-out val_loss: 6.684857 -> 6.660975 (-0.357%).
+  Against the matched 450-second parent:
+    completed_steps: 841 -> 875 (+34, +4.043%).
+    average step time: 535.153389ms -> 514.552000ms
+      (-20.601389ms, -3.850%).
+    training tokens: 6889472 -> 7168000 (+278528, +4.043%).
+    held-out val_loss: 5.128476 -> 5.108639 (-0.387%).
+decision:
+  Keep and promote. Reciprocal profiles and both fixed-wall gates agree on a
+  roughly 4% whole-step win, held-out loss improves at both endpoints, and all
+  stability signals remain clean. notes/sweep_baseline.env points to this run.
+  The next aggregate 0.5% floor is
+  (450.233 / 875) * 0.005 = 2.572760ms/step.
+```
+
+```text
+date: 2026-07-16
+commit: accepted local jj commit after full gate
 experiment: Pair exact Four-Six source and transpose quantization for Muon.
 status: accepted_900s_before_450s_gate_transition
 change:

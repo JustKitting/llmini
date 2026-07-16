@@ -6,7 +6,7 @@ use super::OptimizerModule;
 use crate::launch::{grid_x_config, launch_config};
 use crate::nvfp4_quant::NVFP4_TENSOR_AMAX_VALUES_PER_BLOCK;
 
-const SCHEDULE_FREE_GROUP_SIZE: u32 = 16;
+const SCHEDULE_FREE_THREADS_PER_GROUP: u32 = 8;
 
 impl OptimizerModule {
     pub fn materialize_schedule_free_precomputed(
@@ -20,7 +20,7 @@ impl OptimizerModule {
         assert!(args.bytes.len() >= args.len as usize / 2);
         assert!(args.scales.len() >= args.len as usize / 16);
 
-        let groups_per_block = APPLY_THREADS_PER_BLOCK / SCHEDULE_FREE_GROUP_SIZE;
+        let groups_per_block = APPLY_THREADS_PER_BLOCK / SCHEDULE_FREE_THREADS_PER_GROUP;
         self.apply.schedule_free.schedule_free_four_six_kernel(
             args.stream,
             launch_config(
@@ -65,7 +65,7 @@ impl OptimizerModule {
             chunk_count,
         )?;
 
-        let groups_per_block = APPLY_THREADS_PER_BLOCK / SCHEDULE_FREE_GROUP_SIZE;
+        let groups_per_block = APPLY_THREADS_PER_BLOCK / SCHEDULE_FREE_THREADS_PER_GROUP;
         self.apply.schedule_free.schedule_free_four_six_kernel(
             args.stream,
             launch_config(
