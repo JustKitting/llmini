@@ -27,65 +27,6 @@ macro_rules! cta_mma2 {
     };
 }
 
-macro_rules! cta_mma2_k_major_b {
-    ($a_tile:expr, $b_tile:expr, $tile:expr, $acc0:ident, $acc1:ident) => {{
-        let tile = $tile;
-        let a_fragments = $crate::f16_tc_matmul::cta_stage::load_a_fragments($a_tile, tile);
-        $crate::mma::mma_m16n8k16_f16_f16_f32(
-            a_fragments,
-            $crate::f16_tc_matmul::cta_stage::load_b_fragments_k_major($b_tile, tile, tile.warp_n0),
-            &mut $acc0,
-        );
-        $crate::mma::mma_m16n8k16_f16_f16_f32(
-            a_fragments,
-            $crate::f16_tc_matmul::cta_stage::load_b_fragments_k_major(
-                $b_tile,
-                tile,
-                tile.warp_n0 + 1,
-            ),
-            &mut $acc1,
-        );
-    }};
-}
-
-macro_rules! cta_mma2_k_major_a {
-    ($a_tile:expr, $b_tile:expr, $tile:expr, $acc0:ident, $acc1:ident) => {{
-        let tile = $tile;
-        let a_fragments = $crate::f16_tc_matmul::cta_stage::load_a_fragments_k_major($a_tile, tile);
-        $crate::mma::mma_m16n8k16_f16_f16_f32(
-            a_fragments,
-            $crate::f16_tc_matmul::cta_stage::load_b_fragments($b_tile, tile, tile.warp_n0),
-            &mut $acc0,
-        );
-        $crate::mma::mma_m16n8k16_f16_f16_f32(
-            a_fragments,
-            $crate::f16_tc_matmul::cta_stage::load_b_fragments($b_tile, tile, tile.warp_n0 + 1),
-            &mut $acc1,
-        );
-    }};
-}
-
-macro_rules! cta_mma2_k_major_ab {
-    ($a_tile:expr, $b_tile:expr, $tile:expr, $acc0:ident, $acc1:ident) => {{
-        let tile = $tile;
-        let a_fragments = $crate::f16_tc_matmul::cta_stage::load_a_fragments_k_major($a_tile, tile);
-        $crate::mma::mma_m16n8k16_f16_f16_f32(
-            a_fragments,
-            $crate::f16_tc_matmul::cta_stage::load_b_fragments_k_major($b_tile, tile, tile.warp_n0),
-            &mut $acc0,
-        );
-        $crate::mma::mma_m16n8k16_f16_f16_f32(
-            a_fragments,
-            $crate::f16_tc_matmul::cta_stage::load_b_fragments_k_major(
-                $b_tile,
-                tile,
-                tile.warp_n0 + 1,
-            ),
-            &mut $acc1,
-        );
-    }};
-}
-
 macro_rules! cta_accumulate_k_loop2 {
     ($tile:expr, $a_tile:expr, $b_tile:expr, $k:expr, $k_base:ident,
      [$acc0:ident, $acc1:ident]; $stage:block) => {

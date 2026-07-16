@@ -46,6 +46,84 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-16
 commit: accepted local jj commit after full gate
+experiment: Restore the pre-regression FP16 tensor-core staging path.
+status: accepted_correctness_revert_450s
+root_cause:
+  Commit 081256f54609 batched two independent changes: deferred end-of-step
+  optimizer quantization and a K-major/packed FP16 shared-staging rewrite. Its
+  450-second endpoint moved from 5.108639 to 5.263548 (+3.032%) and was kept by
+  an explicit loss-spike override. Matched high-fidelity training logs show
+  that this was not a terminal bump: candidate training loss drifted from
+  +0.328% at step 150 to +1.198% at step 300, +2.202% at step 600, and +2.583%
+  at step 850 versus its parent. The later x_master evaluation correction
+  fixed a separate validation-view bug and recovered part, but not all, of
+  that regression.
+change:
+  Restore the pre-081256f5 row-major shared layout and manual FP16 fragment
+  loads for A-transposed, half-RHS, and strict-causal tensor-core paths. Remove
+  the associated K-major ldmatrix helpers and restore the former two-u16
+  shared fragment load. Keep deferred optimizer quantization, explicit
+  x_master held-out evaluation, the later 512-thread CTA ownership changes,
+  and every later unrelated kernel optimization. This cleanly isolates the
+  inverse to the staging half of the original batched commit.
+numerics:
+  The fixed-wall result proves that the staging batch was not behavior-neutral
+  on the real training trajectory even though the earlier constant-input and
+  causal reference tests passed. The evidence narrows the causal regression to
+  this staging batch; it does not claim which individual K-major fragment or
+  packed shared load was solely responsible. Treat the removed layout as a
+  correctness failure unless a future nonuniform equivalence test identifies
+  and fixes a smaller root cause.
+minimum_impact_gate:
+  This is a quality correction, not a speed candidate. Reciprocal profiles
+  average 4171.440212ms versus 4154.954429ms for the accepted parent, costing
+  16.485782ms/profile (0.397%) or 1.648578ms/step. The restored directly
+  affected staging families move from 301.766120 to 312.953277ms/profile; all
+  generic FP16 tensor-core families move from 592.818968 to 605.897353ms.
+  Recovering 3.255% held-out loss for a 0.395% sustained step-time cost is a
+  decisive objective win.
+profiles:
+  Accepted parent reciprocal samples:
+    target/nsys/20260716_qk_norm_gather_fused_batch_a.nsys-rep:
+      total GPU kernels 4152.356348ms.
+    target/nsys/20260716_qk_norm_gather_fused_batch_b.nsys-rep:
+      total GPU kernels 4157.552509ms.
+  Restored reciprocal samples:
+    target/nsys/20260716_restore_fp16_staging_a.nsys-rep:
+      total GPU kernels 4169.652272ms; held-out val_loss=8.645607.
+    target/nsys/20260716_restore_fp16_staging_b.nsys-rep:
+      total GPU kernels 4173.228151ms; held-out val_loss=8.648808.
+verification:
+  cargo fmt --all --check, cargo check --workspace, git diff --check, a fresh
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a, all 50 workspace
+  release lib/bin host tests, the ignored FP16 tensor-core matmul test, both
+  ignored tiled FP16 tensor-core tests, and the ignored full causal-attention
+  backward comparison: pass.
+gates:
+  30s screen target/runs/20260716_195259Z_fineweb_30s:
+    heldout val_loss=6.508593, completed_steps=74, train_elapsed_s=30.039.
+    Parent is 6.503541 / 75 / 30.384. Average step time moves from 405.120000
+    to 405.932432ms and held-out loss moves +0.078% at this early endpoint.
+  450s sustained target/runs/20260716_195348Z_fineweb_450s:
+    heldout val_loss=5.017801, completed_steps=1081, train_elapsed_s=450.273.
+    Parent is 5.186601 / 1085 / 450.159. Held-out loss improves by 0.168800
+    (-3.255%) while completed steps decrease by four (-0.369%) and average
+    step time moves from 414.893088 to 416.533765ms (+0.395%). The matched
+    training-loss advantage grows from -0.252% at step 150 to -1.844% at step
+    600 and -3.465% at step 1050. All 22 high-fidelity samples are finite and
+    nonzero, every skip metric is zero, batch is 4, sequence length is 2048,
+    and tokens per step are 8192.
+decision:
+  Accept, promote, and commit as a correctness revert. The user's original
+  concern was correct: the +3.032% result was a causal regression rather than
+  an unlucky spike. The quality recovery overwhelms the small throughput cost
+  and also beats the pre-081256f5 held-out endpoint by 1.778%. The next 0.5%
+  aggregate floor is 2.082669ms/step or 20.826688ms per ten-step profile.
+```
+
+```text
+date: 2026-07-16
+commit: accepted local jj commit after full gate
 experiment: Batch Muon epilogue, scale-pack, schedule-amax, and Q/K norm reuse.
 status: accepted_450s
 change:

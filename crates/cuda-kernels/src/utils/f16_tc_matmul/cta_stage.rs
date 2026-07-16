@@ -1,4 +1,4 @@
-use cuda_device::{SharedArray, ptx_asm, thread};
+use cuda_device::{SharedArray, thread};
 
 use super::convert::{load_f16x2_global_bits, store_f16x2_shared};
 use super::cta_tile::{CTA_A_ELEMS, CTA_B_ELEMS, CTA_K, CtaMatmulDims, CtaTile};
@@ -94,85 +94,11 @@ pub(crate) fn load_a_fragments(a_tile: &super::CtaATile, tile: CtaTile) -> [u32;
 }
 
 #[inline(always)]
-pub(crate) fn load_a_fragments_k_major(a_tile: &super::CtaATile, tile: CtaTile) -> [u32; 4] {
-    let lane = tile.group * 4 + tile.thread_in_group;
-    let matrix = lane >> 3;
-    let row = (lane & 7) + (matrix & 1) * 8;
-    let col = tile.warp_m * 16 + (matrix >> 1) * 8;
-    let ptr = unsafe {
-        a_tile
-            .as_ptr()
-            .add((row * super::cta_tile::CTA_M + col) as usize)
-    };
-    let packed: u128;
-    unsafe {
-        ptx_asm!(
-            r"{
-             .reg .b32 %%r0, %%r1, %%r2, %%r3;
-             .reg .u64 %%smem64;
-             .reg .u32 %%smem32;
-             cvta.to.shared.u64 %%smem64, %1;
-             cvt.u32.u64 %%smem32, %%smem64;
-             ldmatrix.sync.aligned.m8n8.x4.trans.shared.b16 {%%r0, %%r1, %%r2, %%r3}, [%%smem32];
-             mov.b128 %0, {%%r0, %%r1, %%r2, %%r3};
-             }",
-            out("=q") packed,
-            in("l") ptr as u64,
-            options(register_only),
-        );
-    }
-    [
-        packed as u32,
-        (packed >> 32) as u32,
-        (packed >> 64) as u32,
-        (packed >> 96) as u32,
-    ]
-}
-
-#[inline(always)]
 pub(crate) fn load_b_fragments(b_tile: &super::CtaBTile, tile: CtaTile, warp_n: u32) -> [u32; 2] {
     [
         load_b_fragment(b_tile, tile, warp_n, 0),
         load_b_fragment(b_tile, tile, warp_n, 1),
     ]
-}
-
-#[inline(always)]
-pub(crate) fn load_b_fragments_k_major(
-    b_tile: &super::CtaBTile,
-    tile: CtaTile,
-    warp_n: u32,
-) -> [u32; 2] {
-    let lane = tile.group * 4 + tile.thread_in_group;
-    let row = lane & (CTA_K - 1);
-    let ptr = unsafe {
-        b_tile
-            .as_ptr()
-            .add((row * super::cta_tile::CTA_N + warp_n * 8) as usize)
-    };
-    ldmatrix_m8n8_x2_trans_shared_b16(ptr)
-}
-
-#[inline(always)]
-fn ldmatrix_m8n8_x2_trans_shared_b16(ptr: *const u16) -> [u32; 2] {
-    let packed: u64;
-    unsafe {
-        ptx_asm!(
-            r"{
-             .reg .b32 %%r0, %%r1;
-             .reg .u64 %%smem64;
-             .reg .u32 %%smem32;
-             cvta.to.shared.u64 %%smem64, %1;
-             cvt.u32.u64 %%smem32, %%smem64;
-             ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16 {%%r0, %%r1}, [%%smem32];
-             mov.b64 %0, {%%r0, %%r1};
-             }",
-            out("=l") packed,
-            in("l") ptr as u64,
-            options(register_only),
-        );
-    }
-    [packed as u32, (packed >> 32) as u32]
 }
 
 #[inline(always)]
@@ -194,5 +120,5 @@ fn load_packed2<const N: usize, const ALIGN: usize>(
     tile: &SharedArray<u16, N, ALIGN>,
     offset: u32,
 ) -> u32 {
-    unsafe { *(tile.as_ptr().add(offset as usize) as *const u32) }
+    (tile[offset as usize] as u32) | ((tile[offset as usize + 1] as u32) << 16)
 }

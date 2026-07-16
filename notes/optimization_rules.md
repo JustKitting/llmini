@@ -85,8 +85,8 @@ minimum_step_saving = (TRAIN_ELAPSED_S / COMPLETED_STEPS) * 0.005
 ```
 
 For the current matched 450-second baseline,
-`450.383 / 1078 = 0.417794991` seconds per step, so a candidate batch must
-credibly be able to save at least `2.088975 ms/step`
+`450.273 / 1081 = 0.416533765` seconds per step, so a candidate batch must
+credibly be able to save at least `2.082669 ms/step`
 before a rebuild, GPU test, or training screen. Multiply a per-launch saving by
 the launch count per step and compare that aggregate saving with the threshold.
 
@@ -129,10 +129,9 @@ width-2048, 32-head, batch-4, 2K-pretraining-context NextLat model, current
 dataset, and current tokenizer, not a result from an older or smaller
 architecture.
 
-The compact TMA ReLU2-forward code with reused NextLat and safe main-forward
-activation storage plus corrected schedule-free `x_master` evaluation is the
-current matched 450-second control: 1078 steps in 450.383 seconds with held-out
-loss 5.174783.
+The restored pre-regression FP16 staging path plus the later accepted kernel
+and memory wins is the current matched 450-second control: 1081 steps in
+450.273 seconds with held-out loss 5.017801.
 Do not compare future 450-second candidates with historical 900-second
 endpoints.
 

@@ -22,7 +22,7 @@ pub(super) fn cta_matmul_half_rhs_lower_a_body(
             a, rhs, a_tile, b_tile, tile, dims, k_base,
         );
         cuda_device::thread::sync_threads();
-        cta_mma2_k_major_b!(a_tile, b_tile, tile, acc0, acc1);
+        cta_mma2!(a_tile, b_tile, tile, acc0, acc1);
         super::cta_sync::sync_before_next_k(k_base, k_limit);
         k_base += super::cta_tile::CTA_K;
     }
@@ -47,7 +47,7 @@ pub(super) fn cta_matmul_half_a_transposed_rhs_lower_a_body(
             a, rhs, a_tile, b_tile, tile, dims, k_base,
         );
         cuda_device::thread::sync_threads();
-        cta_mma2_k_major_ab!(a_tile, b_tile, tile, acc0, acc1);
+        cta_mma2!(a_tile, b_tile, tile, acc0, acc1);
         super::cta_sync::sync_before_next_k(k_base, dims.k);
         k_base += super::cta_tile::CTA_K;
     }
