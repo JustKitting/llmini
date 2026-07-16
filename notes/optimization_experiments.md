@@ -45,6 +45,41 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 
 ```text
 date: 2026-07-16
+commit: rejection record only; candidate source reverted
+experiment: Compute each MS-EDEN group scale once and pair E2M1 payload conversion.
+status: rejected_profile_gate
+change:
+  Kept the 32-lane Hadamard transform and 16-value group maximum, but computed
+  each group's E4M3 scale and inverse only in its leader, broadcast the inverse
+  within the half warp, and let each even lane encode its adjacent pair with
+  one packed E2M1 instruction. Scale bits, payload order, and stores were
+  bitwise identical in the focused GPU comparisons.
+minimum_impact_gate:
+  Active MS-EDEN payload families occupied 472.889076ms/profile, excluding the
+  unchanged global-scale reducer. Halving payload conversion and group-scale
+  work gave a credible ceiling above the active 20.938047ms profile floor.
+verification:
+  cargo fmt --all, cargo check --workspace, git diff --check, a fresh exact
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a, all five ignored
+  MS-EDEN transpose tests, the ignored direct MS-EDEN quantizer test, and the
+  ignored MS-EDEN linear-backward comparison: pass.
+profiles:
+  target/nsys/20260716_ms_eden_leader_pair_a.nsys-rep:
+    total GPU kernels 4183.209189ms; touched family 473.117135ms.
+  target/nsys/20260716_ms_eden_leader_pair_b.nsys-rep:
+    total GPU kernels 4192.659864ms; touched family 474.444261ms.
+  The candidate touched-family mean is 473.780698ms, regressing 0.891622ms
+  (+0.189%) versus the 472.889076ms parent. Whole-profile mean appears
+  3.895530ms (0.093%) favorable, but that movement is far below the
+  20.938047ms floor and is contradicted by the directly changed kernels.
+decision:
+  Reject without either fixed-wall gate and fully restore the accepted packer.
+  Explicit leader broadcasts and paired conversion do not repay their added
+  shuffle/control cost on the active MS-EDEN kernels.
+```
+
+```text
+date: 2026-07-16
 commit: accepted local jj commit after full gate
 experiment: Remove dead FP32 MLP pre-activation stores and workspace.
 status: accepted_450s_memory_capacity_win
