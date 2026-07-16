@@ -14,7 +14,8 @@ use crate::nvfp4::nvfp4_value;
 use crate::warp_reduce::warp_max_nonnegative_f32;
 
 use super::cute::{
-    KMajorU4, Sm120KMajorSwizzle, Sm120Nvfp4MmaAtom, Sm120Nvfp4WarpMma, Sm120ScaleLayout,
+    KMajorU4, N_LAYOUT_WARP_CONTIGUOUS, Sm120KMajorSwizzle, Sm120Nvfp4MmaAtom, Sm120Nvfp4WarpMma,
+    Sm120ScaleLayout,
 };
 use super::load::E4M3_ONE_PACKED4;
 
@@ -214,6 +215,7 @@ struct CtaTile {
     col_base: u32,
     warp_m: u32,
     warp_n: u32,
+    n_layout: u32,
     group: u32,
     thread_in_group: u32,
 }
@@ -221,6 +223,11 @@ struct CtaTile {
 impl CtaTile {
     #[inline(always)]
     fn new(thread_id: u32) -> Self {
+        Self::new_with_n_layout(thread_id, NVFP4_N_LAYOUT)
+    }
+
+    #[inline(always)]
+    fn new_with_n_layout(thread_id: u32, n_layout: u32) -> Self {
         let lane = thread_id & 31;
         let warp = thread_id >> 5;
         let (warp_m, warp_n) = WarpTileShape::unflatten(warp);
@@ -229,6 +236,7 @@ impl CtaTile {
             col_base: thread::blockIdx_x() * TILE_N,
             warp_m,
             warp_n,
+            n_layout,
             group: lane >> 2,
             thread_in_group: lane & 3,
         }
@@ -246,18 +254,24 @@ impl CtaTile {
 
     #[inline(always)]
     fn mma_col_offset(self, n_repeat: u32) -> u32 {
-        mma_n_atom(self.warp_n, n_repeat) * MMA_N
+        mma_n_atom(self.n_layout, self.warp_n, n_repeat) * MMA_N
     }
 }
 
 #[inline(always)]
-const fn mma_n_atom(warp_n: u32, n_repeat: u32) -> u32 {
-    WarpMmaLayout::n_atom::<WARP_TILES_N>(warp_n, n_repeat)
+const fn mma_n_atom(n_layout: u32, warp_n: u32, n_repeat: u32) -> u32 {
+    if n_layout == N_LAYOUT_WARP_CONTIGUOUS {
+        Sm120Nvfp4WarpMma::<M_REPEAT, N_REPEAT, N_LAYOUT_WARP_CONTIGUOUS>::n_atom::<WARP_TILES_N>(
+            warp_n, n_repeat,
+        )
+    } else {
+        WarpMmaLayout::n_atom::<WARP_TILES_N>(warp_n, n_repeat)
+    }
 }
 
 #[inline(always)]
-const fn mma_n_atoms_are_adjacent(warp_n: u32, n0: u32, n1: u32) -> bool {
-    WarpMmaLayout::n_atoms_are_adjacent::<WARP_TILES_N>(warp_n, n0, n1)
+const fn mma_n_atoms_are_adjacent(n_layout: u32, warp_n: u32, n0: u32, n1: u32) -> bool {
+    mma_n_atom(n_layout, warp_n, n1) == mma_n_atom(n_layout, warp_n, n0) + 1
 }
 
 #[inline(always)]
@@ -516,7 +530,7 @@ fn load_b_fragment_pair_ldmatrix(
 ) -> [[u32; 2]; 2] {
     let lane = tile.group * 4 + tile.thread_in_group;
     let matrix = lane >> 3;
-    let n_atom = mma_n_atom(tile.warp_n, n_repeat) + (matrix >> 1);
+    let n_atom = mma_n_atom(tile.n_layout, tile.warp_n, n_repeat) + (matrix >> 1);
     let col = n_atom * MMA_N + (lane & (MMA_N - 1));
     let pack = k_atom * (MMA_K / 8) + if matrix & 1 == 0 { 0 } else { 4 };
     let ptr = unsafe { b_packs.add(TmaOperandLayout::ldmatrix_chunk_start_u32(col, pack)) };
@@ -1230,7 +1244,7 @@ macro_rules! with_b_entries_swizzled_go {
         [$n0:tt, $n1:tt $(, $n_rest:tt)*]
         $(, $arg:tt)*
     ) => {{
-        let (b0, b1) = if mma_n_atoms_are_adjacent($tile.warp_n, $n0, $n1) {
+        let (b0, b1) = if mma_n_atoms_are_adjacent($tile.n_layout, $tile.warp_n, $n0, $n1) {
             let pair = load_b_fragment_pair_ldmatrix($b_packs, $tile, $k_atom, $n0);
             (pair[0], pair[1])
         } else {
@@ -2334,7 +2348,7 @@ pub mod module {
         static mut A_PACKS_SM: APacksSmemStages = SharedArray::UNINIT;
         static mut B_PACKS_SM: BPacksSmemStages = SharedArray::UNINIT;
 
-        let tile = CtaTile::new(thread_id);
+        let tile = CtaTile::new_with_n_layout(thread_id, N_LAYOUT_WARP_CONTIGUOUS);
         let tma_bars = unsafe { (&mut *(&raw mut TMA_BARS)).as_mut_ptr() };
         let empty_bars = unsafe { (&mut *(&raw mut EMPTY_BARS)).as_mut_ptr() };
         let a_scales_base = unsafe { (&mut *(&raw mut A_SCALES_SM)).as_mut_ptr() };

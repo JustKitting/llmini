@@ -45,6 +45,111 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-16
 commit: accepted local jj commit after full gate
+experiment: Specialize residual TMA N ownership and pipeline fused MS-EDEN transpose tiles.
+status: accepted_900s
+change:
+  The residual NVFP4 TMA GEMM now assigns each warp a contiguous run of N MMA
+  atoms while every other TMA GEMM retains the generated pair-interleaved
+  layout. The fused FP32-pair MS-EDEN transpose-and-bias quantizer now
+  double-buffers its 32x9 shared-memory tile: it preloads the first tile, then
+  stages the next tile into the alternate buffer while packing the current
+  one. These are compatible independent scheduling wins and were profiled and
+  gated as one candidate batch.
+numerics:
+  The residual layout changes only which warp owns each N atom. Every output
+  retains the same increasing K-tile accumulation order, scales, epilogue, and
+  output address. The transpose pipeline preserves input values, local bias
+  accumulation order, chunk order, and packed outputs. The focused 64-row GPU
+  comparison crosses both shared buffers and exactly matches payloads and
+  scales while matching bias within the existing test tolerance. Projection
+  and full training diagnostics also pass.
+memory:
+  The transpose kernel uses 2304 rather than 1152 bytes of static shared
+  memory and 37 rather than 38 registers. The residual TMA kernel compiles at
+  146 rather than 161 registers with the same 92240 bytes of static shared
+  memory. Other TMA variants compile at 143 registers and 93224 bytes of
+  static shared memory. Occupancy remains one CTA per SM and no persistent-
+  VRAM or batch-capacity change is claimed.
+minimum_impact_gate:
+  The matched parent averaged 562.083021ms per step, so the aggregate 0.5%
+  screen floor was 2.810415ms. Reciprocal whole-workload profiles measured a
+  3.312747ms per-step average saving, clearing the floor before either fixed-
+  wall gate. The two individually clear scheduling changes were deliberately
+  batched; there was no exact 3ms quota for either component.
+focused_profile:
+  Matched parent samples:
+    target/nsys/20260716_kda_dual_fused_row_quant_candidate.nsys-rep
+    target/nsys/20260716_kda_dual_fused_row_quant_candidate_reciprocal.nsys-rep
+    total GPU kernels: 5596.838867 and 5613.826558ms.
+    kernel launches: 85821 in both samples.
+  Candidate samples:
+    target/nsys/20260716_tma_residual_contiguous_ms_eden_pipeline_candidate.nsys-rep
+    target/nsys/20260716_tma_residual_contiguous_ms_eden_pipeline_candidate_reciprocal.nsys-rep
+    total GPU kernels: 5569.958 and 5574.452ms.
+    kernel launches: 85821 in both samples.
+  Over the same 10 training steps plus endpoint validation, average total GPU
+  kernel time falls from 5605.333 to 5572.205ms, or 3.312747ms per step. The
+  TMA family saves 2.910166ms per step, almost entirely from residual GEMMs,
+  which save 2.907583ms per step. The fused transpose-and-bias pair saves a
+  further 0.488029ms per step. Profiled training wall time improves by about
+  3.1ms per step and launch count is unchanged.
+rejected_side_checks:
+  Directly scattering packed scales from each quantizer removed 14115 profile
+  launches and cut the pack kernel from 52.826/53.036ms to 19.844/19.908ms,
+  but producer stores raised total GPU time to 5701.685/5712.183ms, roughly
+  10ms slower per step, so it was reverted. Full-kernel TMA layout sweeps for
+  m4n4, m1n16, m8n2, and global warp-contiguous m2n8 were also reverted; only
+  the residual-specific contiguous layout retained the measured win. A
+  residual bias-load reuse/explicit-u64 variant regressed the focused family
+  from about 77.9 to 79.249ms and was reverted. The 66 layer-norm memsets were
+  timestamp-correlated with only about 0.048ms of GPU work per step; their
+  apparent host API time was queue backpressure, so no memset rewrite was
+  implemented. Artifacts are under target/nsys/20260716_direct_packed_scales_*,
+  target/nsys/20260716_tma_*, and
+  target/nsys/20260716_tma_residual_contiguous_ms_eden_pipeline_*.
+verification:
+  cargo fmt --all --check, git diff --check, cargo check --workspace -q,
+  fresh TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a, and
+  cargo test --workspace --release --lib --bins: pass (50 host tests).
+  The complete MS-EDEN GPU suite passes 5/5 and the projection TMA GPU suite
+  passes 6/6 after the candidate build.
+  Required clean 30-second screen with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260716_034511Z_fineweb_30s
+    stdout: target/gates/20260716_tma_residual_contiguous_ms_eden_pipeline_30s.log
+    completed_steps=56, train_elapsed_s=30.340, val_loss=6.709591.
+  Required 900-second gate with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260716_034605Z_fineweb_900s
+    stdout: target/gates/20260716_tma_residual_contiguous_ms_eden_pipeline_900s.log
+    completed_steps=1609, train_elapsed_s=900.438, val_loss=4.871391.
+    All 33 high-fidelity loss and grad-norm samples were finite and nonzero,
+    with zero skipped updates, loss-spike skips, grad-norm-spike skips, or
+    nonfinite skips. Grad norm ranged from 1.149584293 to 18.951820374. Every
+    sample retained batch 4, sequence 2048, and 8192 tokens per step. Held-out
+    evaluation, plotting, and generation all completed normally.
+measured_effect:
+  Against the matched 30-second parent:
+    completed_steps: 56 -> 56 (unchanged).
+    average step time: 544.232143ms -> 541.785714ms
+      (-2.446429ms, -0.450%).
+    held-out val_loss: 6.708341 -> 6.709591 (+0.019%).
+  Against the matched 900-second parent:
+    completed_steps: 1602 -> 1609 (+7, +0.437%).
+    average step time: 562.083021ms -> 559.625855ms
+      (-2.457167ms, -0.437%).
+    training tokens: 13123584 -> 13180928 (+57344, +0.437%).
+    held-out val_loss: 4.872478 -> 4.871391 (-0.022%).
+decision:
+  Keep and promote. Reciprocal profiles measured a clear aggregate win above
+  the pre-screen floor. Both fixed-wall gates preserve the direction, the
+  sustained gate trains seven more steps with slightly better held-out loss,
+  and all stability metrics are clean. notes/sweep_baseline.env points to this
+  run. The next aggregate 0.5% floor is
+  (900.438 / 1609) * 0.005 = 2.798129ms per step.
+```
+
+```text
+date: 2026-07-16
+commit: accepted local jj commit after full gate
 experiment: Fuse rowwise amax with NVFP4 encoding and pair KDA state-gradient matmuls.
 status: accepted_900s
 change:

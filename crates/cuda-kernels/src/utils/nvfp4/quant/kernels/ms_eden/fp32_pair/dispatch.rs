@@ -170,7 +170,7 @@ macro_rules! dispatch_fp32_pair_tiled_bias {
         } else {
             static mut TILE: cuda_device::SharedArray<
                 f32,
-                { super::FP32_PAIR_TRANSPOSE_TILE_ELEMS },
+                { 2 * super::FP32_PAIR_TRANSPOSE_TILE_ELEMS },
             > = cuda_device::SharedArray::UNINIT;
 
             let source_rows = $source_rows;
@@ -188,24 +188,42 @@ macro_rules! dispatch_fp32_pair_tiled_bias {
             let row = source_col_base + warp_in_block;
             let chunks = $transpose_chunks;
             let mut local_bias = 0.0f32;
+            let source_col = source_col_base + tile_col as u32;
+
+            let first_source_row = tile_row as u32;
+            unsafe {
+                TILE[tile_row * super::FP32_PAIR_TRANSPOSE_TILE_STRIDE + tile_col] =
+                    $x[(first_source_row * source_cols + source_col) as usize];
+            }
+            cuda_device::thread::sync_threads();
 
             let mut source_row_tile = 0u32;
             while source_row_tile < source_row_tile_count {
+                let tile_offset = (source_row_tile as usize & 1)
+                    * super::FP32_PAIR_TRANSPOSE_TILE_ELEMS;
                 let source_row_base =
                     source_row_tile * super::FP32_PAIR_TRANSPOSE_TILE_ROWS as u32;
-                let source_row = source_row_base + tile_row as u32;
-                let source_col = source_col_base + tile_col as u32;
-
-                unsafe {
-                    TILE[tile_row * super::FP32_PAIR_TRANSPOSE_TILE_STRIDE + tile_col] =
-                        $x[(source_row * source_cols + source_col) as usize];
-                }
-                cuda_device::thread::sync_threads();
-
                 let raw_input = unsafe {
-                    TILE[lane as usize * super::FP32_PAIR_TRANSPOSE_TILE_STRIDE
+                    TILE[tile_offset
+                        + lane as usize * super::FP32_PAIR_TRANSPOSE_TILE_STRIDE
                         + warp_in_block as usize]
                 };
+
+                let next_source_row_tile = source_row_tile + 1;
+                if next_source_row_tile < source_row_tile_count {
+                    let next_tile_offset = (next_source_row_tile as usize & 1)
+                        * super::FP32_PAIR_TRANSPOSE_TILE_ELEMS;
+                    let next_source_row = next_source_row_tile
+                        * super::FP32_PAIR_TRANSPOSE_TILE_ROWS as u32
+                        + tile_row as u32;
+                    unsafe {
+                        TILE[next_tile_offset
+                            + tile_row * super::FP32_PAIR_TRANSPOSE_TILE_STRIDE
+                            + tile_col] =
+                            $x[(next_source_row * source_cols + source_col) as usize];
+                    }
+                }
+
                 local_bias += raw_input;
                 let chunk = if $transpose_chunks_are_shift {
                     (row << chunks) + source_row_tile
@@ -228,8 +246,10 @@ macro_rules! dispatch_fp32_pair_tiled_bias {
                     $transpose_scale_seed,
                 );
 
-                cuda_device::thread::sync_threads();
-                source_row_tile += 1;
+                if next_source_row_tile < source_row_tile_count {
+                    cuda_device::thread::sync_threads();
+                }
+                source_row_tile = next_source_row_tile;
             }
 
             let bias = warp_sum_f32(local_bias);
