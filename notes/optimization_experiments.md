@@ -45,6 +45,46 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 
 ```text
 date: 2026-07-16
+commit: rejected experiment; source fully restored before this record
+experiment: Widen tiled paired MS-EDEN quantization from 256 to 512 threads.
+status: rejected_profile_gate
+change:
+  Launch the exact no-pad paired MS-EDEN kernels with sixteen warps so each
+  row CTA owns sixteen chunks instead of eight. Keep the original eight warps
+  active for each 32x8 tiled transpose and make the extra eight warps idle in
+  that branch while still participating in every block-wide barrier.
+rationale:
+  A basic NCU diagnostic showed the dominant tiled-bias instance at only
+  44.40% achieved occupancy, 33.84% compute utilization, and 18.26% DRAM
+  utilization. Halving the large row grid was therefore worth measuring, but
+  the added CTA width reduced scheduling efficiency more than it saved launch
+  and row-block work.
+verification:
+  Fresh TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a passed. All
+  five ignored MS-EDEN transpose tests and all ten ignored NVFP4 quantization
+  tests passed serially on GPU0, including paired tiled output comparison
+  against independent row and transpose quantization.
+profiles:
+  Corrected accepted parent:
+    target/nsys/20260716_restore_fp16_staging_a.nsys-rep:
+      total GPU kernels 4169.652272ms; paired family 277.024359ms.
+    target/nsys/20260716_restore_fp16_staging_b.nsys-rep:
+      total GPU kernels 4173.228151ms; paired family 277.374455ms.
+  Candidate:
+    target/nsys/20260716_ms_eden_pair_wide_a.nsys-rep:
+      total GPU kernels 4269.029821ms; paired family 326.157748ms.
+    target/nsys/20260716_ms_eden_pair_wide_b.nsys-rep:
+      total GPU kernels 4268.803947ms; paired family 326.485076ms.
+decision:
+  Reject before either fixed-wall gate. Mean total GPU kernel time regressed
+  from 4171.440212ms to 4268.916884ms (+97.476672ms, +2.337%), and the directly
+  changed family regressed from 277.199407ms to 326.321412ms (+17.721%). This
+  is far below the required 20.826688ms ten-step improvement floor. Fully
+  restore all five source files; retain only this factual rejection record.
+```
+
+```text
+date: 2026-07-16
 commit: accepted local jj commit after full gate
 experiment: Restore the pre-regression FP16 tensor-core staging path.
 status: accepted_correctness_revert_450s
