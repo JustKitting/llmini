@@ -9,7 +9,7 @@ use cuda_device::TmaDescriptor;
 use super::cute::{KMajorU4, Sm120KMajorSwizzle, Sm120ScaleLayout};
 use super::kernels::{
     Nvfp4GemmParams, TILE_K, TILE_M, TILE_N, TMA_NVFP4_THREADS_PER_BLOCK, module,
-    tma_nvfp4_output_amax_chunks,
+    tma_nvfp4_output_amax_chunks, tma_nvfp4_symmetric_output_amax_chunks,
 };
 use super::scale_layout::sm120_scale_tma_shape_padded;
 use super::tma::{
@@ -241,6 +241,62 @@ impl Nvfp4GemmModule {
         };
 
         self.module.nvfp4_gemm_tma_amax_kernel(
+            stream,
+            config,
+            tma.a_deviceptr() as *const TmaDescriptor,
+            tma.b_deviceptr() as *const TmaDescriptor,
+            tma.a_scales_deviceptr() as *const TmaDescriptor,
+            tma.b_scales_deviceptr() as *const TmaDescriptor,
+            out,
+            output_chunk_amax,
+            params,
+        )?;
+        Ok(chunk_count)
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "TMA GEMM launch uses explicit buffers"
+    )]
+    pub fn gemm_tma_nvfp4_device_scales_and_global_scale_buffers_symmetric_with_output_amax(
+        &self,
+        stream: &CudaStream,
+        tma: &TmaNvfp4DeviceScaleDescriptors,
+        out: &mut DeviceBuffer<f32>,
+        output_chunk_amax: &mut DeviceBuffer<f32>,
+        dim: u32,
+        input_dim: u32,
+        a_global_scale: &DeviceBuffer<f32>,
+    ) -> Result<u32, DriverError> {
+        let chunk_count = tma_nvfp4_symmetric_output_amax_chunks(dim);
+        if TILE_M != TILE_N
+            || dim % TILE_M != 0
+            || input_dim % Sm120ScaleLayout::K_ATOM != 0
+            || input_dim % TILE_K != 0
+            || input_dim == 0
+            || output_chunk_amax.len() < chunk_count as usize
+        {
+            return Err(DriverError(cudaError_enum_CUDA_ERROR_INVALID_VALUE));
+        }
+
+        let params = Nvfp4GemmParams {
+            token_count: dim,
+            input_dim,
+            output_dim: dim,
+            global_scale_mode: 1,
+            weight_global_scale: 1.0,
+            a_global_scale: a_global_scale.cu_deviceptr(),
+            b_global_scale: a_global_scale.cu_deviceptr(),
+        };
+        let tiles = dim / TILE_M;
+        let triangular_tiles = tiles * (tiles + 1) / 2;
+        let config = LaunchConfig {
+            grid_dim: (triangular_tiles, 1, 1),
+            block_dim: (TMA_NVFP4_THREADS_PER_BLOCK, 1, 1),
+            shared_mem_bytes: 0,
+        };
+
+        self.module.nvfp4_gemm_tma_symmetric_amax_kernel(
             stream,
             config,
             tma.a_deviceptr() as *const TmaDescriptor,

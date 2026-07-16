@@ -8,7 +8,7 @@ use rust_kernels_cuda::mlp::{MlpDownResidualArgs, MlpModule, MlpUpRelu2Args};
 use rust_kernels_cuda::mma::Nvfp4FourSixMmaWeightTensor;
 use rust_kernels_cuda::nvfp4::{Nvfp4DeviceTensor, Nvfp4RowwiseDeviceTensor};
 use rust_kernels_cuda::nvfp4_tma_matmul::{
-    kernels::tma_nvfp4_output_amax_chunks,
+    kernels::{tma_nvfp4_output_amax_chunks, tma_nvfp4_symmetric_output_amax_chunks},
     launcher::Nvfp4GemmModule,
     pad::{TmaMatrixPadModule, U4RowPadArgs},
     scale_layout::{sm120_scale_packed_len, sm120_scale_padded_mn_extent},
@@ -61,6 +61,40 @@ fn tma_output_amax_matches_stored_output() -> Result<(), Box<dyn Error>> {
     assert_eq!(fused, plain, "amax epilogue changed the stored GEMM output");
 
     let output_amax = fused.iter().copied().map(f32::abs).fold(0.0_f32, f32::max);
+    let fused_amax = chunk_amax
+        .to_host_vec(&fixture.stream)?
+        .into_iter()
+        .fold(0.0_f32, f32::max);
+    assert_eq!(fused_amax, output_amax);
+    Ok(())
+}
+
+#[ignore = "requires generated sm_120a PTX"]
+#[test]
+fn tma_symmetric_output_and_amax_match_full_self_product() -> Result<(), Box<dyn Error>> {
+    const DIM: usize = 256;
+    let fixture = Fixture::new(DIM, K, DIM)?;
+    let mut plain = DeviceBuffer::<f32>::zeroed(&fixture.stream, DIM * DIM)?;
+    let mut symmetric = DeviceBuffer::<f32>::zeroed(&fixture.stream, DIM * DIM)?;
+    let chunk_count = tma_nvfp4_symmetric_output_amax_chunks(DIM as u32);
+    let mut chunk_amax = DeviceBuffer::<f32>::zeroed(&fixture.stream, chunk_count as usize)?;
+
+    let launched_chunks =
+        fixture.tma_self_symmetric_with_output_amax(&mut plain, &mut symmetric, &mut chunk_amax)?;
+    assert_eq!(launched_chunks, chunk_count);
+
+    let plain = plain.to_host_vec(&fixture.stream)?;
+    let symmetric = symmetric.to_host_vec(&fixture.stream)?;
+    assert_eq!(
+        symmetric, plain,
+        "triangular self-product changed the stored Gram matrix"
+    );
+
+    let output_amax = symmetric
+        .iter()
+        .copied()
+        .map(f32::abs)
+        .fold(0.0_f32, f32::max);
     let fused_amax = chunk_amax
         .to_host_vec(&fixture.stream)?
         .into_iter()
@@ -392,6 +426,61 @@ impl Fixture {
                 self.n as u32,
                 &self.input_globals,
                 &self.weight_global,
+            )?)
+    }
+
+    fn tma_self_symmetric_with_output_amax(
+        &self,
+        plain: &mut DeviceBuffer<f32>,
+        symmetric: &mut DeviceBuffer<f32>,
+        chunk_amax: &mut DeviceBuffer<f32>,
+    ) -> Result<u32, Box<dyn Error>> {
+        assert_eq!(self.rows, self.n);
+        let mut input_scale_packed = DeviceBuffer::zeroed(
+            &self.stream,
+            sm120_scale_packed_len(sm120_scale_padded_mn_extent(self.rows), self.k),
+        )?;
+        let mut descriptors = TmaNvfp4DeviceScaleDescriptors::new(&self.stream)?;
+
+        self.scale_pack.pack(
+            &self.stream,
+            &self.input_scales,
+            &mut input_scale_packed,
+            self.rows as u32,
+            self.k as u32,
+        )?;
+        self.tma.prepare_tma_nvfp4_device_scales_into(
+            &self.stream,
+            &self.input_bytes,
+            &input_scale_packed,
+            &self.input_bytes,
+            &input_scale_packed,
+            self.rows as u32,
+            self.k as u32,
+            self.rows as u32,
+            &mut descriptors,
+        )?;
+        self.tma
+            .gemm_tma_nvfp4_device_scales_and_global_scale_buffers(
+                &self.stream,
+                &descriptors,
+                plain,
+                self.rows as u32,
+                self.k as u32,
+                self.rows as u32,
+                &self.input_globals,
+                &self.input_globals,
+            )?;
+        Ok(self
+            .tma
+            .gemm_tma_nvfp4_device_scales_and_global_scale_buffers_symmetric_with_output_amax(
+                &self.stream,
+                &descriptors,
+                symmetric,
+                chunk_amax,
+                self.rows as u32,
+                self.k as u32,
+                &self.input_globals,
             )?)
     }
 

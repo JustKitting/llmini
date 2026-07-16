@@ -46,6 +46,162 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-16
 commit: accepted local jj commit after full gate
+experiment: Compute only the upper triangle of Muon self-Gram products.
+status: accepted
+change:
+  Added a dedicated symmetric TMA NVFP4 GEMM+amax path for Muon's XX^T
+  products. A one-dimensional triangular launch maps each CTA to one upper-
+  triangle 128x128 tile, stores that tile normally, and mirrors off-diagonal
+  values into the lower triangle. The action product retains the ordinary
+  full TMA path. For a 2048x2048 Gram matrix this launches 136 mainloop CTAs
+  instead of 256 while preserving all five Muon polar iterations.
+minimum_impact_gate:
+  The accepted sustained baseline required 23.103593ms saved per ten-step
+  profile. Self-Gram products accounted for half of the 414.546643ms fused
+  TMA-amax family, and removing 120 of 256 CTAs from each 2048-wide product
+  had a credible whole-step ceiling well above the floor.
+verification:
+  cargo fmt --all --check, cargo check --workspace, and a fresh
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass. All seven
+  ignored projection-TMA tests pass. The added 256x256 focused test exercises
+  an off-diagonal tile and requires bitwise identity with the full self-GEMM,
+  plus equality between compact fused amax and the stored-output maximum.
+profiles:
+  target/nsys/20260716_muon_symmetric_gram_candidate.nsys-rep
+  target/nsys/20260716_muon_symmetric_gram_candidate.sqlite
+    total GPU kernels 4527.237899ms; full TMA amax 205.820965ms;
+    symmetric TMA amax 110.565332ms; train_elapsed_s=4.440;
+    ten-step held-out val_loss=8.134458; launches 67764.
+  target/nsys/20260716_muon_symmetric_gram_candidate_reciprocal.nsys-rep
+  target/nsys/20260716_muon_symmetric_gram_candidate_reciprocal.sqlite
+    total GPU kernels 4531.635265ms; full TMA amax 206.105585ms;
+    symmetric TMA amax 110.670023ms; train_elapsed_s=4.445;
+    ten-step held-out val_loss=8.135475; launches 67764.
+  The candidate mean is 4529.436582ms, saving 113.142409ms/profile or 2.44%
+  versus the accepted 4642.578991ms mean. The directly affected TMA-amax
+  family averages 316.580953ms, explaining 97.965690ms of that saving.
+gates:
+  30s screen target/runs/20260716_141237Z_fineweb_30s:
+    heldout val_loss=6.519481, completed_steps=69, train_elapsed_s=30.340.
+  450s sustained target/runs/20260716_141332Z_fineweb_450s:
+    heldout val_loss=5.245728, completed_steps=998, train_elapsed_s=450.205.
+  The prior baseline completed 67 steps in 30.162s at loss 6.536005 and 974
+  steps in 450.058s at loss 5.270706. The sustained candidate reduces time
+  per completed step by 2.37% and improves held-out loss by 0.47%.
+decision:
+  Accept and promote as the FineWeb/Llama-2 fixed-1B baseline. The speedup is
+  large, directly supported by the affected kernel family, stable for 450
+  seconds, and quality is better rather than merely within tolerance.
+```
+
+```text
+date: 2026-07-16
+commit: rejection record only; candidate source and focused test reverted
+experiment: Collect Muon self-Gram maxima only from diagonal TMA tiles.
+status: rejected_profile_gate
+change:
+  Added a self-Gram mode to the fused TMA amax epilogue. Off-diagonal output
+  CTAs used the ordinary product store, while diagonal 128x128 tiles retained
+  the amax epilogue and compacted their warp maxima. For a Gram matrix XX^T,
+  Cauchy-Schwarz bounds every off-diagonal magnitude by the largest diagonal,
+  and each diagonal tile includes its exact diagonal entries. Muon action
+  products retained the full-output amax path.
+minimum_impact_gate:
+  The accepted sustained baseline requires 23.103593ms saved per ten-step
+  profile. Self-Gram products account for half of Muon's fused amax launches,
+  so removing local max work from all off-diagonal tiles had a credible
+  pre-edit ceiling in the 414.546643ms TMA-amax family.
+verification:
+  cargo fmt --all, cargo check --workspace, a fresh
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a, and all seven
+  ignored projection-TMA tests: pass. The added focused test required bitwise-
+  identical stored Gram outputs and equality between the compact diagonal-
+  tile maximum and the full stored-output maximum. Candidate profile:
+    target/nsys/20260716_muon_diagonal_gram_amax_candidate.nsys-rep
+    target/nsys/20260716_muon_diagonal_gram_amax_candidate.sqlite
+    total GPU kernels 4624.967670ms; fused TMA amax 412.540199ms;
+      scalar reducers 18.830033ms; train_elapsed_s=4.537;
+      ten-step held-out val_loss=8.135226; launches remain 67764.
+  The accepted reciprocal mean is 4642.578991ms total, 414.546643ms in fused
+  TMA amax, and 19.955303ms in scalar reducers. Directly touched work saves
+  only 3.131714ms/profile. The favorable 17.611321ms total movement remains
+  below the floor and is not supported by the affected-family delta.
+decision:
+  Reject without either fixed-wall gate and fully revert. The TMA mainloop
+  hides almost all local-max epilogue work; diagonal-only collection does not
+  materially improve the whole step despite its valid Gram bound.
+```
+
+```text
+date: 2026-07-16
+commit: rejection record only; candidate source reverted
+experiment: Remove the paired MS-EDEN Hadamard rotation.
+status: rejected_profile_gate
+change:
+  Kept the common random-sign diagonal on both GEMM operands but bypassed the
+  five-stage 32-point Hadamard transform. In exact arithmetic the retained
+  paired sign transform is still orthogonal, while the candidate removes five
+  shuffle and five add/sub operations per MS-EDEN value. This deliberately
+  changes the NVFP4 quantization-error distribution, so fixed-wall held-out
+  quality would have been authoritative if the performance screen passed.
+minimum_impact_gate:
+  The accepted sustained baseline requires 23.103593ms saved per ten-step
+  profile. The parent MS-EDEN family averages 479.040915ms/profile, giving the
+  transform removal ample pre-edit arithmetic ceiling.
+verification:
+  cargo fmt --all --check, a fresh
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a, all five ignored
+  MS-EDEN transpose tests, both ignored linear-backward tests, and the ignored
+  QKV-backward test: pass. Candidate profile:
+    target/nsys/20260716_ms_eden_no_hadamard_candidate_v2.nsys-rep
+    target/nsys/20260716_ms_eden_no_hadamard_candidate_v2.sqlite
+    total GPU kernels 4666.880246ms; MS-EDEN kernels 474.703197ms;
+      train_elapsed_s=4.578; ten-step held-out val_loss=8.163494;
+      launches remain 67764.
+  The accepted reciprocal mean is 4642.578991ms total and 479.040915ms in
+  MS-EDEN kernels. The candidate saves only 4.337718ms in directly touched
+  work, far below the floor, while total time regresses by 24.301255ms.
+  An initial profiling command used the wrong step-cap environment name and
+  was interrupted after step 51; it is not evidence. The corrected artifact
+  above uses the repository's actual TRAIN_STEPS=10 control.
+decision:
+  Reject without either fixed-wall gate and fully restore the Hadamard path.
+  Its instruction cost is hidden behind the active packing and memory work;
+  the semantic quantization change buys no meaningful throughput.
+```
+
+```text
+date: 2026-07-16
+commit: analysis record only; no source candidate
+experiment: Quantify CUDA graph launch-overhead ceiling.
+status: rejected_mathematical_screen
+analysis:
+  The accepted reciprocal profile contains 67,764 kernel launches over ten
+  training steps plus endpoint evaluation. CUDA runtime calls spend
+  2949.819ms in cuLaunchKernel, but that CPU work overlaps GPU execution. The
+  GPU event stream has only 26.807ms of idle gaps across the entire process.
+  A broad training-dominant 1.2s-to-5.65s window contains 23.719ms of gaps,
+  only 0.615ms above the active 23.103593ms profile floor; a graph would have
+  to eliminate more than 97% of every gap before paying graph-launch cost.
+  The profile's 2,363 allocation/free pairs are confined to model setup,
+  first-step descriptor-cache warmup, validation setup, and teardown rather
+  than recurring on every steady-state step. Two device-to-host grad-clip
+  scalar reads do recur per step. The first naturally waits about 149ms for
+  queued gradient work and feeds host-side clipping and update-skip decisions,
+  so the current complete step is not directly capturable as one graph.
+evidence:
+  target/nsys/20260716_muon_direct_packed_scales_candidate_reciprocal.sqlite
+decision:
+  Do not implement CUDA graph capture on this baseline. API duration is not a
+  wall-time ceiling, GPU launch bubbles barely meet the mathematical threshold
+  even before unavoidable dependencies, and splitting or parameter-updating
+  graphs around the host decision has no credible 0.5% net saving from launch
+  gaps alone.
+```
+
+```text
+date: 2026-07-16
+commit: accepted local jj commit after full gate
 experiment: Emit Muon TMA scale layout directly from Four-Six quantizers.
 status: accepted_450s
 change:

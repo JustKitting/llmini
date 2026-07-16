@@ -885,15 +885,13 @@ fn run_tma_gemm_self_prepared_and_bound_amax(
     let chunk_count = runtime
         .optimizer
         .tma_gemm()
-        .gemm_tma_nvfp4_device_scales_and_global_scale_buffers_with_output_amax(
+        .gemm_tma_nvfp4_device_scales_and_global_scale_buffers_symmetric_with_output_amax(
             stream,
             &*tma.descriptors,
             out,
             tma.b.chunk_amax,
             dims.m,
             dims.k,
-            dims.n,
-            &*tma.a.global_scale,
             &*tma.a.global_scale,
         )?;
     runtime.quant.tensor_amax_from_chunks_f32(
