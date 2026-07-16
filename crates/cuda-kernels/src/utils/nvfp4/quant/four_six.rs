@@ -1,10 +1,12 @@
 use cuda_core::{DeviceBuffer, DriverError};
 
 use super::args::{
-    Nvfp4QuantArgs, Nvfp4QuantPaddedArgs, Nvfp4QuantRowwiseArgs, Nvfp4QuantTransposePaddedArgs,
+    Nvfp4QuantArgs, Nvfp4QuantPaddedArgs, Nvfp4QuantRowwiseArgs, Nvfp4QuantRowwiseDerivedAmaxArgs,
+    Nvfp4QuantTransposePaddedArgs, RowAmaxArgs,
 };
 use super::launcher::Nvfp4QuantModule;
 use super::shape::{four_six_grid_config, four_six_rowwise_pow2, four_six_transpose_tiled_config};
+use crate::launch::grid_x_config;
 
 const SCALE_OVERRIDE: f32 = 1.0;
 
@@ -31,6 +33,57 @@ impl Nvfp4QuantModule {
         }
 
         self.launch_fp32_to_nvfp4_four_six(args)
+    }
+
+    pub fn fp32_to_nvfp4_four_six_rowwise_derived_amax(
+        &self,
+        args: Nvfp4QuantRowwiseDerivedAmaxArgs<'_, '_>,
+    ) -> Result<(), DriverError> {
+        let Nvfp4QuantRowwiseDerivedAmaxArgs {
+            stream,
+            x,
+            amax,
+            out_fp4,
+            out_scales,
+            out_global_scale,
+            row_count,
+            row_len,
+        } = args;
+        let group_count = row_count * row_len / 16;
+        if four_six_rowwise_pow2(row_len, group_count) {
+            return self
+                .four_six
+                .fp32_to_nvfp4_four_six_rowwise_derived_amax_pow2_kernel(
+                    stream,
+                    grid_x_config(row_count, 256),
+                    x,
+                    amax,
+                    out_fp4,
+                    out_scales,
+                    out_global_scale,
+                    row_count,
+                    row_len,
+                    SCALE_OVERRIDE,
+                );
+        }
+
+        self.row_amax_f32(RowAmaxArgs {
+            stream,
+            x,
+            out: &mut *amax,
+            row_count,
+            row_len,
+        })?;
+        self.fp32_to_nvfp4_four_six_rowwise(Nvfp4QuantRowwiseArgs {
+            stream,
+            x,
+            amax: &*amax,
+            out_fp4,
+            out_scales,
+            out_global_scale,
+            group_count,
+            row_len,
+        })
     }
 
     pub fn fp32_to_nvfp4_four_six_padded(

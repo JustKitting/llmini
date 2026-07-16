@@ -162,8 +162,7 @@ impl AttentionModule {
             let v_new = kda_v_new.unwrap_or(&*kneg_vnew_dqg_dv);
             launch!(bwd_tc.chunk_kda_dkg_from_vnew_dh_kernel(chunk_cfg; v_new, dh_states_or_kneg, dkg_from_state));
         }
-        launch!(bwd_tc.chunk_kda_dw_from_du_state_kernel(chunk_cfg; kpos_u_dw, chunk_states, w_du_dq));
-        launch!(bwd_tc.chunk_kda_dqg_from_dout_state_kernel(chunk_cfg; dout_daqk_dvbeta, chunk_states, kneg_vnew_dqg_dv));
+        launch!(bwd_tc.chunk_kda_dw_dqg_from_state_kernel(chunk_cfg; kpos_u_dw, dout_daqk_dvbeta, chunk_states, w_du_dq, kneg_vnew_dqg_dv));
         launch!(bwd_elementwise.make_kda_backward_kneg_from_kg_kernel(linear_config(dims.compact_elems, threads); kg, g, dh_states_or_kneg));
         mm!(f32_input_accumulate(
             local_grad,

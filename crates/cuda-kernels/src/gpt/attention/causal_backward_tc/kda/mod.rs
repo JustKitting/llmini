@@ -15,5 +15,6 @@ pub(super) use elementwise::{
 pub(super) use finish::{FinishKdaGrads, finish_kda_backward_body};
 pub(super) use intra::{KdaIntraGrads, KdaIntraInputs, chunk_intra_kda_backward_body};
 pub(super) use state::{
-    ChunkStateMatmulMode, chunk_kda_dkg_from_vnew_dh_body, chunk_state_matmul_body,
+    ChunkStateMatmulMode, chunk_kda_dkg_from_vnew_dh_body, chunk_state_dw_dqg_matmul_body,
+    chunk_state_matmul_body,
 };

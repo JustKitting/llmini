@@ -3,8 +3,8 @@ use cuda_device::{DisjointSlice, thread};
 use crate::attention::CausalAttentionParams;
 use crate::kda_tc::{
     CompactStore::SetScaled, CtaTiles, KdaChunkTileCtx, StateTileLayout, StateTileSource,
-    stage_compact_a as stage_dm_compact_a, stage_state_b_t, store_compact_quads, store_vnew_quads,
-    tc_stage_loop,
+    mma_accumulate, stage_compact_a as stage_dm_compact_a, stage_state_b_t, store_compact_quads,
+    store_vnew_quads, tc_stage_loop,
 };
 
 pub(crate) fn chunk_kda_dkg_from_vnew_dh_body(
@@ -75,4 +75,46 @@ pub(crate) fn chunk_state_matmul_body(
             store_compact_quads(acc, &mut out, compact_ctx, SetScaled(1.0))
         }
     }
+}
+
+pub(crate) fn chunk_state_dw_dqg_matmul_body(
+    d_u: &[f32],
+    d_out_compact: &[f32],
+    state_u16: &[u16],
+    mut d_w: DisjointSlice<f32>,
+    mut d_qg: DisjointSlice<f32>,
+    params: CausalAttentionParams,
+    tiles: CtaTiles<'_>,
+) {
+    let Some(ctx) = KdaChunkTileCtx::from_block(&params) else {
+        return;
+    };
+    let (a_tile, b_tile) = tiles;
+    let compact_ctx = ctx.compact;
+
+    let mut dw_acc = [[0.0_f32; 4]; 4];
+    let mut dqg_acc = [[0.0_f32; 4]; 4];
+    let mut k_base = 0;
+    while k_base < params.head_dim {
+        stage_state_b_t(
+            StateTileSource::F16(state_u16),
+            b_tile,
+            ctx,
+            k_base,
+            StateTileLayout::VK,
+        );
+        stage_dm_compact_a(d_u, a_tile, compact_ctx, k_base);
+        thread::sync_threads();
+        mma_accumulate(compact_ctx.tile, a_tile, b_tile, &mut dw_acc);
+        thread::sync_threads();
+
+        stage_dm_compact_a(d_out_compact, a_tile, compact_ctx, k_base);
+        thread::sync_threads();
+        mma_accumulate(compact_ctx.tile, a_tile, b_tile, &mut dqg_acc);
+        thread::sync_threads();
+        k_base += crate::f16_tc_matmul::cta_tile::CTA_K;
+    }
+
+    store_compact_quads(dw_acc, &mut d_w, compact_ctx, SetScaled(-1.0));
+    store_compact_quads(dqg_acc, &mut d_qg, compact_ctx, SetScaled(1.0));
 }

@@ -1,6 +1,8 @@
 use cuda_device::{DisjointSlice, SharedArray, cuda_module, kernel, thread};
 
-use crate::float_ptx::sqrt_f32;
+use crate::block_reduce::block_max_shared_f32_for_warps;
+use crate::float_ptx::{abs_f32, max_f32, sqrt_f32};
+use crate::warp_reduce::thread_lane_warp;
 
 #[path = "four_six/helpers.rs"]
 pub(crate) mod helpers;
@@ -11,6 +13,8 @@ const TRANSPOSE_TILE_STRIDE: usize = TRANSPOSE_TILE_COLS + 1;
 const TRANSPOSE_TILE_ELEMS: usize = TRANSPOSE_TILE_ROWS * TRANSPOSE_TILE_STRIDE;
 const TRANSPOSE_TILE_LOAD_ELEMS: usize = TRANSPOSE_TILE_ROWS * TRANSPOSE_TILE_COLS;
 const TRANSPOSE_GROUPS_PER_ROUND: usize = 256 / TRANSPOSE_TILE_ROWS;
+const ROWWISE_WARPS_PER_BLOCK: usize = 8;
+const ROWWISE_GROUPS_PER_BLOCK: u32 = 16;
 
 #[cuda_module]
 pub(crate) mod module {
@@ -112,6 +116,78 @@ pub(crate) mod module {
             writes_global_scale,
             scale_override,
         );
+    }
+
+    #[kernel]
+    pub fn fp32_to_nvfp4_four_six_rowwise_derived_amax_pow2_kernel(
+        x: &[f32],
+        mut amax: DisjointSlice<f32>,
+        mut out_fp4: DisjointSlice<u8>,
+        mut out_scales: DisjointSlice<u8>,
+        mut out_global_scale: DisjointSlice<f32>,
+        row_count: u32,
+        row_len: u32,
+        scale_override: f32,
+    ) {
+        static mut ROW_AMAX: SharedArray<f32, ROWWISE_WARPS_PER_BLOCK> = SharedArray::UNINIT;
+
+        let row = thread::blockIdx_x();
+        let (thread_id, lane, warp_in_block) = thread_lane_warp();
+        if row >= row_count {
+            return;
+        }
+
+        let row_base = row as usize * row_len as usize;
+        let mut local_amax = 0.0_f32;
+        let mut col = thread_id;
+        while col < row_len {
+            local_amax = max_f32(local_amax, abs_f32(x[row_base + col as usize]));
+            col += thread::blockDim_x();
+        }
+        let tensor_amax = unsafe {
+            block_max_shared_f32_for_warps(
+                &mut ROW_AMAX,
+                ROWWISE_WARPS_PER_BLOCK as u32,
+                local_amax,
+                lane,
+                warp_in_block,
+                0.0,
+            )
+        };
+        let global_scale = four_six_global_scale(tensor_amax, scale_override);
+        if thread_id == 0 {
+            unsafe {
+                *amax.get_unchecked_mut(row as usize) = tensor_amax;
+                *out_global_scale.get_unchecked_mut(row as usize) = global_scale;
+            }
+        }
+
+        let (lane_in_group, group_mask, group_leader) = four_six_lane();
+        let groups_per_row = row_len / GROUP_SIZE as u32;
+        let mut group_in_row = thread_id / GROUP_SIZE as u32;
+        while group_in_row < groups_per_row {
+            let group = row * groups_per_row + group_in_row;
+            let base = group as usize * GROUP_SIZE;
+            let value = x[base + lane_in_group];
+            let (scale_bits, payload) = four_six_group_scale(
+                value,
+                global_scale,
+                scale_override,
+                group_mask,
+                group_leader,
+                lane_in_group,
+            );
+            let payload_byte = four_six_payload_byte(payload, group_mask);
+            unsafe {
+                if lane_in_group == 0 {
+                    *out_scales.get_unchecked_mut(group as usize) = scale_bits;
+                }
+                if lane_in_group.is_multiple_of(2) {
+                    *out_fp4.get_unchecked_mut(base / 2 + lane_in_group / 2) = payload_byte;
+                }
+            }
+            group_in_row += ROWWISE_GROUPS_PER_BLOCK;
+        }
     }
 
     #[kernel]

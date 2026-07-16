@@ -21,6 +21,17 @@ pub struct Nvfp4QuantRowwiseArgs<'a, 'out> {
     pub row_len: u32,
 }
 
+pub struct Nvfp4QuantRowwiseDerivedAmaxArgs<'a, 'out> {
+    pub stream: &'a CudaStream,
+    pub x: &'a DeviceBuffer<f32>,
+    pub amax: &'out mut DeviceBuffer<f32>,
+    pub out_fp4: &'out mut DeviceBuffer<u8>,
+    pub out_scales: &'out mut DeviceBuffer<u8>,
+    pub out_global_scale: &'out mut DeviceBuffer<f32>,
+    pub row_count: u32,
+    pub row_len: u32,
+}
+
 pub struct Nvfp4QuantPaddedArgs<'a, 'out> {
     pub stream: &'a CudaStream,
     pub x: &'a DeviceBuffer<f32>,

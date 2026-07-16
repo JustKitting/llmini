@@ -16,9 +16,10 @@ mod shape;
 pub use args::{
     MsEdenDeviceScaleQuantArgs, MsEdenPairDeviceScaleQuantArgs, MsEdenQuantArgs,
     MsEdenTransposeDeviceScaleQuantArgs, Nvfp4QuantArgs, Nvfp4QuantPaddedArgs,
-    Nvfp4QuantRowwiseArgs, Nvfp4QuantTransposePaddedArgs, Nvfp4TransposeMsEdenDeviceScaleQuantArgs,
-    QuartetBackwardMsEdenDeviceScaleQuantArgs, QuartetBackwardMsEdenQuantArgs, RowAmaxArgs,
-    RowwiseNvfp4TransposeMsEdenDeviceScaleQuantArgs, TensorAmaxArgs,
+    Nvfp4QuantRowwiseArgs, Nvfp4QuantRowwiseDerivedAmaxArgs, Nvfp4QuantTransposePaddedArgs,
+    Nvfp4TransposeMsEdenDeviceScaleQuantArgs, QuartetBackwardMsEdenDeviceScaleQuantArgs,
+    QuartetBackwardMsEdenQuantArgs, RowAmaxArgs, RowwiseNvfp4TransposeMsEdenDeviceScaleQuantArgs,
+    TensorAmaxArgs,
 };
 pub use launcher::Nvfp4QuantModule;
 

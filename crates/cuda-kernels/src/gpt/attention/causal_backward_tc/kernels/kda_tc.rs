@@ -3,7 +3,8 @@ use cuda_device::{DisjointSlice, cuda_module, kernel};
 use super::super::kda::{
     ChunkStateMatmulMode, KdaChunkwiseGrads, KdaChunkwiseInputs, KdaDmInputs, KdaIntraGrads,
     KdaIntraInputs, chunk_intra_kda_backward_body, chunk_intra_kda_dm_body,
-    chunk_kda_dkg_from_vnew_dh_body, chunk_state_matmul_body, chunkwise_kda_backward_body,
+    chunk_kda_dkg_from_vnew_dh_body, chunk_state_dw_dqg_matmul_body, chunk_state_matmul_body,
+    chunkwise_kda_backward_body,
 };
 use crate::attention::CausalAttentionParams;
 use crate::kda_tc::{with_kda_tiles, with_tc_ab_tiles};
@@ -41,6 +42,18 @@ pub(super) mod module {
         params: CausalAttentionParams,
     ) {
         with_tc_ab_tiles!(chunk_state_matmul_body; d_out_compact, d_out_compact, chunk_states, d_qg, params; ChunkStateMatmulMode::Dqg);
+    }
+
+    #[kernel]
+    pub fn chunk_kda_dw_dqg_from_state_kernel(
+        d_u: &[f32],
+        d_out_compact: &[f32],
+        chunk_states: &[u16],
+        d_w: DisjointSlice<f32>,
+        d_qg: DisjointSlice<f32>,
+        params: CausalAttentionParams,
+    ) {
+        with_tc_ab_tiles!(chunk_state_dw_dqg_matmul_body; d_u, d_out_compact, chunk_states, d_w, d_qg, params);
     }
 
     #[kernel]

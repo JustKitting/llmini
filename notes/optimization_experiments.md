@@ -44,6 +44,104 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 
 ```text
 date: 2026-07-16
+commit: accepted local jj commit after full gate
+experiment: Fuse rowwise amax with NVFP4 encoding and pair KDA state-gradient matmuls.
+status: accepted_900s
+change:
+  The active FP32 rowwise-activation quantization path now uses one 256-thread
+  CTA per row to compute the exact row maximum, write the existing amax and
+  global-scale side effects, and encode that row's NVFP4 payload and scales.
+  Hidden-precomputed-amax callers retain the separate quantization kernel. In
+  KDA backward, dW and dQG now share one kernel which stages their common FP16
+  saved-state B tile once, then performs the two original tensor-core
+  accumulations in the same order with independent accumulators.
+numerics:
+  A new 17x2048 GPU comparison checks the fused row path bit-for-bit against
+  the former row-amax plus row-quant sequence for the amax values, FP4 bytes,
+  encoded scales, and global scales. Causal-attention backward and full block-
+  attention backward GPU comparisons pass with the paired KDA kernel. The
+  whole-training diagnostic exactly preserves loss=10.8644304276,
+  Grad_norm=18.9518203735, and held-out val_loss=10.422729.
+memory:
+  All output and scratch allocations are unchanged. The fusion only removes
+  redundant reads and launches; no peak-VRAM or larger-batch fit is claimed.
+minimum_impact_gate:
+  The matched parent average was 565.717159ms per step, so the aggregate 0.5%
+  screen floor was 2.828586ms. Across reciprocal profiles, the directly
+  affected row-quant and KDA families save 3.706282 and 3.700821ms per step,
+  clearing that floor before the fixed-wall gates.
+focused_profile:
+  Matched parent samples:
+    target/nsys/20260716_producer_batch_accepted_math_candidate.nsys-rep
+    target/nsys/20260716_producer_batch_accepted_math_candidate_reciprocal.nsys-rep
+    total GPU kernels: 5648.075521 and 5660.412221ms.
+    kernel launches: 86315 in both samples.
+  Candidate samples:
+    target/nsys/20260716_kda_dual_fused_row_quant_candidate.nsys-rep
+    target/nsys/20260716_kda_dual_fused_row_quant_candidate_reciprocal.nsys-rep
+    total GPU kernels: 5596.838867 and 5613.826558ms.
+    kernel launches: 85821 in both samples.
+  Over the same 10 training steps plus endpoint validation, total-kernel time
+  falls by 5.123665 and 4.658566ms per training step (-0.907% and -0.823%),
+  and the profile contains 494 fewer launches. The old dW plus dQG kernels
+  take 114.392680/114.695678ms per profile versus
+  112.278812/112.591585ms fused. The old row-quant plus row-amax families take
+  131.660842/131.939972ms versus 96.711894/97.035849ms after fusion.
+rejected_side_checks:
+  Two attempted scale-plane packing rewrites were fully reverted. A wider
+  word-store version raised pack time from 53.027848/53.154049ms to
+  53.611535/53.766093ms. A shared-memory tiled version raised it to
+  79.352389/79.554140ms, about 50% slower. Artifacts are under
+  target/nsys/20260716_scale_pack_word_candidate* and
+  target/nsys/20260716_scale_pack_tiled_candidate*.
+verification:
+  cargo fmt --all --check, git diff --check,
+  cargo check --workspace --lib --bins, fresh
+  cargo oxide build --arch sm_120a, and
+  cargo test --workspace --release --lib --bins: pass (50 host tests).
+  The exact fused-row GPU test, GPT causal-attention backward wrapper, and full
+  block-attention backward comparisons pass after the candidate build.
+  Required clean 30-second screen with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260716_024218Z_fineweb_30s
+    stdout: target/gates/20260716_kda_dual_fused_row_quant_30s.log
+    completed_steps=56, train_elapsed_s=30.477, val_loss=6.708341.
+  Required 900-second gate with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260716_024312Z_fineweb_900s
+    stdout: target/gates/20260716_kda_dual_fused_row_quant_900s.log
+    completed_steps=1602, train_elapsed_s=900.457, val_loss=4.872478.
+    All 33 high-fidelity loss and grad-norm samples were finite and nonzero,
+    with zero skipped updates, loss-spike skips, grad-norm-spike skips, or
+    nonfinite skips. Grad norm ranged from 1.160712361 to 18.951820374. Every
+    sample retained batch 4, sequence 2048, and 8192 tokens per step.
+  Training, validation, metric checks, and loss plotting all completed before
+  the 900-second process encountered an unrelated post-training generation
+  error: its host executable had linked a tokenizer artifact compiled in a
+  subsequently deleted temporary JJ workspace. A clean release rebuild from
+  this checkout contains no stale path, and the exact one-step generation
+  recheck exits successfully and writes generated text:
+    target/gates/20260716_kda_dual_fused_row_quant_generation_recheck.log
+measured_effect:
+  Against the matched 30-second parent:
+    completed_steps: 55 -> 56 (+1, +1.818%).
+    average step time: 549.836364ms -> 544.232143ms
+      (-5.604221ms, -1.019%).
+    held-out val_loss: 6.722679 -> 6.708341 (-0.213%).
+  Against the matched 900-second parent:
+    completed_steps: 1591 -> 1602 (+11, +0.691%).
+    average step time: 565.717159ms -> 562.083021ms
+      (-3.634138ms, -0.642%).
+    training tokens: 13033472 -> 13123584 (+90112, +0.691%).
+    held-out val_loss: 4.886631 -> 4.872478 (-0.290%).
+decision:
+  Keep and promote. Reciprocal profiles and both fixed-wall gates agree on the
+  speed direction, the sustained run clears the 0.5% threshold, held-out loss
+  improves, and numerical stability is clean. notes/sweep_baseline.env points
+  to this run. The next aggregate 0.5% floor is
+  (900.457 / 1602) * 0.005 = 2.810415ms per step.
+```
+
+```text
+date: 2026-07-16
 commit: rejected uncommitted candidate, source reverted
 experiment: Correct full-width layer norm and save normalized xhat in the FP16 tape.
 status: rejected_900s_quality_gate

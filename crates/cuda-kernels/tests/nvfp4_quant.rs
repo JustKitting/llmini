@@ -6,8 +6,9 @@ use rust_kernels_cuda::f32_matrix_ops::{
     F32MatrixOpsModule, F32ScaleInPlaceByAmaxArgs,
 };
 use rust_kernels_cuda::nvfp4_quant::{
-    MsEdenQuantArgs, Nvfp4QuantArgs, Nvfp4QuantModule, Nvfp4QuantPaddedArgs,
-    Nvfp4QuantTransposePaddedArgs, TensorAmaxArgs, nvfp4_tensor_amax_chunks,
+    MsEdenQuantArgs, Nvfp4QuantArgs, Nvfp4QuantModule, Nvfp4QuantPaddedArgs, Nvfp4QuantRowwiseArgs,
+    Nvfp4QuantRowwiseDerivedAmaxArgs, Nvfp4QuantTransposePaddedArgs, RowAmaxArgs, TensorAmaxArgs,
+    nvfp4_tensor_amax_chunks,
 };
 use rust_kernels_cuda::quartet::QUARTET_MS_EDEN_SCALE_OVERRIDE;
 
@@ -46,6 +47,76 @@ fn fp32_to_nvfp4_four_six_writes_quantized_outputs() -> Result<(), Box<dyn Error
 
     common::assert_nvfp4_buffers_nonzero(&fp4, &scales);
     assert!((global_scale[0] - 8.0 / (256.0 * 6.0)).abs() <= 1.0e-8);
+    Ok(())
+}
+
+#[ignore = "requires generated sm_120a PTX"]
+#[test]
+fn fused_row_amax_four_six_matches_two_pass_rowwise_quantization() -> Result<(), Box<dyn Error>> {
+    const ROWS: usize = 17;
+    const COLS: usize = 2048;
+    let x = (0..ROWS * COLS)
+        .map(|index| {
+            let signed = (index % 509) as f32 - 254.0;
+            signed * (1.0 + (index / COLS) as f32 * 0.03125) * 0.0078125
+        })
+        .collect::<Vec<_>>();
+    let (_, stream, module) = common::cuda_test_module(Nvfp4QuantModule::from_module)?;
+    let x_dev = DeviceBuffer::from_host(&stream, &x)?;
+
+    let mut reference_amax = DeviceBuffer::<f32>::zeroed(&stream, ROWS)?;
+    let mut reference_fp4 = DeviceBuffer::<u8>::zeroed(&stream, x.len() / 2)?;
+    let mut reference_scales = DeviceBuffer::<u8>::zeroed(&stream, x.len() / 16)?;
+    let mut reference_global = DeviceBuffer::<f32>::zeroed(&stream, ROWS)?;
+    module.row_amax_f32(RowAmaxArgs {
+        stream: &stream,
+        x: &x_dev,
+        out: &mut reference_amax,
+        row_count: ROWS as u32,
+        row_len: COLS as u32,
+    })?;
+    module.fp32_to_nvfp4_four_six_rowwise(Nvfp4QuantRowwiseArgs {
+        stream: &stream,
+        x: &x_dev,
+        amax: &reference_amax,
+        out_fp4: &mut reference_fp4,
+        out_scales: &mut reference_scales,
+        out_global_scale: &mut reference_global,
+        group_count: (x.len() / 16) as u32,
+        row_len: COLS as u32,
+    })?;
+
+    let mut fused_amax = DeviceBuffer::<f32>::zeroed(&stream, ROWS)?;
+    let mut fused_fp4 = DeviceBuffer::<u8>::zeroed(&stream, x.len() / 2)?;
+    let mut fused_scales = DeviceBuffer::<u8>::zeroed(&stream, x.len() / 16)?;
+    let mut fused_global = DeviceBuffer::<f32>::zeroed(&stream, ROWS)?;
+    module.fp32_to_nvfp4_four_six_rowwise_derived_amax(Nvfp4QuantRowwiseDerivedAmaxArgs {
+        stream: &stream,
+        x: &x_dev,
+        amax: &mut fused_amax,
+        out_fp4: &mut fused_fp4,
+        out_scales: &mut fused_scales,
+        out_global_scale: &mut fused_global,
+        row_count: ROWS as u32,
+        row_len: COLS as u32,
+    })?;
+
+    assert_eq!(
+        fused_amax.to_host_vec(&stream)?,
+        reference_amax.to_host_vec(&stream)?
+    );
+    assert_eq!(
+        fused_fp4.to_host_vec(&stream)?,
+        reference_fp4.to_host_vec(&stream)?
+    );
+    assert_eq!(
+        fused_scales.to_host_vec(&stream)?,
+        reference_scales.to_host_vec(&stream)?
+    );
+    assert_eq!(
+        fused_global.to_host_vec(&stream)?,
+        reference_global.to_host_vec(&stream)?
+    );
     Ok(())
 }
 

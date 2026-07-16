@@ -1,6 +1,8 @@
 use cuda_core::{CudaStream, DeviceBuffer, DriverError};
 use rust_kernels_cuda::nvfp4::Nvfp4RowwiseDeviceTensor;
-use rust_kernels_cuda::nvfp4_quant::{Nvfp4QuantModule, Nvfp4QuantRowwiseArgs, RowAmaxArgs};
+use rust_kernels_cuda::nvfp4_quant::{
+    Nvfp4QuantModule, Nvfp4QuantRowwiseArgs, Nvfp4QuantRowwiseDerivedAmaxArgs,
+};
 
 use crate::types::HiddenStateDevice;
 
@@ -41,14 +43,16 @@ impl<'a> RowwiseNvfp4Scratch<'a> {
         row_count: u32,
         row_len: u32,
     ) -> Result<(), DriverError> {
-        quant_module.row_amax_f32(RowAmaxArgs {
+        quant_module.fp32_to_nvfp4_four_six_rowwise_derived_amax(Nvfp4QuantRowwiseDerivedAmaxArgs {
             stream,
             x: input,
-            out: amax,
+            amax,
+            out_fp4: self.bytes,
+            out_scales: self.scales,
+            out_global_scale: self.global_scales,
             row_count,
             row_len,
-        })?;
-        self.quantize_precomputed_amax(quant_module, stream, input, amax, row_count, row_len)
+        })
     }
 
     pub fn quantize_hidden_precomputed(
