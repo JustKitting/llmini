@@ -46,6 +46,83 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-16
 commit: accepted local jj commit after full gate
+experiment: Reuse safe main-forward activation storage for backward gradients.
+status: accepted_450s_memory_capacity_win
+change:
+  Backward d_hidden now reuses the consumed final-normalized FP32 forward
+  workspace, and d_mlp_up reuses the consumed FP32 MLP activation workspace.
+  The corresponding owned backward allocations are removed. The buffers have
+  identical shapes, and each backward writer is enqueued only after the last
+  forward/NextLat consumer on the same CUDA stream. Kernels, arithmetic,
+  launches, and saved tapes are unchanged.
+alias_diagnostics:
+  The original four-buffer candidate also reused the forward residual as
+  d_residual_after_attention and forward QKV as d_qkv. That candidate was
+  rejected before gating: reciprocal 10-step runs ended at held-out losses
+  10.416636 and 10.419899 instead of the parent's 8.648398 and 8.647870.
+  First-step grad norm was approximately 659k instead of 16.9.
+  Split diagnostics identified two independently unsafe aliases:
+    target/gates/20260716_qkv_mlp_forward_buffer_reuse_10step_diagnostic.log
+      QKV+MLP reuse: grad_norm=16872.791, val_loss=8.858086.
+    target/gates/20260716_residual_mlp_forward_buffer_reuse_10step_diagnostic.log
+      residual+MLP reuse: grad_norm=582830.875, val_loss=10.433649.
+  The safe subsets remained numerically matched:
+    target/gates/20260716_mlp_forward_buffer_reuse_10step_diagnostic.log
+      MLP-only: grad_norm=16.880507, val_loss=8.643079.
+    target/gates/20260716_normalized_mlp_forward_buffer_reuse_10step_diagnostic.log
+      normalized+MLP: grad_norm=16.848600, val_loss=8.647417.
+  Therefore residual and QKV retain dedicated backward storage; their observed
+  corruption is not folded into or hidden by this accepted change.
+memory:
+  Matched TRAIN_REPORT_MEMORY probes:
+    target/gates/20260716_nextlat_buffer_reuse_memory_candidate.log
+      accepted parent used_bytes=43850596352.
+    target/gates/20260716_normalized_mlp_forward_buffer_reuse_memory_candidate.log
+      candidate used_bytes=43515052032.
+  Used allocation falls by exactly 335544320 bytes = 320 MiB. Across the four
+  accepted capacity changes since used_bytes=45326991360, the active allocation
+  has fallen by 1811939328 bytes = 1728 MiB = 1.6875 GiB.
+minimum_impact_gate:
+  This candidate is accepted through the separate measured memory-capacity
+  rule. Launch count is unchanged and reciprocal profiles are timing-neutral;
+  no standalone 0.5% speed claim is made.
+profiles:
+  Accepted NextLat-reuse parent mean:
+    target/nsys/20260716_nextlat_buffer_reuse_a.nsys-rep: 4182.476640ms.
+    target/nsys/20260716_nextlat_buffer_reuse_b.nsys-rep: 4193.734158ms.
+  Candidate:
+    target/nsys/20260716_normalized_mlp_forward_buffer_reuse_a.nsys-rep:
+      4182.837916ms.
+    target/nsys/20260716_normalized_mlp_forward_buffer_reuse_b.nsys-rep:
+      4189.331148ms.
+  Mean total kernel time is 4188.105399 -> 4186.084532ms, a 2.020867ms
+  (0.048%) favorable movement treated as noise. Both paths launch exactly
+  65026 kernels.
+verification:
+  cargo fmt --all --check, cargo check --workspace, git diff --check, a fresh
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a, and all 50 workspace
+  release lib/bin host tests: pass. Multiple matched 10-step training
+  diagnostics verify the accepted and rejected alias subsets directly.
+gates:
+  30s screen target/runs/20260716_181600Z_fineweb_30s:
+    heldout val_loss=6.513461, completed_steps=74, train_elapsed_s=30.097.
+    Parent is 6.513792 / 74 / 30.178; held-out loss moves -0.005%.
+  450s sustained target/runs/20260716_181705Z_fineweb_450s:
+    heldout val_loss=5.174783, completed_steps=1078, train_elapsed_s=450.383.
+    Parent is 5.159012 / 1077 / 450.364; held-out loss moves +0.306%,
+    completed steps increase by one, and average step time moves from
+    418.165274 to 417.794991ms. All 22 high-fidelity samples are finite and
+    nonzero, every skip metric is zero, batch is 4, sequence length is 2048,
+    and tokens per step are 8192.
+decision:
+  Accept and promote the 320 MiB safe subset. Reject and retain dedicated
+  storage for residual and QKV. The next aggregate 0.5% floor is
+  2.088975ms per step, or 20.889750ms per ten-step profile.
+```
+
+```text
+date: 2026-07-16
+commit: accepted local jj commit after full gate
 experiment: Reuse non-overlapping NextLat forward and backward activation buffers.
 status: accepted_450s_memory_capacity_win
 change:

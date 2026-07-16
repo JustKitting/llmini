@@ -1,8 +1,8 @@
 use cuda_core::{CudaStream, DeviceBuffer, DriverError};
 use gpt2_nvfp4::{
     AttentionCoreScratchBuffers, BlockAttentionBackwardScratch, GPT2_MLP, GPT2_N_EMBD, GPT2_QKV,
-    GPT2_VOCAB_SIZE, Gpt2BackwardScratch, HiddenState, LinearScratch, MlpActivation,
-    MlpBackwardScratch, QkvActivation,
+    GPT2_VOCAB_SIZE, Gpt2BackwardScratch, HiddenState, LinearScratch, MlpBackwardScratch,
+    QkvActivation,
 };
 
 use super::device_buffer::zero;
@@ -14,10 +14,10 @@ pub struct BackwardScratchBuffers {
     pub attention_core: AttentionCoreScratchBuffers,
     mlp_down: LinearScratch,
     mlp_up: LinearScratch,
+    // Keep these disjoint from the forward residual and QKV workspaces. Matched
+    // training diagnostics show that aliasing either workspace corrupts gradients.
     d_residual_after_attention: DeviceBuffer<f32>,
-    d_hidden: DeviceBuffer<f32>,
     d_qkv: DeviceBuffer<f32>,
-    d_mlp_up: DeviceBuffer<f32>,
 }
 
 impl BackwardScratchBuffers {
@@ -30,13 +30,15 @@ impl BackwardScratchBuffers {
             mlp_down: LinearScratch::new(stream, GPT2_MLP, GPT2_N_EMBD)?,
             mlp_up: LinearScratch::new(stream, GPT2_N_EMBD, GPT2_MLP)?,
             d_residual_after_attention: zero(stream, HiddenState::LEN)?,
-            d_hidden: zero(stream, HiddenState::LEN)?,
             d_qkv: zero(stream, QkvActivation::LEN)?,
-            d_mlp_up: zero(stream, MlpActivation::LEN)?,
         })
     }
 
-    pub fn scratch(&mut self) -> Gpt2BackwardScratch<'_> {
+    pub fn scratch<'a>(
+        &'a mut self,
+        d_hidden: &'a mut DeviceBuffer<f32>,
+        d_mlp_up: &'a mut DeviceBuffer<f32>,
+    ) -> Gpt2BackwardScratch<'a> {
         let down_linear = self.mlp_down.parts();
         let up_linear = self.mlp_up.parts();
         Gpt2BackwardScratch {
@@ -51,9 +53,9 @@ impl BackwardScratchBuffers {
                 up_linear,
             },
             d_residual_after_attention: &mut self.d_residual_after_attention,
-            d_hidden: &mut self.d_hidden,
+            d_hidden,
             d_qkv: &mut self.d_qkv,
-            d_mlp_up: &mut self.d_mlp_up,
+            d_mlp_up,
         }
     }
 }
