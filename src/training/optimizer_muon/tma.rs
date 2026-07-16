@@ -555,7 +555,7 @@ fn prepare_tma_a_padded(
         x: input,
         amax: &*tma.bound_amax,
         out_fp4: tma.a.bytes,
-        out_scales: tma.a.scales,
+        out_scales: tma.a.scale_packed,
         out_global_scale: tma.a.global_scale,
         rows,
         cols,
@@ -565,19 +565,12 @@ fn prepare_tma_a_padded(
     if defer_bound {
         runtime
             .quant
-            .fp32_to_nvfp4_four_six_exact_lazy_bounded_amax(args)?;
+            .fp32_to_nvfp4_four_six_exact_lazy_bounded_amax_packed_scales(args)
     } else {
         runtime
             .quant
-            .fp32_to_nvfp4_four_six_exact_bounded_amax(args)?;
+            .fp32_to_nvfp4_four_six_exact_bounded_amax_packed_scales(args)
     }
-    runtime.optimizer.tma_scale_pack().pack(
-        stream,
-        &*tma.a.scales,
-        tma.a.scale_packed,
-        dims.m,
-        dims.k,
-    )
 }
 
 fn prepare_tma_b_transposed(
@@ -949,35 +942,23 @@ fn quantize_operand_pair_padded_with_amax(
     assert!(rows.is_multiple_of(16));
     assert!(cols.is_multiple_of(64));
 
-    runtime.quant.fp32_pair_to_nvfp4_four_six_exact_pow2_tiled(
-        Nvfp4QuantPairTransposeExactArgs {
-            stream,
-            x: input,
-            amax: &*row.amax,
-            out_fp4: row.bytes,
-            out_scales: row.scales,
-            out_global_scale: row.global_scale,
-            transpose_out_fp4: transpose.bytes,
-            transpose_out_scales: transpose.scales,
-            transpose_out_global_scale: transpose.global_scale,
-            source_rows: rows,
-            source_cols: cols,
-        },
-    )?;
-    runtime.optimizer.tma_scale_pack().pack(
-        stream,
-        &*row.scales,
-        row.scale_packed,
-        padded_rows,
-        padded_cols,
-    )?;
-    runtime.optimizer.tma_scale_pack().pack(
-        stream,
-        &*transpose.scales,
-        transpose.scale_packed,
-        padded_cols,
-        padded_rows,
-    )
+    runtime
+        .quant
+        .fp32_pair_to_nvfp4_four_six_exact_pow2_tiled_packed_scales(
+            Nvfp4QuantPairTransposeExactArgs {
+                stream,
+                x: input,
+                amax: &*row.amax,
+                out_fp4: row.bytes,
+                out_scales: row.scale_packed,
+                out_global_scale: row.global_scale,
+                transpose_out_fp4: transpose.bytes,
+                transpose_out_scales: transpose.scale_packed,
+                transpose_out_global_scale: transpose.global_scale,
+                source_rows: rows,
+                source_cols: cols,
+            },
+        )
 }
 
 fn quantize_operand_padded(
@@ -1092,6 +1073,27 @@ fn quantize_operand_transposed_padded_with_amax(
     padded_rows: u32,
     padded_cols: u32,
 ) -> Result<(), DriverError> {
+    if cols == padded_rows
+        && rows == padded_cols
+        && rows.is_power_of_two()
+        && rows.is_multiple_of(64)
+        && cols.is_multiple_of(128)
+    {
+        return runtime
+            .quant
+            .fp32_transpose_to_nvfp4_four_six_exact_packed_scales(Nvfp4QuantTransposePaddedArgs {
+                stream,
+                x: input,
+                amax: scratch.amax,
+                out_fp4: scratch.bytes,
+                out_scales: scratch.scale_packed,
+                out_global_scale: scratch.global_scale,
+                source_rows: rows,
+                source_cols: cols,
+                padded_rows,
+                padded_cols,
+            });
+    }
     runtime
         .quant
         .fp32_transpose_to_nvfp4_four_six_padded(Nvfp4QuantTransposePaddedArgs {

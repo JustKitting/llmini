@@ -10,6 +10,7 @@ use rust_kernels_cuda::nvfp4_quant::{
     Nvfp4QuantPairTransposeExactArgs, Nvfp4QuantRowwiseArgs, Nvfp4QuantRowwiseDerivedAmaxArgs,
     Nvfp4QuantTransposePaddedArgs, RowAmaxArgs, TensorAmaxArgs, nvfp4_tensor_amax_chunks,
 };
+use rust_kernels_cuda::nvfp4_tma_matmul::scale_layout::pack_sm120_scale_plane_compact;
 use rust_kernels_cuda::quartet::QUARTET_MS_EDEN_SCALE_OVERRIDE;
 
 mod common;
@@ -427,6 +428,165 @@ fn tiled_four_six_transpose_matches_explicit_transpose() -> Result<(), Box<dyn E
     assert_eq!(
         tiled_global.to_host_vec(&stream)?,
         reference_global.to_host_vec(&stream)?
+    );
+    Ok(())
+}
+
+#[ignore = "requires generated sm_120a PTX"]
+#[test]
+fn direct_tma_scale_layout_quantizers_match_logical_scale_pack() -> Result<(), Box<dyn Error>> {
+    const ROWS: usize = 128;
+    const COLS: usize = 256;
+    let x = (0..ROWS * COLS)
+        .map(|index| {
+            let row = index / COLS;
+            let col = index % COLS;
+            ((row * 37 + col * 19) as f32 - 2048.0) * 0.0078125
+        })
+        .collect::<Vec<_>>();
+    let amax = [x.iter().fold(0.0f32, |max, value| max.max(value.abs()))];
+    let (_, stream, module) = common::cuda_test_module(Nvfp4QuantModule::from_module)?;
+    let x_dev = DeviceBuffer::from_host(&stream, &x)?;
+    let amax_dev = DeviceBuffer::from_host(&stream, &amax)?;
+
+    let mut row_fp4 = DeviceBuffer::<u8>::zeroed(&stream, x.len() / 2)?;
+    let mut row_scales = DeviceBuffer::<u8>::zeroed(&stream, x.len() / 16)?;
+    let mut row_global = DeviceBuffer::<f32>::zeroed(&stream, 1)?;
+    let mut transpose_fp4 = DeviceBuffer::<u8>::zeroed(&stream, x.len() / 2)?;
+    let mut transpose_scales = DeviceBuffer::<u8>::zeroed(&stream, x.len() / 16)?;
+    let mut transpose_global = DeviceBuffer::<f32>::zeroed(&stream, 1)?;
+    module.fp32_pair_to_nvfp4_four_six_exact_pow2_tiled(Nvfp4QuantPairTransposeExactArgs {
+        stream: &stream,
+        x: &x_dev,
+        amax: &amax_dev,
+        out_fp4: &mut row_fp4,
+        out_scales: &mut row_scales,
+        out_global_scale: &mut row_global,
+        transpose_out_fp4: &mut transpose_fp4,
+        transpose_out_scales: &mut transpose_scales,
+        transpose_out_global_scale: &mut transpose_global,
+        source_rows: ROWS as u32,
+        source_cols: COLS as u32,
+    })?;
+
+    let row_scale_reference =
+        pack_sm120_scale_plane_compact(&row_scales.to_host_vec(&stream)?, ROWS, COLS);
+    let transpose_scale_reference =
+        pack_sm120_scale_plane_compact(&transpose_scales.to_host_vec(&stream)?, COLS, ROWS);
+    let mut packed_row_fp4 = DeviceBuffer::<u8>::zeroed(&stream, x.len() / 2)?;
+    let mut packed_row_scales = DeviceBuffer::<u8>::zeroed(&stream, x.len() / 16)?;
+    let mut packed_row_global = DeviceBuffer::<f32>::zeroed(&stream, 1)?;
+    let mut packed_transpose_fp4 = DeviceBuffer::<u8>::zeroed(&stream, x.len() / 2)?;
+    let mut packed_transpose_scales = DeviceBuffer::<u8>::zeroed(&stream, x.len() / 16)?;
+    let mut packed_transpose_global = DeviceBuffer::<f32>::zeroed(&stream, 1)?;
+    module.fp32_pair_to_nvfp4_four_six_exact_pow2_tiled_packed_scales(
+        Nvfp4QuantPairTransposeExactArgs {
+            stream: &stream,
+            x: &x_dev,
+            amax: &amax_dev,
+            out_fp4: &mut packed_row_fp4,
+            out_scales: &mut packed_row_scales,
+            out_global_scale: &mut packed_row_global,
+            transpose_out_fp4: &mut packed_transpose_fp4,
+            transpose_out_scales: &mut packed_transpose_scales,
+            transpose_out_global_scale: &mut packed_transpose_global,
+            source_rows: ROWS as u32,
+            source_cols: COLS as u32,
+        },
+    )?;
+    assert_eq!(
+        packed_row_fp4.to_host_vec(&stream)?,
+        row_fp4.to_host_vec(&stream)?
+    );
+    assert_eq!(packed_row_scales.to_host_vec(&stream)?, row_scale_reference);
+    assert_eq!(
+        packed_row_global.to_host_vec(&stream)?,
+        row_global.to_host_vec(&stream)?
+    );
+    assert_eq!(
+        packed_transpose_fp4.to_host_vec(&stream)?,
+        transpose_fp4.to_host_vec(&stream)?
+    );
+    assert_eq!(
+        packed_transpose_scales.to_host_vec(&stream)?,
+        transpose_scale_reference
+    );
+    assert_eq!(
+        packed_transpose_global.to_host_vec(&stream)?,
+        transpose_global.to_host_vec(&stream)?
+    );
+
+    let mut bounded_fp4 = DeviceBuffer::<u8>::zeroed(&stream, x.len() / 2)?;
+    let mut bounded_scales = DeviceBuffer::<u8>::zeroed(&stream, x.len() / 16)?;
+    let mut bounded_global = DeviceBuffer::<f32>::zeroed(&stream, 1)?;
+    module.fp32_to_nvfp4_four_six_exact_lazy_bounded_amax(Nvfp4QuantPaddedArgs {
+        stream: &stream,
+        x: &x_dev,
+        amax: &amax_dev,
+        out_fp4: &mut bounded_fp4,
+        out_scales: &mut bounded_scales,
+        out_global_scale: &mut bounded_global,
+        rows: ROWS as u32,
+        cols: COLS as u32,
+        padded_rows: ROWS as u32,
+        padded_cols: COLS as u32,
+    })?;
+    let bounded_scale_reference =
+        pack_sm120_scale_plane_compact(&bounded_scales.to_host_vec(&stream)?, ROWS, COLS);
+    let mut packed_bounded_fp4 = DeviceBuffer::<u8>::zeroed(&stream, x.len() / 2)?;
+    let mut packed_bounded_scales = DeviceBuffer::<u8>::zeroed(&stream, x.len() / 16)?;
+    let mut packed_bounded_global = DeviceBuffer::<f32>::zeroed(&stream, 1)?;
+    module.fp32_to_nvfp4_four_six_exact_lazy_bounded_amax_packed_scales(Nvfp4QuantPaddedArgs {
+        stream: &stream,
+        x: &x_dev,
+        amax: &amax_dev,
+        out_fp4: &mut packed_bounded_fp4,
+        out_scales: &mut packed_bounded_scales,
+        out_global_scale: &mut packed_bounded_global,
+        rows: ROWS as u32,
+        cols: COLS as u32,
+        padded_rows: ROWS as u32,
+        padded_cols: COLS as u32,
+    })?;
+    assert_eq!(
+        packed_bounded_fp4.to_host_vec(&stream)?,
+        bounded_fp4.to_host_vec(&stream)?
+    );
+    assert_eq!(
+        packed_bounded_scales.to_host_vec(&stream)?,
+        bounded_scale_reference
+    );
+    assert_eq!(
+        packed_bounded_global.to_host_vec(&stream)?,
+        bounded_global.to_host_vec(&stream)?
+    );
+
+    let mut transposed_fp4 = DeviceBuffer::<u8>::zeroed(&stream, x.len() / 2)?;
+    let mut transposed_scales = DeviceBuffer::<u8>::zeroed(&stream, x.len() / 16)?;
+    let mut transposed_global = DeviceBuffer::<f32>::zeroed(&stream, 1)?;
+    module.fp32_transpose_to_nvfp4_four_six_exact_packed_scales(Nvfp4QuantTransposePaddedArgs {
+        stream: &stream,
+        x: &x_dev,
+        amax: &amax_dev,
+        out_fp4: &mut transposed_fp4,
+        out_scales: &mut transposed_scales,
+        out_global_scale: &mut transposed_global,
+        source_rows: ROWS as u32,
+        source_cols: COLS as u32,
+        padded_rows: COLS as u32,
+        padded_cols: ROWS as u32,
+    })?;
+    assert_eq!(
+        transposed_fp4.to_host_vec(&stream)?,
+        transpose_fp4.to_host_vec(&stream)?
+    );
+    assert_eq!(
+        transposed_scales.to_host_vec(&stream)?,
+        transpose_scale_reference
+    );
+    assert_eq!(
+        transposed_global.to_host_vec(&stream)?,
+        transpose_global.to_host_vec(&stream)?
     );
     Ok(())
 }

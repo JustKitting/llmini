@@ -7,6 +7,7 @@ use super::args::{
 use super::launcher::Nvfp4QuantModule;
 use super::shape::{four_six_grid_config, four_six_rowwise_pow2, four_six_transpose_tiled_config};
 use crate::launch::grid_x_config;
+use crate::nvfp4_tma_matmul::cute::Sm120ScaleLayout;
 
 const SCALE_OVERRIDE: f32 = 1.0;
 
@@ -145,6 +146,39 @@ impl Nvfp4QuantModule {
             )
     }
 
+    pub fn fp32_pair_to_nvfp4_four_six_exact_pow2_tiled_packed_scales(
+        &self,
+        args: Nvfp4QuantPairTransposeExactArgs<'_, '_>,
+    ) -> Result<(), DriverError> {
+        assert!(args.source_rows.is_power_of_two());
+        assert!(args.source_rows.is_multiple_of(Sm120ScaleLayout::MN_BLOCK));
+        assert!(args.source_cols.is_multiple_of(Sm120ScaleLayout::MN_BLOCK));
+        assert!(
+            args.out_scales.len()
+                >= Sm120ScaleLayout::packed_len(args.source_rows, args.source_cols)
+        );
+        assert!(
+            args.transpose_out_scales.len()
+                >= Sm120ScaleLayout::packed_len(args.source_cols, args.source_rows)
+        );
+        self.four_six
+            .fp32_pair_to_nvfp4_four_six_exact_pow2_tiled_packed_scales_kernel(
+                args.stream,
+                four_six_transpose_tiled_config(args.source_rows, args.source_cols),
+                args.x,
+                args.amax,
+                args.out_fp4,
+                args.out_scales,
+                args.out_global_scale,
+                args.transpose_out_fp4,
+                args.transpose_out_scales,
+                args.transpose_out_global_scale,
+                args.source_rows,
+                args.source_cols,
+                SCALE_OVERRIDE,
+            )
+    }
+
     pub fn rebase_four_six_global_scale_sqrt_bound(
         &self,
         stream: &CudaStream,
@@ -176,6 +210,20 @@ impl Nvfp4QuantModule {
         self.launch_fp32_to_nvfp4_four_six_exact_bounded_amax(args, true)
     }
 
+    pub fn fp32_to_nvfp4_four_six_exact_bounded_amax_packed_scales(
+        &self,
+        args: Nvfp4QuantPaddedArgs<'_, '_>,
+    ) -> Result<(), DriverError> {
+        self.launch_fp32_to_nvfp4_four_six_exact_bounded_amax_packed_scales(args, false)
+    }
+
+    pub fn fp32_to_nvfp4_four_six_exact_lazy_bounded_amax_packed_scales(
+        &self,
+        args: Nvfp4QuantPaddedArgs<'_, '_>,
+    ) -> Result<(), DriverError> {
+        self.launch_fp32_to_nvfp4_four_six_exact_bounded_amax_packed_scales(args, true)
+    }
+
     fn launch_fp32_to_nvfp4_four_six_exact_bounded_amax(
         &self,
         args: Nvfp4QuantPaddedArgs<'_, '_>,
@@ -194,6 +242,32 @@ impl Nvfp4QuantModule {
                 args.out_fp4,
                 args.out_scales,
                 args.out_global_scale,
+                apply_bound as u32,
+            )
+    }
+
+    fn launch_fp32_to_nvfp4_four_six_exact_bounded_amax_packed_scales(
+        &self,
+        args: Nvfp4QuantPaddedArgs<'_, '_>,
+        apply_bound: bool,
+    ) -> Result<(), DriverError> {
+        assert_eq!(args.rows, args.padded_rows);
+        assert_eq!(args.cols, args.padded_cols);
+        assert!(args.rows.is_multiple_of(Sm120ScaleLayout::MN_BLOCK));
+        assert!(args.cols.is_multiple_of(Sm120ScaleLayout::K_ATOM));
+        assert!(args.out_scales.len() >= Sm120ScaleLayout::packed_len(args.rows, args.cols));
+        let elements = args.rows * args.cols;
+        self.four_six
+            .fp32_to_nvfp4_four_six_exact_bounded_amax_packed_scales_kernel(
+                args.stream,
+                four_six_grid_config(elements / 16),
+                args.x,
+                args.amax,
+                args.out_fp4,
+                args.out_scales,
+                args.out_global_scale,
+                args.rows,
+                args.cols,
                 apply_bound as u32,
             )
     }
@@ -269,6 +343,34 @@ impl Nvfp4QuantModule {
                 args.source_rows,
                 args.source_cols,
                 args.padded_cols,
+                SCALE_OVERRIDE,
+            )
+    }
+
+    pub fn fp32_transpose_to_nvfp4_four_six_exact_packed_scales(
+        &self,
+        args: Nvfp4QuantTransposePaddedArgs<'_, '_>,
+    ) -> Result<(), DriverError> {
+        assert_eq!(args.source_cols, args.padded_rows);
+        assert_eq!(args.source_rows, args.padded_cols);
+        assert!(args.source_rows.is_power_of_two());
+        assert!(args.source_rows.is_multiple_of(Sm120ScaleLayout::K_ATOM));
+        assert!(args.source_cols.is_multiple_of(Sm120ScaleLayout::MN_BLOCK));
+        assert!(
+            args.out_scales.len()
+                >= Sm120ScaleLayout::packed_len(args.source_cols, args.source_rows)
+        );
+        self.four_six
+            .fp32_transpose_to_nvfp4_four_six_exact_pow2_tiled_packed_scales_kernel(
+                args.stream,
+                four_six_transpose_tiled_config(args.source_rows, args.source_cols),
+                args.x,
+                args.amax,
+                args.out_fp4,
+                args.out_scales,
+                args.out_global_scale,
+                args.source_rows,
+                args.source_cols,
                 SCALE_OVERRIDE,
             )
     }

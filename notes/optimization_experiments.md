@@ -46,6 +46,94 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-16
 commit: accepted local jj commit after full gate
+experiment: Emit Muon TMA scale layout directly from Four-Six quantizers.
+status: accepted_450s
+change:
+  Added exact-shape Four-Six producers that store local E4M3 scales directly
+  in the SM120 block-major TMA layout while producing the existing row,
+  transpose, and bounded NVFP4 payloads. Routed Muon's paired source/transpose
+  producer, bounded Gram producer, and transposed action producer through the
+  new paths. This removes the following 13,400 standalone scale-pack launches
+  from each ten-step profile; padded and non-Muon paths retain the generic
+  logical-scale producer plus pack fallback.
+numerics:
+  Scale byte values, FP4 payload bytes, global scales, Polar iterations,
+  magnitude bounds, update math, and TMA descriptors are unchanged. Only the
+  destination address of each produced scale byte changes. A dedicated GPU
+  test compares all three direct-layout producers against CPU packing of the
+  logical layouts and requires bitwise equality for scales, payloads, and
+  global scales. The exact FineWeb one-step loss also remains 10.422787.
+memory:
+  No persistent allocation or scratch capacity changes. Existing logical
+  scale buffers remain available for fallback paths; direct-layout hot calls
+  simply leave them unused. This is a launch/traffic win, not a VRAM win.
+minimum_impact_gate:
+  The promoted floor was 23.238184ms over a ten-step profile. Directly touched
+  pack and producer families fall from 318.013614 to 284.727322ms/profile,
+  saving 33.286292ms and clearing the floor by 1.43x. The standalone scale
+  pack family falls from 53.279954 to 23.263669ms because 13,400 of 17,616
+  launches disappear. Total GPU kernel time moves from 4655.971040 to
+  4642.578991ms, a noisier 13.392049ms / 0.288% mean reduction; both fixed-wall
+  gates below provide the objective-facing throughput result.
+focused_profile:
+  Accepted reciprocal samples:
+    target/nsys/20260716_nextlat_tma_affine_candidate.nsys-rep
+    target/nsys/20260716_nextlat_tma_affine_candidate_reciprocal.nsys-rep
+    total GPU kernels 4655.201237 and 4656.740842ms;
+      mean 4655.971040ms, 81164 launches each.
+    directly touched families 317.837119 and 318.190109ms;
+      mean 318.013614ms.
+  Candidate reciprocal samples:
+    target/nsys/20260716_muon_direct_packed_scales_candidate.nsys-rep
+    target/nsys/20260716_muon_direct_packed_scales_candidate_reciprocal.nsys-rep
+    total GPU kernels 4638.933485 and 4646.224496ms;
+      mean 4642.578991ms, 67764 launches each.
+    directly touched families 284.823773 and 284.630870ms;
+      mean 284.727322ms.
+verification:
+  cargo fmt --all, cargo check --workspace -q, git diff --check, and a fresh
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass. After that
+  exact rebuild, all ten ignored NVFP4 quantization tests pass, including the
+  new bitwise direct-TMA-layout comparison. A one-step FineWeb launch
+  diagnostic also completes at the exact parent held-out loss; it is not used
+  as promotion evidence.
+  Required 30-second screen with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260716_133514Z_fineweb_30s
+    stdout: target/gates/20260716_muon_direct_packed_scales_30s.log
+    completed_steps=67, train_elapsed_s=30.162, val_loss=6.536005.
+  Required 450-second gate with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260716_133604Z_fineweb_450s
+    stdout: target/gates/20260716_muon_direct_packed_scales_450s.log
+    completed_steps=974, train_elapsed_s=450.058, val_loss=5.270706.
+    All 20 high-fidelity samples are finite and nonzero, with zero skipped
+    updates, loss-spike skips, grad-norm-spike skips, or nonfinite skips. Grad
+    norm ranges from 1.173835397 to 16.900184631. Every sample retains batch 4,
+    sequence 2048, and 8192 tokens per step.
+measured_effect:
+  Against the matched 30-second parent:
+    completed steps remain 67.
+    average step time 452.701493 -> 450.179104ms
+      (-2.522388ms, -0.557%).
+    held-out val_loss 6.536700 -> 6.536005
+      (-0.000695, -0.011%).
+  Against the matched 450-second parent:
+    completed steps 969 -> 974 (+5, +0.516%).
+    average step time 464.763674 -> 462.071869ms
+      (-2.691805ms, -0.579%).
+    training tokens 7938048 -> 7979008 (+40960, +0.516%).
+    held-out val_loss 5.278974 -> 5.270706
+      (-0.008268, -0.157%).
+decision:
+  Keep and promote. The directly affected profile family clears the
+  mathematical screen, both fixed-wall gates preserve at least a 0.5% speed
+  signal, held-out loss improves, and the sustained run is stable. The next
+  0.5% threshold is (450.058 / 974) * 0.005 = 2.310359ms per step, or
+  23.103593ms over a ten-step profile.
+```
+
+```text
+date: 2026-07-16
+commit: accepted local jj commit after full gate
 experiment: Route NextLat affine projections through the NVFP4 TMA GEMM.
 status: accepted_450s_within_quality_tolerance
 change:

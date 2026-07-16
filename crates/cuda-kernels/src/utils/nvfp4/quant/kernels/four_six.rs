@@ -3,6 +3,7 @@ use cuda_device::{DisjointSlice, SharedArray, cuda_module, kernel, thread};
 use crate::block_reduce::block_max_shared_f32_for_warps;
 use crate::f16_tc_matmul::convert::load_f32x2_global;
 use crate::float_ptx::{abs_f32, max_f32, sqrt_f32};
+use crate::nvfp4_tma_matmul::cute::Sm120ScaleLayout;
 use crate::warp_reduce::thread_lane_warp;
 
 #[path = "four_six/helpers.rs"]
@@ -386,6 +387,134 @@ pub(crate) mod module {
     }
 
     #[kernel]
+    pub fn fp32_pair_to_nvfp4_four_six_exact_pow2_tiled_packed_scales_kernel(
+        x: &[f32],
+        amax: &[f32],
+        mut out_fp4: DisjointSlice<u8>,
+        mut out_scales_packed: DisjointSlice<u8>,
+        mut out_global_scale: DisjointSlice<f32>,
+        mut transpose_out_fp4: DisjointSlice<u8>,
+        mut transpose_out_scales_packed: DisjointSlice<u8>,
+        mut transpose_out_global_scale: DisjointSlice<f32>,
+        source_rows: u32,
+        source_cols: u32,
+        scale_override: f32,
+    ) {
+        static mut TILE: SharedArray<f32, TRANSPOSE_TILE_ELEMS> = SharedArray::UNINIT;
+
+        let thread_id = thread::threadIdx_x() as usize;
+        let source_row_base = thread::blockIdx_y() as usize * TRANSPOSE_TILE_ROWS;
+        let source_col_base = thread::blockIdx_x() as usize * TRANSPOSE_TILE_COLS;
+        let source_cols_usize = source_cols as usize;
+
+        let mut load_offset = thread_id;
+        while load_offset < TRANSPOSE_TILE_LOAD_ELEMS {
+            let row = load_offset / TRANSPOSE_TILE_COLS;
+            let col = load_offset - row * TRANSPOSE_TILE_COLS;
+            unsafe {
+                TILE[row * TRANSPOSE_TILE_STRIDE + col] =
+                    x[(source_row_base + row) * source_cols_usize + source_col_base + col];
+            }
+            load_offset += 256;
+        }
+        thread::sync_threads();
+
+        let (lane, mask, leader) = four_six_lane();
+        let thread_group = thread_id / GROUP_THREADS;
+        let global_scale = four_six_global_scale(amax[0], scale_override);
+        if source_row_base == 0 && source_col_base == 0 && thread_id == 0 {
+            unsafe {
+                *out_global_scale.get_unchecked_mut(0) = global_scale;
+                *transpose_out_global_scale.get_unchecked_mut(0) = global_scale;
+            }
+        }
+
+        let groups_per_source_row = source_cols_usize / GROUP_SIZE;
+        let groups_per_tile_row = TRANSPOSE_TILE_COLS / GROUP_SIZE;
+        let mut row_group = thread_group;
+        while row_group < TRANSPOSE_TILE_GROUPS {
+            let tile_row = row_group / groups_per_tile_row;
+            let row_col = (row_group - tile_row * groups_per_tile_row) * GROUP_SIZE;
+            let lane_col = row_col + 4 * lane;
+            let value_0 = unsafe { TILE[tile_row * TRANSPOSE_TILE_STRIDE + lane_col] };
+            let value_1 = unsafe { TILE[tile_row * TRANSPOSE_TILE_STRIDE + lane_col + 1] };
+            let value_2 = unsafe { TILE[tile_row * TRANSPOSE_TILE_STRIDE + lane_col + 2] };
+            let value_3 = unsafe { TILE[tile_row * TRANSPOSE_TILE_STRIDE + lane_col + 3] };
+            let source_row = source_row_base + tile_row;
+            let k_group = (source_col_base + row_col) / GROUP_SIZE;
+            let group = source_row * groups_per_source_row + k_group;
+            let base = group * GROUP_SIZE;
+            let (scale_bits, payload_word) = four_six_group_scale(
+                value_0,
+                value_1,
+                value_2,
+                value_3,
+                global_scale,
+                scale_override,
+                mask,
+                leader,
+                lane,
+            );
+            unsafe {
+                if lane == 0 {
+                    let packed = Sm120ScaleLayout::block_major_byte_offset(
+                        source_row as u32,
+                        k_group as u32,
+                        source_rows,
+                        source_cols,
+                    );
+                    *out_scales_packed.get_unchecked_mut(packed) = scale_bits;
+                }
+                store_four_six_payload_word(out_fp4.as_mut_ptr(), base, lane, payload_word);
+            }
+            row_group += TRANSPOSE_GROUPS_PER_ROUND;
+        }
+
+        let groups_per_output_row = source_rows as usize / GROUP_SIZE;
+        let group_in_output_row = source_row_base / GROUP_SIZE;
+        let mut transpose_col = thread_group;
+        while transpose_col < TRANSPOSE_TILE_COLS {
+            let lane_row = 4 * lane;
+            let value_0 = unsafe { TILE[lane_row * TRANSPOSE_TILE_STRIDE + transpose_col] };
+            let value_1 = unsafe { TILE[(lane_row + 1) * TRANSPOSE_TILE_STRIDE + transpose_col] };
+            let value_2 = unsafe { TILE[(lane_row + 2) * TRANSPOSE_TILE_STRIDE + transpose_col] };
+            let value_3 = unsafe { TILE[(lane_row + 3) * TRANSPOSE_TILE_STRIDE + transpose_col] };
+            let output_row = source_col_base + transpose_col;
+            let group = output_row * groups_per_output_row + group_in_output_row;
+            let base = group * GROUP_SIZE;
+            let (scale_bits, payload_word) = four_six_group_scale(
+                value_0,
+                value_1,
+                value_2,
+                value_3,
+                global_scale,
+                scale_override,
+                mask,
+                leader,
+                lane,
+            );
+            unsafe {
+                if lane == 0 {
+                    let packed = Sm120ScaleLayout::block_major_byte_offset(
+                        output_row as u32,
+                        group_in_output_row as u32,
+                        source_cols,
+                        source_rows,
+                    );
+                    *transpose_out_scales_packed.get_unchecked_mut(packed) = scale_bits;
+                }
+                store_four_six_payload_word(
+                    transpose_out_fp4.as_mut_ptr(),
+                    base,
+                    lane,
+                    payload_word,
+                );
+            }
+            transpose_col += TRANSPOSE_GROUPS_PER_ROUND;
+        }
+    }
+
+    #[kernel]
     pub fn four_six_rebase_sqrt_bound_global_scale_kernel(
         original_amax: &[f32],
         sqrt_bound_amax: &[f32],
@@ -448,6 +577,73 @@ pub(crate) mod module {
                 value_2 * bound_scale,
                 value_3 * bound_scale,
             );
+        }
+    }
+
+    #[kernel]
+    pub fn fp32_to_nvfp4_four_six_exact_bounded_amax_packed_scales_kernel(
+        x: &[f32],
+        original_amax: &[f32],
+        mut out_fp4: DisjointSlice<u8>,
+        mut out_scales_packed: DisjointSlice<u8>,
+        mut out_global_scale: DisjointSlice<f32>,
+        rows: u32,
+        cols: u32,
+        apply_bound: u32,
+    ) {
+        let group_ctx = four_six_group_ctx();
+        let group_count = rows as usize * cols as usize / GROUP_SIZE;
+
+        if group_ctx.group < group_count {
+            let bound = original_amax[0];
+            let bounded_amax = if bound > 1.0 {
+                bound * (1.0 / bound)
+            } else {
+                bound
+            };
+            let bound_scale = if apply_bound != 0 && bound > 1.0 {
+                1.0 / bound
+            } else {
+                1.0
+            };
+            let value_base = group_ctx.base + 4 * group_ctx.lane;
+            let (value_0, value_1) = load_f32x2_global(x.as_ptr(), value_base);
+            let (value_2, value_3) = load_f32x2_global(x.as_ptr(), value_base + 2);
+            let global_scale = four_six_global_scale(bounded_amax, 1.0);
+            let (scale_bits, payload_word) = four_six_group_scale(
+                value_0 * bound_scale,
+                value_1 * bound_scale,
+                value_2 * bound_scale,
+                value_3 * bound_scale,
+                global_scale,
+                1.0,
+                group_ctx.mask,
+                group_ctx.leader,
+                group_ctx.lane,
+            );
+            unsafe {
+                if group_ctx.group == 0 && group_ctx.lane == 0 {
+                    *out_global_scale.get_unchecked_mut(0) = global_scale;
+                }
+                if group_ctx.lane == 0 {
+                    let k_groups = cols as usize / GROUP_SIZE;
+                    let row = group_ctx.group / k_groups;
+                    let k_group = group_ctx.group - row * k_groups;
+                    let packed = Sm120ScaleLayout::block_major_byte_offset(
+                        row as u32,
+                        k_group as u32,
+                        rows,
+                        cols,
+                    );
+                    *out_scales_packed.get_unchecked_mut(packed) = scale_bits;
+                }
+                store_four_six_payload_word(
+                    out_fp4.as_mut_ptr(),
+                    group_ctx.base,
+                    group_ctx.lane,
+                    payload_word,
+                );
+            }
         }
     }
 
@@ -678,6 +874,82 @@ pub(crate) mod module {
                 }
                 if lane == 0 {
                     *out_scales.get_unchecked_mut(group) = scale_bits;
+                }
+                store_four_six_payload_word(out_fp4.as_mut_ptr(), base, lane, payload_word);
+            }
+
+            col += TRANSPOSE_GROUPS_PER_ROUND;
+        }
+    }
+
+    #[kernel]
+    pub fn fp32_transpose_to_nvfp4_four_six_exact_pow2_tiled_packed_scales_kernel(
+        x: &[f32],
+        amax: &[f32],
+        mut out_fp4: DisjointSlice<u8>,
+        mut out_scales_packed: DisjointSlice<u8>,
+        mut out_global_scale: DisjointSlice<f32>,
+        source_rows: u32,
+        source_cols: u32,
+        scale_override: f32,
+    ) {
+        static mut TILE: SharedArray<f32, TRANSPOSE_TILE_ELEMS> = SharedArray::UNINIT;
+
+        let thread_id = thread::threadIdx_x() as usize;
+        let source_row_base = thread::blockIdx_y() as usize * TRANSPOSE_TILE_ROWS;
+        let source_col_base = thread::blockIdx_x() as usize * TRANSPOSE_TILE_COLS;
+        let source_cols_usize = source_cols as usize;
+
+        let mut load_offset = thread_id;
+        while load_offset < TRANSPOSE_TILE_LOAD_ELEMS {
+            let row = load_offset / TRANSPOSE_TILE_COLS;
+            let col = load_offset - row * TRANSPOSE_TILE_COLS;
+            unsafe {
+                TILE[row * TRANSPOSE_TILE_STRIDE + col] =
+                    x[(source_row_base + row) * source_cols_usize + source_col_base + col];
+            }
+            load_offset += 256;
+        }
+        thread::sync_threads();
+
+        let (lane, mask, leader) = four_six_lane();
+        let thread_group = thread_id / GROUP_THREADS;
+        let group_in_output_row = source_row_base / GROUP_SIZE;
+        let global_scale = four_six_global_scale(amax[0], scale_override);
+        let mut col = thread_group;
+
+        while col < TRANSPOSE_TILE_COLS {
+            let lane_row = 4 * lane;
+            let value_0 = unsafe { TILE[lane_row * TRANSPOSE_TILE_STRIDE + col] };
+            let value_1 = unsafe { TILE[(lane_row + 1) * TRANSPOSE_TILE_STRIDE + col] };
+            let value_2 = unsafe { TILE[(lane_row + 2) * TRANSPOSE_TILE_STRIDE + col] };
+            let value_3 = unsafe { TILE[(lane_row + 3) * TRANSPOSE_TILE_STRIDE + col] };
+            let output_row = source_col_base + col;
+            let group = output_row * (source_rows as usize / GROUP_SIZE) + group_in_output_row;
+            let base = group * GROUP_SIZE;
+            let (scale_bits, payload_word) = four_six_group_scale(
+                value_0,
+                value_1,
+                value_2,
+                value_3,
+                global_scale,
+                scale_override,
+                mask,
+                leader,
+                lane,
+            );
+            unsafe {
+                if group == 0 && lane == 0 {
+                    *out_global_scale.get_unchecked_mut(0) = global_scale;
+                }
+                if lane == 0 {
+                    let packed = Sm120ScaleLayout::block_major_byte_offset(
+                        output_row as u32,
+                        group_in_output_row as u32,
+                        source_cols,
+                        source_rows,
+                    );
+                    *out_scales_packed.get_unchecked_mut(packed) = scale_bits;
                 }
                 store_four_six_payload_word(out_fp4.as_mut_ptr(), base, lane, payload_word);
             }
