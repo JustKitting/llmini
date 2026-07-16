@@ -46,6 +46,37 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-16
 commit: rejection record only; candidate source reverted
+experiment: Split the fused KDA intra-backward tail into 64-thread kernels.
+status: rejected_profile_gate
+change:
+  Kept the compact-gradient phase in the original 256-thread kernel, then
+  moved beta-gradient and reverse-dG-prefix into separate 64-thread chunk-grid
+  kernels. Same-stream launch ordering preserved the original phase order and
+  each phase retained its arithmetic order.
+minimum_impact_gate:
+  The fused parent occupied 102.780ms/profile. Its beta and reverse-prefix
+  phases activate only 64 of 256 threads, so releasing six idle warps per CTA
+  had a credible ceiling above the active 21.220028ms profile floor.
+verification:
+  cargo fmt --all, cargo check --workspace, a fresh exact
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a, and the ignored
+  tensor-core causal-attention backward reference comparison: pass. Profile:
+    target/nsys/20260716_kda_intra_split_tail_candidate.nsys-rep
+    target/nsys/20260716_kda_intra_split_tail_candidate.sqlite
+    total GPU kernels 4320.262629ms; compact 81.748297ms; beta 83.231026ms;
+    reverse-prefix 6.266011ms; aggregate 171.245334ms; ten-step held-out
+    val_loss=8.137571.
+decision:
+  Reject without reciprocal or fixed-wall gates and fully revert. The three
+  specialized phases regress 68.465ms (66.61%) versus the fused 102.780ms
+  parent, and total GPU time regresses 61.842ms versus the accepted
+  4258.421ms mean. Fused phase locality and avoided launch/staging costs are
+  more valuable than removing the idle tail warps; keep these phases fused.
+```
+
+```text
+date: 2026-07-16
+commit: rejection record only; candidate source reverted
 experiment: Explicitly sink the KDA dG-last reduction under its final-token use.
 status: rejected_profile_gate
 change:
