@@ -1,6 +1,6 @@
 use cuda_device::{DisjointSlice, SharedArray, cuda_module, kernel, thread, warp};
 
-use crate::nvfp4::nvfp4_rowwise_value;
+use crate::nvfp4::{nvfp4_rowwise_value, nvfp4_values2};
 
 use super::super::input::{no_pad_pow2_chunk_position, nvfp4_rowwise_value_at_pow2};
 use super::super::pack::{ms_eden_pack_chunk_no_chunk_amax_row, pack_chunk};
@@ -123,15 +123,18 @@ pub(crate) mod module {
         let source_row = source_row_base + tile_row as u32;
         let source_col = source_col_base + tile_col as u32;
 
-        unsafe {
-            TILE[tile_row * TRANSPOSE_TILE_STRIDE + tile_col] = nvfp4_rowwise_value_at_pow2(
+        if tile_col & 1 == 0 {
+            let index = ((source_row << source_cols_shift) + source_col) as usize;
+            let (lo, hi) = nvfp4_values2(
                 bytes,
                 scales,
-                source_global_scales,
-                source_cols_shift,
-                source_row,
-                source_col,
+                source_global_scales[source_row as usize],
+                index,
             );
+            unsafe {
+                TILE[tile_row * TRANSPOSE_TILE_STRIDE + tile_col] = lo;
+                TILE[tile_row * TRANSPOSE_TILE_STRIDE + tile_col + 1] = hi;
+            }
         }
         thread::sync_threads();
 

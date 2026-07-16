@@ -11,7 +11,7 @@ const WARPS_PER_BLOCK: u32 = PARAM_THREADS_PER_BLOCK / WARP_SIZE;
 const ROWS_PER_THREAD: u32 = 4;
 const UNROLLED_ROW_STRIDE: u32 = PARAM_THREADS_PER_BLOCK * ROWS_PER_THREAD;
 pub const PARAM_TILE_COLS: u32 = WARP_SIZE;
-pub const PARAM_ROW_PARTITIONS: u32 = 8;
+pub const PARAM_ROW_PARTITIONS: u32 = 16;
 const PARAM_TILED_ROW_STRIDE: u32 = WARPS_PER_BLOCK * PARAM_ROW_PARTITIONS;
 
 #[expect(clippy::too_many_arguments, reason = "CUDA ABI uses explicit buffers")]

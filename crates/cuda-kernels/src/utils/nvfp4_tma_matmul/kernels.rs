@@ -10,7 +10,7 @@ use cuda_device::{
 };
 
 use crate::float_ptx::{abs_f32, fma_f32, max_f32};
-use crate::nvfp4::nvfp4_value;
+use crate::nvfp4::nvfp4_values2;
 use crate::warp_reduce::warp_max_nonnegative_f32;
 
 use super::cute::{
@@ -676,13 +676,7 @@ fn store_acc_affine_scaled(
         return;
     }
 
-    let bias0 = nvfp4_value(bias_bytes, bias_scales, bias_global_scale, col0 as usize);
-    let bias1 = nvfp4_value(
-        bias_bytes,
-        bias_scales,
-        bias_global_scale,
-        (col0 + 1) as usize,
-    );
+    let (bias0, bias1) = nvfp4_values2(bias_bytes, bias_scales, bias_global_scale, col0 as usize);
     store_f32x2_global(
         out,
         row0 * output_dim + col0,
@@ -721,13 +715,7 @@ fn store_acc_residual_scaled(
 
     let index00 = row0 * output_dim + col0;
     let index10 = row1 * output_dim + col0;
-    let bias0 = nvfp4_value(bias_bytes, bias_scales, bias_global_scale, col0 as usize);
-    let bias1 = nvfp4_value(
-        bias_bytes,
-        bias_scales,
-        bias_global_scale,
-        (col0 + 1) as usize,
-    );
+    let (bias0, bias1) = nvfp4_values2(bias_bytes, bias_scales, bias_global_scale, col0 as usize);
     let value00 = affine_from_stored_product(acc[0], scale0, bias0);
     let value01 = affine_from_stored_product(acc[1], scale0, bias1);
     let value10 = affine_from_stored_product(acc[2], scale1, bias0);
@@ -773,13 +761,7 @@ fn store_acc_relu2_scaled(
         return;
     }
 
-    let bias0 = nvfp4_value(bias_bytes, bias_scales, bias_global_scale, col0 as usize);
-    let bias1 = nvfp4_value(
-        bias_bytes,
-        bias_scales,
-        bias_global_scale,
-        (col0 + 1) as usize,
-    );
+    let (bias0, bias1) = nvfp4_values2(bias_bytes, bias_scales, bias_global_scale, col0 as usize);
     let pre00 = affine_from_stored_product(acc[0], scale0, bias0);
     let pre01 = affine_from_stored_product(acc[1], scale0, bias1);
     let pre10 = affine_from_stored_product(acc[2], scale1, bias0);
@@ -829,13 +811,7 @@ fn store_acc_relu2_f16_scaled(
         return;
     }
 
-    let bias0 = nvfp4_value(bias_bytes, bias_scales, bias_global_scale, col0 as usize);
-    let bias1 = nvfp4_value(
-        bias_bytes,
-        bias_scales,
-        bias_global_scale,
-        (col0 + 1) as usize,
-    );
+    let (bias0, bias1) = nvfp4_values2(bias_bytes, bias_scales, bias_global_scale, col0 as usize);
     let pre00 = affine_from_stored_product(acc[0], scale0, bias0);
     let pre01 = affine_from_stored_product(acc[1], scale0, bias1);
     let pre10 = affine_from_stored_product(acc[2], scale1, bias0);

@@ -46,6 +46,150 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-16
 commit: accepted local jj commit after full gate
+experiment: Pack adjacent NVFP4 decodes and retune reduction grids.
+status: accepted_450s
+change:
+  Decode each adjacent E2M1 payload pair with one f16x2 conversion in fused TMA
+  bias postops and the tiled MS-EDEN rowwise-transpose load. Reduce the generic
+  f32 matrix-op launch from 256 threads / 8 warps to 64 threads / 2 warps, and
+  increase layer-norm parameter-gradient row partitions from 8 to 16. The
+  packed transpose path assigns each even lane both adjacent shared-memory
+  stores; payload layout and output layout are unchanged.
+numerics:
+  Packed E2M1 decode is value-equivalent. The smaller f32 block changes the
+  reduction tree for row sums and sum-of-squares, while 16 layer-norm
+  partitions change the atomic accumulation grouping. Focused correctness
+  tests pass without tolerance changes. Both fixed-wall endpoints improve, so
+  the harmless reassociation did not consume any quality tolerance in these
+  matched runs.
+memory:
+  No persistent allocation, scratch capacity, or buffer lifetime changes.
+  This is an instruction and launch-geometry win, not a VRAM-capacity win.
+minimum_impact_gate:
+  The promoted floor was 23.67087ms over a ten-step profile. Against the
+  accepted reciprocal mean, directly touched kernels fall from 601.766512 to
+  577.281698ms/profile, saving 24.484814ms and clearing the floor by
+  0.813944ms. Total GPU kernel time falls from 4759.010914 to 4727.753230ms,
+  saving 31.257684ms / 0.657%. The retained component means save 12.660658ms
+  in f32 linear operations, 9.658731ms in layer-norm parameter reductions, and
+  2.165424ms in packed-decode consumers. Rejected f32 block sizes of 32, 96,
+  and 128 threads measured 286.669048, 277.370061, and 275.345921ms for the
+  linear-operation family; 64 threads was best at 271.919569ms.
+focused_profile:
+  Accepted reciprocal samples:
+    target/nsys/20260716_ms_eden_no_correction_candidate.nsys-rep
+    target/nsys/20260716_ms_eden_no_correction_candidate_reciprocal.nsys-rep
+    total GPU kernels 4758.250812 and 4759.771015ms; mean 4759.010914ms.
+    Directly affected kernels mean 601.766512ms.
+  Candidate reciprocal samples:
+    target/nsys/20260716_decode_f32ops64_lnpart16_batch_candidate.nsys-rep
+    target/nsys/20260716_decode_f32ops64_lnpart16_batch_candidate_reciprocal.nsys-rep
+    total GPU kernels 4725.692928 and 4729.813531ms; mean 4727.753230ms.
+    Directly affected kernels 577.067869 and 577.495527ms; mean 577.281698ms.
+verification:
+  cargo fmt --all, cargo check, git diff --check, and a fresh
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass. After that
+  exact rebuild, all six ignored projection-TMA tests, all five ignored
+  MS-EDEN transpose tests, all nine ignored nvfp4_quant tests, both ignored
+  layer-norm parameter-backward tests, all seven relevant ignored Muon tests,
+  and the ignored block-attention backward test pass.
+  Required 30-second screen with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260716_121246Z_fineweb_30s
+    stdout: target/gates/20260716_decode_f32ops64_lnpart16_30s.log
+    completed_steps=66, train_elapsed_s=30.293, val_loss=6.555990.
+  Required 450-second gate with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260716_121355Z_fineweb_450s
+    stdout: target/gates/20260716_decode_f32ops64_lnpart16_450s.log
+    completed_steps=955, train_elapsed_s=450.189, val_loss=5.248910.
+    All 20 high-fidelity samples are finite and nonzero, with zero skipped
+    updates, loss-spike skips, grad-norm-spike skips, or nonfinite skips. Grad
+    norm ranges from 1.153846622 to 16.900184631. Every sample retains batch 4,
+    sequence 2048, and 8192 tokens per step.
+measured_effect:
+  Against the matched 30-second parent:
+    completed steps 65 -> 66 (+1, +1.538%).
+    average step time 461.984615 -> 458.984848ms
+      (-2.999767ms, -0.649%).
+    held-out val_loss 6.561170 -> 6.555990
+      (-0.005180, -0.079%).
+  Against the matched 450-second parent:
+    completed steps 951 -> 955 (+4, +0.421%).
+    average step time 473.417455 -> 471.402094ms
+      (-2.015361ms, -0.426%).
+    training tokens 7790592 -> 7823360 (+32768, +0.421%).
+    held-out val_loss 5.270691 -> 5.248910
+      (-0.021781, -0.413%).
+decision:
+  Keep and promote. Reciprocal profiles clear the pre-test mathematical floor,
+  the 30-second screen shows the expected 0.649% step-time win, and the
+  sustained gate remains faster while improving held-out loss with clean
+  stability signals. The next 0.5% threshold is
+  (450.189 / 955) * 0.005 = 2.357010ms per step, or 23.570105ms over a
+  ten-step profile.
+```
+
+```text
+date: 2026-07-16
+commit: rejection record only; candidate source reverted
+experiment: Replace MS-EDEN random-sign selection with a one-multiply hash.
+status: rejected_subthreshold
+change:
+  Replaced the existing random-sign calculation with a cheaper integer hash
+  whose final bit selects the sign.
+verification:
+  Fresh exact build and focused tests pass. Profile:
+    target/nsys/20260716_ms_eden_fast_sign_candidate.nsys-rep
+measured_effect:
+  Directly affected MS-EDEN work saves only 2.833ms/profile, while total GPU
+  kernel time regresses by 2.256ms/profile. Both are far below the active
+  whole-step floor.
+decision:
+  Reject without fixed-wall gates and fully revert.
+```
+
+```text
+date: 2026-07-16
+commit: rejection record only; candidate source reverted
+experiment: Batch approximate reciprocals in attention softmax and Adam correction.
+status: rejected_subthreshold
+change:
+  Used approximate reciprocal operations in attention-softmax normalization
+  and Adam host-side bias correction/final normalization.
+verification:
+  Fresh exact build and focused tests pass. Profile:
+    target/nsys/20260716_softmax_adam_rcp_batch_candidate.nsys-rep
+measured_effect:
+  Total GPU kernels appear 17.177480ms below the accepted 4759.010914ms mean,
+  short of the 23.67087ms floor. The touched softmax kernel regresses by about
+  0.037ms/profile and touched Adam work saves only about 0.144ms/profile, so
+  the total movement is unrelated profile noise rather than a direct win.
+decision:
+  Reject without fixed-wall gates and fully revert.
+```
+
+```text
+date: 2026-07-16
+commit: rejection record only; candidate source reverted
+experiment: Launch tensor-amax final reducers with 64 threads.
+status: rejected_regression
+change:
+  Retuned the final amax reducer from its larger launch to 64 threads and two
+  warp partials. An initial static eight-warp scratch implementation produced
+  NaNs; correcting the scratch/reduction geometry removed that implementation
+  bug before measurement.
+verification:
+  The corrected candidate is finite, passes focused tests, and is profiled in:
+    target/nsys/20260716_packed_decode_f32ops64_amaxreduce64_fixed_candidate.nsys-rep
+measured_effect:
+  The corrected reducer regresses from 19.723598 to 48.585277ms/profile.
+decision:
+  Reject without fixed-wall gates and fully revert. The initial NaNs are not
+  treated as evidence against the geometry; the finite timing regression is.
+```
+
+```text
+date: 2026-07-16
+commit: accepted local jj commit after full gate
 experiment: Remove the MS-EDEN least-squares local-scale correction pass.
 status: accepted_450s_within_quality_tolerance
 change:

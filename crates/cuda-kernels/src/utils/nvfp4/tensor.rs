@@ -1,6 +1,6 @@
 use cuda_core::DeviceBuffer;
 
-use crate::nvfp4_cast::{e2m1_value, e4m3_value};
+use crate::nvfp4_cast::{e2m1_value, e2m1_values, e4m3_value};
 
 #[derive(Clone, Copy)]
 pub struct Nvfp4DeviceTensor<'a> {
@@ -54,6 +54,18 @@ pub fn nvfp4_value(bytes: &[u8], scales: &[u8], global_scale: f32, index: usize)
     };
 
     e2m1_value(payload) * e4m3_value(scales[index / 16] as u16) * global_scale
+}
+
+#[inline(always)]
+pub fn nvfp4_values2(
+    bytes: &[u8],
+    scales: &[u8],
+    global_scale: f32,
+    even_index: usize,
+) -> (f32, f32) {
+    let (lo, hi) = e2m1_values(bytes[even_index / 2]);
+    let scale = e4m3_value(scales[even_index / 16] as u16);
+    (lo * scale * global_scale, hi * scale * global_scale)
 }
 
 #[inline(always)]

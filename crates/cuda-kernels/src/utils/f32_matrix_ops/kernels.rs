@@ -6,7 +6,7 @@ use crate::float_ptx::{abs_f32, fma_f32, max_f32, sqrt_f32};
 use crate::nvfp4_quant::kernels::row_amax::TENSOR_AMAX_VALUES_PER_BLOCK;
 use crate::warp_reduce::thread_lane_warp;
 
-const F32_OPS_WARPS_PER_BLOCK: usize = 8;
+const F32_OPS_WARPS_PER_BLOCK: usize = 2;
 
 #[cuda_module]
 pub(super) mod module {

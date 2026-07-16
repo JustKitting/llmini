@@ -9,7 +9,7 @@ use super::args::{
 use super::kernels;
 use crate::launch::{grid_x_config, linear_config};
 
-const F32_OPS_THREADS_PER_BLOCK: u32 = 256;
+const F32_OPS_THREADS_PER_BLOCK: u32 = 64;
 
 pub struct F32MatrixOpsModule {
     module: kernels::module::LoadedModule,
