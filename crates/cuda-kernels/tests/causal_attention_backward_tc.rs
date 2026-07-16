@@ -41,9 +41,9 @@ fn materialized_tc_backward_matches_reference() -> Result<(), Box<dyn Error>> {
     let mut tc_softmax_d = DeviceBuffer::<f32>::zeroed(&stream, shape::TOKEN_COUNT * shape::HEADS)?;
     let mut tc_qk_norm_max = DeviceBuffer::<f32>::zeroed(&stream, 2 * shape::HEADS)?;
     let mut tc_grad = DeviceBuffer::<f32>::zeroed(&stream, shape::TOKEN_COUNT * shape::QKV_DIM)?;
-    let mut tc_grad_chunk_amax = DeviceBuffer::<f32>::zeroed(&stream, 1)?;
+    let mut tc_grad_chunk_amax = DeviceBuffer::<f32>::zeroed(&stream, 3 * shape::TOKEN_COUNT)?;
     let mut scratch = TcScratchBuffers::new(&stream)?;
-    attention.causal_attention_backward_tc(CausalAttentionBackwardTcArgs {
+    let tc_chunk_count = attention.causal_attention_backward_tc(CausalAttentionBackwardTcArgs {
         reuse_forward_probs: false,
         forward_probs_f16: None,
         stream: &stream,
@@ -73,6 +73,12 @@ fn materialized_tc_backward_matches_reference() -> Result<(), Box<dyn Error>> {
 
     let recomputed = tc_grad.to_host_vec(&stream)?;
     common::assert_slice_close(&recomputed, &expected, 1.0e-6);
+    let chunk_amax = tc_grad_chunk_amax.to_host_vec(&stream)?;
+    assert_eq!(tc_chunk_count as usize, chunk_amax.len());
+    for (section, values) in recomputed.chunks(shape::EMBEDDING).enumerate() {
+        let expected_amax = values.iter().copied().map(f32::abs).fold(0.0, f32::max);
+        assert_eq!(chunk_amax[section].to_bits(), expected_amax.to_bits());
+    }
 
     let mut saved_probs = vec![0_u16; shape::HEADS * shape::TOKEN_COUNT * shape::TOKEN_COUNT];
     for head in 0..shape::HEADS {
@@ -85,7 +91,7 @@ fn materialized_tc_backward_matches_reference() -> Result<(), Box<dyn Error>> {
         DeviceBuffer::<f32>::zeroed(&stream, shape::TOKEN_COUNT * shape::HEADS)?;
     let mut reuse_qk_norm_max = DeviceBuffer::<f32>::zeroed(&stream, 2 * shape::HEADS)?;
     let mut reuse_grad = DeviceBuffer::<f32>::zeroed(&stream, shape::TOKEN_COUNT * shape::QKV_DIM)?;
-    let mut reuse_grad_chunk_amax = DeviceBuffer::<f32>::zeroed(&stream, 1)?;
+    let mut reuse_grad_chunk_amax = DeviceBuffer::<f32>::zeroed(&stream, 3 * shape::TOKEN_COUNT)?;
     let mut reuse_scratch = TcScratchBuffers::new(&stream)?;
     let saved_probs = DeviceBuffer::from_host(&stream, &saved_probs)?;
     attention.causal_attention_backward_tc(CausalAttentionBackwardTcArgs {

@@ -4,7 +4,7 @@ use super::blocks::{BlocksBackwardRun, run_blocks};
 use super::final_head::run_final_head;
 use super::types::Gpt2BackwardArgs;
 use crate::GPT2_EMBEDDING_DIM;
-use crate::backward::{Gpt2LayerNormBackwardArgs, layer_norm_backward};
+use crate::backward::{Gpt2LayerNormBackwardAmaxArgs, layer_norm_backward_amax};
 use crate::types::Gpt2BackwardGrads;
 use rust_kernels_cuda::residual::ResidualGradAccumulateArgs;
 
@@ -59,15 +59,17 @@ pub fn backward(args: Gpt2BackwardArgs<'_, '_, '_>) -> Result<(), DriverError> {
                 len: saved.row_count * GPT2_EMBEDDING_DIM,
             })?;
     }
-    layer_norm_backward(Gpt2LayerNormBackwardArgs {
-        stream,
-        module: modules.final_norm,
-        weights: weights.ln_f,
-        saved: saved.final_norm,
-        grads: final_norm.reborrow(),
-        d_normalized: &*d_hidden,
-        d_residual: &mut *d_embedding_residual,
-    })?;
+    let d_embedding_residual_amax_chunks =
+        layer_norm_backward_amax(Gpt2LayerNormBackwardAmaxArgs {
+            stream,
+            module: modules.final_norm,
+            weights: weights.ln_f,
+            saved: saved.final_norm,
+            grads: final_norm.reborrow(),
+            d_normalized: &*d_hidden,
+            d_residual: &mut *d_embedding_residual,
+            chunk_amax: &mut *mlp_scratch.down_linear.e_h.chunk_amax,
+        })?;
     run_blocks(BlocksBackwardRun {
         stream,
         modules,
@@ -82,6 +84,7 @@ pub fn backward(args: Gpt2BackwardArgs<'_, '_, '_>) -> Result<(), DriverError> {
         d_mlp_relu2,
         attention_scratch: &mut attention_scratch,
         mlp_scratch: &mut mlp_scratch,
+        initial_d_residual_amax_chunks: d_embedding_residual_amax_chunks,
         seeds,
     })
 }

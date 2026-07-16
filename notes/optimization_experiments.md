@@ -43,6 +43,147 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```
 
 ```text
+date: 2026-07-16
+commit: rejected uncommitted candidate, source reverted
+experiment: Correct full-width layer norm and save normalized xhat in the FP16 tape.
+status: rejected_900s_quality_gate
+change:
+  Audited the active layer-norm CUDA path and found that its three values per
+  256-thread CTA touched only 768 of 2048 GPT channels, and only 768 of 4096
+  NextLat channels, while still dividing its reductions by the declared full
+  width. A candidate covered all channels with eight values per thread and a
+  512-thread route for width 4096. The corrected full-width path exposed a
+  latent tape overflow: the forward result stayed finite, but storing the raw
+  pre-normalized residual in FP16 first produced infinity at optimizer
+  candidate step 457. Saving xhat=(x-mean)*inv_std in the same FP16 tape fixed
+  that overflow, removed the per-layer saved mean buffers and copies, and let
+  backward consume the value it actually needs.
+diagnosis:
+  A no-producer-amax control failed at the same step and tensor as the combined
+  speed candidate, exonerating the scan eliminations. A post-forward tape probe
+  then reported final_norm residual_bits=0xfc00 with finite inv_std around
+  1.61e-4. The xhat regression test uses raw residuals above FP16's 65504
+  maximum and confirms every saved tape value remains finite.
+verification:
+  Fresh cargo oxide build --arch sm_120a: pass.
+  Full-width 2048/4096 forward layer norm, input backward, parameter backward,
+  causal-attention scatter, and GPT block-wrapper GPU comparisons: pass.
+  Failure controls:
+    target/gates/20260716_full_width_no_producer_amax_500step.log
+    target/gates/20260716_full_width_forward_tape_nonfinite_460step.log
+  Required 30-second run after the xhat fix:
+    target/gates/20260716_full_width_xhat_producer_batch_30s.log
+    completed_steps=55, train_elapsed_s=30.151, val_loss=7.577504.
+  Required 900-second run after the xhat fix:
+    target/runs/20260716_013927Z_fineweb_900s
+    stdout: target/gates/20260716_full_width_xhat_producer_batch_900s.log
+    completed_steps=1607, train_elapsed_s=900.167, val_loss=7.526673.
+    All 33 high-fidelity samples were finite and nonzero with zero skipped
+    updates or instability flags, so the FP16 overflow did not recur.
+measured_effect:
+  The corrected run was stable and completed 23 more steps than the promoted
+  parent, but its held-out loss regressed from 4.869185 to 7.526673
+  (+54.579%). The 30-second endpoint was already 12.72% worse than the parent,
+  so this is a different and substantially worse fixed-budget trajectory, not
+  seed noise inside the active roughly 1% allowance.
+decision:
+  Reject and restore the promoted training math before evaluating the
+  independent producer-side speed batch. Do not commit the full-width/xhat
+  candidate under the fixed-budget loss objective. The audit remains recorded
+  because the active 768-channel behavior and the raw-FP16 overflow are real
+  correctness constraints for any future attempt to retune full-width math.
+```
+
+```text
+date: 2026-07-16
+commit: accepted local jj commit after full gate
+experiment: Batch Muon, layer-norm, and full-attention producer amax reuse.
+status: accepted_900s
+change:
+  Three compatible producer families now write exact maxima into the existing
+  consumer scratch. Muon normalization and non-final Polar recurrence kernels
+  emit 2048-value chunk maxima while writing their FP32 outputs. GPT
+  layer-norm backward emits one row/chunk maximum: it reduces the three
+  produced 256-thread columns and reads the accepted path's preserved tail so
+  the result exactly matches the former full-buffer scan. Full-attention
+  dQ/dK/dV scatter uses one CTA per row-section and emits the exact maximum of
+  each contiguous 2048-value Q, K, or V chunk. Downstream quantizers consume
+  those maxima and skip 3350 Muon, 320 layer-norm, and 40 attention scans over
+  the 10-step profile.
+numerics:
+  The Muon and recurrence tests compare producer outputs and every emitted
+  chunk maximum against their former standalone operations. The layer-norm
+  test preloads a distinct untouched tail, compares the ordinary and amax
+  outputs bit-for-bit, and verifies the maximum over the exact final 2048
+  values. The attention test compares every scattered gradient and row-section
+  maximum exactly. One-step loss=10.8644304276 and
+  Grad_norm=18.9518203735 match the promoted accepted-math path.
+memory:
+  Existing chunk-amax scratch is reused throughout. No allocation, lifetime,
+  peak-VRAM, or batch-capacity change is claimed.
+minimum_impact_gate:
+  The 371 removed scan launches per step had a credible aggregate ceiling above
+  the promoted 2.840969ms floor before implementation. After implementation,
+  the directly affected reciprocal profile family saved 2.685762ms per step,
+  narrowly below the floor, while both whole-profile comparisons retained a
+  smaller but same-direction real saving. This remains eligible under the rule
+  that a promising candidate which falls below 0.5% after measurement may be
+  kept when the measured time reduction survives the full gates.
+focused_profile:
+  Promoted parent samples:
+    target/nsys/20260715_shared_backward_scratch_candidate.nsys-rep
+    target/nsys/20260715_shared_backward_scratch_candidate_reciprocal.nsys-rep
+    total GPU kernels: 5654.247788 and 5667.101387ms.
+    kernel launches: 90025 in both samples.
+  Candidate samples:
+    target/nsys/20260716_producer_batch_accepted_math_candidate.nsys-rep
+    target/nsys/20260716_producer_batch_accepted_math_candidate_reciprocal.nsys-rep
+    total GPU kernels: 5648.075521 and 5660.412221ms.
+    kernel launches: 86315 in both samples.
+  Over the same 10 training steps plus endpoint validation, paired total-kernel
+  savings are 0.617227 and 0.668917ms per step. Launches fall by exactly 3710,
+  or 371 per training step. Held-out loss is 8.661839/8.663950 versus
+  8.660966/8.666331 for the parent reciprocal samples.
+verification:
+  cargo fmt --all --check, git diff --check,
+  cargo check --workspace --lib --bins, fresh
+  cargo oxide build --arch sm_120a, and
+  cargo test --workspace --release --lib --bins: pass (50 host tests).
+  Focused layer-norm backward, causal-attention backward, linear3 amax, Muon
+  TMA prepare, full block-attention backward, QKV backward, and GPT causal
+  wrapper GPU comparisons pass after the fresh rebuild: 7 comparisons.
+  Required clean 30-second screen with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260716_020130Z_fineweb_30s
+    stdout: target/gates/20260716_producer_batch_accepted_math_30s.log
+    completed_steps=55, train_elapsed_s=30.241, val_loss=6.722679.
+  Required 900-second gate with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260716_020209Z_fineweb_900s
+    stdout: target/gates/20260716_producer_batch_accepted_math_900s.log
+    completed_steps=1591, train_elapsed_s=900.056, val_loss=4.886631.
+    All 32 high-fidelity samples were finite and nonzero, with zero skipped
+    updates, loss-spike skips, grad-norm-spike skips, or nonfinite skips. Grad
+    norm ranged from 1.162621498 to 18.951820374. Every sample retained batch
+    4, sequence 2048, and 8192 tokens per step.
+measured_effect:
+  Against the matched 30-second parent:
+    completed_steps: 55 -> 55.
+    train_elapsed_s: 30.275 -> 30.241 (-0.112%).
+    held-out val_loss: 6.722232 -> 6.722679 (+0.0066%).
+  Against the matched 900-second parent:
+    completed_steps: 1584 -> 1591 (+7, +0.442%).
+    average step time: 568.193813ms -> 565.717159ms
+      (-2.476654ms, -0.436%).
+    training tokens: 12976128 -> 13033472 (+57344, +0.442%).
+    held-out val_loss: 4.869185 -> 4.886631 (+0.358%).
+decision:
+  Keep and promote. The reciprocal profiles and both fixed-wall gates preserve
+  the speed direction, the sustained run completes seven more steps, held-out
+  loss stays within the active roughly 1% noise band, and stability is clean.
+  notes/sweep_baseline.env points to this run. The next aggregate 0.5% floor is
+  (900.056 / 1591) * 0.005 = 2.828586ms per step.
+```
+
+```text
 date: 2026-07-15
 commit: accepted local jj commit after full gate
 experiment: Remove dead residual-gradient allocations and share sequential backward activation scratch.

@@ -2,8 +2,8 @@ use std::error::Error;
 
 use cuda_core::DeviceBuffer;
 use rust_kernels_cuda::f32_matrix_ops::{
-    F32Linear3SqrtBoundArgs, F32Linear3SqrtBoundRowSumsqArgs, F32MatrixOpsModule,
-    F32ScaleInPlaceByAmaxArgs,
+    F32Linear3SqrtBoundAmaxArgs, F32Linear3SqrtBoundArgs, F32Linear3SqrtBoundRowSumsqArgs,
+    F32MatrixOpsModule, F32ScaleInPlaceByAmaxArgs,
 };
 use rust_kernels_cuda::nvfp4_quant::{
     MsEdenQuantArgs, Nvfp4QuantArgs, Nvfp4QuantModule, Nvfp4QuantPaddedArgs,
@@ -221,6 +221,70 @@ fn linear3_sqrt_bound_row_sumsq_matches_elementwise_kernel() -> Result<(), Box<d
             "row {row}: got {}, expected {expected}, error {error}",
             row_sumsq[row]
         );
+    }
+    Ok(())
+}
+
+#[ignore = "requires generated sm_120a PTX"]
+#[test]
+fn linear3_sqrt_bound_amax_matches_elementwise_kernel() -> Result<(), Box<dyn Error>> {
+    const LEN: usize = 4103;
+    let a = (0..LEN)
+        .map(|index| ((index % 211) as f32 - 105.0) * 0.0037)
+        .collect::<Vec<_>>();
+    let b = (0..LEN)
+        .map(|index| ((index % 157) as f32 - 78.0) * 0.0029)
+        .collect::<Vec<_>>();
+    let c = (0..LEN)
+        .map(|index| ((index % 97) as f32 - 48.0) * 0.0041)
+        .collect::<Vec<_>>();
+    let bound = [3.7_f32];
+
+    let (_, stream, ptx) = common::cuda_test_context()?;
+    let f32_ops = F32MatrixOpsModule::from_module(ptx)?;
+    let a_dev = DeviceBuffer::from_host(&stream, &a)?;
+    let b_dev = DeviceBuffer::from_host(&stream, &b)?;
+    let bound_dev = DeviceBuffer::from_host(&stream, &bound)?;
+    let mut reference = DeviceBuffer::from_host(&stream, &c)?;
+    let mut fused = DeviceBuffer::from_host(&stream, &c)?;
+    let mut chunk_amax = DeviceBuffer::<f32>::zeroed(&stream, nvfp4_tensor_amax_chunks(LEN))?;
+
+    f32_ops.linear3_sqrt_bound_a(F32Linear3SqrtBoundArgs {
+        stream: &stream,
+        a: &a_dev,
+        b: &b_dev,
+        c_out: &mut reference,
+        bound_amax: &bound_dev,
+        len: LEN as u32,
+        a_scale: 2.3,
+        b_scale: -1.7,
+        c_scale: 0.41,
+    })?;
+    let chunk_count = f32_ops.linear3_sqrt_bound_a_with_amax(F32Linear3SqrtBoundAmaxArgs {
+        stream: &stream,
+        a: &a_dev,
+        b: &b_dev,
+        c_out: &mut fused,
+        bound_amax: &bound_dev,
+        chunk_amax: &mut chunk_amax,
+        len: LEN as u32,
+        a_scale: 2.3,
+        b_scale: -1.7,
+        c_scale: 0.41,
+    })?;
+
+    let reference = reference.to_host_vec(&stream)?;
+    let fused = fused.to_host_vec(&stream)?;
+    let chunk_amax = chunk_amax.to_host_vec(&stream)?;
+    assert_eq!(fused, reference);
+    assert_eq!(chunk_count as usize, chunk_amax.len());
+    for (chunk, &got) in chunk_amax.iter().enumerate() {
+        let start = chunk * 2048;
+        let end = (start + 2048).min(fused.len());
+        let expected = fused[start..end]
+            .iter()
+            .fold(0.0_f32, |amax, value| amax.max(value.abs()));
+        assert_eq!(got, expected, "chunk {chunk}");
     }
     Ok(())
 }

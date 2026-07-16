@@ -45,6 +45,7 @@ pub struct MuonTmaPrepareArgs<'a> {
     pub oriented: &'a mut DeviceBuffer<f32>,
     pub polar_x: &'a mut DeviceBuffer<f32>,
     pub polar_chunks: &'a mut DeviceBuffer<f32>,
+    pub polar_x_chunk_amax: &'a mut DeviceBuffer<f32>,
     pub slot_index: u32,
     pub matrix_len: u32,
     pub mu: f32,

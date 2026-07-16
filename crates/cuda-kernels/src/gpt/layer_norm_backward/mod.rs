@@ -3,6 +3,7 @@ mod param;
 mod types;
 
 pub use types::{
-    LayerNormBackwardInputAddArgs, LayerNormBackwardInputArgs, LayerNormBackwardInputF32Args,
+    LayerNormBackwardInputAddAmaxArgs, LayerNormBackwardInputAddArgs,
+    LayerNormBackwardInputAmaxArgs, LayerNormBackwardInputArgs, LayerNormBackwardInputF32Args,
     LayerNormBackwardModule, LayerNormBackwardParamArgs, LayerNormBackwardParamF32Args,
 };

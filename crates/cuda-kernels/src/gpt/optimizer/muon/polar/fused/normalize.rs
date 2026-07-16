@@ -80,21 +80,6 @@ pub(crate) fn reduce_source_sumsq_chunks_to_inv_norm(
     }
 }
 
-pub(crate) fn scale_source_to_x(
-    source: *const f32,
-    x: *mut f32,
-    chunks: *const f32,
-    work: WorkGrid,
-    len: u32,
-) {
-    let inv_norm = read_f32(chunks, 0);
-    let mut index = work.thread();
-    while index < len {
-        write_f32(x, index, read_f32(source, index) * inv_norm);
-        index += work.stride();
-    }
-}
-
 #[expect(clippy::too_many_arguments, reason = "CUDA ABI uses explicit buffers")]
 pub(crate) fn normalize_source_to_x(
     source: *const f32,

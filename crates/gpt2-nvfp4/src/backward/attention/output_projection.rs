@@ -11,6 +11,7 @@ pub fn c_proj_backward(args: AttentionCProjBackwardArgs<'_, '_, '_>) -> Result<(
         saved,
         projections,
         d_residual_after_attention,
+        precomputed_d_residual_amax_chunks,
         d_attention_out,
         d_attn_c_proj_weight,
         d_attn_c_proj_bias,
@@ -35,7 +36,7 @@ pub fn c_proj_backward(args: AttentionCProjBackwardArgs<'_, '_, '_>) -> Result<(
             sign_seed: seeds.sign,
             scale_seed: seeds.scale,
             e: d_residual_after_attention,
-            precomputed_e_amax_chunks: None,
+            precomputed_e_amax_chunks: precomputed_d_residual_amax_chunks,
         },
     )
 }

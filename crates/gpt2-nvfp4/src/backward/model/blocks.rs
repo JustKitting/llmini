@@ -22,13 +22,15 @@ pub(super) struct BlocksBackwardRun<'ctx, 'a, 'scratch, 'out> {
     pub d_mlp_relu2: &'ctx mut DeviceBuffer<f32>,
     pub attention_scratch: &'ctx mut BlockAttentionBackwardScratch<'scratch>,
     pub mlp_scratch: &'ctx mut MlpBackwardScratch<'scratch>,
+    pub initial_d_residual_amax_chunks: u32,
     pub seeds: Gpt2BackwardSeeds,
 }
 
 pub(super) fn run_blocks(args: BlocksBackwardRun<'_, '_, '_, '_>) -> Result<(), DriverError> {
+    let mut d_residual_amax_chunks = Some(args.initial_d_residual_amax_chunks);
     for block_index in (0..GPT2_N_LAYER).rev() {
         let current = &mut args.blocks[block_index];
-        run_block(
+        d_residual_amax_chunks = run_block(
             args.stream,
             args.modules,
             args.saved,
@@ -42,6 +44,7 @@ pub(super) fn run_blocks(args: BlocksBackwardRun<'_, '_, '_, '_>) -> Result<(), 
             &mut *args.d_mlp_relu2,
             &mut *args.attention_scratch,
             &mut *args.mlp_scratch,
+            d_residual_amax_chunks,
             args.seeds,
             block_index,
         )?;
@@ -65,19 +68,22 @@ fn run_block<'a, 'scratch, 'out>(
     d_mlp_relu2: &mut DeviceBuffer<f32>,
     attention_scratch: &mut BlockAttentionBackwardScratch<'scratch>,
     mlp_scratch: &mut MlpBackwardScratch<'scratch>,
+    precomputed_d_residual_amax_chunks: Option<u32>,
     seeds: Gpt2BackwardSeeds,
     block_index: usize,
-) -> Result<(), DriverError> {
+) -> Result<Option<u32>, DriverError> {
     let mut grads = current.reborrow();
     let use_full_attention = uses_full_attention(block_index);
-    mlp_side_backward(BlockMlpBackwardArgs {
+    let d_residual_after_attention_amax_chunks = mlp_side_backward(BlockMlpBackwardArgs {
         stream,
         modules: modules.mlp,
         saved: saved.blocks[block_index],
         ln_2: weights.block_ln_2[block_index],
         mlp_projections: weights.mlp[block_index],
         d_residual_out: &*d_residual,
+        precomputed_d_residual_amax_chunks,
         d_residual_after_attention: &mut *d_residual_after_attention,
+        d_residual_after_attention_chunk_amax: &mut *attention_scratch.c_proj.linear.e_h.chunk_amax,
         d_hidden: &mut *d_hidden,
         d_mlp_up: &mut *d_mlp_up,
         d_mlp_relu2: &mut *d_mlp_relu2,
@@ -95,7 +101,11 @@ fn run_block<'a, 'scratch, 'out>(
         ln_1: weights.block_ln_1[block_index],
         projections: weights.attention[block_index],
         d_residual_after_attention: &*d_residual_after_attention,
+        precomputed_d_residual_after_attention_amax_chunks: Some(
+            d_residual_after_attention_amax_chunks,
+        ),
         d_residual_in: d_residual,
+        d_residual_in_chunk_amax: &mut *mlp_scratch.down_linear.e_h.chunk_amax,
         d_hidden,
         d_qkv,
         grads: grads.reborrow(),

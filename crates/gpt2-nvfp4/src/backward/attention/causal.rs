@@ -40,8 +40,7 @@ pub fn causal_attention_backward(
         qk_norm_offset: (args.block_index as u32) * 2 * dims.head_count,
     };
     if args.use_full_attention {
-        args.module.causal_attention_backward_tc(tc_args)?;
-        Ok(None)
+        args.module.causal_attention_backward_tc(tc_args).map(Some)
     } else {
         args.module.kda_attention_backward_tc(tc_args).map(Some)
     }

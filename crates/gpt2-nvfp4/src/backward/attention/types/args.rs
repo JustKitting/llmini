@@ -14,6 +14,7 @@ pub struct AttentionCProjBackwardArgs<'a, 'scratch, 'out> {
     pub saved: BlockForwardSaved<'a>,
     pub projections: AttentionProjectionTensors<'a>,
     pub d_residual_after_attention: &'a DeviceBuffer<f32>,
+    pub precomputed_d_residual_amax_chunks: Option<u32>,
     pub d_attention_out: &'out mut DeviceBuffer<f32>,
     pub d_attn_c_proj_weight: &'out mut DeviceBuffer<f32>,
     pub d_attn_c_proj_bias: &'out mut DeviceBuffer<f32>,

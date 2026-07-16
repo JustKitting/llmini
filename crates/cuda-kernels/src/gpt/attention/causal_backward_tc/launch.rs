@@ -7,13 +7,13 @@ use super::launch_scores::{run_ds_scores, run_pair_scores};
 use super::matmul::AttentionTcMatmulContext;
 use super::types::CausalAttentionBackwardTcArgs;
 use crate::attention::AttentionModule;
-use crate::launch::linear_config;
+use crate::launch::{grid_x_config, linear_config};
 
 impl AttentionModule {
     pub fn causal_attention_backward_tc(
         &self,
         args: CausalAttentionBackwardTcArgs<'_, '_, '_>,
-    ) -> Result<(), DriverError> {
+    ) -> Result<u32, DriverError> {
         let params = args.params();
         let CausalAttentionBackwardTcArgs {
             reuse_forward_probs,
@@ -31,7 +31,7 @@ impl AttentionModule {
             softmax_d,
             qk_norm_max: _,
             d_qkv,
-            d_qkv_chunk_amax: _,
+            d_qkv_chunk_amax,
             scratch,
             row_count: _,
             seq_len,
@@ -113,14 +113,28 @@ impl AttentionModule {
             )?;
             run_grad_matmuls(&tc_ctx, &mut scratch, None)?;
         }
-        kernels.scatter_dqkv_kernel(
+        assert_eq!(
+            params.embedding_dim,
+            params.head_count * params.head_dim,
+            "full-attention embedding must equal head_count * head_dim"
+        );
+        assert_eq!(
+            params.qkv_dim,
+            3 * params.embedding_dim,
+            "full-attention output must contain contiguous Q, K, and V sections"
+        );
+        let chunk_count = 3 * params.row_count;
+        assert!(d_qkv_chunk_amax.len() >= chunk_count as usize);
+        kernels.scatter_dqkv_amax_kernel(
             stream,
-            linear(batch_head * seq_len * head_dim),
+            grid_x_config(chunk_count, TC_BACKWARD_THREADS_PER_BLOCK),
             scratch.d_q,
             scratch.d_k,
             scratch.d_v,
             d_qkv,
+            d_qkv_chunk_amax,
             params,
-        )
+        )?;
+        Ok(chunk_count)
     }
 }

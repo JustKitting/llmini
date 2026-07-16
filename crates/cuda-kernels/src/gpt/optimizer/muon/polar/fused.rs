@@ -14,8 +14,7 @@ mod tiles;
 
 pub use coefficients::{Coefficients, coefficients};
 pub(crate) use normalize::{
-    normalize_source_to_x, reduce_source_sumsq_chunks_to_inv_norm, scale_source_to_x,
-    source_sumsq_chunks,
+    normalize_source_to_x, reduce_source_sumsq_chunks_to_inv_norm, source_sumsq_chunks,
 };
 use ptr::{source_ptr, target_ptr};
 use tiles::{run_plain_tiles, run_symmetric_polynomial_tiles, run_symmetric_tiles};

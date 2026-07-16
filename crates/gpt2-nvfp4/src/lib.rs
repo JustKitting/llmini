@@ -18,12 +18,16 @@ pub use backward::{
     BlockAttentionBackwardSeeds, BlockMlpBackwardArgs, BlockMlpBackwardModules,
     FinalHeadBackwardArgs, FinalHeadBackwardModules, FinalHeadBackwardScratch,
     FinalHeadBackwardSeeds, Gpt2BackwardArgs, Gpt2BackwardModules, Gpt2BackwardScratch,
-    Gpt2BackwardSeeds, Gpt2BackwardWeights, Gpt2LayerNormBackwardArgs,
+    Gpt2BackwardSeeds, Gpt2BackwardWeights, Gpt2LayerNormBackwardAddAmaxArgs,
+    Gpt2LayerNormBackwardAmaxArgs, Gpt2LayerNormBackwardArgs,
+    Gpt2LayerNormBackwardInputAddAmaxArgs, Gpt2LayerNormBackwardInputAmaxArgs,
     Gpt2LayerNormBackwardInputArgs, Gpt2LayerNormBackwardParamArgs, LinearScratch, MlpBackwardArgs,
     MlpBackwardGrads, MlpBackwardModules, MlpBackwardScratch, MlpBackwardSeeds,
     attention_c_proj_backward, attention_side_backward, causal_attention_backward,
-    final_head_backward, gpt2_backward, layer_norm_backward, layer_norm_backward_input,
-    layer_norm_backward_params, mlp_backward, mlp_side_backward, qkv_projection_backward,
+    final_head_backward, gpt2_backward, layer_norm_backward, layer_norm_backward_add_amax,
+    layer_norm_backward_amax, layer_norm_backward_input, layer_norm_backward_input_add_amax,
+    layer_norm_backward_input_amax, layer_norm_backward_params, mlp_backward, mlp_side_backward,
+    qkv_projection_backward,
 };
 
 pub use config::AttentionDims;

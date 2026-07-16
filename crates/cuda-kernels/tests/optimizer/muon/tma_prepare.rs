@@ -25,6 +25,14 @@ fn compare_shape(
     assert_eq!(split.oriented, cooperative.oriented);
     assert_eq!(split.polar_x, cooperative.polar_x);
     assert_eq!(split.polar_chunks, cooperative.polar_chunks);
+    for (chunk, &got) in split.polar_x_chunk_amax.iter().enumerate() {
+        let start = chunk * 2048;
+        let end = (start + 2048).min(split.polar_x.len());
+        let expected = split.polar_x[start..end]
+            .iter()
+            .fold(0.0_f32, |amax, value| amax.max(value.abs()));
+        assert_eq!(got, expected, "chunk {chunk}");
+    }
     Ok(())
 }
 
@@ -33,6 +41,7 @@ struct PrepareOutput {
     oriented: Vec<f32>,
     polar_x: Vec<f32>,
     polar_chunks: Vec<f32>,
+    polar_x_chunk_amax: Vec<f32>,
 }
 
 fn run_prepare(
@@ -74,12 +83,14 @@ fn run_prepare(
     let mut oriented = DeviceBuffer::<f32>::zeroed(stream, len)?;
     let mut polar_x = DeviceBuffer::<f32>::zeroed(stream, len)?;
     let mut polar_chunks = DeviceBuffer::<f32>::zeroed(stream, 2 * MUON_COOPERATIVE_BLOCKS)?;
+    let mut polar_x_chunk_amax = DeviceBuffer::<f32>::zeroed(stream, len.div_ceil(2048))?;
     let args = MuonTmaPrepareArgs {
         stream,
         slots: &slots,
         oriented: &mut oriented,
         polar_x: &mut polar_x,
         polar_chunks: &mut polar_chunks,
+        polar_x_chunk_amax: &mut polar_x_chunk_amax,
         slot_index: 0,
         matrix_len: len as u32,
         mu: 0.9,
@@ -95,5 +106,6 @@ fn run_prepare(
         oriented: oriented.to_host_vec(stream)?,
         polar_x: polar_x.to_host_vec(stream)?,
         polar_chunks: polar_chunks.to_host_vec(stream)?,
+        polar_x_chunk_amax: polar_x_chunk_amax.to_host_vec(stream)?,
     })
 }

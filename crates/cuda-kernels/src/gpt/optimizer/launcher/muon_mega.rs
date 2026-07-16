@@ -40,10 +40,14 @@ impl OptimizerModule {
         )
     }
 
-    pub fn muon_tma_prepare_polar(&self, args: MuonTmaPrepareArgs<'_>) -> Result<(), DriverError> {
+    pub fn muon_tma_prepare_polar(&self, args: MuonTmaPrepareArgs<'_>) -> Result<u32, DriverError> {
         assert!(args.slot_index < args.slots.len() as u32);
         assert!(args.matrix_len > 0);
         assert!(args.polar_chunks.len() >= MUON_COOPERATIVE_BLOCKS);
+        let amax_chunk_count = args
+            .matrix_len
+            .div_ceil(NVFP4_TENSOR_AMAX_VALUES_PER_BLOCK as u32);
+        assert!(args.polar_x_chunk_amax.len() >= amax_chunk_count as usize);
 
         self.apply.muon.tma_split.muon_tma_momentum_orient_kernel(
             args.stream,
@@ -76,14 +80,19 @@ impl OptimizerModule {
                 MUON_COOPERATIVE_BLOCKS as u32,
             )?;
 
-        self.apply.muon.tma_split.muon_tma_scale_source_to_x_kernel(
-            args.stream,
-            grid_x_config(args.matrix_len.div_ceil(CTA_THREADS), CTA_THREADS),
-            &*args.oriented,
-            args.polar_x,
-            &*args.polar_chunks,
-            args.matrix_len,
-        )
+        self.apply
+            .muon
+            .tma_split
+            .muon_tma_scale_source_to_x_kernel(
+                args.stream,
+                grid_x_config(amax_chunk_count, CTA_THREADS),
+                &*args.oriented,
+                args.polar_x,
+                &*args.polar_chunks,
+                args.polar_x_chunk_amax,
+                args.matrix_len,
+            )?;
+        Ok(amax_chunk_count)
     }
 
     pub fn muon_tma_prepare_polar_cooperative_reference(

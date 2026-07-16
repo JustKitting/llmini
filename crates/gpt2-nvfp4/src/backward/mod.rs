@@ -26,9 +26,12 @@ pub use final_head::{
     FinalHeadBackwardSeeds, backward as final_head_backward,
 };
 pub use layer_norm::{
-    Gpt2LayerNormBackwardAddArgs, Gpt2LayerNormBackwardArgs, Gpt2LayerNormBackwardInputArgs,
+    Gpt2LayerNormBackwardAddAmaxArgs, Gpt2LayerNormBackwardAddArgs, Gpt2LayerNormBackwardAmaxArgs,
+    Gpt2LayerNormBackwardArgs, Gpt2LayerNormBackwardInputAddAmaxArgs,
+    Gpt2LayerNormBackwardInputAmaxArgs, Gpt2LayerNormBackwardInputArgs,
     Gpt2LayerNormBackwardParamArgs, layer_norm_backward, layer_norm_backward_add,
-    layer_norm_backward_input, layer_norm_backward_params,
+    layer_norm_backward_add_amax, layer_norm_backward_amax, layer_norm_backward_input,
+    layer_norm_backward_input_add_amax, layer_norm_backward_input_amax, layer_norm_backward_params,
 };
 pub use linear_scratch::LinearScratch;
 pub use mlp::{

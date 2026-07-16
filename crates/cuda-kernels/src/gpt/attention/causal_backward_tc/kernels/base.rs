@@ -1,10 +1,12 @@
-use cuda_device::{DisjointSlice, SharedArray, cuda_module, kernel};
+use cuda_device::{DisjointSlice, SharedArray, cuda_module, kernel, thread};
 
 use super::super::gather::gather_body;
 use super::super::probs::{ds_from_probs_f16_body, prob_ds_body, prob_ds_f16_body};
-use super::super::scatter::scatter_body;
+use super::super::scatter::{scatter_amax_body, scatter_body};
 use super::super::softmax_d::softmax_d_f16_body;
 use crate::attention::CausalAttentionParams;
+use crate::block_reduce::block_max_store_f32;
+use crate::warp_reduce::thread_lane_warp;
 
 #[cuda_module]
 pub(super) mod module {
@@ -80,6 +82,28 @@ pub(super) mod module {
         params: CausalAttentionParams,
     ) {
         scatter_body(d_q, d_k, d_v, d_qkv, params);
+    }
+
+    #[kernel]
+    pub fn scatter_dqkv_amax_kernel(
+        d_q: &[f32],
+        d_k: &[f32],
+        d_v: &[f32],
+        d_qkv: DisjointSlice<f32>,
+        mut d_qkv_chunk_amax: DisjointSlice<f32>,
+        params: CausalAttentionParams,
+    ) {
+        static mut SCATTER_AMAX: SharedArray<f32, 8> = SharedArray::UNINIT;
+
+        let local_amax = scatter_amax_body(d_q, d_k, d_v, d_qkv, params);
+        let (_, lane, warp_in_block) = thread_lane_warp();
+        block_max_store_f32!(
+            SCATTER_AMAX,
+            d_qkv_chunk_amax[thread::blockIdx_x()],
+            local_amax,
+            lane,
+            warp_in_block
+        );
     }
 }
 

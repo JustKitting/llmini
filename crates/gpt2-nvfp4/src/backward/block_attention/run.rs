@@ -3,14 +3,15 @@ use cuda_core::DriverError;
 use super::types::BlockAttentionBackwardArgs;
 use crate::backward::{
     AttentionCProjBackwardArgs, AttentionCoreBackwardArgs, AttentionQkvBackwardArgs,
-    Gpt2LayerNormBackwardAddArgs, attention_c_proj_backward, causal_attention_backward,
-    layer_norm_backward_add, qkv_projection_backward,
+    Gpt2LayerNormBackwardAddAmaxArgs, Gpt2LayerNormBackwardAddArgs, attention_c_proj_backward,
+    causal_attention_backward, layer_norm_backward_add, layer_norm_backward_add_amax,
+    qkv_projection_backward,
 };
 use crate::types::BlockBackwardGrads;
 
 pub fn attention_side_backward(
     args: BlockAttentionBackwardArgs<'_, '_, '_>,
-) -> Result<(), DriverError> {
+) -> Result<Option<u32>, DriverError> {
     let BlockAttentionBackwardArgs {
         block_index,
         use_full_attention,
@@ -21,7 +22,9 @@ pub fn attention_side_backward(
         ln_1,
         projections,
         d_residual_after_attention,
+        precomputed_d_residual_after_attention_amax_chunks,
         d_residual_in,
+        d_residual_in_chunk_amax,
         d_hidden,
         d_qkv,
         grads,
@@ -43,6 +46,7 @@ pub fn attention_side_backward(
         saved,
         projections,
         d_residual_after_attention,
+        precomputed_d_residual_amax_chunks: precomputed_d_residual_after_attention_amax_chunks,
         d_attention_out: &mut *d_hidden,
         d_attn_c_proj_weight,
         d_attn_c_proj_bias,
@@ -76,14 +80,30 @@ pub fn attention_side_backward(
         scratch: scratch.qkv,
         seeds: seeds.qkv,
     })?;
-    layer_norm_backward_add(Gpt2LayerNormBackwardAddArgs {
-        stream,
-        module: modules.layer_norm,
-        weights: ln_1,
-        saved: saved.ln_1,
-        grads: ln_1_grads.reborrow(),
-        d_normalized: &*d_hidden,
-        direct: d_residual_after_attention,
-        d_residual: d_residual_in,
-    })
+    if block_index == 0 {
+        layer_norm_backward_add(Gpt2LayerNormBackwardAddArgs {
+            stream,
+            module: modules.layer_norm,
+            weights: ln_1,
+            saved: saved.ln_1,
+            grads: ln_1_grads.reborrow(),
+            d_normalized: &*d_hidden,
+            direct: d_residual_after_attention,
+            d_residual: d_residual_in,
+        })?;
+        Ok(None)
+    } else {
+        let chunk_count = layer_norm_backward_add_amax(Gpt2LayerNormBackwardAddAmaxArgs {
+            stream,
+            module: modules.layer_norm,
+            weights: ln_1,
+            saved: saved.ln_1,
+            grads: ln_1_grads.reborrow(),
+            d_normalized: &*d_hidden,
+            direct: d_residual_after_attention,
+            d_residual: d_residual_in,
+            chunk_amax: d_residual_in_chunk_amax,
+        })?;
+        Ok(Some(chunk_count))
+    }
 }

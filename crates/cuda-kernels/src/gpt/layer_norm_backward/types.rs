@@ -11,7 +11,8 @@ use super::param::{
 use crate::launch::grid_x_config;
 
 pub use args::{
-    LayerNormBackwardInputAddArgs, LayerNormBackwardInputArgs, LayerNormBackwardInputF32Args,
+    LayerNormBackwardInputAddAmaxArgs, LayerNormBackwardInputAddArgs,
+    LayerNormBackwardInputAmaxArgs, LayerNormBackwardInputArgs, LayerNormBackwardInputF32Args,
     LayerNormBackwardParamArgs, LayerNormBackwardParamF32Args,
 };
 
@@ -78,6 +79,32 @@ impl LayerNormBackwardModule {
         LayerNormBackwardInputF32Args<'_, '_>,
         layer_norm_backward_input_f32_kernel
     );
+    pub fn backward_input_amax(
+        &self,
+        args: LayerNormBackwardInputAmaxArgs<'_, '_>,
+    ) -> Result<u32, DriverError> {
+        assert_eq!(
+            args.embedding_dim as usize,
+            crate::nvfp4_quant::NVFP4_TENSOR_AMAX_VALUES_PER_BLOCK
+        );
+        assert!(args.chunk_amax.len() >= args.row_count as usize);
+        self.module.layer_norm_backward_input_amax_kernel(
+            args.stream,
+            grid_x_config(args.row_count, THREADS_PER_BLOCK),
+            args.residual,
+            args.d_normalized,
+            args.mean,
+            args.inv_std,
+            args.weight.bytes,
+            args.weight.scales,
+            args.weight.global_scale,
+            args.d_residual,
+            args.chunk_amax,
+            args.row_count,
+            args.embedding_dim,
+        )?;
+        Ok(args.row_count)
+    }
     pub fn backward_input_add(
         &self,
         args: LayerNormBackwardInputAddArgs<'_, '_>,
@@ -97,6 +124,33 @@ impl LayerNormBackwardModule {
             args.row_count,
             args.embedding_dim,
         )
+    }
+    pub fn backward_input_add_amax(
+        &self,
+        args: LayerNormBackwardInputAddAmaxArgs<'_, '_>,
+    ) -> Result<u32, DriverError> {
+        assert_eq!(
+            args.embedding_dim as usize,
+            crate::nvfp4_quant::NVFP4_TENSOR_AMAX_VALUES_PER_BLOCK
+        );
+        assert!(args.chunk_amax.len() >= args.row_count as usize);
+        self.module.layer_norm_backward_input_add_amax_kernel(
+            args.stream,
+            grid_x_config(args.row_count, THREADS_PER_BLOCK),
+            args.residual,
+            args.d_normalized,
+            args.mean,
+            args.inv_std,
+            args.weight.bytes,
+            args.weight.scales,
+            args.weight.global_scale,
+            args.direct,
+            args.d_residual,
+            args.chunk_amax,
+            args.row_count,
+            args.embedding_dim,
+        )?;
+        Ok(args.row_count)
     }
     pub fn backward_params(
         &self,

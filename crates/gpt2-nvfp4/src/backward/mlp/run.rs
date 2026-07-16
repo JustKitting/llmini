@@ -12,6 +12,7 @@ pub fn backward(args: MlpBackwardArgs<'_, '_, '_>) -> Result<(), DriverError> {
         saved,
         projections,
         d_residual_out,
+        precomputed_d_residual_amax_chunks,
         grads,
         scratch,
         seeds,
@@ -49,7 +50,7 @@ pub fn backward(args: MlpBackwardArgs<'_, '_, '_>) -> Result<(), DriverError> {
             output_dim: GPT2_EMBEDDING_DIM,
             sign_seed: seeds.down_sign,
             scale_seed: seeds.down_scale,
-            precomputed_e_amax_chunks: None,
+            precomputed_e_amax_chunks: precomputed_d_residual_amax_chunks,
         },
     )?;
 

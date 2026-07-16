@@ -2,16 +2,17 @@ use cuda_device::{
     DisjointSlice, SharedArray, cooperative_launch, cuda_module, grid, kernel, thread,
 };
 
+use crate::block_reduce::block_max_store_f32;
 use crate::device_ptr::read_f32;
-use crate::float_ptx::{max_f32, sqrt_f32};
+use crate::float_ptx::{abs_f32, max_f32, sqrt_f32};
 use crate::nvfp4_quant::kernels::four_six::helpers::four_six_global_scale;
+use crate::nvfp4_quant::kernels::row_amax::TENSOR_AMAX_VALUES_PER_BLOCK;
 use crate::optimizer::MuonSlotDescriptor;
 
 use super::super::super::threads::{WARP_SIZE, WARPS_PER_BLOCK};
 use super::super::super::work_grid::WorkGrid;
 use super::super::polar::fused::{
-    normalize_source_to_x, reduce_source_sumsq_chunks_to_inv_norm, scale_source_to_x,
-    source_sumsq_chunks,
+    normalize_source_to_x, reduce_source_sumsq_chunks_to_inv_norm, source_sumsq_chunks,
 };
 use super::momentum::momentum_orient;
 use super::quant::{encode_four_six, quantize_updated_master};
@@ -136,14 +137,37 @@ pub(crate) mod module {
         source: &[f32],
         mut polar_x: DisjointSlice<f32>,
         polar_chunks: &[f32],
+        mut polar_x_chunk_amax: DisjointSlice<f32>,
         matrix_len: u32,
     ) {
-        scale_source_to_x(
-            source.as_ptr(),
-            polar_x.as_mut_ptr(),
-            polar_chunks.as_ptr(),
-            WorkGrid::x_axis(),
-            matrix_len,
+        static mut CHUNK_AMAX: SharedArray<f32, { WARPS_PER_BLOCK as usize }> = SharedArray::UNINIT;
+
+        let inv_norm = polar_chunks[0];
+        let chunk = thread::blockIdx_x();
+        let thread = thread::threadIdx_x();
+        let lane = thread & (WARP_SIZE - 1);
+        let warp = thread / WARP_SIZE;
+        let base = chunk * TENSOR_AMAX_VALUES_PER_BLOCK;
+        let mut offset = thread;
+        let mut local_amax = 0.0;
+        let out = polar_x.as_mut_ptr();
+        while offset < TENSOR_AMAX_VALUES_PER_BLOCK {
+            let index = base + offset;
+            if index < matrix_len {
+                let value = source[index as usize] * inv_norm;
+                unsafe {
+                    *out.add(index as usize) = value;
+                }
+                local_amax = max_f32(local_amax, abs_f32(value));
+            }
+            offset += thread::blockDim_x();
+        }
+        block_max_store_f32!(
+            CHUNK_AMAX,
+            polar_x_chunk_amax[chunk],
+            local_amax,
+            lane,
+            warp
         );
     }
 

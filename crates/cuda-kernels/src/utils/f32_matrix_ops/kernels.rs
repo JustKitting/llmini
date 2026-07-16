@@ -1,7 +1,8 @@
 use cuda_device::{DisjointSlice, SharedArray, cuda_module, kernel, thread};
 
-use crate::block_reduce::block_sum_shared_f32;
-use crate::float_ptx::{fma_f32, sqrt_f32};
+use crate::block_reduce::{block_max_store_f32, block_sum_shared_f32};
+use crate::float_ptx::{abs_f32, fma_f32, max_f32, sqrt_f32};
+use crate::nvfp4_quant::kernels::row_amax::TENSOR_AMAX_VALUES_PER_BLOCK;
 use crate::warp_reduce::thread_lane_warp;
 
 const F32_OPS_WARPS_PER_BLOCK: usize = 8;
@@ -83,6 +84,49 @@ pub(super) mod module {
             }
             index += stride;
         }
+    }
+
+    #[kernel]
+    pub fn f32_linear3_sqrt_bound_a_amax_in_place_kernel(
+        a: &[f32],
+        b: &[f32],
+        mut c_out: DisjointSlice<f32>,
+        bound_amax: &[f32],
+        mut chunk_amax: DisjointSlice<f32>,
+        len: u32,
+        a_scale: f32,
+        b_scale: f32,
+        c_scale: f32,
+    ) {
+        static mut CHUNK_AMAX: SharedArray<f32, F32_OPS_WARPS_PER_BLOCK> = SharedArray::UNINIT;
+
+        let bound = bound_amax[0];
+        let bound_scale = if bound > 1.0 {
+            1.0 / sqrt_f32(bound)
+        } else {
+            1.0
+        };
+        let chunk = thread::blockIdx_x();
+        let (thread, lane, warp) = thread_lane_warp();
+        let base = chunk * TENSOR_AMAX_VALUES_PER_BLOCK;
+        let mut offset = thread;
+        let mut local_amax = 0.0;
+        let c_ptr = c_out.as_mut_ptr();
+        while offset < TENSOR_AMAX_VALUES_PER_BLOCK {
+            let index = base + offset;
+            if index < len {
+                let i = index as usize;
+                unsafe {
+                    let current = *c_ptr.add(i);
+                    let bc = fma_f32(b_scale, b[i], c_scale * current);
+                    let value = fma_f32(a_scale, a[i] * bound_scale, bc);
+                    *c_ptr.add(i) = value;
+                    local_amax = max_f32(local_amax, abs_f32(value));
+                }
+            }
+            offset += thread::blockDim_x();
+        }
+        block_max_store_f32!(CHUNK_AMAX, chunk_amax[chunk], local_amax, lane, warp);
     }
 
     #[kernel]

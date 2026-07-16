@@ -1,6 +1,6 @@
 use cuda_core::{CudaStream, DeviceBuffer, DriverError};
 use rust_kernels_cuda::f32_matrix_ops::{
-    F32Linear3Args, F32Linear3SqrtBoundArgs, F32Linear3SqrtBoundRowSumsqArgs,
+    F32Linear3Args, F32Linear3SqrtBoundAmaxArgs, F32Linear3SqrtBoundRowSumsqArgs,
     F32ScaleInPlaceByAmaxArgs,
 };
 use rust_kernels_cuda::nvfp4_quant::{
@@ -41,19 +41,27 @@ pub(in crate::training) fn apply_muon_tma(args: MuonTmaArgs<'_>) -> Result<(), D
             continue;
         }
 
-        args.runtime
-            .optimizer
-            .muon_tma_prepare_polar(MuonTmaPrepareArgs {
-                stream,
-                slots: &args.table.slots,
-                oriented: &mut args.scratch.oriented,
-                polar_x: &mut args.scratch.polar_x,
-                polar_chunks: &mut args.scratch.polar_chunks,
-                slot_index: slot_index as u32,
-                matrix_len: desc.rows * desc.cols,
-                mu: MU,
-                grad_scale: args.grad_scale,
-            })?;
+        let polar_x_amax_chunks =
+            args.runtime
+                .optimizer
+                .muon_tma_prepare_polar(MuonTmaPrepareArgs {
+                    stream,
+                    slots: &args.table.slots,
+                    oriented: &mut args.scratch.oriented,
+                    polar_x: &mut args.scratch.polar_x,
+                    polar_chunks: &mut args.scratch.polar_chunks,
+                    polar_x_chunk_amax: &mut args.scratch.tma.a.chunk_amax,
+                    slot_index: slot_index as u32,
+                    matrix_len: desc.rows * desc.cols,
+                    mu: MU,
+                    grad_scale: args.grad_scale,
+                })?;
+        args.runtime.quant.tensor_amax_from_chunks_f32(
+            stream,
+            &args.scratch.tma.a.chunk_amax,
+            &mut args.scratch.tma.a.amax,
+            polar_x_amax_chunks,
+        )?;
 
         let (polar_rows, polar_cols) = polar_shape(desc);
         let defer_bounds = can_defer_polar_bounds(polar_rows, polar_cols);
@@ -196,6 +204,7 @@ fn run_tma_polar_iteration(
         tma.reborrow(),
         polar_rows,
         polar_cols,
+        iter == 0 || defer_bounds,
     )?;
     trace_buffer(
         stream,
@@ -325,19 +334,27 @@ fn run_tma_polar_iteration(
             polar_rows,
         )?;
     } else if defer_bounds {
-        runtime
-            .f32_ops
-            .linear3_sqrt_bound_a(F32Linear3SqrtBoundArgs {
-                stream,
-                a: source,
-                b: ax,
-                c_out: target,
-                bound_amax: &*tma.bound_amax,
-                len: polar_rows * polar_cols,
-                a_scale: coeffs.a,
-                b_scale: coeffs.b,
-                c_scale: coeffs.c,
-            })?;
+        let chunk_count =
+            runtime
+                .f32_ops
+                .linear3_sqrt_bound_a_with_amax(F32Linear3SqrtBoundAmaxArgs {
+                    stream,
+                    a: source,
+                    b: ax,
+                    c_out: target,
+                    bound_amax: &*tma.bound_amax,
+                    chunk_amax: tma.a.chunk_amax,
+                    len: polar_rows * polar_cols,
+                    a_scale: coeffs.a,
+                    b_scale: coeffs.b,
+                    c_scale: coeffs.c,
+                })?;
+        runtime.quant.tensor_amax_from_chunks_f32(
+            stream,
+            &*tma.a.chunk_amax,
+            tma.a.amax,
+            chunk_count,
+        )?;
     } else {
         runtime.f32_ops.linear3(F32Linear3Args {
             stream,
@@ -369,6 +386,7 @@ fn run_tma_polar_iteration(
             tma.reborrow(),
             polar_rows,
             polar_cols,
+            false,
         )?;
         trace_buffer(
             stream,
@@ -455,18 +473,32 @@ fn tma_matmul_self_transpose(
     mut tma: TmaScratchRefs<'_>,
     rows: u32,
     k: u32,
+    source_amax_precomputed: bool,
 ) -> Result<(), DriverError> {
     let dims = TmaDims::new(rows, rows, k);
-    quantize_operand_padded(
-        stream,
-        runtime,
-        x,
-        tma.a.reborrow(),
-        rows,
-        k,
-        dims.m,
-        dims.k,
-    )?;
+    if source_amax_precomputed {
+        quantize_operand_padded_with_amax(
+            stream,
+            runtime,
+            x,
+            tma.a.reborrow(),
+            rows,
+            k,
+            dims.m,
+            dims.k,
+        )?;
+    } else {
+        quantize_operand_padded(
+            stream,
+            runtime,
+            x,
+            tma.a.reborrow(),
+            rows,
+            k,
+            dims.m,
+            dims.k,
+        )?;
+    }
     run_tma_gemm_self_prepared_and_bound_amax(stream, runtime, out, &mut tma, dims)
 }
 
@@ -881,14 +913,41 @@ fn quantize_operand_padded(
     padded_rows: u32,
     padded_cols: u32,
 ) -> Result<(), DriverError> {
+    let mut scratch = scratch;
     let elements = rows * cols;
     runtime.quant.tensor_amax_f32(TensorAmaxArgs {
         stream,
         x: input,
-        chunk_amax: scratch.chunk_amax,
-        out: scratch.amax,
+        chunk_amax: &mut *scratch.chunk_amax,
+        out: &mut *scratch.amax,
         element_count: elements,
     })?;
+    quantize_operand_padded_with_amax(
+        stream,
+        runtime,
+        input,
+        scratch.reborrow(),
+        rows,
+        cols,
+        padded_rows,
+        padded_cols,
+    )
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "padded quantization uses explicit dimensions"
+)]
+fn quantize_operand_padded_with_amax(
+    stream: &CudaStream,
+    runtime: &Runtime,
+    input: &DeviceBuffer<f32>,
+    scratch: OperandScratchRefs<'_>,
+    rows: u32,
+    cols: u32,
+    padded_rows: u32,
+    padded_cols: u32,
+) -> Result<(), DriverError> {
     runtime
         .quant
         .fp32_to_nvfp4_four_six_padded(Nvfp4QuantPaddedArgs {

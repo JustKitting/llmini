@@ -2,8 +2,8 @@ use cuda_device::{DisjointSlice, thread};
 
 use super::gather::TC_BACKWARD_THREADS_PER_BLOCK;
 use crate::attention::CausalAttentionParams;
-use crate::attention::layout::{batched_qkv_index, compact_linear_parts, row_index};
-use crate::float_ptx::{exp_f32, fma_f32, sincos_f32};
+use crate::attention::layout::{batched_qkv_index, compact_index, compact_linear_parts, row_index};
+use crate::float_ptx::{abs_f32, exp_f32, fma_f32, max_f32, sincos_f32};
 
 pub(super) fn scatter_body(
     d_q: &[f32],
@@ -53,6 +53,57 @@ pub(super) fn scatter_body(
         *d_qkv.get_unchecked_mut(k) = dk;
         *d_qkv.get_unchecked_mut(v) = d_v[index as usize];
     }
+}
+
+pub(super) fn scatter_amax_body(
+    d_q: &[f32],
+    d_k: &[f32],
+    d_v: &[f32],
+    mut d_qkv: DisjointSlice<f32>,
+    params: CausalAttentionParams,
+) -> f32 {
+    let chunk = thread::blockIdx_x();
+    let row = chunk / 3;
+    let section = chunk - row * 3;
+    let batch = row / params.seq_len;
+    let token = row - batch * params.seq_len;
+    let mut col = thread::threadIdx_x();
+    let mut local_amax = 0.0;
+
+    while col < params.embedding_dim {
+        let head = col / params.head_dim;
+        let dim = col - head * params.head_dim;
+        let compact = compact_index(batch, token, head, dim, &params);
+        let value = if section == 0 {
+            rope_raw_grad(
+                token,
+                dim,
+                d_q[compact] * params.scale,
+                d_q[compact ^ 1] * params.scale,
+                params.head_dim,
+            )
+        } else if section == 1 {
+            rope_raw_grad(
+                token,
+                dim,
+                d_k[compact] * params.scale,
+                d_k[compact ^ 1] * params.scale,
+                params.head_dim,
+            )
+        } else {
+            d_v[compact]
+        };
+        let out = row as usize * params.qkv_dim as usize
+            + section as usize * params.embedding_dim as usize
+            + col as usize;
+        unsafe {
+            *d_qkv.get_unchecked_mut(out) = value;
+        }
+        local_amax = max_f32(local_amax, abs_f32(value));
+        col += TC_BACKWARD_THREADS_PER_BLOCK;
+    }
+
+    local_amax
 }
 
 #[inline(always)]

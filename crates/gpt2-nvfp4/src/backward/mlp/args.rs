@@ -67,6 +67,7 @@ pub struct MlpBackwardArgs<'a, 'scratch, 'out> {
     pub saved: BlockForwardSaved<'a>,
     pub projections: MlpProjectionTensors<'a>,
     pub d_residual_out: &'a DeviceBuffer<f32>,
+    pub precomputed_d_residual_amax_chunks: Option<u32>,
     pub grads: MlpBackwardGrads<'out>,
     pub scratch: MlpBackwardScratch<'scratch>,
     pub seeds: MlpBackwardSeeds,

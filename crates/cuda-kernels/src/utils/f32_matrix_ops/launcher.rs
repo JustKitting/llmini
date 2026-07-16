@@ -3,8 +3,8 @@ use std::sync::Arc;
 use cuda_core::{CudaModule, DriverError};
 
 use super::args::{
-    F32AddScaledIdentityArgs, F32Linear2Args, F32Linear3Args, F32Linear3SqrtBoundArgs,
-    F32Linear3SqrtBoundRowSumsqArgs, F32ScaleInPlaceByAmaxArgs,
+    F32AddScaledIdentityArgs, F32Linear2Args, F32Linear3Args, F32Linear3SqrtBoundAmaxArgs,
+    F32Linear3SqrtBoundArgs, F32Linear3SqrtBoundRowSumsqArgs, F32ScaleInPlaceByAmaxArgs,
 };
 use super::kernels;
 use crate::launch::{grid_x_config, linear_config};
@@ -78,6 +78,35 @@ impl F32MatrixOpsModule {
             args.b_scale,
             args.c_scale,
         )
+    }
+
+    pub fn linear3_sqrt_bound_a_with_amax(
+        &self,
+        args: F32Linear3SqrtBoundAmaxArgs<'_, '_>,
+    ) -> Result<u32, DriverError> {
+        assert!(args.a.len() >= args.len as usize);
+        assert!(args.b.len() >= args.len as usize);
+        assert!(args.c_out.len() >= args.len as usize);
+        assert!(!args.bound_amax.is_empty());
+        let chunk_count = args
+            .len
+            .div_ceil(crate::nvfp4_quant::NVFP4_TENSOR_AMAX_VALUES_PER_BLOCK as u32);
+        assert!(args.chunk_amax.len() >= chunk_count as usize);
+
+        self.module.f32_linear3_sqrt_bound_a_amax_in_place_kernel(
+            args.stream,
+            grid_x_config(chunk_count, F32_OPS_THREADS_PER_BLOCK),
+            args.a,
+            args.b,
+            args.c_out,
+            args.bound_amax,
+            args.chunk_amax,
+            args.len,
+            args.a_scale,
+            args.b_scale,
+            args.c_scale,
+        )?;
+        Ok(chunk_count)
     }
 
     pub fn linear3_sqrt_bound_a_row_sumsq(
