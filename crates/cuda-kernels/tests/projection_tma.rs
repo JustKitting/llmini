@@ -3,6 +3,7 @@ use std::error::Error;
 use cuda_core::{CudaStream, DeviceBuffer};
 use rust_kernels_cuda::attention::{AttentionModule, CProjArgs, QkvProjectionArgs};
 use rust_kernels_cuda::f16_tc_matmul::{F16ConvertArgs, F16TcMatmulModule};
+use rust_kernels_cuda::f32_matrix_ops::{F32Linear3SqrtBoundAmaxArgs, F32MatrixOpsModule};
 use rust_kernels_cuda::lm_head::{LmHeadArgs, LmHeadModule};
 use rust_kernels_cuda::mlp::{MlpDownResidualArgs, MlpModule, MlpUpRelu2Args};
 use rust_kernels_cuda::mma::Nvfp4FourSixMmaWeightTensor;
@@ -96,6 +97,53 @@ fn tma_symmetric_output_and_amax_match_full_self_product() -> Result<(), Box<dyn
         .map(f32::abs)
         .fold(0.0_f32, f32::max);
     let fused_amax = chunk_amax
+        .to_host_vec(&fixture.stream)?
+        .into_iter()
+        .fold(0.0_f32, f32::max);
+    assert_eq!(fused_amax, output_amax);
+    Ok(())
+}
+
+#[ignore = "requires generated sm_120a PTX"]
+#[test]
+fn tma_linear3_amax_epilogue_matches_standalone_update() -> Result<(), Box<dyn Error>> {
+    const DIM: usize = 128;
+    const LEN: usize = ROWS * DIM;
+    const A_SCALE: f32 = 3.4445;
+    const B_SCALE: f32 = -4.775;
+    const C_SCALE: f32 = 2.0315;
+    let fixture = Fixture::new(ROWS, K, DIM)?;
+    let source = DeviceBuffer::from_host(&fixture.stream, &residual_values(LEN))?;
+    let action = DeviceBuffer::from_host(&fixture.stream, &action_values(LEN))?;
+    let bound_amax = DeviceBuffer::from_host(&fixture.stream, &[1.5625_f32])?;
+    let mut standalone = DeviceBuffer::<f32>::zeroed(&fixture.stream, LEN)?;
+    let mut fused = DeviceBuffer::<f32>::zeroed(&fixture.stream, LEN)?;
+    let mut standalone_chunks = DeviceBuffer::<f32>::zeroed(&fixture.stream, LEN)?;
+    let chunk_count = tma_nvfp4_output_amax_chunks(ROWS as u32, DIM as u32);
+    let mut fused_chunks = DeviceBuffer::<f32>::zeroed(&fixture.stream, chunk_count as usize)?;
+
+    let launched_chunks = fixture.tma_linear3_with_output_amax(
+        &source,
+        &action,
+        &bound_amax,
+        &mut standalone,
+        &mut standalone_chunks,
+        &mut fused,
+        &mut fused_chunks,
+        A_SCALE,
+        B_SCALE,
+        C_SCALE,
+    )?;
+    assert_eq!(launched_chunks, chunk_count);
+
+    let standalone = standalone.to_host_vec(&fixture.stream)?;
+    let fused = fused.to_host_vec(&fixture.stream)?;
+    assert_eq!(
+        fused, standalone,
+        "fused linear3 epilogue changed the Muon update"
+    );
+    let output_amax = fused.iter().copied().map(f32::abs).fold(0.0_f32, f32::max);
+    let fused_amax = fused_chunks
         .to_host_vec(&fixture.stream)?
         .into_iter()
         .fold(0.0_f32, f32::max);
@@ -239,6 +287,7 @@ struct Fixture {
     lm_head: LmHeadModule,
     mlp: MlpModule,
     f16: F16TcMatmulModule,
+    f32: F32MatrixOpsModule,
     tma: Nvfp4GemmModule,
     scale_pack: Sm120ScalePackModule,
     pad: TmaMatrixPadModule,
@@ -264,6 +313,7 @@ impl Fixture {
             lm_head: LmHeadModule::from_module(ptx.clone())?,
             mlp: MlpModule::from_module(ptx.clone())?,
             f16: F16TcMatmulModule::from_module(ptx.clone())?,
+            f32: F32MatrixOpsModule::from_module(ptx.clone())?,
             tma: Nvfp4GemmModule::from_module(ptx.clone())?,
             scale_pack: Sm120ScalePackModule::from_module(ptx.clone())?,
             pad: TmaMatrixPadModule::from_module(ptx.clone())?,
@@ -484,6 +534,103 @@ impl Fixture {
             )?)
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "test compares explicit standalone and fused operands"
+    )]
+    fn tma_linear3_with_output_amax(
+        &self,
+        source: &DeviceBuffer<f32>,
+        action: &DeviceBuffer<f32>,
+        bound_amax: &DeviceBuffer<f32>,
+        standalone: &mut DeviceBuffer<f32>,
+        standalone_chunks: &mut DeviceBuffer<f32>,
+        fused: &mut DeviceBuffer<f32>,
+        fused_chunks: &mut DeviceBuffer<f32>,
+        a_scale: f32,
+        b_scale: f32,
+        c_scale: f32,
+    ) -> Result<u32, Box<dyn Error>> {
+        let mut input_scale_packed = DeviceBuffer::zeroed(
+            &self.stream,
+            sm120_scale_packed_len(sm120_scale_padded_mn_extent(self.rows), self.k),
+        )?;
+        let mut weight_scale_packed = DeviceBuffer::zeroed(
+            &self.stream,
+            sm120_scale_packed_len(sm120_scale_padded_mn_extent(self.n), self.k),
+        )?;
+        let mut descriptors = TmaNvfp4DeviceScaleDescriptors::new(&self.stream)?;
+
+        self.scale_pack.pack(
+            &self.stream,
+            &self.input_scales,
+            &mut input_scale_packed,
+            self.rows as u32,
+            self.k as u32,
+        )?;
+        self.scale_pack.pack(
+            &self.stream,
+            &self.weight_scales,
+            &mut weight_scale_packed,
+            self.n as u32,
+            self.k as u32,
+        )?;
+        self.tma.prepare_tma_nvfp4_device_scales_into(
+            &self.stream,
+            &self.input_bytes,
+            &input_scale_packed,
+            &self.weight_bytes,
+            &weight_scale_packed,
+            self.rows as u32,
+            self.k as u32,
+            self.n as u32,
+            &mut descriptors,
+        )?;
+        self.tma
+            .gemm_tma_nvfp4_device_scales_and_global_scale_buffers(
+                &self.stream,
+                &descriptors,
+                standalone,
+                self.rows as u32,
+                self.k as u32,
+                self.n as u32,
+                &self.input_globals,
+                &self.weight_global,
+            )?;
+        self.f32
+            .linear3_sqrt_bound_a_with_amax(F32Linear3SqrtBoundAmaxArgs {
+                stream: &self.stream,
+                a: source,
+                b: action,
+                c_out: standalone,
+                bound_amax,
+                chunk_amax: standalone_chunks,
+                len: (self.rows * self.n) as u32,
+                a_scale,
+                b_scale,
+                c_scale,
+            })?;
+        Ok(self
+            .tma
+            .gemm_tma_nvfp4_device_scales_and_global_scale_buffers_linear3_with_output_amax(
+                &self.stream,
+                &descriptors,
+                source,
+                action,
+                fused,
+                bound_amax,
+                fused_chunks,
+                self.rows as u32,
+                self.k as u32,
+                self.n as u32,
+                &self.input_globals,
+                &self.weight_global,
+                a_scale,
+                b_scale,
+                c_scale,
+            )?)
+    }
+
     fn tma_affine(&self, out: &mut DeviceBuffer<f32>) -> Result<(), Box<dyn Error>> {
         let padded_n = sm120_scale_padded_mn_extent(self.n);
         let mut input_scale_packed = DeviceBuffer::zeroed(
@@ -697,5 +844,11 @@ fn row_globals(rows: usize) -> Vec<f32> {
 fn residual_values(len: usize) -> Vec<f32> {
     (0..len)
         .map(|index| (index % 23) as f32 * 0.03125 - 0.25)
+        .collect()
+}
+
+fn action_values(len: usize) -> Vec<f32> {
+    (0..len)
+        .map(|index| (index % 29) as f32 * -0.0234375 + 0.375)
         .collect()
 }

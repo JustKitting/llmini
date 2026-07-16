@@ -312,6 +312,79 @@ impl Nvfp4GemmModule {
 
     #[expect(
         clippy::too_many_arguments,
+        reason = "fused Muon TMA launch uses explicit buffers"
+    )]
+    pub fn gemm_tma_nvfp4_device_scales_and_global_scale_buffers_linear3_with_output_amax(
+        &self,
+        stream: &CudaStream,
+        tma: &TmaNvfp4DeviceScaleDescriptors,
+        source: &DeviceBuffer<f32>,
+        action: &DeviceBuffer<f32>,
+        out: &mut DeviceBuffer<f32>,
+        bound_amax: &DeviceBuffer<f32>,
+        output_chunk_amax: &mut DeviceBuffer<f32>,
+        token_count: u32,
+        input_dim: u32,
+        output_dim: u32,
+        a_global_scale: &DeviceBuffer<f32>,
+        b_global_scale: &DeviceBuffer<f32>,
+        a_scale: f32,
+        b_scale: f32,
+        c_scale: f32,
+    ) -> Result<u32, DriverError> {
+        let output_len = token_count as usize * output_dim as usize;
+        let chunk_count = tma_nvfp4_output_amax_chunks(token_count, output_dim);
+        if token_count % TILE_M != 0
+            || output_dim % TILE_N != 0
+            || input_dim % Sm120ScaleLayout::K_ATOM != 0
+            || input_dim % TILE_K != 0
+            || input_dim == 0
+            || source.len() < output_len
+            || action.len() < output_len
+            || out.len() < output_len
+            || bound_amax.is_empty()
+            || output_chunk_amax.len() < chunk_count as usize
+        {
+            return Err(DriverError(cudaError_enum_CUDA_ERROR_INVALID_VALUE));
+        }
+
+        let params = Nvfp4GemmParams {
+            token_count,
+            input_dim,
+            output_dim,
+            global_scale_mode: 1,
+            weight_global_scale: 1.0,
+            a_global_scale: a_global_scale.cu_deviceptr(),
+            b_global_scale: b_global_scale.cu_deviceptr(),
+        };
+        let config = LaunchConfig {
+            grid_dim: (output_dim / TILE_N, token_count / TILE_M, 1),
+            block_dim: (TMA_NVFP4_THREADS_PER_BLOCK, 1, 1),
+            shared_mem_bytes: 0,
+        };
+
+        self.module.nvfp4_gemm_tma_linear3_amax_kernel(
+            stream,
+            config,
+            tma.a_deviceptr() as *const TmaDescriptor,
+            tma.b_deviceptr() as *const TmaDescriptor,
+            tma.a_scales_deviceptr() as *const TmaDescriptor,
+            tma.b_scales_deviceptr() as *const TmaDescriptor,
+            source,
+            action,
+            out,
+            bound_amax,
+            output_chunk_amax,
+            params,
+            a_scale,
+            b_scale,
+            c_scale,
+        )?;
+        Ok(chunk_count)
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
         reason = "TMA GEMM launch uses explicit buffers"
     )]
     pub fn gemm_tma_nvfp4_rowwise_a_scale_and_global_scale_buffer(

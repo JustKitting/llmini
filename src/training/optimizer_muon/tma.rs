@@ -308,75 +308,91 @@ fn run_tma_polar_iteration(
         polar_rows,
         polar_cols,
     )?;
-    run_tma_gemm_prepared(stream, runtime, target, &mut tma, action_dims)?;
-    trace_buffer(
-        stream,
-        trace,
-        slot_index,
-        "target_ggx",
-        target,
-        polar_rows * polar_cols,
-        Some(iter),
-        desc,
-    )?;
     let final_iteration = iter + 1 == POLAR_ITERATIONS;
-    if defer_bounds && final_iteration {
-        runtime
-            .f32_ops
-            .linear3_sqrt_bound_a_row_sumsq(F32Linear3SqrtBoundRowSumsqArgs {
-                stream,
-                a: source,
-                b: ax,
-                c_out: target,
-                bound_amax: &*tma.bound_amax,
-                row_sumsq: tma.b.chunk_amax,
-                rows: polar_rows,
-                cols: polar_cols,
-                a_scale: coeffs.a,
-                b_scale: coeffs.b,
-                c_scale: coeffs.c,
-            })?;
-        // For a Gram matrix XX^T, every off-diagonal magnitude is bounded by
-        // the largest diagonal, so its tensor amax is the maximum row sumsq.
-        runtime.quant.tensor_amax_from_chunks_f32(
+    let fused_linear3 = defer_bounds && !final_iteration && !trace.enabled;
+    if fused_linear3 {
+        run_tma_gemm_prepared_linear3_amax(
             stream,
-            &*tma.b.chunk_amax,
-            tma.bound_amax,
-            polar_rows,
+            runtime,
+            source,
+            ax,
+            target,
+            &mut tma,
+            action_dims,
+            coeffs.a,
+            coeffs.b,
+            coeffs.c,
         )?;
-    } else if defer_bounds {
-        let chunk_count =
+    } else {
+        run_tma_gemm_prepared(stream, runtime, target, &mut tma, action_dims)?;
+        trace_buffer(
+            stream,
+            trace,
+            slot_index,
+            "target_ggx",
+            target,
+            polar_rows * polar_cols,
+            Some(iter),
+            desc,
+        )?;
+        if defer_bounds && final_iteration {
             runtime
                 .f32_ops
-                .linear3_sqrt_bound_a_with_amax(F32Linear3SqrtBoundAmaxArgs {
+                .linear3_sqrt_bound_a_row_sumsq(F32Linear3SqrtBoundRowSumsqArgs {
                     stream,
                     a: source,
                     b: ax,
                     c_out: target,
                     bound_amax: &*tma.bound_amax,
-                    chunk_amax: tma.a.chunk_amax,
-                    len: polar_rows * polar_cols,
+                    row_sumsq: tma.b.chunk_amax,
+                    rows: polar_rows,
+                    cols: polar_cols,
                     a_scale: coeffs.a,
                     b_scale: coeffs.b,
                     c_scale: coeffs.c,
                 })?;
-        runtime.quant.tensor_amax_from_chunks_f32(
-            stream,
-            &*tma.a.chunk_amax,
-            tma.a.amax,
-            chunk_count,
-        )?;
-    } else {
-        runtime.f32_ops.linear3(F32Linear3Args {
-            stream,
-            a: source,
-            b: ax,
-            c_out: target,
-            len: polar_rows * polar_cols,
-            a_scale: coeffs.a,
-            b_scale: coeffs.b,
-            c_scale: coeffs.c,
-        })?;
+            // For a Gram matrix XX^T, every off-diagonal magnitude is bounded by
+            // the largest diagonal, so its tensor amax is the maximum row sumsq.
+            runtime.quant.tensor_amax_from_chunks_f32(
+                stream,
+                &*tma.b.chunk_amax,
+                tma.bound_amax,
+                polar_rows,
+            )?;
+        } else if defer_bounds {
+            let chunk_count =
+                runtime
+                    .f32_ops
+                    .linear3_sqrt_bound_a_with_amax(F32Linear3SqrtBoundAmaxArgs {
+                        stream,
+                        a: source,
+                        b: ax,
+                        c_out: target,
+                        bound_amax: &*tma.bound_amax,
+                        chunk_amax: tma.a.chunk_amax,
+                        len: polar_rows * polar_cols,
+                        a_scale: coeffs.a,
+                        b_scale: coeffs.b,
+                        c_scale: coeffs.c,
+                    })?;
+            runtime.quant.tensor_amax_from_chunks_f32(
+                stream,
+                &*tma.a.chunk_amax,
+                tma.a.amax,
+                chunk_count,
+            )?;
+        } else {
+            runtime.f32_ops.linear3(F32Linear3Args {
+                stream,
+                a: source,
+                b: ax,
+                c_out: target,
+                len: polar_rows * polar_cols,
+                a_scale: coeffs.a,
+                b_scale: coeffs.b,
+                c_scale: coeffs.c,
+            })?;
+        }
     }
     trace_buffer(
         stream,
@@ -731,6 +747,62 @@ fn run_tma_gemm_prepared(
             &*tma.b.global_scale,
         )?;
     crop_tma_out(stream, runtime, out, tma.out_padded, dims)
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "fused Muon action uses explicit operands and coefficients"
+)]
+fn run_tma_gemm_prepared_linear3_amax(
+    stream: &CudaStream,
+    runtime: &Runtime,
+    source: &DeviceBuffer<f32>,
+    action: &DeviceBuffer<f32>,
+    out: &mut DeviceBuffer<f32>,
+    tma: &mut TmaScratchRefs<'_>,
+    dims: TmaDims,
+    a_scale: f32,
+    b_scale: f32,
+    c_scale: f32,
+) -> Result<(), DriverError> {
+    debug_assert!(dims.is_exact());
+    runtime
+        .optimizer
+        .tma_gemm()
+        .prepare_tma_nvfp4_device_scales_into(
+            stream,
+            &*tma.a.bytes,
+            &*tma.a.scale_packed,
+            &*tma.b.bytes,
+            &*tma.b.scale_packed,
+            dims.m,
+            dims.k,
+            dims.n,
+            tma.descriptors,
+        )?;
+    let chunk_count = runtime
+        .optimizer
+        .tma_gemm()
+        .gemm_tma_nvfp4_device_scales_and_global_scale_buffers_linear3_with_output_amax(
+            stream,
+            &*tma.descriptors,
+            source,
+            action,
+            out,
+            &*tma.bound_amax,
+            tma.a.chunk_amax,
+            dims.m,
+            dims.k,
+            dims.n,
+            &*tma.a.global_scale,
+            &*tma.b.global_scale,
+            a_scale,
+            b_scale,
+            c_scale,
+        )?;
+    runtime
+        .quant
+        .tensor_amax_from_chunks_f32(stream, &*tma.a.chunk_amax, tma.a.amax, chunk_count)
 }
 
 fn run_tma_gemm_prepared_and_b_amax(

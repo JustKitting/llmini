@@ -45,6 +45,69 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 
 ```text
 date: 2026-07-16
+commit: accepted local jj commit after full retry gate
+experiment: Fuse Muon's non-final linear3 update and amax into the second TMA action GEMM.
+status: accepted_after_clean_retry
+change:
+  Added a TMA NVFP4 epilogue that applies the exact existing
+  a*X + b*GX + c*G2X expression while the G2X accumulator is still resident,
+  stores the final FP32 update, and emits its amax chunks. This replaces the
+  separate FP32 linear3+amax kernel for the first four of five Muon polar
+  iterations. The final row-sumsq iteration is unchanged. MUON_TMA_TRACE keeps
+  the former two-kernel route so its raw target_ggx diagnostic remains valid.
+minimum_impact_gate:
+  The accepted baseline required 2.255536ms saved per step, or 22.555361ms
+  per ten-step profile. The removable standalone linear3+amax family alone
+  averaged 219.741599ms/profile, so the pre-edit ceiling cleared the floor.
+verification:
+  cargo fmt --all --check, cargo check --workspace, a fresh
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a, and all eight
+  ignored projection-TMA tests: pass. The added focused test requires bitwise
+  identity between the fused epilogue and ordinary TMA GEMM followed by the
+  standalone linear3 kernel, plus exact equality of the fused amax and stored
+  output maximum.
+profiles:
+  target/nsys/20260716_muon_tma_linear3_epilogue_candidate.nsys-rep
+  target/nsys/20260716_muon_tma_linear3_epilogue_candidate.sqlite
+    total GPU kernels 4494.785520ms; fused TMA linear3+amax 336.716574ms;
+    remaining plain TMA 359.611277ms; train_elapsed_s=4.405;
+    ten-step held-out val_loss=8.135963; launches 65084.
+  target/nsys/20260716_muon_tma_linear3_epilogue_candidate_reciprocal.nsys-rep
+  target/nsys/20260716_muon_tma_linear3_epilogue_candidate_reciprocal.sqlite
+    total GPU kernels 4500.013982ms; fused TMA linear3+amax 337.038857ms;
+    remaining plain TMA 360.457253ms; train_elapsed_s=4.411;
+    ten-step held-out val_loss=8.137257; launches 65084.
+  Candidate mean is 4497.399751ms, saving 32.036831ms/profile or 0.71%
+  versus the accepted 4529.436582ms mean. Plain TMA plus standalone linear3
+  averaged 743.085489ms in the parent; plain TMA plus the fused kernel averages
+  696.911981ms, directly explaining 46.173508ms. Exactly 2,680 launches are
+  removed.
+gates:
+  30s screen target/runs/20260716_143119Z_fineweb_30s:
+    heldout val_loss=6.519189, completed_steps=69, train_elapsed_s=30.188.
+  The first 450s attempt, target/runs/20260716_143201Z_fineweb_450s, reached
+  the logged step 850 before CUDA returned DriverError 719. The kernel journal
+  recorded an Xid 13 channel/class-mismatch report with Data deaddead, without
+  an SM out-of-range or misaligned-address report. A filtered one-step
+  compute-sanitizer memcheck of the new kernel reported zero errors:
+    target/diagnostics/20260716_muon_tma_linear3_epilogue_memcheck.log
+  An unchanged full retry target/runs/20260716_144115Z_fineweb_450s completed
+  cleanly with heldout val_loss=5.247858, completed_steps=1003, and
+  train_elapsed_s=450.092, with no further Xid.
+  The parent completed 69 steps in 30.340s at loss 6.519481 and 998 steps in
+  450.205s at loss 5.245728. The clean retry reduces sustained time per step
+  by 0.52%; held-out loss moves only +0.041%, well inside tolerance.
+decision:
+  Accept on the clean full retry and preserve the failed attempt in the record.
+  The speed signal is reciprocal and directly explained, the kernel is bitwise
+  equivalent in the focused test, filtered memcheck is clean, the channel-level
+  Xid did not reproduce, and the required full-duration run passes. Promote
+  the retry as baseline. The next aggregate 0.5% floor is 2.243729ms per step,
+  or 22.437288ms per ten-step profile.
+```
+
+```text
+date: 2026-07-16
 commit: accepted local jj commit after full gate
 experiment: Compute only the upper triangle of Muon self-Gram products.
 status: accepted
