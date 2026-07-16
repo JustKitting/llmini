@@ -71,8 +71,7 @@ macro_rules! with_tc_ab_tiles {
 macro_rules! with_kda_tiles {
     (inv $body:ident; $($arg:expr),* $(,)?) => {{
         static mut RAW: $crate::kda_tc::KdaMatrixTile = cuda_device::SharedArray::UNINIT;
-        static mut INV: $crate::kda_tc::KdaMatrixTile = cuda_device::SharedArray::UNINIT;
-        $body($($arg,)* unsafe { &mut RAW }, unsafe { &mut INV });
+        $body($($arg,)* unsafe { &mut RAW });
     }};
     (state $body:ident; $($arg:expr),* $(,)?) => {{
         static mut STATE: $crate::kda_tc::KdaStateTile = cuda_device::SharedArray::UNINIT;

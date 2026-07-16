@@ -45,6 +45,69 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 
 ```text
 date: 2026-07-16
+commit: accepted local jj commit after full gate
+experiment: Solve KDA unit-lower triangular inverses independently by column.
+status: accepted_450s
+change:
+  Replaced the row-serial 64x64 KDA inverse solve, which synchronized the full
+  256-thread CTA after every row, with one independent inverse column per
+  thread. Each thread preserves the former per-output FMA order. The final
+  compact form stores the transposed inverse in the input tile's unused upper
+  triangle, so the kernel needs one 16KiB shared tile instead of two 16KiB
+  tiles; lower-triangular coefficients remain unmodified until consumed.
+minimum_impact_gate:
+  The accepted baseline required 2.243729ms saved per step, or 22.437288ms
+  per ten-step profile. Removing 64 block-wide row barriers had a credible
+  ceiling above that floor. An initial exact two-tile version measured a real
+  21.258620ms/profile saving but remained 1.178668ms below the admission
+  threshold, so it was not training-gated. Compacting shared memory supplied
+  the compatible additional saving needed to clear the floor.
+verification:
+  cargo fmt --all, cargo check --workspace, a fresh
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a, and the ignored
+  causal-attention tensor-core backward reference comparison: pass.
+profiles:
+  Initial two-tile diagnostic, not training-gated:
+    target/nsys/20260716_kda_columnwise_solve_candidate.nsys-rep
+    target/nsys/20260716_kda_columnwise_solve_candidate.sqlite
+      total GPU kernels 4472.583274ms; solve 30.591697ms; 28 registers;
+      32768 bytes static shared memory; launches 65084.
+    target/nsys/20260716_kda_columnwise_solve_candidate_reciprocal.nsys-rep
+    target/nsys/20260716_kda_columnwise_solve_candidate_reciprocal.sqlite
+      total GPU kernels 4479.698988ms; solve 30.610090ms; 28 registers;
+      32768 bytes static shared memory; launches 65084.
+    Two-tile mean 4476.141131ms versus accepted mean 4497.399751ms.
+  Final compact-shared-memory candidate:
+    target/nsys/20260716_kda_columnwise_solve_compact_smem_candidate.nsys-rep
+    target/nsys/20260716_kda_columnwise_solve_compact_smem_candidate.sqlite
+      total GPU kernels 4469.074176ms; solve 21.786654ms; 28 registers;
+      16384 bytes static shared memory; launches 65084.
+    target/nsys/20260716_kda_columnwise_solve_compact_smem_candidate_reciprocal.nsys-rep
+    target/nsys/20260716_kda_columnwise_solve_compact_smem_candidate_reciprocal.sqlite
+      total GPU kernels 4474.225866ms; solve 21.807154ms; 28 registers;
+      16384 bytes static shared memory; launches 65084.
+  Final mean is 4471.650021ms, saving 25.749730ms/profile or 0.573%
+  versus the accepted 4497.399751ms mean. The solve itself averages
+  21.796904ms versus 63.996255ms in the parent, directly saving 42.199351ms.
+gates:
+  30s screen target/runs/20260716_145945Z_fineweb_30s:
+    heldout val_loss=6.515830, completed_steps=70, train_elapsed_s=30.000.
+  450s sustained target/runs/20260716_150055Z_fineweb_450s:
+    heldout val_loss=5.226843, completed_steps=1011, train_elapsed_s=450.213.
+  The parent completed 69 steps in 30.188s at loss 6.519189 and 1003 steps
+  in 450.092s at loss 5.247858. Sustained time per completed step falls by
+  0.765%, held-out loss improves by 0.400%, all sampled finite flags are one,
+  and no updates are skipped.
+decision:
+  Accept and promote as the FineWeb/Llama-2 fixed-1B baseline. The reciprocal
+  profile clears the whole-step threshold, the exact reference test passes,
+  and the full fixed-time gate improves both throughput and held-out quality.
+  The next aggregate 0.5% floor is 2.226573ms per step, or 22.265727ms per
+  ten-step profile.
+```
+
+```text
+date: 2026-07-16
 commit: accepted local jj commit after full retry gate
 experiment: Fuse Muon's non-final linear3 update and amax into the second TMA action GEMM.
 status: accepted_after_clean_retry
