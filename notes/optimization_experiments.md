@@ -45,6 +45,111 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-16
 commit: accepted local jj commit after full gate
+experiment: Pack adjacent KDA transfers and tensor-core stage values.
+status: accepted_900s
+change:
+  Four compatible KDA data paths now operate on adjacent pairs. Backward
+  chunk-state reloads issue one 32-bit global load before converting both FP16
+  values, and saved dH rows use one vector FP32 store. Compact A tiles issue
+  one 64-bit global load, one packed FP32-to-FP16 conversion, and one packed
+  shared store for each adjacent dimension pair. Shared recurrent states and
+  global VK-layout states use the same packed conversion/store path; existing
+  KV-layout staging remains scalar because its adjacent MMA columns are not
+  adjacent in global state storage. MMA fragments, launch grids, and all
+  recurrence and accumulation order are unchanged.
+numerics:
+  Packed FP16 conversion uses the same round-to-nearest instruction already
+  used independently for each scalar; the low and high halves land at the
+  same addresses. Packed chunk-state loads preserve the original FP16 bits,
+  vector dH stores preserve the original FP32 bits, and paired compact/state
+  staging writes exactly the same shared-memory tile positions. Direct KDA
+  tensor-core backward, causal-attention wrapper, and full block-attention
+  backward comparisons pass after the final rebuild.
+memory:
+  All persistent buffers, scratch sizes, and lifetimes are unchanged. The
+  current ptxas report has zero spills for all affected kernels; chunkwise
+  backward uses 56 registers and 53248 bytes of shared memory, state-save uses
+  56 registers and 20480 bytes, fused dW/dQG uses 53 registers and 4096 bytes,
+  and dKG uses 48 registers and 4096 bytes. No peak-VRAM or larger-batch fit is
+  claimed.
+minimum_impact_gate:
+  The matched parent averaged 559.625855ms per sustained step, so the aggregate
+  0.5% screen floor was 2.798129ms. Reciprocal whole-workload profiles measured
+  a 4.249380ms per-step average saving, clearing the floor before either fixed-
+  wall gate. The individually compatible transfer and staging wins were kept
+  as one batch rather than requiring any atomic edit to meet an exact quota.
+focused_profile:
+  Matched parent samples:
+    target/nsys/20260716_tma_residual_contiguous_ms_eden_pipeline_candidate.nsys-rep
+    target/nsys/20260716_tma_residual_contiguous_ms_eden_pipeline_candidate_reciprocal.nsys-rep
+    total GPU kernels: 5569.958254 and 5574.452234ms.
+    kernel launches: 85821 in both samples.
+  Candidate samples:
+    target/nsys/20260716_kda_packed_compact_state_staging_candidate.nsys-rep
+    target/nsys/20260716_kda_packed_compact_state_staging_candidate_reciprocal.nsys-rep
+    total GPU kernels: 5527.103915 and 5532.318976ms.
+    kernel launches: 85821 in both samples.
+  Over the same 10 training steps plus endpoint validation, average total GPU
+  kernel time falls from 5572.205244 to 5529.711445ms, or 4.249380ms per step.
+  Chunkwise backward saves 2.370519ms per step, forward state-save saves
+  1.120211ms, fused dW/dQG saves 0.235802ms, and dKG saves 0.194243ms. Profiled
+  training wall time improves from about 5.4785 to 5.4375 seconds, or about
+  4.1ms per step. Held-out loss is 8.665544/8.664145 in the candidate pair.
+rejected_side_checks:
+  A preceding 512-thread quantizer batch halved CTA counts for direct four-six
+  and paired MS-EDEN exact grids but lost residency/scheduling efficiency. The
+  dominant paired MS-EDEN bias family regressed from 231.370810 to 247.766445ms
+  (+7.086%), and direct four-six regressed from 175.763482 to 184.530537ms
+  (+4.988%), so both wider launch routes were fully reverted before gates.
+  Artifact: target/nsys/20260716_wide_quantizer_blocks_candidate.nsys-rep.
+  An early partial KDA batch also packed forward global chunk-state snapshots;
+  that family changed by only 0.014ms per step and the partial aggregate saved
+  only 2.508ms per step, below the profile floor. The neutral forward snapshot
+  rewrite was removed while the measured backward transfer win remained in
+  the batch for the compatible state and compact staging additions.
+verification:
+  cargo fmt --all --check, git diff --check, cargo check --workspace -q,
+  fresh TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a, and
+  cargo test --workspace --release --lib --bins: pass (50 host tests).
+  Direct KDA tensor-core backward, GPT causal-attention backward wrapper, and
+  full block-attention backward GPU comparisons pass after the final build.
+  Required clean 30-second screen with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260716_042114Z_fineweb_30s
+    stdout: target/gates/20260716_kda_packed_compact_state_staging_30s.log
+    completed_steps=56, train_elapsed_s=30.126, val_loss=6.709967.
+  Required 900-second gate with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260716_042215Z_fineweb_900s
+    stdout: target/gates/20260716_kda_packed_compact_state_staging_900s.log
+    completed_steps=1621, train_elapsed_s=900.465, val_loss=4.852551.
+    All 33 high-fidelity loss and grad-norm samples were finite and nonzero,
+    with zero skipped updates, loss-spike skips, grad-norm-spike skips, or
+    nonfinite skips. Loss ranged from 4.492164612 to 10.864430428 and grad norm
+    ranged from 1.182952404 to 18.951820374. Every sample retained batch 4,
+    sequence 2048, and 8192 tokens per step. Held-out evaluation, plotting,
+    and generation all completed normally.
+measured_effect:
+  Against the matched 30-second parent:
+    completed_steps: 56 -> 56 (unchanged).
+    average step time: 541.785714ms -> 537.964286ms
+      (-3.821429ms, -0.705%).
+    held-out val_loss: 6.709591 -> 6.709967 (+0.006%).
+  Against the matched 900-second parent:
+    completed_steps: 1609 -> 1621 (+12, +0.746%).
+    average step time: 559.625855ms -> 555.499692ms
+      (-4.126163ms, -0.737%).
+    training tokens: 13180928 -> 13279232 (+98304, +0.746%).
+    held-out val_loss: 4.871391 -> 4.852551 (-0.387%).
+decision:
+  Keep and promote. Reciprocal profiles, the clean 30-second screen, and the
+  sustained gate all agree on a real speed win. The full gate trains 12 more
+  steps with better held-out loss and every stability field is clean.
+  notes/sweep_baseline.env points to this run. The next aggregate 0.5% floor is
+  (900.465 / 1621) * 0.005 = 2.777498ms per step.
+```
+
+```text
+date: 2026-07-16
+commit: accepted local jj commit after full gate
 experiment: Specialize residual TMA N ownership and pipeline fused MS-EDEN transpose tiles.
 status: accepted_900s
 change:

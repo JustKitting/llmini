@@ -1,7 +1,7 @@
 use cuda_device::thread;
 
 use crate::attention::CausalAttentionParams;
-use crate::f16_tc_matmul::convert::{cvt_f32_f16, cvt_rn_f16_f32};
+use crate::f16_tc_matmul::convert::{cvt_rn_f16_f32, load_f16x2_global};
 use crate::f16_tc_matmul::cta_tile::{CTA_A_ELEMS, CTA_B_ELEMS, CTA_K, CTA_THREADS};
 use crate::kda_common::{chunk_state_index, compact_index, hidden_index, kda_decay_exp};
 use crate::kda_tc::{
@@ -67,10 +67,13 @@ pub(crate) fn load_chunk_state(
     params: &CausalAttentionParams,
     threads_per_block: u32,
 ) {
-    let mut idx = thread::threadIdx_x();
-    while idx < state_elems {
-        state[idx as usize] = cvt_f32_f16(chunk_states[chunk_state_index(bh, chunk, idx, params)]);
-        idx += threads_per_block;
+    let state_base = chunk_state_index(bh, chunk, 0, params);
+    let mut pair = thread::threadIdx_x() * 2;
+    while pair < state_elems {
+        let (lo, hi) = load_f16x2_global(chunk_states.as_ptr(), state_base + pair as usize);
+        state[pair as usize] = lo;
+        state[pair as usize + 1] = hi;
+        pair += threads_per_block * 2;
     }
     thread::sync_threads();
 }

@@ -4,6 +4,7 @@ use cuda_device::{DisjointSlice, thread};
 
 use super::super::gather::TC_BACKWARD_THREADS_PER_BLOCK;
 use crate::attention::CausalAttentionParams;
+use crate::f16_tc_matmul::convert::store_f32x2_global;
 use crate::f16_tc_matmul::cta_tile::CtaTile;
 use crate::kda_backward::load_chunk_state;
 use crate::kda_common::{batch_head, chunk_count, kda_tc_shape, state_elems};
@@ -66,14 +67,17 @@ pub(crate) fn chunkwise_kda_backward_body(
             TC_BACKWARD_THREADS_PER_BLOCK,
         );
 
-        idx = tid;
+        let mut pair = tid * 2;
         let d_h_base = ((bh * chunks + chunk) * state_elems) as usize;
-        while idx < state_elems {
-            unsafe {
-                *grads.d_h_states.get_unchecked_mut(d_h_base + idx as usize) =
-                    d_h_next[idx as usize];
-            }
-            idx += TC_BACKWARD_THREADS_PER_BLOCK;
+        let d_h_states_ptr = grads.d_h_states.as_mut_ptr();
+        while pair < state_elems {
+            store_f32x2_global(
+                d_h_states_ptr,
+                d_h_base + pair as usize,
+                d_h_next[pair as usize],
+                d_h_next[pair as usize + 1],
+            );
+            pair += TC_BACKWARD_THREADS_PER_BLOCK * 2;
         }
 
         let tile = CtaTile::from_tile(tid, 0, 0, 0);

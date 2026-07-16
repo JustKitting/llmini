@@ -35,3 +35,62 @@ pub(crate) fn cvt_f32_f16(bits: u16) -> f32 {
     }
     value
 }
+
+#[inline(always)]
+pub(crate) fn load_f16x2_global_bits(src: *const u16, index: usize) -> u32 {
+    let packed: u32;
+    unsafe {
+        ptx_asm!(
+            "ld.global.u32 %0, [%1];",
+            out("=r") packed,
+            in("l") src.add(index) as u64,
+            options(register_only),
+        );
+    }
+    packed
+}
+
+#[inline(always)]
+pub(crate) fn load_f16x2_global(src: *const u16, index: usize) -> (f32, f32) {
+    let packed = load_f16x2_global_bits(src, index);
+    (
+        cvt_f32_f16(packed as u16),
+        cvt_f32_f16((packed >> 16) as u16),
+    )
+}
+
+#[inline(always)]
+pub(crate) fn load_f32x2_global(src: *const f32, index: usize) -> (f32, f32) {
+    let packed: u64;
+    unsafe {
+        ptx_asm!(
+            "ld.global.u64 %0, [%1];",
+            out("=l") packed,
+            in("l") src.add(index) as u64,
+            options(register_only),
+        );
+    }
+    (
+        f32::from_bits(packed as u32),
+        f32::from_bits((packed >> 32) as u32),
+    )
+}
+
+#[inline(always)]
+pub(crate) fn store_f32x2_global(dst: *mut f32, index: usize, lo: f32, hi: f32) {
+    unsafe {
+        ptx_asm!(
+            "st.global.v2.f32 [%0], {%1, %2};",
+            in("l") dst.add(index) as u64,
+            in("f") lo,
+            in("f") hi,
+        );
+    }
+}
+
+#[inline(always)]
+pub(crate) fn store_f16x2_shared(dst: *mut u16, index: usize, packed: u32) {
+    unsafe {
+        *(dst.add(index) as *mut u32) = packed;
+    }
+}
