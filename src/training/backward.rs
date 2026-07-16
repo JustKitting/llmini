@@ -18,6 +18,17 @@ impl Trainer {
         Ok(())
     }
 
+    pub(in crate::training) fn materialize_evaluation_weights(&mut self) -> AppResult<()> {
+        super::schedule_free::materialize_evaluation_weights(
+            self.runtime.stream.as_ref(),
+            &self.runtime,
+            &mut self.uploaded,
+            &mut self.buffers.optimizer,
+            &self.buffers.optimizer_state,
+        )?;
+        Ok(())
+    }
+
     pub fn train_step(&mut self, batch: &TokenBatch, sync_loss: bool) -> AppResult<TrainStats> {
         self.materialize_training_weights()?;
 

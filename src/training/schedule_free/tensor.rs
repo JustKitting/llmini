@@ -66,6 +66,23 @@ impl<'a> Materializer<'a> {
         )
     }
 
+    pub(super) fn master(
+        &mut self,
+        tensor: &mut UploadedNvfp4,
+        master: &DeviceBuffer<f32>,
+    ) -> Result<(), DriverError> {
+        self.optimizer.materialize_master(
+            self.stream,
+            &mut tensor.bytes,
+            &mut tensor.scales,
+            &mut tensor.global_scale,
+            master,
+            &mut self.scratch.amax,
+            &mut self.scratch.chunk_amax,
+            tensor.len as u32,
+        )
+    }
+
     fn tensor(
         &mut self,
         tensor: &mut UploadedNvfp4,

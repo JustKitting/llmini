@@ -8,7 +8,7 @@ use crate::launch::grid_x_config;
 impl OptimizerModule {
     pub fn apply_kda_muon_clip(&self, mut args: KdaMuonClipArgs<'_>) -> Result<(), DriverError> {
         let len = self.apply_kda_muon_clip_master(&mut args)?;
-        self.requantize(
+        self.materialize_master(
             args.stream,
             args.bytes,
             args.scales,

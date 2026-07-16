@@ -8,7 +8,7 @@ use crate::launch::linear_config;
 impl OptimizerModule {
     pub fn apply_adamw_update(&self, mut args: AdamWUpdateArgs<'_>) -> Result<(), DriverError> {
         self.apply_adamw_update_master(&mut args)?;
-        self.requantize(
+        self.materialize_master(
             args.stream,
             args.bytes,
             args.scales,

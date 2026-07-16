@@ -20,6 +20,11 @@ Use this validation line as the comparable endpoint:
 heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```
 
+Held-out evaluation must materialize the schedule-free averaged `x_master`
+weights. `materialize_training_weights` emits the `z/x` interpolation for the
+next training step and is not a valid evaluation substitute. This distinction
+is part of the baseline convention, not a tunable optimization.
+
 Training loss, one-step runs, tokens/s, step time, memory use, and isolated
 profiler timings are diagnostics. Tokens/s is a useful explanation for quality
 movement because it controls training exposure, but it is not a hard objective:
@@ -80,8 +85,8 @@ minimum_step_saving = (TRAIN_ELAPSED_S / COMPLETED_STEPS) * 0.005
 ```
 
 For the current matched 450-second baseline,
-`450.214 / 1071 = 0.420367880` seconds per step, so a candidate batch must
-credibly be able to save at least `2.101839 ms/step`
+`450.256 / 1075 = 0.418842791` seconds per step, so a candidate batch must
+credibly be able to save at least `2.094214 ms/step`
 before a rebuild, GPU test, or training screen. Multiply a per-launch saving by
 the launch count per step and compare that aggregate saving with the threshold.
 
@@ -124,8 +129,9 @@ width-2048, 32-head, batch-4, 2K-pretraining-context NextLat model, current
 dataset, and current tokenizer, not a result from an older or smaller
 architecture.
 
-The fused TMA down-projection/ReLU2-backward commit is the current matched
-450-second control: 1071 steps in 450.214 seconds with held-out loss 5.243308.
+The fused TMA down-projection/ReLU2-backward code with corrected schedule-free
+`x_master` evaluation is the current matched 450-second control: 1075 steps in
+450.256 seconds with held-out loss 5.153626.
 Do not compare future 450-second candidates with historical 900-second
 endpoints.
 

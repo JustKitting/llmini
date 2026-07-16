@@ -46,6 +46,57 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-16
 commit: accepted local jj commit after full gate
+experiment: Restore schedule-free averaged weights for held-out evaluation.
+status: accepted_correctness_fix_450s
+root_cause:
+  Commit 081256f54609 correctly deferred redundant end-of-step optimizer
+  requantization, but changed validation to call materialize_training_weights.
+  That routine emits z + beta(next_step) * (x - z), the interpolated weights
+  used by the next training step. Before the deferral, endpoint validation saw
+  the schedule-free averaged x_master weights emitted by each eager optimizer
+  update. The resulting 5.108639 -> 5.263548 (+3.032%) endpoint was therefore
+  partly a validation-view regression, not an isolated loss spike.
+change:
+  Keep deferred per-step quantization and the compatible packed FP16 staging
+  optimization. Add an explicit evaluation materializer that quantizes every
+  Adam and Muon tensor directly from x_master, and route held-out validation
+  through it. Training still materializes the next-step z/x interpolation at
+  the start of each step. The two views are now explicit and cannot be
+  substituted at the validation call site.
+verification:
+  cargo fmt --all --check, cargo check --workspace, git diff --check, a fresh
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a, all 50 workspace
+  release lib/bin host tests, and all 18 ignored release optimizer GPU tests:
+  pass. The optimizer suite completed in 235.48s.
+gates:
+  30s screen target/runs/20260716_170705Z_fineweb_30s:
+    heldout val_loss=6.510702, completed_steps=74, train_elapsed_s=30.189.
+    The incorrect next-step-weight baseline completed the same 74 steps in
+    30.248s at val_loss=6.464782; x_master is 0.710% worse at this early point.
+  450s sustained target/runs/20260716_171530Z_fineweb_450s:
+    heldout val_loss=5.153626, completed_steps=1075, train_elapsed_s=450.256.
+    All 22 high-fidelity loss and grad-norm samples are finite and nonzero,
+    every skip metric is zero, batch is 4, sequence length is 2048, and tokens
+    per step are 8192.
+measured_effect:
+  Against the active but incorrectly evaluated baseline, held-out loss improves
+  from 5.243308 to 5.153626 (-1.710%) while completed steps move from 1071 to
+  1075 (+0.374%). No training kernel or optimizer update math changed, so the
+  small step-count movement is treated as timing noise rather than a speed
+  claim. Relative to the pre-081256f5 x_master endpoint of 5.108639, the fixed
+  current run is only +0.881% higher and recovers 70.96% of the original
+  absolute 5.108639 -> 5.263548 jump despite the intervening code changes.
+decision:
+  Accept as a validation correctness fix and promote this run as the matched
+  baseline. The speed optimization from 081256f5 remains; only its erroneous
+  held-out materialization is undone. Future held-out gates must evaluate the
+  schedule-free averaged x_master weights, never the next-step training blend.
+  The next aggregate 0.5% floor is 2.094214ms per step.
+```
+
+```text
+date: 2026-07-16
+commit: accepted local jj commit after full gate
 experiment: Fuse MLP down-projection with FP16 ReLU2 backward and amax.
 status: accepted_450s_within_quality_tolerance
 change:

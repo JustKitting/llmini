@@ -47,7 +47,7 @@ impl OptimizerModule {
     }
 
     #[expect(clippy::too_many_arguments, reason = "CUDA ABI uses explicit buffers")]
-    fn requantize(
+    pub fn materialize_master(
         &self,
         stream: &CudaStream,
         bytes: &mut DeviceBuffer<u8>,
