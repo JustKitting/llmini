@@ -46,6 +46,37 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-16
 commit: rejection record only; candidate source reverted
+experiment: Widen and interleave the final Muon linear3 row-sumsq pass.
+status: rejected_profile_gate
+change:
+  Doubled the dedicated row CTA from 64 to 128 threads and interleaved four
+  independent sumsq accumulators per thread. Elementwise linear3 arithmetic
+  and stores were unchanged; only the row-reduction association changed.
+minimum_impact_gate:
+  The parent row-sumsq family occupied 51.887426ms/profile, so a schedule near
+  the plausible twofold per-thread critical-path ceiling could have cleared
+  the active 22.265727ms whole-profile floor.
+verification:
+  cargo fmt --all, cargo check --workspace, a fresh exact
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a, and the ignored
+  linear3 row-sumsq GPU comparison: pass. Profile:
+    target/nsys/20260716_muon_row_sumsq_128x4_candidate.nsys-rep
+    target/nsys/20260716_muon_row_sumsq_128x4_candidate.sqlite
+    total GPU kernels 4456.855246ms; row-sumsq 51.104431ms across 670
+    launches; 128 threads, 40 registers/thread, and 16 bytes static shared
+    memory; launches remain 65084.
+decision:
+  Reject without reciprocal or fixed-wall gates and fully revert. Direct
+  target-family saving is only 0.782995ms/profile (1.51%), far below the
+  required 22.265727ms. The favorable total sample is only 14.794775ms below
+  the accepted mean and is not explained by the touched kernel. Doubling
+  threads and exposing four FMA chains does not remove its bandwidth/schedule
+  limit, so do not sweep wider row CTAs without a different traffic reduction.
+```
+
+```text
+date: 2026-07-16
+commit: rejection record only; candidate source reverted
 experiment: Fuse taped KDA Akk construction, inverse solve, and two inverse products.
 status: rejected_profile_gate
 change:
