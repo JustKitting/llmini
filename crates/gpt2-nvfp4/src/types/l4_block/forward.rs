@@ -14,7 +14,6 @@ impl Gpt2BlockWeights {
     ) -> Result<HiddenStateDevice<'a>, DriverError> {
         let qkv = args.qkv;
         let attention_log_sum_exp = args.attention_log_sum_exp;
-        let mlp_pre_activation = args.mlp_pre_activation;
         let mlp_activation = args.mlp_activation;
         let mut hidden_nvfp4 = args.hidden_nvfp4;
         let tma_descriptors = args.tma_descriptors;
@@ -72,7 +71,6 @@ impl Gpt2BlockWeights {
             scratch: MlpScratch {
                 input_nvfp4: hidden_nvfp4.reborrow(),
                 activation_nvfp4: args.mlp_activation_nvfp4,
-                pre_activation: &mut *mlp_pre_activation,
                 activation: &mut *mlp_activation,
                 tma_descriptors: &mut *tma_descriptors,
                 tma_input_scale_packed: &mut *tma_input_scale_packed,

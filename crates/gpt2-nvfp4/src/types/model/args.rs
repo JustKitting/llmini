@@ -42,7 +42,6 @@ pub struct Gpt2ForwardArgs<'a> {
     pub ln_f: LayerNormTensors<'a>,
     pub attention_qkv: &'a mut DeviceBuffer<f32>,
     pub attention_log_sum_exp: &'a mut DeviceBuffer<f32>,
-    pub mlp_pre_activation: &'a mut DeviceBuffer<f32>,
     pub mlp_activation: &'a mut DeviceBuffer<f32>,
     pub logits: &'a mut DeviceBuffer<f32>,
     pub tape: Option<Gpt2ForwardTape<'a>>,

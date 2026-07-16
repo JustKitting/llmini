@@ -46,6 +46,72 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-16
 commit: accepted local jj commit after full gate
+experiment: Remove dead FP32 MLP pre-activation stores and workspace.
+status: accepted_450s_memory_capacity_win
+change:
+  Added a compact TMA ReLU2 epilogue that stores the FP32 squared-ReLU output
+  and optional FP16 pre-activation tape but omits the redundant FP32
+  pre-activation output. The FP16 tape is the sole backward consumer. The
+  active MLP forward path now uses the compact epilogue and removes the full
+  8192x8192 FP32 pre-activation allocation and its plumbing through model,
+  block, and MLP argument structures.
+numerics:
+  MMA accumulation, row scaling, ReLU2 evaluation, and the FP16 tape conversion
+  are unchanged. The focused projection-TMA GPU test requires the compact
+  activation and FP16 tape to be bitwise identical to the generic epilogue.
+  The removed FP32 output had no reader. All 22 sustained samples are finite
+  and nonzero and every skip metric is zero.
+memory:
+  Matched TRAIN_REPORT_MEMORY probes:
+    target/gates/20260716_tma_relu2_backward_fusion_memory_candidate.log
+      accepted parent used_bytes=45058555904.
+    target/gates/20260716_tma_relu2_compact_memory_candidate.log
+      candidate used_bytes=44790120448.
+  Used allocation falls by exactly 268435456 bytes = 256 MiB, the removed
+  8192*8192 FP32 forward buffer. Together with the preceding backward fusion,
+  the two accepted changes have removed 512 MiB of full-shape MLP scratch.
+minimum_impact_gate:
+  This candidate is accepted through the separate measured memory-capacity
+  rule. Its reciprocal profile gain is real but is 0.359%, below the standalone
+  0.5% speed threshold; no speed-gate exception is claimed.
+profiles:
+  Corrected-evaluation parent samples:
+    target/nsys/20260716_eval_master_baseline_a.nsys-rep: 4205.019650ms.
+    target/nsys/20260716_eval_master_baseline_b.nsys-rep: 4208.868967ms.
+  Candidate samples:
+    target/nsys/20260716_tma_relu2_compact_evalfix_a.nsys-rep: 4187.942458ms.
+    target/nsys/20260716_tma_relu2_compact_evalfix_b.nsys-rep: 4195.717656ms.
+  Mean whole-profile time falls from 4206.944309 to 4191.830057ms over ten
+  steps plus validation, saving 15.114252ms (0.359%) or 1.511425ms/step.
+  The directly changed ReLU2 family falls from 78.420678 to 62.695769ms over
+  176 calls, saving 15.724909ms. Omitting one 256 MiB output per call avoids
+  47244640256 bytes = 44 GiB of global stores in each profile. Launch count
+  remains 65026.
+verification:
+  cargo fmt --all --check, cargo check --workspace, git diff --check, a fresh
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a, all 50 workspace
+  release lib/bin host tests, and all nine ignored release projection-TMA GPU
+  tests: pass. The focused compact path comparison is included in that suite.
+gates:
+  30s screen target/runs/20260716_173253Z_fineweb_30s:
+    heldout val_loss=6.513063, completed_steps=74, train_elapsed_s=30.186.
+    The corrected-evaluation parent is 6.510702 / 74 / 30.189, so held-out
+    loss moves +0.036% with the same completed steps.
+  450s sustained target/runs/20260716_173342Z_fineweb_450s:
+    heldout val_loss=5.155224, completed_steps=1075, train_elapsed_s=450.168.
+    The corrected-evaluation parent is 5.153626 / 1075 / 450.256, so held-out
+    loss moves +0.031% with the same completed steps. Every one of 22 metric
+    samples retains batch 4, sequence length 2048, and 8192 tokens/step.
+decision:
+  Accept and promote as a clear memory-capacity win with unchanged model math,
+  effectively identical held-out quality, clean sustained stability, and a
+  small positive profile effect. The next aggregate 0.5% floor is 2.093805ms
+  per step, or 20.938047ms per ten-step profile.
+```
+
+```text
+date: 2026-07-16
+commit: accepted local jj commit after full gate
 experiment: Restore schedule-free averaged weights for held-out evaluation.
 status: accepted_correctness_fix_450s
 root_cause:

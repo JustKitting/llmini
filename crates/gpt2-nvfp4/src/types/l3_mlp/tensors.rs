@@ -34,7 +34,6 @@ pub struct MlpProjectionTensors<'a> {
 pub struct MlpScratch<'scratch> {
     pub input_nvfp4: HiddenStateNvfp4<'scratch>,
     pub activation_nvfp4: MlpActivationNvfp4<'scratch>,
-    pub pre_activation: &'scratch mut DeviceBuffer<f32>,
     pub activation: &'scratch mut DeviceBuffer<f32>,
     pub tma_descriptors: &'scratch mut TmaNvfp4DeviceScaleDescriptors,
     pub tma_input_scale_packed: &'scratch mut DeviceBuffer<u8>,

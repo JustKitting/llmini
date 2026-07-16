@@ -49,7 +49,6 @@ impl Trainer {
             ln_f: uploaded.ln_f.tensors(),
             attention_qkv: &mut buffers.qkv,
             attention_log_sum_exp: &mut buffers.log_sum_exp,
-            mlp_pre_activation: &mut buffers.mlp_pre,
             mlp_activation: &mut buffers.mlp_act,
             logits: &mut buffers.logits,
             tape: Some(buffers.tape.tape()),

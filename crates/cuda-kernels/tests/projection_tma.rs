@@ -272,8 +272,10 @@ fn tma_relu2_matches_old_mlp_up_projection() -> Result<(), Box<dyn Error>> {
     let mut old_act = DeviceBuffer::<f32>::zeroed(&fixture.stream, ROWS * 128)?;
     let mut tma_pre = DeviceBuffer::<f32>::zeroed(&fixture.stream, ROWS * 128)?;
     let mut tma_pre_f16 = DeviceBuffer::<u16>::zeroed(&fixture.stream, ROWS * 128)?;
+    let mut compact_pre_f16 = DeviceBuffer::<u16>::zeroed(&fixture.stream, ROWS * 128)?;
     let mut reference_pre_f16 = DeviceBuffer::<u16>::zeroed(&fixture.stream, ROWS * 128)?;
     let mut tma_act = DeviceBuffer::<f32>::zeroed(&fixture.stream, ROWS * 128)?;
+    let mut compact_act = DeviceBuffer::<f32>::zeroed(&fixture.stream, ROWS * 128)?;
 
     fixture.mlp.up_relu2(MlpUpRelu2Args {
         stream: &fixture.stream,
@@ -287,6 +289,7 @@ fn tma_relu2_matches_old_mlp_up_projection() -> Result<(), Box<dyn Error>> {
         output_dim: 128,
     })?;
     fixture.tma_relu2(&mut tma_pre, Some(&mut tma_pre_f16), &mut tma_act)?;
+    fixture.tma_relu2_compact(Some(&mut compact_pre_f16), &mut compact_act)?;
     fixture.f16.fp32_to_f16(F16ConvertArgs {
         stream: &fixture.stream,
         src: &tma_pre,
@@ -305,9 +308,19 @@ fn tma_relu2_matches_old_mlp_up_projection() -> Result<(), Box<dyn Error>> {
         TOLERANCE,
     );
     assert_eq!(
+        compact_act.to_host_vec(&fixture.stream)?,
+        tma_act.to_host_vec(&fixture.stream)?,
+        "compact ReLU2 epilogue changed the activation"
+    );
+    assert_eq!(
         tma_pre_f16.to_host_vec(&fixture.stream)?,
         reference_pre_f16.to_host_vec(&fixture.stream)?,
         "fused ReLU2 tape must match the standalone FP32-to-FP16 conversion"
+    );
+    assert_eq!(
+        compact_pre_f16.to_host_vec(&fixture.stream)?,
+        reference_pre_f16.to_host_vec(&fixture.stream)?,
+        "compact ReLU2 tape must match the standalone FP32-to-FP16 conversion"
     );
     Ok(())
 }
@@ -930,6 +943,61 @@ impl Fixture {
             &self.stream,
             &descriptors,
             pre_activation,
+            pre_activation_f16,
+            out,
+            self.bias_device(),
+            self.rows as u32,
+            self.k as u32,
+            self.n as u32,
+            &self.input_globals,
+            &self.weight_global,
+        )?;
+        Ok(())
+    }
+
+    fn tma_relu2_compact(
+        &self,
+        pre_activation_f16: Option<&mut DeviceBuffer<u16>>,
+        out: &mut DeviceBuffer<f32>,
+    ) -> Result<(), Box<dyn Error>> {
+        let padded_n = sm120_scale_padded_mn_extent(self.n);
+        assert_eq!(padded_n, self.n, "fused ReLU2 requires exact output tiles");
+        let mut input_scale_packed = DeviceBuffer::zeroed(
+            &self.stream,
+            sm120_scale_packed_len(sm120_scale_padded_mn_extent(self.rows), self.k),
+        )?;
+        let mut weight_scale_packed =
+            DeviceBuffer::zeroed(&self.stream, sm120_scale_packed_len(padded_n, self.k))?;
+        let mut descriptors = TmaNvfp4DeviceScaleDescriptors::new(&self.stream)?;
+
+        self.scale_pack.pack(
+            &self.stream,
+            &self.input_scales,
+            &mut input_scale_packed,
+            self.rows as u32,
+            self.k as u32,
+        )?;
+        self.scale_pack.pack(
+            &self.stream,
+            &self.weight_scales,
+            &mut weight_scale_packed,
+            self.n as u32,
+            self.k as u32,
+        )?;
+        self.tma.prepare_tma_nvfp4_device_scales_into(
+            &self.stream,
+            &self.input_bytes,
+            &input_scale_packed,
+            &self.weight_bytes,
+            &weight_scale_packed,
+            self.rows as u32,
+            self.k as u32,
+            padded_n as u32,
+            &mut descriptors,
+        )?;
+        self.tma.gemm_tma_nvfp4_rowwise_a_scale_relu2_compact(
+            &self.stream,
+            &descriptors,
             pre_activation_f16,
             out,
             self.bias_device(),

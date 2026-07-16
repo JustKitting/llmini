@@ -45,19 +45,19 @@ pub(super) fn forward<'a, 'scratch>(
         crate::GPT2_MLP_DIM,
         args.scratch.tma_descriptors,
     )?;
-    args.tma_module.gemm_tma_nvfp4_rowwise_a_scale_relu2(
-        hidden.stream,
-        args.scratch.tma_descriptors,
-        args.scratch.pre_activation,
-        tape.as_mut().map(|tape| &mut *tape.pre_activation_f16),
-        args.scratch.activation,
-        args.projections.up.bias,
-        hidden.row_count,
-        crate::GPT2_EMBEDDING_DIM,
-        crate::GPT2_MLP_DIM,
-        input.global_scales,
-        args.projections.up.weight_device.global_scale,
-    )?;
+    args.tma_module
+        .gemm_tma_nvfp4_rowwise_a_scale_relu2_compact(
+            hidden.stream,
+            args.scratch.tma_descriptors,
+            tape.as_mut().map(|tape| &mut *tape.pre_activation_f16),
+            args.scratch.activation,
+            args.projections.up.bias,
+            hidden.row_count,
+            crate::GPT2_EMBEDDING_DIM,
+            crate::GPT2_MLP_DIM,
+            input.global_scales,
+            args.projections.up.weight_device.global_scale,
+        )?;
 
     activation_nvfp4.quantize_row_amax(
         args.quant_module,

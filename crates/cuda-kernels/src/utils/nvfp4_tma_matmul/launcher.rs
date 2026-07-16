@@ -683,6 +683,69 @@ impl Nvfp4GemmModule {
 
     #[expect(
         clippy::too_many_arguments,
+        reason = "compact fused TMA ReLU2 launch uses explicit buffers"
+    )]
+    pub fn gemm_tma_nvfp4_rowwise_a_scale_relu2_compact(
+        &self,
+        stream: &CudaStream,
+        tma: &TmaNvfp4DeviceScaleDescriptors,
+        pre_activation_f16: Option<&mut DeviceBuffer<u16>>,
+        out: &mut DeviceBuffer<f32>,
+        bias: Nvfp4DeviceTensor<'_>,
+        token_count: u32,
+        input_dim: u32,
+        output_dim: u32,
+        a_global_scales: &DeviceBuffer<f32>,
+        b_global_scale: &DeviceBuffer<f32>,
+    ) -> Result<(), DriverError> {
+        if let Some(pre_activation_f16) = pre_activation_f16.as_ref() {
+            assert!(pre_activation_f16.len() >= (token_count * output_dim) as usize);
+        }
+        if token_count % TILE_M != 0
+            || output_dim % TILE_N != 0
+            || input_dim % Sm120ScaleLayout::K_ATOM != 0
+            || input_dim % TILE_K != 0
+            || input_dim == 0
+        {
+            return Err(DriverError(cudaError_enum_CUDA_ERROR_INVALID_VALUE));
+        }
+
+        let params = Nvfp4GemmParams {
+            token_count,
+            input_dim,
+            output_dim,
+            global_scale_mode: 2,
+            weight_global_scale: 1.0,
+            a_global_scale: a_global_scales.cu_deviceptr(),
+            b_global_scale: b_global_scale.cu_deviceptr(),
+        };
+        let config = LaunchConfig {
+            grid_dim: (output_dim.div_ceil(TILE_N), token_count.div_ceil(TILE_M), 1),
+            block_dim: (TMA_NVFP4_THREADS_PER_BLOCK, 1, 1),
+            shared_mem_bytes: 0,
+        };
+        let pre_activation_f16 = pre_activation_f16
+            .map(|values| values.cu_deviceptr() as *mut u16)
+            .unwrap_or(core::ptr::null_mut());
+
+        self.module.nvfp4_gemm_tma_relu2_compact_kernel(
+            stream,
+            config,
+            tma.a_deviceptr() as *const TmaDescriptor,
+            tma.b_deviceptr() as *const TmaDescriptor,
+            tma.a_scales_deviceptr() as *const TmaDescriptor,
+            tma.b_scales_deviceptr() as *const TmaDescriptor,
+            pre_activation_f16,
+            out,
+            bias.bytes,
+            bias.scales,
+            bias.global_scale,
+            params,
+        )
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
         reason = "TMA GEMM launch uses explicit buffers"
     )]
     pub fn gemm_tma_nvfp4_rowwise_a_scale_padded_output(

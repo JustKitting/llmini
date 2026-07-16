@@ -38,7 +38,6 @@ pub struct BlockForwardArgs<'a, 'scratch> {
     pub mlp: MlpProjectionTensors<'a>,
     pub qkv: &'scratch mut DeviceBuffer<f32>,
     pub attention_log_sum_exp: &'scratch mut DeviceBuffer<f32>,
-    pub mlp_pre_activation: &'scratch mut DeviceBuffer<f32>,
     pub mlp_activation: &'scratch mut DeviceBuffer<f32>,
     pub hidden: HiddenStateDevice<'a>,
     pub tape: Option<BlockForwardTape<'scratch>>,
