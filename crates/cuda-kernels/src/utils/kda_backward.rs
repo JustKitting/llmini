@@ -1,41 +1,44 @@
-use cuda_device::thread;
+use cuda_device::{convert::cvt_f16x2_f32, thread};
 
 use crate::attention::CausalAttentionParams;
-use crate::f16_tc_matmul::convert::{cvt_rn_f16_f32, load_f16x2_global};
+use crate::f16_tc_matmul::convert::{
+    load_f16x2_global, load_f32x2_shared, store_f16x2_shared, store_f32x2_shared,
+};
 use crate::f16_tc_matmul::cta_tile::{CTA_A_ELEMS, CTA_B_ELEMS, CTA_K, CTA_THREADS};
 use crate::kda_common::{chunk_state_index, compact_index, hidden_index, kda_decay_exp};
 use crate::kda_tc::{
-    CompactTileCtx, CtaATile, CtaBTile, KdaStateTile, compact_fragment_coords, for_acc_fragments,
+    CompactTileCtx, CtaATile, CtaBTile, KdaStateTile, compact_fragment_coords,
+    for_acc_fragment_pairs,
 };
 
-macro_rules! stage_compact_t_a_fn {
-    ($name:ident, $src:ident: $src_ty:ty, $index:ident, $read:expr) => {
-        pub(crate) fn $name(
-            $src: $src_ty,
-            a_tile: &mut CtaATile,
-            ctx: CompactTileCtx<'_>,
-            k_base: u32,
-            scale: f32,
-        ) {
-            let mut offset = thread::threadIdx_x();
-            while offset < CTA_A_ELEMS as u32 {
-                let row = offset / CTA_K;
-                let col = offset - row * CTA_K;
-                let dim = ctx.tile.row_base + row;
-                let token = ctx.start + k_base + col;
-                a_tile[offset as usize] = if dim < ctx.params.head_dim && token < ctx.end {
-                    let $index = compact_index(ctx.batch, token, ctx.head, dim, ctx.params);
-                    cvt_rn_f16_f32(scale * $read)
-                } else {
-                    0
-                };
-                offset += CTA_THREADS;
-            }
-        }
-    };
+pub(crate) fn stage_compact_t_a(
+    src: &[f32],
+    a_tile: &mut CtaATile,
+    ctx: CompactTileCtx<'_>,
+    k_base: u32,
+    scale: f32,
+) {
+    let mut pair = thread::threadIdx_x() * 2;
+    while pair < CTA_A_ELEMS as u32 {
+        let row = pair / CTA_K;
+        let col = pair - row * CTA_K;
+        let dim = ctx.tile.row_base + row;
+        let token0 = ctx.start + k_base + col;
+        let token1 = token0 + 1;
+        let lo = if dim < ctx.params.head_dim && token0 < ctx.end {
+            scale * src[compact_index(ctx.batch, token0, ctx.head, dim, ctx.params)]
+        } else {
+            0.0
+        };
+        let hi = if dim < ctx.params.head_dim && token1 < ctx.end {
+            scale * src[compact_index(ctx.batch, token1, ctx.head, dim, ctx.params)]
+        } else {
+            0.0
+        };
+        store_f16x2_shared(a_tile.as_mut_ptr(), pair as usize, cvt_f16x2_f32(lo, hi));
+        pair += CTA_THREADS * 2;
+    }
 }
-
-stage_compact_t_a_fn!(stage_compact_t_a, src: &[f32], index, src[index]);
 
 pub(crate) fn stage_hidden_dout_b_t(
     d_out: &[f32],
@@ -43,18 +46,25 @@ pub(crate) fn stage_hidden_dout_b_t(
     ctx: CompactTileCtx<'_>,
     k_base: u32,
 ) {
-    let mut offset = thread::threadIdx_x();
-    while offset < CTA_B_ELEMS as u32 {
-        let row = offset / CTA_K;
-        let col = offset - row * CTA_K;
+    let mut pair = thread::threadIdx_x() * 2;
+    while pair < CTA_B_ELEMS as u32 {
+        let row = pair / CTA_K;
+        let col = pair - row * CTA_K;
         let v_dim = ctx.tile.col_base + row;
-        let token = ctx.start + k_base + col;
-        b_tile[offset as usize] = if v_dim < ctx.params.head_dim && token < ctx.end {
-            cvt_rn_f16_f32(d_out[hidden_index(ctx.batch, token, ctx.head, v_dim, ctx.params)])
+        let token0 = ctx.start + k_base + col;
+        let token1 = token0 + 1;
+        let lo = if v_dim < ctx.params.head_dim && token0 < ctx.end {
+            d_out[hidden_index(ctx.batch, token0, ctx.head, v_dim, ctx.params)]
         } else {
-            0
+            0.0
         };
-        offset += CTA_THREADS;
+        let hi = if v_dim < ctx.params.head_dim && token1 < ctx.end {
+            d_out[hidden_index(ctx.batch, token1, ctx.head, v_dim, ctx.params)]
+        } else {
+            0.0
+        };
+        store_f16x2_shared(b_tile.as_mut_ptr(), pair as usize, cvt_f16x2_f32(lo, hi));
+        pair += CTA_THREADS * 2;
     }
 }
 
@@ -85,12 +95,35 @@ pub(crate) fn store_dh_quads(
     g: &[f32],
     ctx: CompactTileCtx<'_>,
 ) {
-    for_acc_fragments!(acc, ctx.tile, |warp_n, frag, value| {
-        let (k_dim, v_dim) = compact_fragment_coords(ctx.tile, warp_n, frag);
-        if k_dim < ctx.params.head_dim && v_dim < ctx.params.head_dim {
-            let index = (k_dim * ctx.params.head_dim + v_dim) as usize;
-            let g_last = g[compact_index(ctx.batch, ctx.end - 1, ctx.head, k_dim, ctx.params)];
-            d_h[index] = kda_decay_exp(g_last) * d_h_next[index] + value;
+    for_acc_fragment_pairs!(acc, ctx.tile, |warp_n, frag, lo, hi| {
+        let (k_dim0, v_dim0) = compact_fragment_coords(ctx.tile, warp_n, frag);
+        let (k_dim1, v_dim1) = compact_fragment_coords(ctx.tile, warp_n, frag + 1);
+        if k_dim0 < ctx.params.head_dim
+            && k_dim1 == k_dim0
+            && v_dim0 + 1 == v_dim1
+            && v_dim1 < ctx.params.head_dim
+        {
+            let index = (k_dim0 * ctx.params.head_dim + v_dim0) as usize;
+            let g_last = g[compact_index(ctx.batch, ctx.end - 1, ctx.head, k_dim0, ctx.params)];
+            let decay = kda_decay_exp(g_last);
+            let (next_lo, next_hi) = load_f32x2_shared(d_h_next.as_ptr(), index);
+            store_f32x2_shared(
+                d_h.as_mut_ptr(),
+                index,
+                decay * next_lo + lo,
+                decay * next_hi + hi,
+            );
+        } else {
+            if k_dim0 < ctx.params.head_dim && v_dim0 < ctx.params.head_dim {
+                let index = (k_dim0 * ctx.params.head_dim + v_dim0) as usize;
+                let g_last = g[compact_index(ctx.batch, ctx.end - 1, ctx.head, k_dim0, ctx.params)];
+                d_h[index] = kda_decay_exp(g_last) * d_h_next[index] + lo;
+            }
+            if k_dim1 < ctx.params.head_dim && v_dim1 < ctx.params.head_dim {
+                let index = (k_dim1 * ctx.params.head_dim + v_dim1) as usize;
+                let g_last = g[compact_index(ctx.batch, ctx.end - 1, ctx.head, k_dim1, ctx.params)];
+                d_h[index] = kda_decay_exp(g_last) * d_h_next[index] + hi;
+            }
         }
     });
 }

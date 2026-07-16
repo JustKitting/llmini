@@ -1,7 +1,7 @@
-use cuda_device::{DisjointSlice, thread};
+use cuda_device::{DisjointSlice, convert::cvt_f16x2_f32, thread};
 
 use crate::attention::CausalAttentionParams;
-use crate::f16_tc_matmul::convert::cvt_rn_f16_f32;
+use crate::f16_tc_matmul::convert::{load_f32x2_global, store_f16x2_shared};
 use crate::f16_tc_matmul::cta_tile::{CTA_B_ELEMS, CTA_K, CTA_THREADS};
 use crate::kda_common::{beta_compact_index, compact_index, kda_decay_exp};
 use crate::kda_tc::{
@@ -53,23 +53,38 @@ fn stage_dm_kpos_b_t(
     ctx: CompactTileCtx<'_>,
     k_base: u32,
 ) {
-    let mut offset = thread::threadIdx_x();
-    while offset < CTA_B_ELEMS as u32 {
-        let row = offset / CTA_K;
-        let col = offset - row * CTA_K;
+    let mut pair = thread::threadIdx_x() * 2;
+    while pair < CTA_B_ELEMS as u32 {
+        let row = pair / CTA_K;
+        let col = pair - row * CTA_K;
         let source = ctx.tile.col_base + row;
         let dim = k_base + col;
         let token = ctx.start + source;
-        b_tile[offset as usize] = if token < ctx.end && dim < ctx.params.head_dim {
+        let packed = if token < ctx.end && dim + 1 < ctx.params.head_dim {
             let compact = compact_index(ctx.batch, token, ctx.head, dim, ctx.params);
-            let g_value = inputs.g[compact];
+            let last = compact_index(ctx.batch, ctx.end - 1, ctx.head, dim, ctx.params);
+            let (g0, g1) = load_f32x2_global(inputs.g.as_ptr(), compact);
+            let (kg0, kg1) = load_f32x2_global(inputs.kg.as_ptr(), compact);
+            let (g_last0, g_last1) = load_f32x2_global(inputs.g.as_ptr(), last);
+            let beta_value =
+                inputs.beta[beta_compact_index(ctx.batch, token, ctx.head, ctx.params)];
+            cvt_f16x2_f32(
+                beta_value * kg0 * kda_decay_exp(2.0 * g0 - g_last0),
+                beta_value * kg1 * kda_decay_exp(2.0 * g1 - g_last1),
+            )
+        } else if token < ctx.end && dim < ctx.params.head_dim {
+            let compact = compact_index(ctx.batch, token, ctx.head, dim, ctx.params);
             let g_last = inputs.g[compact_index(ctx.batch, ctx.end - 1, ctx.head, dim, ctx.params)];
             let beta_value =
                 inputs.beta[beta_compact_index(ctx.batch, token, ctx.head, ctx.params)];
-            cvt_rn_f16_f32(beta_value * inputs.kg[compact] * kda_decay_exp(2.0 * g_value - g_last))
+            cvt_f16x2_f32(
+                beta_value * inputs.kg[compact] * kda_decay_exp(2.0 * inputs.g[compact] - g_last),
+                0.0,
+            )
         } else {
             0
         };
-        offset += CTA_THREADS;
+        store_f16x2_shared(b_tile.as_mut_ptr(), pair as usize, packed);
+        pair += CTA_THREADS * 2;
     }
 }

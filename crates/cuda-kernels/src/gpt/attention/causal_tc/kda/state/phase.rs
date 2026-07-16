@@ -1,7 +1,7 @@
-use cuda_device::{DisjointSlice, thread};
+use cuda_device::{DisjointSlice, convert::cvt_f16x2_f32, thread};
 
 use super::super::super::gather::TC_FORWARD_THREADS_PER_BLOCK;
-use crate::f16_tc_matmul::convert::cvt_rn_f16_f32;
+use crate::f16_tc_matmul::convert::store_f16x2_shared;
 use crate::f16_tc_matmul::cta_tile::{CTA_A_ELEMS, CTA_K, CTA_THREADS};
 use crate::kda_common::{chunk_g_last_index, compact_index, kda_decay_exp, state_elems};
 use crate::kda_tc::{
@@ -64,17 +64,24 @@ pub(super) fn decay_state(
 }
 
 fn stage_kg_t_a(src: &[f32], a_tile: &mut CtaATile, ctx: CompactTileCtx<'_>, k_base: u32) {
-    let mut offset = thread::threadIdx_x();
-    while offset < CTA_A_ELEMS as u32 {
-        let row = offset / CTA_K;
-        let col = offset - row * CTA_K;
+    let mut pair = thread::threadIdx_x() * 2;
+    while pair < CTA_A_ELEMS as u32 {
+        let row = pair / CTA_K;
+        let col = pair - row * CTA_K;
         let dim = ctx.tile.row_base + row;
-        let token = ctx.start + k_base + col;
-        a_tile[offset as usize] = if dim < ctx.params.head_dim && token < ctx.end {
-            cvt_rn_f16_f32(src[compact_index(ctx.batch, token, ctx.head, dim, ctx.params)])
+        let token0 = ctx.start + k_base + col;
+        let token1 = token0 + 1;
+        let lo = if dim < ctx.params.head_dim && token0 < ctx.end {
+            src[compact_index(ctx.batch, token0, ctx.head, dim, ctx.params)]
         } else {
-            0
+            0.0
         };
-        offset += CTA_THREADS;
+        let hi = if dim < ctx.params.head_dim && token1 < ctx.end {
+            src[compact_index(ctx.batch, token1, ctx.head, dim, ctx.params)]
+        } else {
+            0.0
+        };
+        store_f16x2_shared(a_tile.as_mut_ptr(), pair as usize, cvt_f16x2_f32(lo, hi));
+        pair += CTA_THREADS * 2;
     }
 }

@@ -34,7 +34,24 @@ macro_rules! for_acc_fragments {
     }};
 }
 
-pub(crate) use for_acc_fragments;
+macro_rules! for_acc_fragment_pairs {
+    ($acc:expr, $tile:expr, |$warp_n:ident, $frag:ident, $lo:ident, $hi:ident| $body:block) => {{
+        let mut i = 0;
+        while i < 4 {
+            let $warp_n = $tile.warp_n0 + i as u32;
+            let mut $frag = 0;
+            while $frag < 4 {
+                let $lo = $acc[i][$frag];
+                let $hi = $acc[i][$frag + 1];
+                $body
+                $frag += 2;
+            }
+            i += 1;
+        }
+    }};
+}
+
+pub(crate) use for_acc_fragment_pairs;
 
 pub(crate) type CtaATile = cuda_device::SharedArray<u16, CTA_A_ELEMS>;
 pub(crate) type CtaBTile = cuda_device::SharedArray<u16, CTA_B_ELEMS>;

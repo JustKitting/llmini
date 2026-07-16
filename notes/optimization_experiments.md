@@ -45,6 +45,105 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-16
 commit: accepted local jj commit after full gate
+experiment: Pack the remaining adjacent KDA tensor-core transfers and epilogues.
+status: accepted_900s
+change:
+  Eight compatible KDA paths now process the two adjacent MMA-fragment values
+  owned by each thread together. Compact token/dimension and chunk-matrix
+  stages issue one 64-bit global load, one packed FP32-to-FP16 conversion, and
+  one packed shared store. Kpos staging additionally reuses the common beta
+  load for both adjacent dimensions. The token-strided compact A/B, hidden
+  dOut, and forward KG stages retain their two noncontiguous global reads but
+  share one packed conversion and shared store. Compact, hidden, v_new,
+  chunk-matrix, and recurrent dH epilogues use paired loads/stores for adjacent
+  FP32 outputs. The previously rejected recurrent-state snapshot conversion
+  and global-store path is unchanged.
+numerics:
+  Every pair consists of the existing fragment positions 0/1 or 2/3, which
+  have the same row/token and adjacent dimensions. Packed conversion uses the
+  same round-to-nearest FP16 instruction per half. Kpos arithmetic, decay,
+  signs, accumulation order, MMA fragments, grids, and synchronization are
+  unchanged. Vector stores write the two independently computed FP32 bit
+  patterns to the same adjacent addresses; Add epilogues load both old values
+  before applying the same independent additions. Boundary fallbacks retain
+  scalar behavior outside the active aligned head_dim=64/chunk_size=64 shape.
+memory:
+  Persistent buffers, scratch sizes, and shared-memory allocations are
+  unchanged. Nsight Systems reports zero local memory per thread for every
+  affected kernel. Registers remain 56 for chunkwise, 48 for intra-backward,
+  dM, and dKG, while state-save changes 56 -> 60, fused dW/dQG 53 -> 59, and
+  state-output 40 -> 52. Despite those increases, every materially affected
+  family is faster except intra-backward, which is flat within profile noise.
+  No peak-VRAM or larger-batch capacity change is claimed.
+minimum_impact_gate:
+  The accepted parent averaged 555.499692ms per sustained step, so the
+  aggregate 0.5% screen floor was 2.777498ms. Reciprocal whole-workload
+  profiles measured a 6.979138ms per-step average saving, clearing the floor
+  by 2.51x before either fixed-wall gate. The compatible transfer and
+  epilogue changes were deliberately measured as one aggregate batch rather
+  than requiring each atomic instruction rewrite to clear 0.5% alone.
+focused_profile:
+  Accepted parent samples:
+    target/nsys/20260716_kda_packed_compact_state_staging_candidate.nsys-rep
+    target/nsys/20260716_kda_packed_compact_state_staging_candidate_reciprocal.nsys-rep
+    total GPU kernels: 5527.103915 and 5532.318976ms.
+    kernel launches: 85821 in both samples.
+  Candidate samples:
+    target/nsys/20260716_kda_remaining_packed_transfers_candidate.nsys-rep
+    target/nsys/20260716_kda_remaining_packed_transfers_candidate_reciprocal.nsys-rep
+    total GPU kernels: 5457.128078 and 5462.712056ms.
+    kernel launches: 85821 in both samples.
+  Over the same 10 training steps plus endpoint validation, average total GPU
+  kernel time falls from 5529.711445 to 5459.920067ms, or 6.979138ms per step.
+  Chunkwise backward saves 4.250861ms per step, state-save 2.431947,
+  state-output 0.540273, fused dW/dQG 0.483248, dM 0.373842, and dKG 0.237138.
+  Intra-backward changes by -0.038348ms per step, effectively flat. Profiled
+  training wall time improves from 5.435/5.440 to 5.367/5.373 seconds.
+  Candidate held-out loss is 8.662971/8.666262.
+verification:
+  cargo fmt --all --check, git diff --check, cargo check --workspace -q,
+  fresh TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a, and
+  cargo test --workspace --release --lib --bins: pass (50 host tests).
+  The tensor-core attention comparison, GPT KDA wrapper comparison, and full
+  block-attention backward chain pass after the final rebuild.
+  Required clean 30-second screen with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260716_044952Z_fineweb_30s
+    stdout: target/gates/20260716_kda_remaining_packed_transfers_30s.log
+    completed_steps=57, train_elapsed_s=30.268, val_loss=6.698350.
+  Required 900-second gate with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260716_045100Z_fineweb_900s
+    stdout: target/gates/20260716_kda_remaining_packed_transfers_900s.log
+    completed_steps=1637, train_elapsed_s=900.047, val_loss=4.863899.
+    All 33 high-fidelity loss and grad-norm samples are finite and nonzero,
+    with zero skipped updates, loss-spike skips, grad-norm-spike skips, or
+    nonfinite skips. Loss ranges from 4.521250248 to 10.864430428 and grad norm
+    ranges from 1.145620584 to 18.951820374. Every sample retains batch 4,
+    sequence 2048, and 8192 tokens per step. Held-out evaluation, generation,
+    and plotting all complete normally.
+measured_effect:
+  Against the accepted 30-second baseline:
+    completed_steps: 56 -> 57 (+1, +1.786%).
+    average step time: 537.964286ms -> 531.017544ms
+      (-6.946742ms, -1.291%).
+    held-out val_loss: 6.709967 -> 6.698350 (-0.173%).
+  Against the accepted 900-second baseline:
+    completed_steps: 1621 -> 1637 (+16, +0.987%).
+    average step time: 555.499692ms -> 549.814905ms
+      (-5.684786ms, -1.023%).
+    training tokens: 13279232 -> 13410304 (+131072, +0.987%).
+    held-out val_loss: 4.852551 -> 4.863899 (+0.234%).
+decision:
+  Keep and promote. Both reciprocal profiles and both fixed-wall gates show a
+  clear speed win, the full run trains 16 additional steps, and held-out loss
+  remains well inside the active roughly 1% seed-noise allowance with every
+  stability signal clean. notes/sweep_baseline.env points to this run. The
+  next aggregate 0.5% floor is
+  (900.047 / 1637) * 0.005 = 2.749075ms per step.
+```
+
+```text
+date: 2026-07-16
+commit: accepted local jj commit after full gate
 experiment: Pack adjacent KDA transfers and tensor-core stage values.
 status: accepted_900s
 change:

@@ -89,6 +89,23 @@ pub(crate) fn store_f32x2_global(dst: *mut f32, index: usize, lo: f32, hi: f32) 
 }
 
 #[inline(always)]
+pub(crate) fn load_f32x2_shared(src: *const f32, index: usize) -> (f32, f32) {
+    let packed = unsafe { *(src.add(index) as *const u64) };
+    (
+        f32::from_bits(packed as u32),
+        f32::from_bits((packed >> 32) as u32),
+    )
+}
+
+#[inline(always)]
+pub(crate) fn store_f32x2_shared(dst: *mut f32, index: usize, lo: f32, hi: f32) {
+    let packed = lo.to_bits() as u64 | ((hi.to_bits() as u64) << 32);
+    unsafe {
+        *(dst.add(index) as *mut u64) = packed;
+    }
+}
+
+#[inline(always)]
 pub(crate) fn store_f16x2_shared(dst: *mut u16, index: usize, packed: u32) {
     unsafe {
         *(dst.add(index) as *mut u32) = packed;
