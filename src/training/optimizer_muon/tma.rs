@@ -4,7 +4,8 @@ use rust_kernels_cuda::f32_matrix_ops::{
     F32ScaleInPlaceByAmaxArgs,
 };
 use rust_kernels_cuda::nvfp4_quant::{
-    Nvfp4QuantPaddedArgs, Nvfp4QuantTransposePaddedArgs, TensorAmaxArgs,
+    Nvfp4QuantPaddedArgs, Nvfp4QuantPairTransposeExactArgs, Nvfp4QuantTransposePaddedArgs,
+    TensorAmaxArgs,
 };
 use rust_kernels_cuda::nvfp4_tma_matmul::kernels::{TILE_K, TILE_M, TILE_N};
 use rust_kernels_cuda::nvfp4_tma_matmul::pad::F32CropArgs;
@@ -205,6 +206,7 @@ fn run_tma_polar_iteration(
         polar_rows,
         polar_cols,
         iter == 0 || defer_bounds,
+        defer_bounds,
     )?;
     trace_buffer(
         stream,
@@ -267,16 +269,25 @@ fn run_tma_polar_iteration(
         polar_rows,
         defer_bounds,
     )?;
-    prepare_tma_b_sqrt_bounded_transposed(
-        stream,
-        runtime,
-        source,
-        &mut tma,
-        action_dims,
-        polar_rows,
-        polar_cols,
-        defer_bounds,
-    )?;
+    if defer_bounds {
+        runtime.quant.rebase_four_six_global_scale_sqrt_bound(
+            stream,
+            &*tma.a.amax,
+            &*tma.bound_amax,
+            tma.b.global_scale,
+        )?;
+    } else {
+        prepare_tma_b_sqrt_bounded_transposed(
+            stream,
+            runtime,
+            source,
+            &mut tma,
+            action_dims,
+            polar_rows,
+            polar_cols,
+            false,
+        )?;
+    }
     run_tma_gemm_prepared_and_b_amax(stream, runtime, ax, &mut tma, action_dims)?;
     trace_buffer(
         stream,
@@ -387,6 +398,7 @@ fn run_tma_polar_iteration(
             polar_rows,
             polar_cols,
             false,
+            false,
         )?;
         trace_buffer(
             stream,
@@ -474,9 +486,22 @@ fn tma_matmul_self_transpose(
     rows: u32,
     k: u32,
     source_amax_precomputed: bool,
+    prepare_source_transpose: bool,
 ) -> Result<(), DriverError> {
     let dims = TmaDims::new(rows, rows, k);
-    if source_amax_precomputed {
+    if source_amax_precomputed && prepare_source_transpose {
+        quantize_operand_pair_padded_with_amax(
+            stream,
+            runtime,
+            x,
+            tma.a.reborrow(),
+            tma.b.reborrow(),
+            rows,
+            k,
+            dims.m,
+            dims.k,
+        )?;
+    } else if source_amax_precomputed {
         quantize_operand_padded_with_amax(
             stream,
             runtime,
@@ -901,6 +926,58 @@ fn crop_tma_out(
         cols: dims.logical_n,
         input_cols: dims.n,
     })
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "paired exact quantization uses explicit dimensions"
+)]
+fn quantize_operand_pair_padded_with_amax(
+    stream: &CudaStream,
+    runtime: &Runtime,
+    input: &DeviceBuffer<f32>,
+    row: OperandScratchRefs<'_>,
+    transpose: OperandScratchRefs<'_>,
+    rows: u32,
+    cols: u32,
+    padded_rows: u32,
+    padded_cols: u32,
+) -> Result<(), DriverError> {
+    assert_eq!(rows, padded_rows);
+    assert_eq!(cols, padded_cols);
+    assert!(rows.is_power_of_two());
+    assert!(rows.is_multiple_of(16));
+    assert!(cols.is_multiple_of(64));
+
+    runtime.quant.fp32_pair_to_nvfp4_four_six_exact_pow2_tiled(
+        Nvfp4QuantPairTransposeExactArgs {
+            stream,
+            x: input,
+            amax: &*row.amax,
+            out_fp4: row.bytes,
+            out_scales: row.scales,
+            out_global_scale: row.global_scale,
+            transpose_out_fp4: transpose.bytes,
+            transpose_out_scales: transpose.scales,
+            transpose_out_global_scale: transpose.global_scale,
+            source_rows: rows,
+            source_cols: cols,
+        },
+    )?;
+    runtime.optimizer.tma_scale_pack().pack(
+        stream,
+        &*row.scales,
+        row.scale_packed,
+        padded_rows,
+        padded_cols,
+    )?;
+    runtime.optimizer.tma_scale_pack().pack(
+        stream,
+        &*transpose.scales,
+        transpose.scale_packed,
+        padded_cols,
+        padded_rows,
+    )
 }
 
 fn quantize_operand_padded(

@@ -5,13 +5,14 @@ They are not historical notes.
 
 ## Primary Objective
 
-Optimize for the lowest held-out validation loss after the fixed 900-second
-single-GPU training window:
+Optimize for the lowest held-out validation loss after the fixed 450-second
+single-GPU candidate gate:
 
 - 30 seconds is the fast candidate screen.
-- 900 seconds is the mandatory sustained stability, regression, and held-out
+- 450 seconds is the mandatory sustained stability, regression, and held-out
   quality gate before a passing change is committed in JJ.
-- The target is held-out validation loss `<= 3.4` on one GPU in 900 seconds.
+- The 450-second duration is an iteration gate, not the final training budget
+  or a redefinition of the longer-run loss target.
 
 Use this validation line as the comparable endpoint:
 
@@ -23,7 +24,7 @@ Training loss, one-step runs, tokens/s, step time, memory use, and isolated
 profiler timings are diagnostics. Tokens/s is a useful explanation for quality
 movement because it controls training exposure, but it is not a hard objective:
 a slower architecture may win if it produces better held-out and downstream
-quality. Diagnostic metrics do not replace the 900-second gate.
+quality. Diagnostic metrics do not replace the 450-second gate.
 
 ## Model-Size Invariant
 
@@ -55,8 +56,8 @@ stage-transition evidence.
 
 The current kernel/runtime acceptance rule is:
 
-- Accept if 900-second held-out validation loss improves.
-- Accept if 900-second held-out validation loss is within `+/-1%` of the current
+- Accept if 450-second held-out validation loss improves.
+- Accept if 450-second held-out validation loss is within `+/-1%` of the current
   baseline and completed step count increases.
 - Reject if validation loss worsens by more than `1%`, even if profiler numbers
   or completed step count improve.
@@ -78,8 +79,9 @@ threshold from the active baseline whenever that baseline changes:
 minimum_step_saving = (TRAIN_ELAPSED_S / COMPLETED_STEPS) * 0.005
 ```
 
-For the current baseline, `900.098 / 1661 = 0.541901264` seconds per step, so a
-candidate batch must credibly be able to save at least `2.709506 ms/step`
+For the accepted code awaiting its matched 450-second control,
+`900.096 / 1668 = 0.539625899` seconds per step, so a candidate batch must
+credibly be able to save at least `2.698129 ms/step`
 before a rebuild, GPU test, or training screen. Multiply a per-launch saving by
 the launch count per step and compare that aggregate saving with the threshold.
 
@@ -88,12 +90,12 @@ Several clear savings may be implemented and profiled together when their
 credible combined ceiling clears `0.5%`. A component that has already measured
 a real but sub-threshold speedup may remain in an unproven batch while another
 compatible saving is added; do not discard known-good work merely because it
-misses `0.5%` alone. Do not run the 30-second or 900-second gates until the
+misses `0.5%` alone. Do not run the 30-second or 450-second gates until the
 combined profile clears the whole-step threshold.
 
 After implementation, the focused profile must measure at least the same
 aggregate `0.5%` whole-step saving before proceeding to the 30-second screen or
-900-second validation gate. This aggregate rule applies equally to a fusion or
+450-second validation gate. This aggregate rule applies equally to a fusion or
 to a batch of independent compatible wins.
 
 ### Memory-Capacity Wins
@@ -108,7 +110,7 @@ Report the exact matched-run peak-memory reduction and the concrete capacity it
 could unlock, such as a larger batch or more tokens per step. Validate any
 claimed throughput gain separately at the larger configuration; lower memory by
 itself is not evidence of higher tokens/s. Memory-only candidates still require
-the normal correctness checks plus the 30-second and 900-second gates before
+the normal correctness checks plus the 30-second and 450-second gates before
 commit.
 
 ## Active Baseline
@@ -117,21 +119,27 @@ NextLat is part of the active model path. Do not protect or compare against
 pre-NextLat validation results when evaluating current NextLat work.
 
 `notes/sweep_baseline.env` is the mutable baseline for the active model lineage.
-For current work, that means a 900-second result from the active 16-layer,
+For current work, that means a 450-second result from the active 16-layer,
 width-2048, 32-head, batch-4, 2K-pretraining-context NextLat model, current
 dataset, and current tokenizer, not a result from an older or smaller
 architecture.
 
+The paired Four-Six source/transpose candidate was already near completion when
+the gate changed and therefore used its stronger 900-second result for its own
+acceptance. Establish a matched 450-second control on that accepted code before
+screening the next candidate; do not compare future 450-second results with the
+historical 900-second endpoint.
+
 ## Sweep Rule
 
 Do not run a new hyperparameter sweep for same-math kernel/runtime edits. Use
-profiling and fixed 900-second validation for those changes.
+profiling and fixed 450-second validation for those changes.
 
 Run a multivariable sweep only after a major math or architecture change, or
 when explicitly requested.
 
 Sweep baseline promotion is stricter than kernel/runtime acceptance: promote a
-hyperparameter candidate only when its 900-second held-out validation loss is
+hyperparameter candidate only when its 450-second held-out validation loss is
 lower than the current sweep baseline. Do not promote a sweep candidate only
 because it completed more steps inside the `+/-1%` noise band.
 
@@ -151,5 +159,5 @@ Do not call a candidate promoted, accepted, or commit-worthy from:
 - tokens/s improvement alone,
 - kernel timing improvement alone.
 
-Those checks can justify continuing to the 900-second gate. They cannot replace
-the 900-second held-out validation gate.
+Those checks can justify continuing to the 450-second gate. They cannot replace
+the 450-second held-out validation gate.

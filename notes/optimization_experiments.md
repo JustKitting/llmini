@@ -29,9 +29,10 @@ External reference target:
 
 Primary optimization target:
 
-- Lowest held-out validation loss after a fixed 900-second single-GPU training
-  window, with a target at or below 3.4.
-- A 30-second screen is the fast filter and the full 900-second sustained run
+- Lowest held-out validation loss after the active fixed-time single-GPU
+  candidate gate. As of 2026-07-16 the gate is 450 seconds; this shorter gate
+  is an iteration screen, not the final training budget.
+- A 30-second screen is the fast filter and the full 450-second sustained run
   is the mandatory quality and stability gate before committing.
 - Training loss, fixed-step loss, tokens/s, memory, and isolated kernel timings
   are diagnostics. Tokens/s explains training exposure but does not override
@@ -40,6 +41,100 @@ Primary optimization target:
 
 ```text
 heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
+```
+
+```text
+date: 2026-07-16
+commit: accepted local jj commit after full gate
+experiment: Pair exact Four-Six source and transpose quantization for Muon.
+status: accepted_900s_before_450s_gate_transition
+change:
+  The deferred-bound Muon polar path previously read and quantized each FP32
+  source once in row-major order for X*X^T, then reread and quantized that same
+  source transposed for G*X after the Gram bound was known. One 16x64 tiled
+  producer now loads the source once and emits both row-major and transposed
+  NVFP4 payloads and local scales. The transposed representation remains in
+  the existing B scratch while the Gram product is computed. Once its bound is
+  available, a one-warp kernel rebases only the transposed tensor global scale;
+  the later full-source transpose quantizer and scale-pack launch are removed.
+numerics:
+  The paired row-major and transposed outputs match the two existing unbounded
+  quantizers bit-for-bit. Uniformly delaying the square-root bound reproduces
+  its final global scale exactly. In the dedicated adversarial GPU test, FP32
+  rescaling roundoff changes 5 of 2048 packed payload bytes and 1 of 256 local
+  scales versus rerunning the bounded quantizer. The full fixed-wall quality
+  gate decides whether that sub-percent representation difference is safe.
+memory:
+  No persistent buffer or scratch allocation changes. The new paired producer
+  uses 40 registers/thread, 4160 bytes static shared memory, and zero local
+  memory/thread. It replaces a 25-register row producer and a 40-register,
+  4160-byte transpose producer that ran separately. The one-warp rebase uses
+  16 registers/thread and no shared or local memory. No peak-VRAM win is
+  claimed.
+minimum_impact_gate:
+  The accepted parent averaged 541.901264ms per sustained step, so the active
+  aggregate 0.5% floor was 2.709506ms/step. Reciprocal whole-workload profiles
+  measure 3.509761ms/step saved, clearing the floor by 1.30x before either
+  fixed-wall gate.
+focused_profile:
+  Accepted parent samples:
+    target/nsys/20260716_f16_packed_staging_epilogues_candidate.nsys-rep
+    target/nsys/20260716_f16_packed_staging_epilogues_candidate_reciprocal.nsys-rep
+    total GPU kernels: 5388.811707 and 5394.724448ms.
+  Candidate samples:
+    target/nsys/20260716_muon_paired_four_six_candidate.nsys-rep
+    target/nsys/20260716_muon_paired_four_six_candidate_reciprocal.nsys-rep
+    total GPU kernels: 5350.107980 and 5363.232959ms.
+  Every sample has 85821 launches over the same ten training steps plus
+  endpoint validation. Average total GPU time falls from 5391.768078 to
+  5356.670470ms, or 3.509761ms/step (0.651%). The replaced row plus bounded
+  transpose producers average 349.226775ms/profile; the paired producer plus
+  global-scale rebase average 314.335154ms/profile, directly accounting for
+  3.489162ms/step. Candidate held-out loss is 8.662946/8.658190 versus the
+  parent's 8.665606/8.665271.
+verification:
+  cargo fmt --all --check, git diff --check, cargo check --workspace -q,
+  fresh TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a, and
+  cargo test --workspace --release --lib --bins: pass (50 host tests).
+  All nine NVFP4 quant GPU tests and all seven focused Muon optimizer GPU tests
+  pass. The paired-layout test covers exact row/transpose equivalence and the
+  delayed-bound representation tolerance. Two profiled ten-step real FineWeb
+  training paths complete normally.
+  Required clean 30-second screen with TRAIN_LOG_INTERVAL=50:
+    target/runs/20260716_055335Z_fineweb_30s
+    stdout: target/gates/20260716_muon_paired_four_six_30s.log
+    completed_steps=58, train_elapsed_s=30.289, val_loss=6.684857.
+  Required 900-second gate already in progress when the sustained-gate policy
+  changed to 450 seconds:
+    target/runs/20260716_055441Z_fineweb_900s
+    stdout: target/gates/20260716_muon_paired_four_six_900s.log
+    completed_steps=1668, train_elapsed_s=900.096, val_loss=4.838163.
+    All 34 high-fidelity loss and grad-norm samples are finite and nonzero,
+    with zero skipped updates, loss-spike skips, grad-norm-spike skips, or
+    nonfinite skips. Loss ranges from 4.550320148 to 10.864430428 and grad norm
+    ranges from 1.150223255 to 18.951820374. Every sample retains batch 4,
+    sequence 2048, and 8192 tokens/step. Held-out evaluation, generation, and
+    plotting complete normally.
+measured_effect:
+  Against the accepted 30-second parent:
+    completed_steps: 58 -> 58.
+    average step time: 524.517241ms -> 522.224138ms
+      (-2.293103ms, -0.437%).
+    held-out val_loss: 6.683351 -> 6.684857 (+0.023%).
+  Against the accepted 900-second parent:
+    completed_steps: 1661 -> 1668 (+7, +0.421%).
+    average step time: 541.901264ms -> 539.625899ms
+      (-2.275365ms, -0.420%).
+    training tokens: 13606912 -> 13664256 (+57344, +0.421%).
+    held-out val_loss: 4.845352 -> 4.838163 (-0.148%).
+decision:
+  Keep and promote. Both reciprocal profiles and both fixed-wall comparisons
+  show the same speed direction, the full run completes seven additional
+  steps, held-out loss improves, and every stability signal is clean. The
+  smaller fixed-wall effect remains a real accepted win under the explicit
+  speed-plus-within-1%-loss rule. Subsequent candidates use the new 450-second
+  sustained gate, after first establishing a matched control on this accepted
+  code.
 ```
 
 ```text

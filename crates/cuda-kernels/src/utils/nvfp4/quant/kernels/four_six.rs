@@ -254,6 +254,116 @@ pub(crate) mod module {
     }
 
     #[kernel]
+    pub fn fp32_pair_to_nvfp4_four_six_exact_pow2_tiled_kernel(
+        x: &[f32],
+        amax: &[f32],
+        mut out_fp4: DisjointSlice<u8>,
+        mut out_scales: DisjointSlice<u8>,
+        mut out_global_scale: DisjointSlice<f32>,
+        mut transpose_out_fp4: DisjointSlice<u8>,
+        mut transpose_out_scales: DisjointSlice<u8>,
+        mut transpose_out_global_scale: DisjointSlice<f32>,
+        source_rows: u32,
+        source_cols: u32,
+        scale_override: f32,
+    ) {
+        static mut TILE: SharedArray<f32, TRANSPOSE_TILE_ELEMS> = SharedArray::UNINIT;
+
+        let thread_id = thread::threadIdx_x() as usize;
+        let source_row_base = thread::blockIdx_y() as usize * TRANSPOSE_TILE_ROWS;
+        let source_col_base = thread::blockIdx_x() as usize * TRANSPOSE_TILE_COLS;
+        let source_cols_usize = source_cols as usize;
+
+        let mut load_offset = thread_id;
+        while load_offset < TRANSPOSE_TILE_LOAD_ELEMS {
+            let row = load_offset / TRANSPOSE_TILE_COLS;
+            let col = load_offset - row * TRANSPOSE_TILE_COLS;
+            unsafe {
+                TILE[row * TRANSPOSE_TILE_STRIDE + col] =
+                    x[(source_row_base + row) * source_cols_usize + source_col_base + col];
+            }
+            load_offset += 256;
+        }
+        thread::sync_threads();
+
+        let (lane, mask, leader) = four_six_lane();
+        let half_warp = thread_id / TRANSPOSE_TILE_ROWS;
+        let global_scale = four_six_global_scale(amax[0], scale_override);
+        if source_row_base == 0 && source_col_base == 0 && thread_id == 0 {
+            unsafe {
+                *out_global_scale.get_unchecked_mut(0) = global_scale;
+                *transpose_out_global_scale.get_unchecked_mut(0) = global_scale;
+            }
+        }
+
+        let groups_per_source_row = source_cols_usize / GROUP_SIZE;
+        let source_row = source_row_base + half_warp;
+        let mut row_col = 0usize;
+        while row_col < TRANSPOSE_TILE_COLS {
+            let value = unsafe { TILE[half_warp * TRANSPOSE_TILE_STRIDE + row_col + lane] };
+            let group =
+                source_row * groups_per_source_row + (source_col_base + row_col) / GROUP_SIZE;
+            let base = group * GROUP_SIZE;
+            let (scale_bits, payload) =
+                four_six_group_scale(value, global_scale, scale_override, mask, leader, lane);
+            let payload_byte = four_six_payload_byte(payload, mask);
+
+            unsafe {
+                if lane == 0 {
+                    *out_scales.get_unchecked_mut(group) = scale_bits;
+                }
+                if lane.is_multiple_of(2) {
+                    *out_fp4.get_unchecked_mut(base / 2 + lane / 2) = payload_byte;
+                }
+            }
+            row_col += GROUP_SIZE;
+        }
+
+        let groups_per_output_row = source_rows as usize / GROUP_SIZE;
+        let group_in_output_row = source_row_base / GROUP_SIZE;
+        let mut transpose_col = half_warp;
+        while transpose_col < TRANSPOSE_TILE_COLS {
+            let value = unsafe { TILE[lane * TRANSPOSE_TILE_STRIDE + transpose_col] };
+            let group =
+                (source_col_base + transpose_col) * groups_per_output_row + group_in_output_row;
+            let base = group * GROUP_SIZE;
+            let (scale_bits, payload) =
+                four_six_group_scale(value, global_scale, scale_override, mask, leader, lane);
+            let payload_byte = four_six_payload_byte(payload, mask);
+
+            unsafe {
+                if lane == 0 {
+                    *transpose_out_scales.get_unchecked_mut(group) = scale_bits;
+                }
+                if lane.is_multiple_of(2) {
+                    *transpose_out_fp4.get_unchecked_mut(base / 2 + lane / 2) = payload_byte;
+                }
+            }
+            transpose_col += TRANSPOSE_GROUPS_PER_ROUND;
+        }
+    }
+
+    #[kernel]
+    pub fn four_six_rebase_sqrt_bound_global_scale_kernel(
+        original_amax: &[f32],
+        sqrt_bound_amax: &[f32],
+        mut out_global_scale: DisjointSlice<f32>,
+    ) {
+        if thread::threadIdx_x() == 0 {
+            let bound = sqrt_bound_amax[0];
+            let scale = if bound > 1.0 {
+                1.0 / sqrt_f32(bound)
+            } else {
+                1.0
+            };
+            unsafe {
+                *out_global_scale.get_unchecked_mut(0) =
+                    four_six_global_scale(original_amax[0] * scale, 1.0);
+            }
+        }
+    }
+
+    #[kernel]
     pub fn fp32_to_nvfp4_four_six_exact_bounded_amax_kernel(
         x: &[f32],
         original_amax: &[f32],
