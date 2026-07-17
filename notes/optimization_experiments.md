@@ -46,6 +46,96 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-17
 commit: accepted local jj commit after full gate
+experiment: Correct recurrent KDA state decay ownership and use all 32 CTA warps.
+status: accepted_450s
+change:
+  The 512-thread forward state-save kernel still advanced its shared-state
+  decay loop by the unrelated 256-thread gather constant. Threads 256-511
+  therefore overlapped indices already owned by threads 0-255 and raced on
+  repeated state *= decay updates. The loop now strides by the actual block
+  dimension. On top of that corrected ownership, state save launches 1024
+  threads: eight warps share each 16-row MMA group and each warp owns one N
+  fragment. Recurrence order, per-fragment K-stage MMA order, output addresses,
+  and persistent buffers are unchanged.
+numerics:
+  Correcting the overlapping decay updates intentionally changes the former
+  racy forward math. The promoted one-step diagnostic had val_loss=10.421425;
+  both repeated corrected-512 diagnostics and the final 1024-thread diagnostic
+  produce val_loss=10.424550, a +0.030% movement. The identical corrected-512
+  and 1024 endpoints show that the retile preserves the corrected trajectory.
+  Both fixed-wall gates improve held-out loss, so the correction does not use
+  the active quality tolerance.
+memory:
+  Persistent allocations, scratch capacities, and peak logical VRAM are
+  unchanged. Static shared memory remains 20.74 KiB. Registers fall from 45
+  to 38 per thread; this is not a new batch-capacity win.
+minimum_impact_gate:
+  The promoted floor was 20.500546ms over a reciprocal ten-step profile. The
+  parent mean is 4099.795429ms and the candidate mean is 4080.858471ms, saving
+  18.936959ms/profile or 0.462%, slightly below that aggregate floor. The
+  directly touched state-save kernel falls from 88.847776 to 63.282331ms,
+  saving 25.565445ms/profile or 28.774% and clearing the floor itself. Both
+  whole profiles improve, so this is retained under the explicit rule allowing
+  a promising candidate that measures below 0.5% overall but preserves a real
+  speed increase through the fixed-wall gates.
+profiles:
+  Promoted parent:
+    target/nsys/20260717_readonly_ultra_bundle_a.nsys-rep:
+      total 4096.614217ms.
+    target/nsys/20260717_readonly_ultra_bundle_b.nsys-rep:
+      total 4102.976641ms.
+  Candidate:
+    target/nsys/20260717_kda_state_ultra_stride_a.nsys-rep:
+      total 4076.900571ms.
+    target/nsys/20260717_kda_state_ultra_stride_b.nsys-rep:
+      total 4084.816370ms.
+hardware_counters:
+  target/ncu/20260717_kda_state_save_512_basic.ncu-rep measures the promoted
+  racy 512-thread kernel at 694.75us, 45 registers/thread, 20.74 KiB shared
+  memory, 33.33% occupancy, and 0.34 waves. Correcting only the stride in
+  target/ncu/20260717_kda_state_save_stride512_basic.ncu-rep gives 685.86us
+  and 42 registers/thread. The final report,
+  target/ncu/20260717_kda_state_save_1024_basic.ncu-rep, gives 488.51us,
+  38 registers/thread, unchanged shared memory, 66.66% occupancy, and 0.68
+  waves.
+verification:
+  cargo fmt --all, git diff --check, cargo check -q -p rust-kernels-cuda, and
+  the exact TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+  Repeated corrected-512 one-step diagnostics match each other exactly; the
+  final 1024-thread one-step and both ten-step profiled endpoints preserve the
+  corrected trajectory. One-step runs remain diagnostic only; the following
+  fixed-wall gates are the promotion evidence.
+gates:
+  Required 30-second screen:
+    target/runs/20260717_024042Z_fineweb_30s
+    completed_steps=76, train_elapsed_s=30.164, val_loss=6.492160.
+  Required 450-second sustained gate:
+    target/runs/20260717_024123Z_fineweb_450s
+    stdout: target/gates/20260717_kda_state_ultra_stride_450s.log
+    completed_steps=1101, train_elapsed_s=450.140, val_loss=5.016880.
+    All 23 high-fidelity samples are finite and nonzero. Every skip counter is
+    zero, grad norm ranges from 1.039028287 to 16.889122009, and every sample
+    retains batch 4 and sequence 2048.
+measured_effect:
+  Against the matched 30-second parent:
+    completed steps 76 -> 76;
+    average step time 398.039474 -> 396.894737ms (-0.288%);
+    held-out val_loss 6.492509 -> 6.492160 (-0.005%).
+  Against the matched 450-second parent:
+    completed steps 1098 -> 1101 (+3, +0.273%);
+    average step time 410.010929 -> 408.846503ms (-0.284%);
+    held-out val_loss 5.019067 -> 5.016880 (-0.044%).
+decision:
+  Keep and promote. The change removes a concrete shared-memory ownership bug,
+  the directly affected kernel clears the timing floor, both whole profiles
+  and fixed-wall gates improve, and sustained stability is clean. The next
+  0.5% threshold is 2.044233ms per step, or 20.442325ms over a ten-step
+  profile.
+```
+
+```text
+date: 2026-07-17
+commit: accepted local jj commit after full gate
 experiment: Cache immutable KDA/FP16 operands and use all 32 warps for recurrent KDA backward.
 status: accepted_450s
 change:

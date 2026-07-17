@@ -52,7 +52,7 @@ pub(in super::super) fn chunk_kda_state_save_body(
     }
     thread::sync_threads();
 
-    let tile = CtaTile::from_wide_tile(tid, 0, 0, 0);
+    let tile = CtaTile::from_ultra_wide_tile(tid, 0, 0, 0);
     let mut chunk = 0;
     while chunk < chunks {
         let start = chunk * params.chunk_size;

@@ -3,6 +3,7 @@ use cuda_core::DriverError;
 use super::gather::TC_FORWARD_THREADS_PER_BLOCK;
 use super::types::CausalAttentionTcArgs;
 use crate::attention::AttentionModule;
+use crate::f16_tc_matmul::cta_tile::CTA_ULTRA_WIDE_THREADS;
 use crate::kda_launch::{self, KDA_HEAD_DIM};
 use crate::launch::{grid_x_config, linear_config};
 
@@ -31,7 +32,7 @@ impl AttentionModule {
         let stream = args.stream;
         let threads = TC_FORWARD_THREADS_PER_BLOCK;
         let linear = |n| linear_config(n, threads);
-        let batch_cfg = grid_x_config(dims.batch_head, KDA_WIDE_THREADS_PER_BLOCK);
+        let state_cfg = grid_x_config(dims.batch_head, CTA_ULTRA_WIDE_THREADS);
         let chunk_cfg = kda_launch::chunk_dim_config(dims.batch_head, dims.chunks, threads);
         let tc_chunk_cfg =
             kda_launch::chunk_dim_config(dims.batch_head, dims.chunks, KDA_WIDE_THREADS_PER_BLOCK);
@@ -104,7 +105,7 @@ impl AttentionModule {
         };
         macro_rules! kda_output {
             ($chunk_states:expr) => {{
-                kda_kernel!(chunk_kda_state_save_kernel(batch_cfg; &*scratch.k, &mut *v_new, w, &*scratch.probs, &*args.log_sum_exp, &mut *$chunk_states));
+                kda_kernel!(chunk_kda_state_save_kernel(state_cfg; &*scratch.k, &mut *v_new, w, &*scratch.probs, &*args.log_sum_exp, &mut *$chunk_states));
                 kda_kernel!(chunk_kda_output_from_state_kernel(tc_chunk_cfg; &*scratch.q, &*v_new, aqk, args.out, &*$chunk_states));
             }};
         }
