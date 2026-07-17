@@ -49,6 +49,93 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-17
 commit: rejected working-copy experiment; source fully reverted
+experiment: MuonEq-R pre-Polar row equilibration.
+status: rejected_450s
+source:
+  https://arxiv.org/abs/2603.28254
+  https://github.com/MaeChd/muon-eq
+  official implementation commit
+  99b6c8b8f6d8b7d3424e85606d76302a71a8ea79
+rationale:
+  MuonEq reports that finite-step Newton-Schulz/Polar quality depends on the
+  spectrum of its momentum input. Its default R variant unit-normalizes each
+  hidden-weight row before orthogonalization, without changing the persistent
+  optimizer state or rescaling the resulting update. The paper reports lower
+  validation perplexity than Muon on 130M, 350M, and 1B LLaMA2/C4 runs, and
+  its three-seed GPT2/FineWeb ablation beats Muon-Nes, Muon+, AdaMuon, and
+  Mousse. Test that stateless preconditioning while retaining the accepted
+  NorMuon post-Polar variance reduction.
+implementation:
+  On full-Polar steps, computed the official R map
+    M_tilde[i,j] = M[i,j] / sqrt(sum_j M[i,j]^2 + 1e-8)
+  on the transient momentum input before the existing global Frobenius
+  normalization and five PolarExpress iterations. The persistent momentum
+  itself was not normalized. This repo stores linear weights as
+  [input, output], transposed from the official PyTorch [output, input]
+  convention, so the paper's row axis was mapped to descriptor columns. A
+  per-paper-row reduction produced factors in the existing transient NorMuon
+  factor scratch, and the source-sumsq pass applied them before Polar; the
+  scratch was then overwritten normally by accepted post-Polar NorMuon.
+  Period-2 SignMuon steps remained unchanged. AMUSE z/x averaging, NorMuon,
+  Q/K clipping, PolarExpress, NVFP4 bounds, all 16 layers, every active branch,
+  FineWeb, Llama-2 tokenization, B4/S2048, and 8192 tokens per step remained
+  intact.
+fidelity_correction:
+  The first implementation mistakenly treated local [input, output] storage
+  rows as the paper's rows, which actually implemented MuonEq-C. This was
+  caught by auditing the live linear storage convention, not by looking at
+  short-run loss. Artifacts 20260717_125406Z_fineweb_30s,
+  20260717_125509Z_fineweb_450s, and
+  20260717_125537Z_fineweb_450s are excluded; both 450-second processes were
+  interrupted before evaluation. The implementation was corrected, rebuilt,
+  and independently checked against output-neuron row factors before the
+  valid bring-up and gate below.
+verification:
+  cargo fmt --all --check, cargo check --workspace, cargo test --workspace
+  --lib, and git diff --check: pass.
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass for the
+  corrected candidate and again after restoring the accepted source.
+  Seven focused ignored CUDA tests pass for both the corrected candidate and
+  the final restored binary: output-row equilibration on wide and tall
+  matrices, split/cooperative finish agreement, NorMuon variance reduction,
+  both SignMuon/QK-clip paths, schedule-amax retention, and full-Polar Q/K
+  clipping.
+bringup:
+  target/runs/20260717_125743Z_fineweb_30s
+  completed_steps=88, train_elapsed_s=30.270.
+  Both high-fidelity samples are finite and nonzero, every update/skip counter
+  is zero, and B4/S2048/8192 tokens per step plus the 16x2048 model remain
+  intact. This run was used only as a launch, update, and immediate numerical
+  health smoke. Its held-out loss was not compared, ranked, tuned against, or
+  used in the keep/revert decision.
+gate:
+  target/runs/20260717_125826Z_fineweb_450s
+  completed_steps=1277, train_elapsed_s=450.071, val_loss=4.892450.
+  All 26 high-fidelity samples are finite and nonzero, every update/skip
+  counter is zero, and B4/S2048/8192 tokens per step remains intact. Sampled
+  loss ranges from 4.903178692 to 10.676921844 and global gradient norm ranges
+  from 0.889429033 to 14.571924210.
+measured_effect:
+  Against the accepted ResFormer/NorMuon control at 4.868333 / 1291 steps,
+  held-out loss regresses by 0.024117 (+0.495385%). The candidate completes
+  14 fewer steps (-1.084431%), processes 10461184 rather than 10575872 tokens,
+  and moves average step time from 348.697909 to 352.444009 ms (+1.074311%).
+  Lower exposure is not the whole result: at the same logged step, candidate
+  training loss is consistently worse from step 600 through step 1250, where
+  it is higher by 0.057918072.
+decision:
+  Reject and fully restore the accepted SignMuon/NorMuon implementation. This
+  result rejects the official R-axis map composed with the current period-2
+  SignMuon, NorMuon, and AMUSE stack at the matched local hyperparameters; it
+  does not claim that MuonEq-R is intrinsically worse under plain Muon or a
+  separately justified optimizer retune. Do not use either 30-second artifact
+  or the excluded wrong-axis artifacts to choose another direction, exponent,
+  or coefficient.
+```
+
+```text
+date: 2026-07-17
+commit: rejected working-copy experiment; source fully reverted
 experiment: Muon+ bidirectional post-polar normalization.
 status: rejected_450s
 source:
