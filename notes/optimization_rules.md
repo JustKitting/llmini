@@ -57,22 +57,36 @@ must preserve optimizer state and earn its own matched held-out validation;
 model-only checkpoint reloads that reset AMUSE and Muon state are not valid
 stage-transition evidence.
 
+### Model-Integrity and Task Invariant
+
+The gate measures improvements to the intact model on the intact task. It is
+invalid to lower the endpoint by making part of the model task-gradient-dead:
+
+- Do not remove, bypass, freeze, or zero-weight an active branch, including
+  NextLat, while retaining its allocations only to satisfy a nominal parameter
+  count.
+- Shape and layer-width redistribution is allowed, as are optimizer,
+  quantization, initialization, and algorithmic changes, but the resulting
+  model must retain approximately 1B effective trainable parameters and all
+  declared active sections must receive a real training signal.
+- The matched gate uses the same FineWeb source, Llama-2 tokenizer, validation
+  stream, context, and sampling convention. Do not simplify the corpus,
+  alphabet, vocabulary, or validation problem to lower raw cross-entropy.
+- Dataset or tokenizer studies must be labelled as separate experiments and
+  compared with a tokenizer-independent metric such as bits per byte plus
+  downstream evaluation. Their raw token cross-entropies cannot replace this
+  baseline.
+
+The 450-second gate is a screening instrument for genuine model improvements,
+not an objective that may be made easier.
+
 ## Kernel/Runtime Acceptance Rule
 
-The current kernel/runtime acceptance rule is:
-
-- Accept if 450-second held-out validation loss improves.
-- Accept if 450-second held-out validation loss is within `+/-1%` of the current
-  baseline and completed step count increases.
-- Reject if validation loss worsens by more than `1%`, even if profiler numbers
-  or completed step count improve.
-
-The `+/-1%` band is an active noise band, not an old rule and not a weaker
-objective. Seed variance can move validation loss within that band, so higher
-completed step count inside the band can be a valid long-run improvement.
-
-This rule is for math-preserving kernel/runtime changes. It does not apply to
-hyperparameter sweep promotion.
+The active phase is loss-focused. A kernel/runtime candidate is promoted only
+when its 450-second held-out validation loss is lower than the current baseline.
+Completed steps and throughput can explain the loss result, but cannot promote
+a flat or worse endpoint. The former `+/-1%` speed-within-noise exception is not
+active.
 
 ### Minimum Whole-Step Impact
 

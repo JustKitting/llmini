@@ -45,6 +45,35 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 
 ```text
 date: 2026-07-17
+commit: rejected jj a3535871; commit abandoned and source restored
+experiment: Set the NextLat auxiliary-loss weight to zero.
+status: rejected_invalid_objective
+change:
+  A runtime control replaced the hard-coded unit Smooth-L1 coefficient and a
+  zero coefficient was briefly promoted after it lowered held-out
+  cross-entropy.
+measurements:
+  The matched 30-second zero-weight run at
+  target/runs/20260717_055947Z_fineweb_30s completed 79 steps in 30.194s with
+  val_loss=6.408834, versus 6.456209 for the fresh unit-weight control.
+  The zero-weight 450-second run at
+  target/runs/20260717_060239Z_fineweb_450s completed 1155 steps in 450.071s
+  with val_loss=4.994470, versus the active 4.997200 baseline.
+invalidity:
+  At lambda=0 the Smooth-L1 kernel emits zero NextLat loss and zero predicted-
+  state gradients. NextLat forward, backward, optimizer work, parameters, and
+  allocations remain, but the branch receives no task learning signal; only
+  optimizer decay can still move its parameters. This makes part of the
+  nominal model effectively dead and is not an admissible loss improvement.
+decision:
+  Reject regardless of the measured endpoint, abandon the jj commit, restore
+  the unit-weight intact model, and keep 4.997200 as the active baseline.
+  Future gates must preserve nonzero task gradients through every active model
+  section and the unchanged FineWeb/Llama-2 validation task.
+```
+
+```text
+date: 2026-07-17
 commit: accepted local jj commit after full gate
 experiment: Use a single six-grid NVFP4 encoder and specialize exact raw TMA output.
 status: accepted_450s
