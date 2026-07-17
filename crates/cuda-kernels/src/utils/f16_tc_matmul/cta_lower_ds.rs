@@ -1,6 +1,9 @@
 use cuda_device::{DisjointSlice, convert::cvt_f16x2_f32, thread};
 
-use super::convert::{cvt_f32_f16, cvt_rn_f16_f32, load_f16x2_global_bits, store_f16x2_global};
+use super::convert::{
+    cvt_f32_f16, cvt_rn_f16_f32, load_f16_global_bits_read_only, load_f16x2_global_bits_read_only,
+    load_f32_global_read_only, store_f16x2_global,
+};
 use super::cta_tile::{CtaMatmulDims, CtaTile};
 
 pub(super) fn cta_matmul_lower_ds_body(
@@ -73,8 +76,9 @@ fn store_pair(
     let (row1, col1) = tile.accumulator_coords(warp_n, acc_index + 1);
     if row0 < dims.m && row1 == row0 && col0 + 1 == col1 && col1 < dims.n && col1 <= row0 {
         let offset = ((tile.batch * dims.m + row0) * dims.n + col0) as usize;
-        let packed_probs = load_f16x2_global_bits(probs.as_ptr(), offset);
-        let d = softmax_d[(tile.batch * dims.m + row0) as usize];
+        let packed_probs = load_f16x2_global_bits_read_only(probs.as_ptr(), offset);
+        let d =
+            load_f32_global_read_only(softmax_d.as_ptr(), (tile.batch * dims.m + row0) as usize);
         let grad0 = cvt_f32_f16(packed_probs as u16) * (dot0 - d);
         let grad1 = cvt_f32_f16((packed_probs >> 16) as u16) * (dot1 - d);
         store_f16x2_global(out.as_mut_ptr(), offset, cvt_f16x2_f32(grad0, grad1));
@@ -107,8 +111,8 @@ fn store_one(
     let (row, col) = tile.accumulator_coords(warp_n, acc_index);
     if row < dims.m && col < dims.n && col <= row {
         let offset = ((tile.batch * dims.m + row) * dims.n + col) as usize;
-        let d = softmax_d[(tile.batch * dims.m + row) as usize];
-        let grad = cvt_f32_f16(probs[offset]) * (dot - d);
+        let d = load_f32_global_read_only(softmax_d.as_ptr(), (tile.batch * dims.m + row) as usize);
+        let grad = cvt_f32_f16(load_f16_global_bits_read_only(probs.as_ptr(), offset)) * (dot - d);
         unsafe {
             *out.get_unchecked_mut(offset) = cvt_rn_f16_f32(grad);
         }

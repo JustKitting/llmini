@@ -1,6 +1,8 @@
 use cuda_device::{convert::cvt_f16x2_f32, thread};
 
-use super::convert::store_f16x2_shared;
+use super::convert::{
+    load_f16_global_bits_read_only, load_f32_global_read_only, store_f16x2_shared,
+};
 use super::cta_stage::stage_coords;
 use super::cta_tile::{CTA_A_ELEMS, CtaMatmulDims, CtaTile};
 
@@ -52,13 +54,19 @@ fn stage_a_transposed(
     while pair < CTA_A_ELEMS as u32 {
         let (global_row, global_col) = stage_coords(pair, tile.row_base, k_base);
         let lo = if global_row < dims.m && global_col < dims.k {
-            a[((tile.batch * dims.k + global_col) * dims.m + global_row) as usize]
+            load_f32_global_read_only(
+                a.as_ptr(),
+                ((tile.batch * dims.k + global_col) * dims.m + global_row) as usize,
+            )
         } else {
             0.0
         };
         let hi_col = global_col + 1;
         let hi = if global_row < dims.m && hi_col < dims.k {
-            a[((tile.batch * dims.k + hi_col) * dims.m + global_row) as usize]
+            load_f32_global_read_only(
+                a.as_ptr(),
+                ((tile.batch * dims.k + hi_col) * dims.m + global_row) as usize,
+            )
         } else {
             0.0
         };
@@ -78,13 +86,19 @@ fn stage_a_transposed_lower(
     while pair < CTA_A_ELEMS as u32 {
         let (global_row, global_col) = stage_coords(pair, tile.row_base, k_base);
         let lo = if global_row < dims.m && global_col < dims.k && global_col >= global_row {
-            a[((tile.batch * dims.k + global_col) * dims.m + global_row) as usize]
+            load_f32_global_read_only(
+                a.as_ptr(),
+                ((tile.batch * dims.k + global_col) * dims.m + global_row) as usize,
+            )
         } else {
             0.0
         };
         let hi_col = global_col + 1;
         let hi = if global_row < dims.m && hi_col < dims.k && hi_col >= global_row {
-            a[((tile.batch * dims.k + hi_col) * dims.m + global_row) as usize]
+            load_f32_global_read_only(
+                a.as_ptr(),
+                ((tile.batch * dims.k + hi_col) * dims.m + global_row) as usize,
+            )
         } else {
             0.0
         };
@@ -93,6 +107,12 @@ fn stage_a_transposed_lower(
     }
 }
 
-cta_stage_transposed_rhs_fn!(stage_rhs, f32, |lo, hi| cvt_f16x2_f32(lo, hi));
-cta_stage_transposed_rhs_fn!(stage_half_rhs, u16, |lo, hi| lo as u32
-    | ((hi as u32) << 16));
+cta_stage_transposed_rhs_fn!(stage_rhs, f32, load_f32_global_read_only, |lo, hi| {
+    cvt_f16x2_f32(lo, hi)
+});
+cta_stage_transposed_rhs_fn!(
+    stage_half_rhs,
+    u16,
+    load_f16_global_bits_read_only,
+    |lo, hi| lo as u32 | ((hi as u32) << 16)
+);

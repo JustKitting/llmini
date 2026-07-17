@@ -79,7 +79,7 @@ pub(crate) fn chunkwise_kda_backward_body(
             pair += thread::blockDim_x() * 2;
         }
 
-        let tile = CtaTile::from_wide_tile(tid, 0, 0, 0);
+        let tile = CtaTile::from_ultra_wide_tile(tid, 0, 0, 0);
         let ctx = CompactTileCtx::new(tile, (batch, head), (start, end), &params);
         add_kg_dh_to_du_tc(inputs.kg, &mut grads.u_to_du, d_h_next, a_tile, b_tile, ctx);
         thread::sync_threads();

@@ -1,5 +1,6 @@
 use cuda_device::{SharedArray, thread};
 
+use crate::f16_tc_matmul::convert::load_f32_global_read_only;
 use crate::float_ptx::max_f32;
 use crate::float_ptx::sqrt_f32;
 
@@ -49,7 +50,7 @@ pub(super) fn update_master_chunks(
             debug_assert_eq!(rows, UPDATE_VALUES_PER_CHUNK);
             debug_assert!(qk_clip_head_dim > 0);
             let head = (chunk % rows) / qk_clip_head_dim;
-            unsafe { *qk_clip_factors.add((qk_clip_factor_offset + head) as usize) }
+            load_f32_global_read_only(qk_clip_factors, (qk_clip_factor_offset + head) as usize)
         } else {
             1.0
         };

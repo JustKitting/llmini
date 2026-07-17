@@ -1,6 +1,8 @@
 use cuda_device::{SharedArray, thread};
 
-use super::convert::{load_f16x2_global_bits, store_f16x2_shared};
+use super::convert::{
+    load_f16_global_bits_read_only, load_f16x2_global_bits_read_only, store_f16x2_shared,
+};
 use super::cta_tile::{CTA_A_ELEMS, CTA_B_ELEMS, CTA_K, CtaMatmulDims, CtaTile};
 
 macro_rules! stage_tiles_fn {
@@ -65,9 +67,12 @@ fn stage_matrix_tile<const CHECK_BOUNDS: bool, const TILE_ELEMS: usize>(
         let (global_row, global_col) = stage_coords(pair, row_base, k_base);
         let packed = if !CHECK_BOUNDS || (global_row < rows && global_col + 1 < cols) {
             let index = ((tile.batch * rows + global_row) * cols + global_col) as usize;
-            load_f16x2_global_bits(src.as_ptr(), index)
+            load_f16x2_global_bits_read_only(src.as_ptr(), index)
         } else if global_row < rows && global_col < cols {
-            src[((tile.batch * rows + global_row) * cols + global_col) as usize] as u32
+            load_f16_global_bits_read_only(
+                src.as_ptr(),
+                ((tile.batch * rows + global_row) * cols + global_col) as usize,
+            ) as u32
         } else {
             0
         };

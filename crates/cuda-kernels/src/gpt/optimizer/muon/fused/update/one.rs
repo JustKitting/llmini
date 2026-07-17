@@ -1,6 +1,6 @@
 use crate::float_ptx::abs_f32;
 
-use crate::device_ptr::read_f32;
+use crate::f16_tc_matmul::convert::load_f32_global_read_only;
 
 #[derive(Clone, Copy)]
 pub(super) struct UpdateAmax {
@@ -37,7 +37,8 @@ pub(super) fn update_one(
     let row = index / cols;
     let col = index - row * cols;
     let update_index = if transposed { col * rows + row } else { index };
-    let muon_update = scale * (read_f32(u, update_index) * polar_update_scale);
+    let muon_update =
+        scale * (load_f32_global_read_only(u, update_index as usize) * polar_update_scale);
     let decay = 1.0 - learning_rate * weight_decay;
 
     unsafe {

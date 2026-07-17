@@ -1,5 +1,5 @@
 macro_rules! cta_stage_transposed_rhs_fn {
-    ($name:ident, $rhs_ty:ty, |$lo:ident, $hi:ident| $packed:expr) => {
+    ($name:ident, $rhs_ty:ty, $load:path, |$lo:ident, $hi:ident| $packed:expr) => {
         fn $name(
             rhs: &[$rhs_ty],
             b_tile: &mut $crate::f16_tc_matmul::CtaBTile,
@@ -13,13 +13,19 @@ macro_rules! cta_stage_transposed_rhs_fn {
                 let (global_row, global_col) =
                     $crate::f16_tc_matmul::cta_stage::stage_coords(pair, tile.col_base, k_base);
                 let $lo: $rhs_ty = if global_row < n && global_col < k {
-                    rhs[((tile.batch * k + global_col) * n + global_row) as usize]
+                    $load(
+                        rhs.as_ptr(),
+                        ((tile.batch * k + global_col) * n + global_row) as usize,
+                    )
                 } else {
                     0 as $rhs_ty
                 };
                 let hi_col = global_col + 1;
                 let $hi: $rhs_ty = if global_row < n && hi_col < k {
-                    rhs[((tile.batch * k + hi_col) * n + global_row) as usize]
+                    $load(
+                        rhs.as_ptr(),
+                        ((tile.batch * k + hi_col) * n + global_row) as usize,
+                    )
                 } else {
                     0 as $rhs_ty
                 };

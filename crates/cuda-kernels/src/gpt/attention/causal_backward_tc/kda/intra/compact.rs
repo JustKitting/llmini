@@ -1,5 +1,6 @@
 use super::super::super::gather::TC_BACKWARD_THREADS_PER_BLOCK;
 use super::{KdaIntraCtx, KdaIntraGrads, KdaIntraInputs};
+use crate::f16_tc_matmul::convert::load_f32_global_read_only;
 use crate::float_ptx::fma_f32;
 use crate::kda_common::kda_decay_exp;
 
@@ -29,28 +30,29 @@ fn update_compact_grad(
     dim: u32,
 ) {
     let compact = ctx.compact(token, dim);
-    let g_value = inputs.g[compact];
-    let g_last = inputs.g[ctx.last_compact(dim)];
-    let beta_value = inputs.beta[ctx.beta(token)];
+    let g_value = load_f32_global_read_only(inputs.g.as_ptr(), compact);
+    let g_last = load_f32_global_read_only(inputs.g.as_ptr(), ctx.last_compact(dim));
+    let beta_value = load_f32_global_read_only(inputs.beta.as_ptr(), ctx.beta(token));
     let exp_g = kda_decay_exp(g_value);
-    let qg_value = inputs.qg[compact];
-    let kg_value = inputs.kg[compact];
+    let qg_value = load_f32_global_read_only(inputs.qg.as_ptr(), compact);
+    let kg_value = load_f32_global_read_only(inputs.kg.as_ptr(), compact);
     let k_value = kg_value * kda_decay_exp(g_value - g_last);
     let kneg_value = k_value * kda_decay_exp(-g_value);
     let kpos_value = beta_value * k_value * exp_g;
 
     let d_qg_value = unsafe { *grads.qg_to_dv.get_unchecked_mut(compact) };
     let d_k_a_value = unsafe { *grads.k_a_to_dg.get_unchecked_mut(compact) };
-    let d_kpos_m_value = inputs.d_kpos_m[compact];
-    let d_kneg_b_value = inputs.d_kneg_from_b[compact];
-    let d_kpos_b_t_value = inputs.d_kpos_from_b_t[compact];
+    let d_kpos_m_value = load_f32_global_read_only(inputs.d_kpos_m.as_ptr(), compact);
+    let d_kneg_b_value = load_f32_global_read_only(inputs.d_kneg_from_b.as_ptr(), compact);
+    let d_kpos_b_t_value = load_f32_global_read_only(inputs.d_kpos_from_b_t.as_ptr(), compact);
+    let d_kg_value = load_f32_global_read_only(inputs.d_kg.as_ptr(), compact);
     let dq_value = d_qg_value;
-    let mut dk_value = inputs.d_kg[compact] * kda_decay_exp(g_last - g_value)
+    let mut dk_value = d_kg_value * kda_decay_exp(g_last - g_value)
         + d_k_a_value * kda_decay_exp(-g_value)
         + d_kpos_m_value * beta_value * exp_g;
-    let dv_value = inputs.d_vbeta_m[compact] * beta_value;
+    let dv_value = load_f32_global_read_only(inputs.d_vbeta_m.as_ptr(), compact) * beta_value;
     let mut dg_value =
-        -inputs.d_kg[compact] * kg_value - d_k_a_value * kneg_value + d_kpos_m_value * kpos_value;
+        -d_kg_value * kg_value - d_k_a_value * kneg_value + d_kpos_m_value * kpos_value;
 
     dk_value = fma_f32(d_kpos_b_t_value, kda_decay_exp(-g_value), dk_value);
     dk_value = fma_f32(d_kneg_b_value, beta_value * exp_g, dk_value);
@@ -63,8 +65,8 @@ fn update_compact_grad(
         let source_token = ctx.start + kg_source;
         let source_compact = ctx.compact(source_token, dim);
         dg_last_value = fma_f32(
-            inputs.d_kg[source_compact],
-            inputs.kg[source_compact],
+            load_f32_global_read_only(inputs.d_kg.as_ptr(), source_compact),
+            load_f32_global_read_only(inputs.kg.as_ptr(), source_compact),
             dg_last_value,
         );
         kg_source += 1;

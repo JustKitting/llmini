@@ -1,7 +1,8 @@
 use cuda_device::{SharedArray, convert::cvt_f16x2_f32, thread};
 
 use crate::f16_tc_matmul::convert::{
-    cvt_rn_f16_f32, load_f16x2_global_bits, load_f32x2_global, store_f16x2_shared,
+    cvt_rn_f16_f32, load_f16_global_bits_read_only, load_f16x2_global_bits_read_only,
+    load_f32_global_read_only, load_f32x2_global_read_only, store_f16x2_shared,
 };
 use crate::f16_tc_matmul::cta_tile::{CTA_B_ELEMS, CTA_K};
 use crate::kda_common::chunk_state_index;
@@ -58,25 +59,26 @@ pub(crate) fn stage_state_b_t(
             let col = pair - row * CTA_K;
             let k_dim = ctx.compact.tile.col_base + row;
             let v_dim = k_base + col;
-            let packed = if k_dim < ctx.compact.params.head_dim
-                && v_dim + 1 < ctx.compact.params.head_dim
-            {
-                let index = chunk_state_index(
-                    ctx.bh,
-                    ctx.chunk,
-                    k_dim * ctx.compact.params.head_dim + v_dim,
-                    ctx.compact.params,
-                );
-                match source {
-                    StateTileSource::F16(states) => load_f16x2_global_bits(states.as_ptr(), index),
-                    StateTileSource::F32(states) => {
-                        let (lo, hi) = load_f32x2_global(states.as_ptr(), index);
-                        cvt_f16x2_f32(lo, hi)
+            let packed =
+                if k_dim < ctx.compact.params.head_dim && v_dim + 1 < ctx.compact.params.head_dim {
+                    let index = chunk_state_index(
+                        ctx.bh,
+                        ctx.chunk,
+                        k_dim * ctx.compact.params.head_dim + v_dim,
+                        ctx.compact.params,
+                    );
+                    match source {
+                        StateTileSource::F16(states) => {
+                            load_f16x2_global_bits_read_only(states.as_ptr(), index)
+                        }
+                        StateTileSource::F32(states) => {
+                            let (lo, hi) = load_f32x2_global_read_only(states.as_ptr(), index);
+                            cvt_f16x2_f32(lo, hi)
+                        }
                     }
-                }
-            } else {
-                0
-            };
+                } else {
+                    0
+                };
             store_f16x2_shared(b_tile.as_mut_ptr(), pair as usize, packed);
             pair += thread::blockDim_x() * 2;
         }
@@ -100,8 +102,12 @@ pub(crate) fn stage_state_b_t(
                     ctx.compact.params,
                 );
                 match source {
-                    StateTileSource::F16(states) => states[index],
-                    StateTileSource::F32(states) => cvt_rn_f16_f32(states[index]),
+                    StateTileSource::F16(states) => {
+                        load_f16_global_bits_read_only(states.as_ptr(), index)
+                    }
+                    StateTileSource::F32(states) => {
+                        cvt_rn_f16_f32(load_f32_global_read_only(states.as_ptr(), index))
+                    }
                 }
             } else {
                 0

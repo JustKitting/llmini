@@ -1,6 +1,8 @@
 use cuda_device::{DisjointSlice, SharedArray, convert::cvt_f16x2_f32, thread};
 
-use crate::f16_tc_matmul::convert::{load_f32x2_global, store_f16x2_shared};
+use crate::f16_tc_matmul::convert::{
+    load_f32_global_read_only, load_f32x2_global_read_only, store_f16x2_shared,
+};
 use crate::f16_tc_matmul::cta_tile::{CTA_A_ELEMS, CTA_B_ELEMS, CTA_K};
 use crate::kda_common::compact_index;
 use crate::kda_tc::CompactTileCtx;
@@ -19,7 +21,7 @@ pub(crate) fn stage_compact_a(
         let dim = k_base + col;
         let packed = if token < ctx.end && dim + 1 < ctx.params.head_dim {
             let index = compact_index(ctx.batch, token, ctx.head, dim, ctx.params);
-            let (lo, hi) = load_f32x2_global(src.as_ptr(), index);
+            let (lo, hi) = load_f32x2_global_read_only(src.as_ptr(), index);
             cvt_f16x2_f32(lo, hi)
         } else {
             0
@@ -43,12 +45,18 @@ pub(crate) fn stage_compact_b_t(
         let token0 = ctx.start + k_base + col;
         let token1 = token0 + 1;
         let lo = if v_dim < ctx.params.head_dim && token0 < ctx.end {
-            src[compact_index(ctx.batch, token0, ctx.head, v_dim, ctx.params)]
+            load_f32_global_read_only(
+                src.as_ptr(),
+                compact_index(ctx.batch, token0, ctx.head, v_dim, ctx.params),
+            )
         } else {
             0.0
         };
         let hi = if v_dim < ctx.params.head_dim && token1 < ctx.end {
-            src[compact_index(ctx.batch, token1, ctx.head, v_dim, ctx.params)]
+            load_f32_global_read_only(
+                src.as_ptr(),
+                compact_index(ctx.batch, token1, ctx.head, v_dim, ctx.params),
+            )
         } else {
             0.0
         };
@@ -71,11 +79,14 @@ pub(crate) fn stage_compact_token_dim_b_t(
         let dim = k_base + col;
         let packed = if token < ctx.end && dim + 1 < ctx.params.head_dim {
             let index = compact_index(ctx.batch, token, ctx.head, dim, ctx.params);
-            let (lo, hi) = load_f32x2_global(src.as_ptr(), index);
+            let (lo, hi) = load_f32x2_global_read_only(src.as_ptr(), index);
             cvt_f16x2_f32(lo, hi)
         } else if token < ctx.end && dim < ctx.params.head_dim {
             cvt_f16x2_f32(
-                src[compact_index(ctx.batch, token, ctx.head, dim, ctx.params)],
+                load_f32_global_read_only(
+                    src.as_ptr(),
+                    compact_index(ctx.batch, token, ctx.head, dim, ctx.params),
+                ),
                 0.0,
             )
         } else {

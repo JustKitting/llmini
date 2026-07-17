@@ -1,7 +1,9 @@
 use cuda_device::{DisjointSlice, convert::cvt_f16x2_f32, thread};
 
 use crate::attention::CausalAttentionParams;
-use crate::f16_tc_matmul::convert::{load_f32x2_global, store_f16x2_shared};
+use crate::f16_tc_matmul::convert::{
+    load_f32_global_read_only, load_f32x2_global_read_only, store_f16x2_shared,
+};
 use crate::f16_tc_matmul::cta_tile::{CTA_A_ELEMS, CTA_K};
 use crate::kda_common::chunk_matrix_index;
 use crate::kda_tc::{
@@ -50,11 +52,11 @@ fn stage_chunk_matrix_a(src: &[f32], a_tile: &mut CtaATile, ctx: MatrixTileCtx<'
         let packed = if token_in_chunk < ctx.params.chunk_size && source + 1 < ctx.params.chunk_size
         {
             let index = chunk_matrix_index(ctx.bh, ctx.chunk, token_in_chunk, source, ctx.params);
-            let (lo, hi) = load_f32x2_global(src.as_ptr(), index);
+            let (lo, hi) = load_f32x2_global_read_only(src.as_ptr(), index);
             cvt_f16x2_f32(lo, hi)
         } else if token_in_chunk < ctx.params.chunk_size && source < ctx.params.chunk_size {
             let index = chunk_matrix_index(ctx.bh, ctx.chunk, token_in_chunk, source, ctx.params);
-            cvt_f16x2_f32(src[index], 0.0)
+            cvt_f16x2_f32(load_f32_global_read_only(src.as_ptr(), index), 0.0)
         } else {
             0
         };

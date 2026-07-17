@@ -3,6 +3,7 @@ use cuda_core::DriverError;
 use super::gather::TC_BACKWARD_THREADS_PER_BLOCK;
 use super::types::{CausalAttentionBackwardTcArgs, CausalAttentionBackwardTcScratch};
 use crate::attention::AttentionModule;
+use crate::f16_tc_matmul::cta_tile::CTA_ULTRA_WIDE_THREADS;
 use crate::kda_launch::{self, KDA_HEAD_DIM};
 use crate::launch::{grid_x_config, linear_config};
 
@@ -83,7 +84,7 @@ impl AttentionModule {
         let bwd_tc = &self.causal_attention_backward_tc.kda_tc;
         let fwd = &self.causal_attention_tc.kda;
         let threads = TC_BACKWARD_THREADS_PER_BLOCK;
-        let batch_cfg = grid_x_config(dims.batch_head, KDA_WIDE_THREADS_PER_BLOCK);
+        let chunkwise_cfg = grid_x_config(dims.batch_head, CTA_ULTRA_WIDE_THREADS);
         let chunk_cfg = kda_launch::chunk_dim_config(dims.batch_head, dims.chunks, threads);
         let tc_chunk_cfg =
             kda_launch::chunk_dim_config(dims.batch_head, dims.chunks, KDA_WIDE_THREADS_PER_BLOCK);
@@ -161,7 +162,7 @@ impl AttentionModule {
             kpos_u_dw,
             dims.chc()
         ));
-        launch!(bwd_tc.chunkwise_kda_backward_kernel(batch_cfg; qg, kg, kpos_u_dw, w, aqk, g, chunk_states, d_out, dh_states_or_kneg, local_grad));
+        launch!(bwd_tc.chunkwise_kda_backward_kernel(chunkwise_cfg; qg, kg, kpos_u_dw, w, aqk, g, chunk_states, d_out, dh_states_or_kneg, local_grad));
         {
             let v_new = kda_v_new.unwrap_or(&*kneg_vnew_dqg_dv);
             launch!(bwd_tc.chunk_kda_dkg_from_vnew_dh_kernel(tc_chunk_cfg; v_new, dh_states_or_kneg, dkg_from_state));

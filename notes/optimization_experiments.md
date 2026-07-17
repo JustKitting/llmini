@@ -46,6 +46,146 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-17
 commit: accepted local jj commit after full gate
+experiment: Cache immutable KDA/FP16 operands and use all 32 warps for recurrent KDA backward.
+status: accepted_450s
+change:
+  Added scalar f16 and aligned f16x2 read-only global-load helpers using
+  ld.global.nc.L2::128B, then routed immutable FP16 tensor-core staging and
+  immutable KDA state/compact inputs through the read-only cache path. The
+  Muon master-update pass uses the same path for its immutable polar update and
+  QK clip factors. Recurrent chunkwise KDA backward now launches 1024 threads:
+  eight warps share each 16-row MMA group and each warp owns one N fragment,
+  instead of four warps per row group owning two fragments. MMA count, K-stage
+  order, recurrence order, output addresses, and persistent model state are
+  unchanged.
+numerics:
+  The cache-qualified loads return the same source bits. The wider KDA mapping
+  only redistributes independent output fragments; every fragment retains the
+  same ordered MMA accumulation. Focused FP16, nonuniform-fragment, Muon, direct
+  causal-backward, and full block-backward comparisons all pass after the exact
+  rebuild. The fixed-wall endpoint improves rather than consuming the loss
+  tolerance.
+memory:
+  Persistent allocations, scratch capacities, and peak logical VRAM are
+  unchanged. Chunkwise KDA static shared memory remains 53.25 KiB, while its
+  registers fall from 46 to 42 per thread. This is a scheduling/cache win, not
+  a batch-capacity win.
+minimum_impact_gate:
+  The accepted parent averaged 4121.736974ms over reciprocal ten-step profiles,
+  making the predeclared 0.5% floor 20.590350ms/profile. The final candidate
+  averages 4099.795429ms, saving 21.941545ms/profile or 0.532%. Pairwise
+  improvements are 21.923591ms and 21.959499ms. The directly touched all-KDA,
+  FP16-CTA, and Muon-master families save 17.894452ms/profile; the whole-profile
+  signal is larger but repeats to within 0.036ms across the reciprocal pairs.
+profiles:
+  Accepted parent:
+    target/nsys/20260717_four_six_rows32_rebase_a.nsys-rep:
+      total 4118.537808ms.
+    target/nsys/20260717_four_six_rows32_rebase_b.nsys-rep:
+      total 4124.936140ms.
+  Candidate:
+    target/nsys/20260717_readonly_ultra_bundle_a.nsys-rep:
+      total 4096.614217ms.
+    target/nsys/20260717_readonly_ultra_bundle_b.nsys-rep:
+      total 4102.976641ms.
+  Family means move as follows:
+    all KDA 850.149623 -> 839.750514ms, saving 10.399109ms;
+    all FP16 CTA matmuls 612.517505 -> 605.794014ms, saving 6.723491ms;
+    Muon master update 103.497406 -> 102.725555ms, saving 0.771851ms.
+hardware_counters:
+  target/ncu/20260717_kda_chunkwise_current_basic.ncu-rep measures the
+  512-thread parent at 1.01ms, 46 registers/thread, 53.25 KiB shared memory,
+  33.33% achieved occupancy, and 0.68 waves. The final 1024-thread report,
+  target/ncu/20260717_chunkwise_kda_1024_basic.ncu-rep, measures 922.21us,
+  42 registers/thread, the same shared memory and waves, and 66.66% occupancy.
+explored_subcandidates:
+  Read-only forward-softmax scores regressed the target from 48.148314 to
+  48.662324ms/profile and were removed. Read-only Muon momentum/normalization
+  paths were neutral or slightly slower and were removed, retaining only the
+  0.746% faster master update. Layer-norm row partitions of 16, 32, and 64
+  measured 68.22us, 67.14us, and 67.33us in focused NCU; the tiny 32-partition
+  win changes reduction association and was removed rather than hidden in the
+  bundle. Grad-clip sumsq already reaches 96.49% DRAM throughput, so no edit
+  was attempted there.
+verification:
+  cargo fmt --all, cargo fmt --all -- --check, git diff --check,
+  cargo check -q -p rust-kernels-cuda, and the exact
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass. The ignored
+  f16_tc_matmul, f16_tc_matmul_tiled, f16_tc_matmul_fragments, eight Muon,
+  direct causal-attention backward, and full block-attention backward GPU
+  tests all pass serially on GPU0 after the final rebuild.
+gates:
+  Required 30-second screen:
+    target/runs/20260717_022433Z_fineweb_30s
+    completed_steps=76, train_elapsed_s=30.251, val_loss=6.492509.
+  Required 450-second sustained gate:
+    target/runs/20260717_022538Z_fineweb_450s
+    stdout: target/gates/20260717_readonly_ultra_bundle_450s.log
+    completed_steps=1098, train_elapsed_s=450.192, val_loss=5.019067.
+    All 22 high-fidelity samples are finite and nonzero. Every skip counter is
+    zero, grad norm ranges from 1.018159628 to 16.903268814, and every sample
+    retains batch 4 and sequence 2048.
+measured_effect:
+  Against the matched 30-second parent:
+    completed steps 75 -> 76 (+1.333%);
+    average step time 400.253333 -> 398.039474ms (-0.553%);
+    held-out val_loss 6.504412 -> 6.492509 (-0.183%).
+  Against the matched 450-second parent:
+    completed steps 1093 -> 1098 (+5, +0.457%);
+    average step time 411.806953 -> 410.010929ms (-0.436%);
+    held-out val_loss 5.021656 -> 5.019067 (-0.052%).
+decision:
+  Keep and promote. Reciprocal profiles clear the implementation floor, both
+  fixed-wall gates preserve the speed direction, held-out loss improves, and
+  sustained stability is clean. The next 0.5% threshold is 2.050055ms per
+  step, or 20.500546ms over a ten-step profile.
+```
+
+```text
+date: 2026-07-17
+commit: rejected uncommitted candidate, code reverted
+experiment: Eight-thread schedule-free Four-Six groups with fully coalesced pair loads.
+status: rejected_profile_gate
+change:
+  Replaced each four-thread group that loaded four FP32 values per lane with an
+  eight-thread group that loaded one aligned FP32 pair per lane. The launch
+  moved from 256 to 512 threads so both layouts retained 64 quantization groups
+  per block. The candidate reconstructed the former pairwise error summation
+  tree with xor shuffles and wrote one payload byte per lane.
+numerics:
+  A temporary focused GPU regression compared 129 groups, including a partial
+  final block, against the established four-thread Four-Six quantizer. FP4
+  bytes, local scales, and global scale matched bit-for-bit. Both focused Adam
+  schedule-free integration tests also passed.
+minimum_impact_gate:
+  The active floor is 20.590350ms per reciprocal ten-step profile. The accepted
+  baseline averages 4121.736974ms and the candidate averages 4122.012168ms, a
+  0.275194ms regression rather than a qualifying improvement.
+profiles:
+  Accepted baseline:
+    target/nsys/20260717_four_six_rows32_rebase_a.nsys-rep:
+      total 4118.537808ms; schedule-free Four-Six 50.688005ms.
+    target/nsys/20260717_four_six_rows32_rebase_b.nsys-rep:
+      total 4124.936140ms; schedule-free Four-Six 50.692870ms.
+  Candidate:
+    target/nsys/20260717_schedule_free_pair8_a.nsys-rep:
+      total 4119.125791ms; schedule-free Four-Six 50.735768ms.
+    target/nsys/20260717_schedule_free_pair8_b.nsys-rep:
+      total 4124.898545ms; schedule-free Four-Six 50.731755ms.
+verification:
+  cargo fmt --all and a fresh TMPDIR=$PWD/target/tmp cargo oxide build
+  --arch sm_120a pass. The temporary bitwise regression and both ignored Adam
+  GPU tests pass serially on GPU0. Both profiles contain 61428 launches.
+decision:
+  Reject before the 30-second and 450-second gates. The wider subgroup fixes
+  the theoretical load-sector underfill but adds enough subgroup work that the
+  target kernel regresses from 50.690438 to 50.733762ms/profile. Code and the
+  temporary test were reverted.
+```
+
+```text
+date: 2026-07-17
+commit: accepted local jj commit after full gate
 experiment: Fuse deferred Four-Six rebasing and double tiled Four-Six source rows.
 status: accepted_450s
 change:
