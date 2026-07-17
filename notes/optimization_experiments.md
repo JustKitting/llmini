@@ -49,6 +49,74 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-17
 commit: rejected working-copy experiment; source fully reverted
+experiment: Early upper-half Q/K learning-rate slowing with fixed step release.
+status: rejected_450s
+source:
+  https://arxiv.org/abs/2605.10504
+rationale:
+  Learning Less Is More reports that premature specialization of upper-layer
+  attention can hurt pretraining. Its principal intervention applies a 0.25
+  learning-rate multiplier only to Q and K in the upper half of the model
+  during early training, then releases those parameters. The paper reports
+  gains for standard single-branch FFNs and a 0.7B replication, making the
+  mechanism relevant to this model's ReLU-squared FFNs and 1B scale without
+  deleting or bypassing any model path.
+implementation:
+  Applied a 0.25 final-update learning-rate multiplier to Q and K weights and
+  biases in blocks 8 through 15 only. V, attention projections, KDA g/beta,
+  all lower layers, both MLP matrices, embeddings, ResFormer, NextLat, all 16
+  layers, FineWeb, Llama-2 tokenization, B4/S2048, and 8192 tokens per step
+  remained intact. Momentum, global clipping, Polar Express, NorMuon, SignMuon,
+  Adam moments, and schedule-free averaging were unchanged; only the selected
+  master-weight update and its decoupled weight decay used the multiplier.
+  The release was step-gated rather than wall-clock-gated: multiplier 0.25
+  through step 143, followed by a 48-step linear ramp to 1.0. This maps the
+  paper's fixed 3% release and 1% ramp from its 2.5B-token,
+  524288-token/update control to 4768 updates, so the schedule is independent
+  of the 450-second screening duration.
+correctness:
+  cargo fmt --all and cargo check --all-targets: pass.
+  cargo test --workspace --lib and cargo test --workspace --bins: pass before
+  the final host-dispatch cleanup; cargo check --all-targets passed again after
+  that refactor.
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+  Rebuilt-PTX GPU reference tests verified prefix-only learning-rate behavior
+  for Adam and both Polar and SignMuon final updates. Existing Adam averaging,
+  Q/K clipping, NorMuon variance reduction, retained-amax, and split versus
+  cooperative Muon regression tests also passed.
+bringup:
+  target/runs/20260717_155545Z_fineweb_30s
+  completed_steps=89, train_elapsed_s=30.109, val_loss=6.246370.
+  Both high-fidelity samples are finite and nonzero, every update/skip counter
+  is zero, and the exact 16-layer B4/S2048/8192-token configuration remains
+  intact. This run was used only to establish launchability, real updates, and
+  immediate numerical health. Its endpoint loss was not compared, ranked,
+  tuned against, or used in the keep/revert decision.
+gate:
+  target/runs/20260717_155636Z_fineweb_450s
+  completed_steps=1292, train_elapsed_s=450.066, val_loss=4.869989.
+  All 26 high-fidelity samples are finite and nonzero and every update/skip
+  counter is zero. Global gradient norm ranges from 0.818470955 to
+  14.571924210. Every sample retains batch 4, sequence 2048, and 8192 tokens
+  per step.
+measured_effect:
+  Against the accepted ResFormer/NorMuon control at 4.868333 / 1291 steps,
+  held-out loss increases by 0.001656 (+0.034016%). Average step time changes
+  from 348.697909 to 348.348297 ms, a statistically and practically marginal
+  0.100363% speed increase that is below the repo's 0.5% screening threshold.
+decision:
+  Reject and fully restore the accepted optimizer. The result is effectively
+  seed-noise neutral, but the candidate supplies neither a lower held-out loss
+  signal nor a meaningful throughput gain. The 450-second endpoint is the
+  rejection evidence; the healthy 30-second loss played no role. This test
+  rejects this paper-derived fixed-release schedule in the current optimizer
+  composition, not the broader attention-specialization mechanism or a future
+  adaptive release driven by a directly measured specialization metric.
+```
+
+```text
+date: 2026-07-17
+commit: rejected working-copy experiment; source fully reverted
 experiment: Muon²-F factorized preconditioning with three Polar Express iterations.
 status: rejected_450s
 source:
