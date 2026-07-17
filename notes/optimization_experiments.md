@@ -49,6 +49,63 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-17
 commit: rejected working-copy experiment; source fully reverted
+experiment: Token-half-life Adam beta2 with accepted local weight decay.
+status: rejected_450s
+source:
+  https://arxiv.org/abs/2507.07101
+  https://github.com/martin-marek/batch-size
+rationale:
+  The preceding coupled test changed both Adam beta2 and Adam-side weight
+  decay, so it did not isolate the small-batch paper's central claim: preserve
+  the second-moment half-life in training tokens when batch size changes.
+  Test that beta2 mapping alone while restoring the accepted, locally tuned
+  Adam weight decay of 0.005.
+implementation:
+  Changed only Adam beta2 from 0.95 to
+    0.95^(4/512) = 0.9995993514...
+  preserving the 14169835-token half-life of the paper's batch-512,
+  sequence-2048 GPT-3 baseline at the active batch-4, sequence-2048 setting.
+  Adam weight decay remained 0.005. Adam beta1/LR, Muon, NorMuon, SignMuon,
+  AMUSE, ResFormer, all 16 layers, NextLat, FineWeb, Llama-2 tokenization,
+  B4/S2048, and 8192 tokens per step were otherwise unchanged.
+verification:
+  A focused unit test recomputed 0.95^(4/512) and checked the stored f32 beta2
+  to within 1e-7: pass.
+  cargo fmt --all --check and git diff --check: pass.
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+bringup:
+  target/runs/20260717_144432Z_fineweb_30s
+  completed_steps=89, train_elapsed_s=30.221, val_loss=6.228426.
+  Both high-fidelity samples are finite and nonzero, every update/skip
+  counter is zero, and B4/S2048/8192 tokens per step remains intact. This was
+  only a launch, real-update, and immediate numerical-health smoke. Its
+  endpoint loss was not compared, ranked, tuned against, or used for the
+  keep/revert decision.
+gate:
+  target/runs/20260717_144516Z_fineweb_450s
+  completed_steps=1288, train_elapsed_s=450.107, val_loss=4.934059.
+  All 26 high-fidelity samples are finite and nonzero and every update/skip
+  counter is zero. Sampled loss ranges from 4.918959141 to 10.676921844 and
+  global gradient norm ranges from 0.711522400 to 14.571924210. Every sample
+  retains batch 4, sequence 2048, and 8192 tokens per step.
+measured_effect:
+  Against the accepted ResFormer/NorMuon control at 4.868333 / 1291 steps,
+  held-out loss regresses by 0.065726 (+1.350072%). The candidate completes
+  three fewer steps and processes 10551296 rather than 10575872 tokens, but
+  that -0.232378% exposure difference is far smaller than the quality loss.
+  Average step time moves from 348.697909 to 349.461957 ms (+0.219115%).
+decision:
+  Reject the beta2 token-half-life transplant and fully restore beta2=0.95.
+  The full 450-second endpoint is the rejection evidence; the healthy
+  30-second loss played no role. Together with the coupled run, this shows
+  that the paper's batch-512 Adam second-moment timescale does not transfer
+  into the current aggressively retuned Adam/Muon/NorMuon/AMUSE hybrid. It
+  does not reject the paper's result under its plain Adam recipe.
+```
+
+```text
+date: 2026-07-17
+commit: rejected working-copy experiment; source fully reverted
 experiment: Token-half-life Adam beta2 plus zero Adam-side weight decay.
 status: rejected_450s
 source:
