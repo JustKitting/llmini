@@ -64,7 +64,7 @@ pub(super) fn softmax_body(
 
     let mut key = tid;
     while key < params.seq_len {
-        let prob = if key <= query {
+        let prob = if params.key_is_visible(query, key) {
             exp_f32(score(scores, batch, head, query, key, ctx.params) - max_score) / denom
         } else {
             0.0
@@ -115,7 +115,16 @@ pub(super) fn softmax_f16_body(
         }
     }
 
+    let first_key = params.first_visible_key(query);
     let mut key = tid;
+    while key < first_key {
+        unsafe {
+            *probs.get_unchecked_mut(score_index(batch, head, query, key, ctx.params)) = 0;
+        }
+        key += TC_FORWARD_THREADS_PER_BLOCK;
+    }
+
+    let mut key = first_key + tid;
     while key <= query {
         let prob = exp_f32(score(scores, batch, head, query, key, ctx.params) - max_score) / denom;
         unsafe {
@@ -156,7 +165,7 @@ fn query_max(
     reduce: &mut SharedArray<f32, WARPS_PER_BLOCK>,
 ) -> f32 {
     let mut local = NEG_INFINITY;
-    let mut key = ctx.tid;
+    let mut key = ctx.params.first_visible_key(ctx.query) + ctx.tid;
     while key <= ctx.query {
         local = max_f32(
             local,
@@ -174,7 +183,7 @@ fn query_denom(
     reduce: &mut SharedArray<f32, WARPS_PER_BLOCK>,
 ) -> f32 {
     let mut local = 0.0;
-    let mut key = ctx.tid;
+    let mut key = ctx.params.first_visible_key(ctx.query) + ctx.tid;
     while key <= ctx.query {
         local +=
             exp_f32(score(scores, ctx.batch, ctx.head, ctx.query, key, ctx.params) - max_score);

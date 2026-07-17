@@ -68,6 +68,7 @@ fn materialized_tc_backward_matches_reference() -> Result<(), Box<dyn Error>> {
         qkv_dim: shape::QKV_DIM as u32,
         head_count: shape::HEADS as u32,
         head_dim: shape::HEAD_DIM as u32,
+        attention_window: shape::TOKEN_COUNT as u32,
         qk_norm_offset: 0,
     })?;
 
@@ -119,6 +120,7 @@ fn materialized_tc_backward_matches_reference() -> Result<(), Box<dyn Error>> {
         qkv_dim: shape::QKV_DIM as u32,
         head_count: shape::HEADS as u32,
         head_dim: shape::HEAD_DIM as u32,
+        attention_window: shape::TOKEN_COUNT as u32,
         qk_norm_offset: 0,
     })?;
     common::assert_slice_close(&reuse_grad.to_host_vec(&stream)?, &recomputed, 1.0e-6);

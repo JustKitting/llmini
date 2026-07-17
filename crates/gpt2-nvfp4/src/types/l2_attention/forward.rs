@@ -7,8 +7,8 @@ use rust_kernels_cuda::nvfp4_tma_matmul::{
 };
 
 use super::tensors::AttentionForwardArgs;
-use crate::AttentionDims;
 use crate::types::HiddenStateDevice;
+use crate::{AttentionDims, GPT2_FULL_ATTENTION_WINDOW};
 
 pub(super) fn forward<'a, 'scratch>(
     args: AttentionForwardArgs<'a, 'scratch>,
@@ -161,6 +161,11 @@ pub(super) fn forward<'a, 'scratch>(
         qkv_dim: dims.qkv_dim,
         head_count: dims.head_count,
         head_dim: dims.head_dim,
+        attention_window: if args.use_full_attention {
+            GPT2_FULL_ATTENTION_WINDOW as u32
+        } else {
+            hidden.seq_len
+        },
     };
     if args.use_full_attention {
         args.module.causal_attention_tc(attention_args)?;

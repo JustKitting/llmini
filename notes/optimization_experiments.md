@@ -48,6 +48,65 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 
 ```text
 date: 2026-07-17
+commit: passing source candidate; committed after the required gate
+experiment: Backward-aware block-regular support in the four full-attention layers.
+status: accepted_450s; active_baseline
+sources:
+  https://medium.com/@larry36d/partial-model-freezing-and-optimizing-for-the-backwards-pass-df5b0713f219
+  https://arxiv.org/abs/2502.11089
+rationale:
+  Apply the article's general layout principle at the highest-cost nonlinear
+  boundary: choose attention support that can remove work from the expensive
+  backward graph, rather than considering only forward softmax cost. The four
+  full-attention cores and their adjacent matrix products account for about
+  42.3ms/step in the accepted profile, including about 25.5ms in backward.
+  A 1024-token causal support retains 75% of the 2048-token causal pairs and
+  has a 25% attention-tile reduction ceiling. The other twelve KDA layers
+  retain global recurrent sequence mixing, and no model section or parameter
+  is frozen, bypassed, or removed.
+implementation:
+  Add a build-time GPT2_FULL_ATTENTION_WINDOW shape parameter, constrained to
+  128-token alignment and logged in run_info. Full-attention softmax now
+  normalizes only over the trailing causal window and materializes exact zero
+  probabilities outside it. Saved-probability and recomputed-probability
+  backward paths use the identical support. KDA remains full-sequence and is
+  passed its existing seq_len window.
+correctness:
+  cargo fmt --all, cargo check --workspace, and git diff --check: pass.
+  cargo test -p rust-kernels-cuda
+    window_keeps_only_the_trailing_causal_keys --lib: pass.
+  GPT2_FULL_ATTENTION_WINDOW=1024 TMPDIR=$PWD/target/tmp
+    cargo oxide build --arch sm_120a: pass.
+bringup:
+  target/runs/20260717_233517Z_fineweb_30s
+  completed_steps=94, train_elapsed_s=30.124,
+  val_loss=6.141038.
+  This was launch and numerical-health evidence only.
+gate:
+  target/runs/20260717_233557Z_fineweb_450s
+  completed_steps=1363, train_elapsed_s=450.094,
+  val_loss=4.842982769012451.
+  The run used the fixed 1B/B4/S2048 FineWeb/Llama-2 configuration and
+  high-fidelity TRAIN_LOG_INTERVAL=50. Gradient norm remained finite and
+  ended at 1.434925318. No instability or update-skip counter fired.
+measured_effect:
+  Against the detached-KDA baseline at 4.849991321563721 / 1350 steps /
+  333.359259ms per step, validation loss improved by 0.007008553
+  (-0.144506%). Candidate step time was 330.223037ms, a 3.136222ms
+  (-0.940793%) improvement, and the fixed-time gate completed 13 more steps.
+  This is a passing loss result before the dense attention GEMMs skip any
+  out-of-window tiles; the current speed change comes from the shorter
+  nonlinear reductions and may include ordinary run variance.
+decision:
+  Accept window=1024 as the active baseline and persist it in
+  notes/sweep_baseline.env. Next, specialize the six adjacent attention
+  tensor-core products so QK/dS skip unsupported CTAs and the P/dS reduction
+  loops visit only the supported window. Re-run the 30-second health and
+  450-second quality gates before promoting that native layout.
+```
+
+```text
+date: 2026-07-17
 commit: rejected working-copy experiment; source fully reverted
 experiment: Backward-aware dual-layout 4:8 sparsification at the ReLU2 boundary.
 status: rejected_450s_emulation; native_direction_numerically_plausible

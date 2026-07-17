@@ -53,6 +53,7 @@ pub struct CausalAttentionBackwardTcArgs<'a, 'scratch, 'out> {
     pub qkv_dim: u32,
     pub head_count: u32,
     pub head_dim: u32,
+    pub attention_window: u32,
     pub qk_norm_offset: u32,
 }
 
@@ -67,6 +68,7 @@ impl CausalAttentionBackwardTcArgs<'_, '_, '_> {
             self.head_count,
             self.head_dim,
         )
+        .with_attention_window(self.attention_window)
     }
 }
 

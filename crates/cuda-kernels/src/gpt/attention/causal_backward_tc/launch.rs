@@ -41,6 +41,7 @@ impl AttentionModule {
             qkv_dim: _,
             head_count,
             head_dim,
+            attention_window: _,
             qk_norm_offset,
         } = args;
         let batch_head = batch_size * head_count;

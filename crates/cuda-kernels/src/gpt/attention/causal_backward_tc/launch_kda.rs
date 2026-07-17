@@ -66,6 +66,7 @@ impl AttentionModule {
             qkv_dim: _,
             head_count,
             head_dim,
+            attention_window: _,
             qk_norm_offset,
         } = args;
         let dims = kda_launch::LaunchDims::new(

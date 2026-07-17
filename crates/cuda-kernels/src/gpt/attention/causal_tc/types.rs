@@ -35,6 +35,7 @@ pub struct CausalAttentionTcArgs<'a, 'scratch, 'out> {
     pub qkv_dim: u32,
     pub head_count: u32,
     pub head_dim: u32,
+    pub attention_window: u32,
 }
 
 impl CausalAttentionTcArgs<'_, '_, '_> {
@@ -48,6 +49,7 @@ impl CausalAttentionTcArgs<'_, '_, '_> {
             self.head_count,
             self.head_dim,
         )
+        .with_attention_window(self.attention_window)
     }
 }
 

@@ -2,7 +2,7 @@ use cuda_core::DriverError;
 use rust_kernels_cuda::attention::CausalAttentionBackwardTcArgs;
 
 use super::types::AttentionCoreBackwardArgs;
-use crate::AttentionDims;
+use crate::{AttentionDims, GPT2_FULL_ATTENTION_WINDOW};
 
 pub fn causal_attention_backward(
     args: AttentionCoreBackwardArgs<'_, '_, '_>,
@@ -37,6 +37,11 @@ pub fn causal_attention_backward(
         qkv_dim: dims.qkv_dim,
         head_count: dims.head_count,
         head_dim: dims.head_dim,
+        attention_window: if args.use_full_attention {
+            GPT2_FULL_ATTENTION_WINDOW as u32
+        } else {
+            args.saved.seq_len
+        },
         qk_norm_offset: (args.block_index as u32) * 2 * dims.head_count,
     };
     if args.use_full_attention {

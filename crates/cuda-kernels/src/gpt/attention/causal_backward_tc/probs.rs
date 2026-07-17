@@ -29,6 +29,13 @@ pub(super) fn prob_ds_body(
     if key > query {
         return;
     }
+    if !params.key_is_visible(query, key) {
+        unsafe {
+            *p.get_unchecked_mut(index as usize) = 0.0;
+            *ds.get_unchecked_mut(index as usize) = 0.0;
+        }
+        return;
+    }
     if row >= params.row_count {
         unsafe {
             *p.get_unchecked_mut(index as usize) = 0.0;
@@ -69,6 +76,13 @@ pub(super) fn prob_ds_f16_body(
     let head = batch_head - batch * params.head_count;
     let row = batch * params.seq_len + query;
     if key > query {
+        return;
+    }
+    if !params.key_is_visible(query, key) {
+        unsafe {
+            *p.get_unchecked_mut(index as usize) = 0;
+            *ds.get_unchecked_mut(index as usize) = 0;
+        }
         return;
     }
     if row >= params.row_count {
@@ -112,7 +126,7 @@ pub(super) fn ds_from_probs_f16_body(
     let batch = batch_head / params.head_count;
     let head = batch_head - batch * params.head_count;
     let row = batch * params.seq_len + query;
-    let grad = if row < params.row_count {
+    let grad = if row < params.row_count && params.key_is_visible(query, key) {
         let lse_index = log_sum_exp_index(batch, query, head, &params);
         cvt_f32_f16(p[index as usize]) * (dot[index as usize] - softmax_d[lse_index])
     } else {
