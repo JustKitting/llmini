@@ -48,6 +48,87 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 
 ```text
 date: 2026-07-17
+commit: rejected working-copy experiment; source fully reverted
+experiment: Exact-statistics BHyT at both transformer pre-norm sites.
+status: rejected_450s
+source:
+  https://arxiv.org/abs/2601.09719
+  https://github.com/MLAI-Yonsei/BHyT
+rationale:
+  Bounded Hyperbolic Tanh is a 2026 normalization replacement evaluated from
+  374M through 3B parameters. The paper reports lower pretraining evaluation
+  loss than RMSNorm, Peri-LN, LNS, and DyT, including 3.107 versus 3.139 for
+  LNS in its short-budget Llama-3B comparison. Its selected BHyT configuration
+  uses lambda=2 before attention, lambda=1 before the MLP, and kappa=10.
+  Test that substantive replacement against the accepted LNS baseline.
+  The paper's efficient second-statistic approximation assumes approximately
+  uniform standard attention and derives its correction from V and O
+  projection weights. This model uses KDA in 12 of 16 layers, so applying that
+  approximation unchanged would not be paper-faithful. This candidate instead
+  computed exact RMS statistics at both sites, matching the paper's BHyT-star
+  ablation rather than inventing a KDA correction.
+implementation:
+  Replaced both ordinary transformer pre-LayerNorm operations with
+    y = gamma * tanh(input_scale * x / rms(x)) + beta
+  using exact per-token mean-square statistics, epsilon 1e-6, input_scale 0.2
+  before attention, and input_scale 0.1 before the MLP. These scales are the
+  paper-selected lambda/kappa values. The GPT affine beta remained trainable;
+  the selected lambda values were fixed in this tested adaptation rather than
+  adding the official implementation's optional learned scalar.
+  Implemented the exact backward through tanh and RMS scaling for input,
+  gamma, and beta gradients. The mode is carried through ordinary, direct
+  residual-add, amax, FP16 saved-residual, FP32 reference, and tiled FP16
+  parameter-gradient paths. Final model LayerNorm and the separate NextLat
+  LayerNorm remained unchanged.
+  ResFormer, NextLat, every attention and MLP branch, all 16 layers, d=2048,
+  32 heads, FineWeb, Llama-2 tokenization, B4/S2048, and 8192 tokens per step
+  remained intact.
+correctness:
+  cargo fmt --all --check, git diff --check,
+  cargo check --workspace --lib --bins, and
+  cargo test --workspace --lib --bins: pass; 51 library/binary tests pass.
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+  Eleven rebuilt-PTX GPU tests pass. Five new BHyT references cover fused
+  forward output/RMS statistics/amax, FP32 input backward, FP16 input backward
+  with direct residual addition, FP32 affine-parameter gradients, and the
+  tiled FP16 parameter-gradient path. Six retained LayerNorm references verify
+  that final-model and NextLat normalization behavior remains unchanged.
+bringup:
+  target/runs/20260717_183935Z_fineweb_30s
+  completed_steps=89, train_elapsed_s=30.017, val_loss=7.220311.
+  Both high-fidelity samples are finite and nonzero, Adam and Muon learning
+  rates are nonzero, every update/skip counter is zero, and
+  B4/S2048/8192 tokens per step remain intact. This run established only
+  launchability, real updates, and immediate numerical health. Its endpoint
+  loss was ignored and was not compared, ranked, tuned against, or used in
+  the rejection decision.
+gate:
+  target/runs/20260717_184034Z_fineweb_450s
+  completed_steps=1292, train_elapsed_s=450.126,
+  val_loss=5.0312299728393555.
+  All 26 high-fidelity samples are finite and nonzero and every update/skip
+  counter is zero. Sampled training loss ranges from 10.591273308 down to
+  4.926887989 and ends at 5.046400547. Global gradient norm remains finite,
+  ranges from 0.628965437 to 23.166986465, and ends at 0.751415730. Every
+  sample retains batch 4, sequence 2048, and 8192 tokens per step.
+measured_effect:
+  Against the accepted LNS baseline at 4.8560075759887695 / 1291 steps, held-
+  out loss regresses by 0.175222396850586 (+3.608363334%). The candidate
+  completes one additional step and processes 10584064 rather than 10575872
+  tokens. Average step time is effectively unchanged:
+  348.668474 ms baseline versus 348.394737 ms candidate
+  (-0.273737 ms, -0.078509%).
+decision:
+  Reject and fully restore the accepted LNS implementation. The sustained run
+  is numerically stable, but its matched held-out quality is materially worse
+  despite equal training exposure. This result rejects the tested fixed-lambda
+  exact-statistics adaptation; it does not validate blindly applying the
+  paper's standard-attention variance approximation to KDA, nor does it test
+  the official learned-lambda variant. The 30-second loss played no role.
+```
+
+```text
+date: 2026-07-17
 commit: accepted working-copy experiment after full gate
 experiment: LayerNorm Scaling without depth-scaled residual initialization.
 status: accepted_450s
