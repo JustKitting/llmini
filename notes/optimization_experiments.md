@@ -46,6 +46,93 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-17
 commit: accepted local jj commit after full gate
+experiment: Fuse deferred Four-Six rebasing and double tiled Four-Six source rows.
+status: accepted_450s
+change:
+  The deferred-bound Muon path now writes its rebased B global scale from the
+  existing bounded Four-Six quantizer CTA instead of launching a separate
+  one-thread rebase kernel. The paired and exact-transpose Four-Six producers
+  use a 32x64 source tile instead of 16x64. Four-thread subgroup ownership is
+  permuted so shared loads are conflict-free, and each warp owns both adjacent
+  16-value source-row groups for a transposed output row. The active packed
+  paths therefore halve grid.y and write 16 contiguous FP4 bytes per output
+  row. The existing 16-row bounded-transpose path remains available for its
+  smaller supported shapes.
+numerics:
+  Quantization values, four-vs-six error comparison, scale selection, payload
+  layout, random signs, reduction order, and optimizer math are unchanged.
+  The paired regression test compares the former quantizer-plus-rebase result
+  with the fused result bit-for-bit. All focused GPU tests pass, and the full
+  fixed-wall run remains finite and nonzero with no skipped updates.
+memory:
+  Persistent allocations and temporary capacities are unchanged. The active
+  tiled kernels use 8.32 KiB static shared memory per CTA instead of 4.16 KiB;
+  achieved occupancy remains 90.82%. No peak-VRAM reduction is claimed.
+minimum_impact_gate:
+  The accepted-parent reciprocal profiles average 4147.648656ms and the
+  combined candidate profiles average 4121.736974ms over the same ten steps,
+  saving 25.911682ms/profile, 2.591168ms/step, or 0.625%. This clears the
+  predeclared 20.826688ms/profile floor. The paired tiled producer falls from
+  149.865116 to 144.232978ms/profile, and the exact tiled transpose producer
+  falls from 98.399790 to 84.363996ms/profile. Launch count falls from 64778
+  to 61428 by removing exactly 3350 standalone rebase launches.
+profiles:
+  Accepted parent:
+    target/nsys/20260717_readonly_linear3_ms_eden_a.nsys-rep:
+      total 4144.515325ms; pair 149.753616ms; transpose 98.364306ms.
+    target/nsys/20260717_readonly_linear3_ms_eden_b.nsys-rep:
+      total 4150.781987ms; pair 149.976616ms; transpose 98.435274ms.
+  Combined candidate:
+    target/nsys/20260717_four_six_rows32_rebase_a.nsys-rep:
+      total 4118.537808ms; pair 144.075494ms; transpose 84.305927ms.
+    target/nsys/20260717_four_six_rows32_rebase_b.nsys-rep:
+      total 4124.936140ms; pair 144.390461ms; transpose 84.422065ms.
+hardware_counters:
+  target/ncu/20260717_four_six_pair_current.ncu-rep is the former 16x64
+  producer, and target/ncu/20260717_four_six_rows32_pair.ncu-rep is the 32x64
+  candidate. The representative grid moves from 64x256 to 64x128 while
+  duration moves 57.57us -> 57.22us. The former 1074970 shared-load bank
+  conflicts disappear, global-store sector utilization improves from 9.6 to
+  12.0 bytes, registers move 38 -> 40 per thread, static shared memory moves
+  4.16 -> 8.32 KiB, and achieved occupancy moves 92.57% -> 90.82%.
+explored_subcandidates:
+  Padding the 16-row shared stride from 65 to 66 did not address same-row
+  conflicts. target/nsys/20260717_four_six_stride66_rebase_{a,b}.nsys-rep
+  measured 4140.669986/4147.683515ms total, only 3.471905ms/profile faster
+  than the parent and slower than fusion alone, so it was removed. A 16-row
+  ownership-only permutation measured 4135.400855/4146.092250ms total in
+  target/nsys/20260717_four_six_permute_rebase_{a,b}.nsys-rep, also below the
+  whole-step floor. The accepted 32-row design changes output-store geometry
+  in addition to removing shared-load conflicts.
+verification:
+  cargo fmt --all, git diff --check, cargo check --workspace, and a fresh
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a pass. All ten
+  ignored nvfp4_quant GPU tests and all eleven ignored projection_tma GPU
+  tests pass serially on GPU0. The 450-second run contains 22 high-fidelity
+  samples. Loss ranges 5.080335140..10.862103462 and grad norm
+  1.046814680..16.870216370; finite and nonzero are always one, every skip
+  metric is zero, batch is 4, sequence length is 2048, and tokens per step are
+  8192.
+gates:
+  30s target/runs/20260717_012419Z_fineweb_30s:
+    heldout val_loss=6.504412, completed_steps=75, train_elapsed_s=30.019.
+    Control is 6.501903 / 75 / 30.244; loss moves +0.039% while average step
+    time improves 0.744%.
+  450s target/runs/20260717_012528Z_fineweb_450s:
+    heldout val_loss=5.021656, completed_steps=1093, train_elapsed_s=450.105.
+    Control is 5.025898 / 1084 / 450.067. Loss improves 0.084%, completed
+    steps increase by nine (+0.830%), and average step time falls from
+    415.190959 to 411.806953ms (-0.815%).
+decision:
+  Accept, promote, and commit. The combined batch clears the minimum profile
+  floor, improves held-out loss, and completes nine more full training steps
+  without numerical or runtime instability. Promote this gate in
+  notes/sweep_baseline.env.
+```
+
+```text
+date: 2026-07-17
+commit: accepted local jj commit after full gate
 experiment: Route immutable Linear3 and MS-EDEN FP32 operands through the read-only cache path.
 status: accepted_450s
 change:

@@ -5,7 +5,10 @@ use super::args::{
     Nvfp4QuantRowwiseDerivedAmaxArgs, Nvfp4QuantTransposePaddedArgs, RowAmaxArgs,
 };
 use super::launcher::Nvfp4QuantModule;
-use super::shape::{four_six_grid_config, four_six_rowwise_pow2, four_six_transpose_tiled_config};
+use super::shape::{
+    four_six_bounded_transpose_tiled_config, four_six_grid_config, four_six_rowwise_pow2,
+    four_six_transpose_tiled_config,
+};
 use crate::launch::grid_x_config;
 use crate::nvfp4_tma_matmul::cute::Sm120ScaleLayout;
 
@@ -126,7 +129,7 @@ impl Nvfp4QuantModule {
         args: Nvfp4QuantPairTransposeExactArgs<'_, '_>,
     ) -> Result<(), DriverError> {
         assert!(args.source_rows.is_power_of_two());
-        assert!(args.source_rows.is_multiple_of(16));
+        assert!(args.source_rows.is_multiple_of(32));
         assert!(args.source_cols.is_multiple_of(64));
         self.four_six
             .fp32_pair_to_nvfp4_four_six_exact_pow2_tiled_kernel(
@@ -224,6 +227,34 @@ impl Nvfp4QuantModule {
         self.launch_fp32_to_nvfp4_four_six_exact_bounded_amax_packed_scales(args, true)
     }
 
+    pub fn fp32_to_nvfp4_four_six_exact_lazy_bounded_amax_packed_scales_rebase(
+        &self,
+        args: Nvfp4QuantPaddedArgs<'_, '_>,
+        rebase_original_amax: &DeviceBuffer<f32>,
+        rebase_out_global_scale: &mut DeviceBuffer<f32>,
+    ) -> Result<(), DriverError> {
+        assert_eq!(args.rows, args.padded_rows);
+        assert_eq!(args.cols, args.padded_cols);
+        assert!(args.rows.is_multiple_of(Sm120ScaleLayout::MN_BLOCK));
+        assert!(args.cols.is_multiple_of(Sm120ScaleLayout::K_ATOM));
+        assert!(args.out_scales.len() >= Sm120ScaleLayout::packed_len(args.rows, args.cols));
+        let elements = args.rows * args.cols;
+        self.four_six
+            .fp32_to_nvfp4_four_six_exact_lazy_bounded_amax_packed_scales_rebase_kernel(
+                args.stream,
+                four_six_grid_config(elements / 16),
+                args.x,
+                args.amax,
+                rebase_original_amax,
+                args.out_fp4,
+                args.out_scales,
+                args.out_global_scale,
+                rebase_out_global_scale,
+                args.rows,
+                args.cols,
+            )
+    }
+
     fn launch_fp32_to_nvfp4_four_six_exact_bounded_amax(
         &self,
         args: Nvfp4QuantPaddedArgs<'_, '_>,
@@ -280,7 +311,7 @@ impl Nvfp4QuantModule {
         assert!(padded_elements.is_multiple_of(16));
         if args.source_cols == args.padded_rows && args.source_rows == args.padded_cols {
             if args.source_rows.is_power_of_two()
-                && args.source_rows.is_multiple_of(16)
+                && args.source_rows.is_multiple_of(32)
                 && args.source_cols.is_multiple_of(64)
             {
                 return self
@@ -413,7 +444,7 @@ impl Nvfp4QuantModule {
         self.four_six
             .fp32_transpose_to_nvfp4_four_six_exact_pow2_tiled_sqrt_bounded_amax_kernel(
                 args.stream,
-                four_six_transpose_tiled_config(args.source_rows, args.source_cols),
+                four_six_bounded_transpose_tiled_config(args.source_rows, args.source_cols),
                 args.x,
                 args.amax,
                 sqrt_bound_amax,

@@ -272,14 +272,7 @@ fn run_tma_polar_iteration(
         polar_rows,
         defer_bounds,
     )?;
-    if defer_bounds {
-        runtime.quant.rebase_four_six_global_scale_sqrt_bound(
-            stream,
-            &*tma.a.amax,
-            &*tma.bound_amax,
-            tma.b.global_scale,
-        )?;
-    } else {
+    if !defer_bounds {
         prepare_tma_b_sqrt_bounded_transposed(
             stream,
             runtime,
@@ -598,7 +591,11 @@ fn prepare_tma_a_padded(
     if defer_bound {
         runtime
             .quant
-            .fp32_to_nvfp4_four_six_exact_lazy_bounded_amax_packed_scales(args)
+            .fp32_to_nvfp4_four_six_exact_lazy_bounded_amax_packed_scales_rebase(
+                args,
+                &*tma.a.amax,
+                tma.b.global_scale,
+            )
     } else {
         runtime
             .quant

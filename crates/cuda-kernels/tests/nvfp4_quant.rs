@@ -595,7 +595,7 @@ fn direct_tma_scale_layout_quantizers_match_logical_scale_pack() -> Result<(), B
 #[test]
 fn paired_four_six_exact_matches_independent_layouts_and_lazy_bound() -> Result<(), Box<dyn Error>>
 {
-    const ROWS: usize = 32;
+    const ROWS: usize = 128;
     const COLS: usize = 128;
     let x = (0..ROWS * COLS)
         .map(|index| {
@@ -739,6 +739,66 @@ fn paired_four_six_exact_matches_independent_layouts_and_lazy_bound() -> Result<
     assert_eq!(
         transpose_global.to_host_vec(&stream)?,
         lazy_global.to_host_vec(&stream)?
+    );
+
+    let mut reference_bound_fp4 = DeviceBuffer::<u8>::zeroed(&stream, x.len() / 2)?;
+    let mut reference_bound_scales = DeviceBuffer::<u8>::zeroed(&stream, x.len() / 16)?;
+    let mut reference_bound_global = DeviceBuffer::<f32>::zeroed(&stream, 1)?;
+    let mut reference_rebased_global = DeviceBuffer::<f32>::zeroed(&stream, 1)?;
+    module.fp32_to_nvfp4_four_six_exact_lazy_bounded_amax_packed_scales(Nvfp4QuantPaddedArgs {
+        stream: &stream,
+        x: &x_dev,
+        amax: &sqrt_bound_dev,
+        out_fp4: &mut reference_bound_fp4,
+        out_scales: &mut reference_bound_scales,
+        out_global_scale: &mut reference_bound_global,
+        rows: ROWS as u32,
+        cols: COLS as u32,
+        padded_rows: ROWS as u32,
+        padded_cols: COLS as u32,
+    })?;
+    module.rebase_four_six_global_scale_sqrt_bound(
+        &stream,
+        &amax_dev,
+        &sqrt_bound_dev,
+        &mut reference_rebased_global,
+    )?;
+
+    let mut fused_bound_fp4 = DeviceBuffer::<u8>::zeroed(&stream, x.len() / 2)?;
+    let mut fused_bound_scales = DeviceBuffer::<u8>::zeroed(&stream, x.len() / 16)?;
+    let mut fused_bound_global = DeviceBuffer::<f32>::zeroed(&stream, 1)?;
+    let mut fused_rebased_global = DeviceBuffer::<f32>::zeroed(&stream, 1)?;
+    module.fp32_to_nvfp4_four_six_exact_lazy_bounded_amax_packed_scales_rebase(
+        Nvfp4QuantPaddedArgs {
+            stream: &stream,
+            x: &x_dev,
+            amax: &sqrt_bound_dev,
+            out_fp4: &mut fused_bound_fp4,
+            out_scales: &mut fused_bound_scales,
+            out_global_scale: &mut fused_bound_global,
+            rows: ROWS as u32,
+            cols: COLS as u32,
+            padded_rows: ROWS as u32,
+            padded_cols: COLS as u32,
+        },
+        &amax_dev,
+        &mut fused_rebased_global,
+    )?;
+    assert_eq!(
+        reference_bound_fp4.to_host_vec(&stream)?,
+        fused_bound_fp4.to_host_vec(&stream)?
+    );
+    assert_eq!(
+        reference_bound_scales.to_host_vec(&stream)?,
+        fused_bound_scales.to_host_vec(&stream)?
+    );
+    assert_eq!(
+        reference_bound_global.to_host_vec(&stream)?,
+        fused_bound_global.to_host_vec(&stream)?
+    );
+    assert_eq!(
+        reference_rebased_global.to_host_vec(&stream)?,
+        fused_rebased_global.to_host_vec(&stream)?
     );
     Ok(())
 }

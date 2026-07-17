@@ -45,6 +45,13 @@ pub(in crate::nvfp4_quant) fn four_six_transpose_tiled_config(
     source_rows: u32,
     source_cols: u32,
 ) -> LaunchConfig {
+    crate::launch::launch_config((source_cols / 64, source_rows / 32, 1), THREADS_PER_BLOCK)
+}
+
+pub(in crate::nvfp4_quant) fn four_six_bounded_transpose_tiled_config(
+    source_rows: u32,
+    source_cols: u32,
+) -> LaunchConfig {
     crate::launch::launch_config((source_cols / 64, source_rows / 16, 1), THREADS_PER_BLOCK)
 }
 

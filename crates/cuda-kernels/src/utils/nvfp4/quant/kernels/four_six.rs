@@ -9,13 +9,18 @@ use crate::warp_reduce::thread_lane_warp;
 #[path = "four_six/helpers.rs"]
 pub(crate) mod helpers;
 
-const TRANSPOSE_TILE_ROWS: usize = 16;
+const TRANSPOSE_TILE_ROWS: usize = 32;
 const TRANSPOSE_TILE_COLS: usize = 64;
 const TRANSPOSE_TILE_STRIDE: usize = TRANSPOSE_TILE_COLS + 1;
 const TRANSPOSE_TILE_ELEMS: usize = TRANSPOSE_TILE_ROWS * TRANSPOSE_TILE_STRIDE;
 const TRANSPOSE_TILE_LOAD_ELEMS: usize = TRANSPOSE_TILE_ROWS * TRANSPOSE_TILE_COLS;
 const TRANSPOSE_GROUPS_PER_ROUND: usize = 256 / helpers::GROUP_THREADS;
 const TRANSPOSE_TILE_GROUPS: usize = TRANSPOSE_TILE_LOAD_ELEMS / helpers::GROUP_SIZE;
+const BOUNDED_TRANSPOSE_TILE_ROWS: usize = 16;
+const BOUNDED_TRANSPOSE_TILE_STRIDE: usize = TRANSPOSE_TILE_COLS + 1;
+const BOUNDED_TRANSPOSE_TILE_ELEMS: usize =
+    BOUNDED_TRANSPOSE_TILE_ROWS * BOUNDED_TRANSPOSE_TILE_STRIDE;
+const BOUNDED_TRANSPOSE_TILE_LOAD_ELEMS: usize = BOUNDED_TRANSPOSE_TILE_ROWS * TRANSPOSE_TILE_COLS;
 const ROWWISE_WARPS_PER_BLOCK: usize = 8;
 const ROWWISE_GROUPS_PER_BLOCK: u32 = 256 / helpers::GROUP_THREADS as u32;
 
@@ -50,6 +55,28 @@ pub(crate) mod module {
             mask,
             leader,
         }
+    }
+
+    #[inline(always)]
+    fn tiled_row_group_without_bank_conflicts(linear_group: usize) -> usize {
+        let tile_row_chunk = linear_group / TRANSPOSE_GROUPS_PER_ROUND;
+        let local_group = linear_group & (TRANSPOSE_GROUPS_PER_ROUND - 1);
+        let warp = local_group / 8;
+        let group_in_warp = local_group & 7;
+        let tile_row = tile_row_chunk * 16 + (warp / 2) * 4 + group_in_warp / 2;
+        let group_in_row = (warp & 1) * 2 + (group_in_warp & 1);
+        tile_row * (TRANSPOSE_TILE_COLS / GROUP_SIZE) + group_in_row
+    }
+
+    #[inline(always)]
+    fn tiled_transpose_group_without_bank_conflicts(linear_group: usize) -> usize {
+        let col_half = linear_group / TRANSPOSE_GROUPS_PER_ROUND;
+        let local_group = linear_group & (TRANSPOSE_GROUPS_PER_ROUND - 1);
+        let warp = local_group / 8;
+        let group_in_warp = local_group & 7;
+        let tile_row_group = group_in_warp & 1;
+        let col = col_half * 32 + warp * 4 + group_in_warp / 2;
+        tile_row_group * TRANSPOSE_TILE_COLS + col
     }
 
     #[kernel]
@@ -315,8 +342,9 @@ pub(crate) mod module {
 
         let groups_per_source_row = source_cols_usize / GROUP_SIZE;
         let groups_per_tile_row = TRANSPOSE_TILE_COLS / GROUP_SIZE;
-        let mut row_group = thread_group;
-        while row_group < TRANSPOSE_TILE_GROUPS {
+        let mut linear_row_group = thread_group;
+        while linear_row_group < TRANSPOSE_TILE_GROUPS {
+            let row_group = tiled_row_group_without_bank_conflicts(linear_row_group);
             let tile_row = row_group / groups_per_tile_row;
             let row_col = (row_group - tile_row * groups_per_tile_row) * GROUP_SIZE;
             let lane_col = row_col + 4 * lane;
@@ -345,18 +373,23 @@ pub(crate) mod module {
                 }
                 store_four_six_payload_word(out_fp4.as_mut_ptr(), base, lane, payload_word);
             }
-            row_group += TRANSPOSE_GROUPS_PER_ROUND;
+            linear_row_group += TRANSPOSE_GROUPS_PER_ROUND;
         }
 
         let groups_per_output_row = source_rows as usize / GROUP_SIZE;
-        let group_in_output_row = source_row_base / GROUP_SIZE;
-        let mut transpose_col = thread_group;
-        while transpose_col < TRANSPOSE_TILE_COLS {
-            let lane_row = 4 * lane;
+        let group_in_output_row_base = source_row_base / GROUP_SIZE;
+        let mut linear_transpose_group = thread_group;
+        while linear_transpose_group < TRANSPOSE_TILE_GROUPS {
+            let transpose_group =
+                tiled_transpose_group_without_bank_conflicts(linear_transpose_group);
+            let tile_row_group = transpose_group / TRANSPOSE_TILE_COLS;
+            let transpose_col = transpose_group - tile_row_group * TRANSPOSE_TILE_COLS;
+            let lane_row = tile_row_group * GROUP_SIZE + 4 * lane;
             let value_0 = unsafe { TILE[lane_row * TRANSPOSE_TILE_STRIDE + transpose_col] };
             let value_1 = unsafe { TILE[(lane_row + 1) * TRANSPOSE_TILE_STRIDE + transpose_col] };
             let value_2 = unsafe { TILE[(lane_row + 2) * TRANSPOSE_TILE_STRIDE + transpose_col] };
             let value_3 = unsafe { TILE[(lane_row + 3) * TRANSPOSE_TILE_STRIDE + transpose_col] };
+            let group_in_output_row = group_in_output_row_base + tile_row_group;
             let group =
                 (source_col_base + transpose_col) * groups_per_output_row + group_in_output_row;
             let base = group * GROUP_SIZE;
@@ -382,7 +415,7 @@ pub(crate) mod module {
                     payload_word,
                 );
             }
-            transpose_col += TRANSPOSE_GROUPS_PER_ROUND;
+            linear_transpose_group += TRANSPOSE_GROUPS_PER_ROUND;
         }
     }
 
@@ -431,8 +464,9 @@ pub(crate) mod module {
 
         let groups_per_source_row = source_cols_usize / GROUP_SIZE;
         let groups_per_tile_row = TRANSPOSE_TILE_COLS / GROUP_SIZE;
-        let mut row_group = thread_group;
-        while row_group < TRANSPOSE_TILE_GROUPS {
+        let mut linear_row_group = thread_group;
+        while linear_row_group < TRANSPOSE_TILE_GROUPS {
+            let row_group = tiled_row_group_without_bank_conflicts(linear_row_group);
             let tile_row = row_group / groups_per_tile_row;
             let row_col = (row_group - tile_row * groups_per_tile_row) * GROUP_SIZE;
             let lane_col = row_col + 4 * lane;
@@ -467,19 +501,24 @@ pub(crate) mod module {
                 }
                 store_four_six_payload_word(out_fp4.as_mut_ptr(), base, lane, payload_word);
             }
-            row_group += TRANSPOSE_GROUPS_PER_ROUND;
+            linear_row_group += TRANSPOSE_GROUPS_PER_ROUND;
         }
 
         let groups_per_output_row = source_rows as usize / GROUP_SIZE;
-        let group_in_output_row = source_row_base / GROUP_SIZE;
-        let mut transpose_col = thread_group;
-        while transpose_col < TRANSPOSE_TILE_COLS {
-            let lane_row = 4 * lane;
+        let group_in_output_row_base = source_row_base / GROUP_SIZE;
+        let mut linear_transpose_group = thread_group;
+        while linear_transpose_group < TRANSPOSE_TILE_GROUPS {
+            let transpose_group =
+                tiled_transpose_group_without_bank_conflicts(linear_transpose_group);
+            let tile_row_group = transpose_group / TRANSPOSE_TILE_COLS;
+            let transpose_col = transpose_group - tile_row_group * TRANSPOSE_TILE_COLS;
+            let lane_row = tile_row_group * GROUP_SIZE + 4 * lane;
             let value_0 = unsafe { TILE[lane_row * TRANSPOSE_TILE_STRIDE + transpose_col] };
             let value_1 = unsafe { TILE[(lane_row + 1) * TRANSPOSE_TILE_STRIDE + transpose_col] };
             let value_2 = unsafe { TILE[(lane_row + 2) * TRANSPOSE_TILE_STRIDE + transpose_col] };
             let value_3 = unsafe { TILE[(lane_row + 3) * TRANSPOSE_TILE_STRIDE + transpose_col] };
             let output_row = source_col_base + transpose_col;
+            let group_in_output_row = group_in_output_row_base + tile_row_group;
             let group = output_row * groups_per_output_row + group_in_output_row;
             let base = group * GROUP_SIZE;
             let (scale_bits, payload_word) = four_six_group_scale(
@@ -510,7 +549,7 @@ pub(crate) mod module {
                     payload_word,
                 );
             }
-            transpose_col += TRANSPOSE_GROUPS_PER_ROUND;
+            linear_transpose_group += TRANSPOSE_GROUPS_PER_ROUND;
         }
     }
 
@@ -624,6 +663,77 @@ pub(crate) mod module {
             unsafe {
                 if group_ctx.group == 0 && group_ctx.lane == 0 {
                     *out_global_scale.get_unchecked_mut(0) = global_scale;
+                }
+                if group_ctx.lane == 0 {
+                    let k_groups = cols as usize / GROUP_SIZE;
+                    let row = group_ctx.group / k_groups;
+                    let k_group = group_ctx.group - row * k_groups;
+                    let packed = Sm120ScaleLayout::block_major_byte_offset(
+                        row as u32,
+                        k_group as u32,
+                        rows,
+                        cols,
+                    );
+                    *out_scales_packed.get_unchecked_mut(packed) = scale_bits;
+                }
+                store_four_six_payload_word(
+                    out_fp4.as_mut_ptr(),
+                    group_ctx.base,
+                    group_ctx.lane,
+                    payload_word,
+                );
+            }
+        }
+    }
+
+    #[kernel]
+    pub fn fp32_to_nvfp4_four_six_exact_lazy_bounded_amax_packed_scales_rebase_kernel(
+        x: &[f32],
+        bound_amax: &[f32],
+        rebase_original_amax: &[f32],
+        mut out_fp4: DisjointSlice<u8>,
+        mut out_scales_packed: DisjointSlice<u8>,
+        mut out_global_scale: DisjointSlice<f32>,
+        mut rebase_out_global_scale: DisjointSlice<f32>,
+        rows: u32,
+        cols: u32,
+    ) {
+        let group_ctx = four_six_group_ctx();
+        let group_count = rows as usize * cols as usize / GROUP_SIZE;
+
+        if group_ctx.group < group_count {
+            let bound = bound_amax[0];
+            let bounded_amax = if bound > 1.0 {
+                bound * (1.0 / bound)
+            } else {
+                bound
+            };
+            let bound_scale = if bound > 1.0 { 1.0 / bound } else { 1.0 };
+            let value_base = group_ctx.base + 4 * group_ctx.lane;
+            let (value_0, value_1) = load_f32x2_global(x.as_ptr(), value_base);
+            let (value_2, value_3) = load_f32x2_global(x.as_ptr(), value_base + 2);
+            let global_scale = four_six_global_scale(bounded_amax, 1.0);
+            let (scale_bits, payload_word) = four_six_group_scale(
+                value_0 * bound_scale,
+                value_1 * bound_scale,
+                value_2 * bound_scale,
+                value_3 * bound_scale,
+                global_scale,
+                1.0,
+                group_ctx.mask,
+                group_ctx.leader,
+                group_ctx.lane,
+            );
+            unsafe {
+                if group_ctx.group == 0 && group_ctx.lane == 0 {
+                    *out_global_scale.get_unchecked_mut(0) = global_scale;
+                    let sqrt_bound_scale = if bound > 1.0 {
+                        1.0 / sqrt_f32(bound)
+                    } else {
+                        1.0
+                    };
+                    *rebase_out_global_scale.get_unchecked_mut(0) =
+                        four_six_global_scale(rebase_original_amax[0] * sqrt_bound_scale, 1.0);
                 }
                 if group_ctx.lane == 0 {
                     let k_groups = cols as usize / GROUP_SIZE;
@@ -845,16 +955,20 @@ pub(crate) mod module {
         let (lane, mask, leader) = four_six_lane();
         let thread_group = thread_id / GROUP_THREADS;
         let groups_per_output_row = source_rows as usize / GROUP_SIZE;
-        let group_in_output_row = source_row_base / GROUP_SIZE;
+        let group_in_output_row_base = source_row_base / GROUP_SIZE;
         let global_scale = four_six_global_scale(amax[0], scale_override);
-        let mut col = thread_group;
+        let mut linear_group = thread_group;
 
-        while col < TRANSPOSE_TILE_COLS {
-            let lane_row = 4 * lane;
+        while linear_group < TRANSPOSE_TILE_GROUPS {
+            let transpose_group = tiled_transpose_group_without_bank_conflicts(linear_group);
+            let tile_row_group = transpose_group / TRANSPOSE_TILE_COLS;
+            let col = transpose_group - tile_row_group * TRANSPOSE_TILE_COLS;
+            let lane_row = tile_row_group * GROUP_SIZE + 4 * lane;
             let value_0 = unsafe { TILE[lane_row * TRANSPOSE_TILE_STRIDE + col] };
             let value_1 = unsafe { TILE[(lane_row + 1) * TRANSPOSE_TILE_STRIDE + col] };
             let value_2 = unsafe { TILE[(lane_row + 2) * TRANSPOSE_TILE_STRIDE + col] };
             let value_3 = unsafe { TILE[(lane_row + 3) * TRANSPOSE_TILE_STRIDE + col] };
+            let group_in_output_row = group_in_output_row_base + tile_row_group;
             let group = (source_col_base + col) * groups_per_output_row + group_in_output_row;
             let base = group * GROUP_SIZE;
             let (scale_bits, payload_word) = four_six_group_scale(
@@ -878,7 +992,7 @@ pub(crate) mod module {
                 store_four_six_payload_word(out_fp4.as_mut_ptr(), base, lane, payload_word);
             }
 
-            col += TRANSPOSE_GROUPS_PER_ROUND;
+            linear_group += TRANSPOSE_GROUPS_PER_ROUND;
         }
     }
 
@@ -914,17 +1028,21 @@ pub(crate) mod module {
 
         let (lane, mask, leader) = four_six_lane();
         let thread_group = thread_id / GROUP_THREADS;
-        let group_in_output_row = source_row_base / GROUP_SIZE;
+        let group_in_output_row_base = source_row_base / GROUP_SIZE;
         let global_scale = four_six_global_scale(amax[0], scale_override);
-        let mut col = thread_group;
+        let mut linear_group = thread_group;
 
-        while col < TRANSPOSE_TILE_COLS {
-            let lane_row = 4 * lane;
+        while linear_group < TRANSPOSE_TILE_GROUPS {
+            let transpose_group = tiled_transpose_group_without_bank_conflicts(linear_group);
+            let tile_row_group = transpose_group / TRANSPOSE_TILE_COLS;
+            let col = transpose_group - tile_row_group * TRANSPOSE_TILE_COLS;
+            let lane_row = tile_row_group * GROUP_SIZE + 4 * lane;
             let value_0 = unsafe { TILE[lane_row * TRANSPOSE_TILE_STRIDE + col] };
             let value_1 = unsafe { TILE[(lane_row + 1) * TRANSPOSE_TILE_STRIDE + col] };
             let value_2 = unsafe { TILE[(lane_row + 2) * TRANSPOSE_TILE_STRIDE + col] };
             let value_3 = unsafe { TILE[(lane_row + 3) * TRANSPOSE_TILE_STRIDE + col] };
             let output_row = source_col_base + col;
+            let group_in_output_row = group_in_output_row_base + tile_row_group;
             let group = output_row * (source_rows as usize / GROUP_SIZE) + group_in_output_row;
             let base = group * GROUP_SIZE;
             let (scale_bits, payload_word) = four_six_group_scale(
@@ -954,7 +1072,7 @@ pub(crate) mod module {
                 store_four_six_payload_word(out_fp4.as_mut_ptr(), base, lane, payload_word);
             }
 
-            col += TRANSPOSE_GROUPS_PER_ROUND;
+            linear_group += TRANSPOSE_GROUPS_PER_ROUND;
         }
     }
 
@@ -970,19 +1088,19 @@ pub(crate) mod module {
         source_cols: u32,
         apply_bound: u32,
     ) {
-        static mut TILE: SharedArray<f32, TRANSPOSE_TILE_ELEMS> = SharedArray::UNINIT;
+        static mut TILE: SharedArray<f32, BOUNDED_TRANSPOSE_TILE_ELEMS> = SharedArray::UNINIT;
 
         let thread_id = thread::threadIdx_x() as usize;
-        let source_row_base = thread::blockIdx_y() as usize * TRANSPOSE_TILE_ROWS;
+        let source_row_base = thread::blockIdx_y() as usize * BOUNDED_TRANSPOSE_TILE_ROWS;
         let source_col_base = thread::blockIdx_x() as usize * TRANSPOSE_TILE_COLS;
         let source_cols_usize = source_cols as usize;
 
         let mut load_offset = thread_id;
-        while load_offset < TRANSPOSE_TILE_LOAD_ELEMS {
+        while load_offset < BOUNDED_TRANSPOSE_TILE_LOAD_ELEMS {
             let row = load_offset / TRANSPOSE_TILE_COLS;
             let col = load_offset - row * TRANSPOSE_TILE_COLS;
             unsafe {
-                TILE[row * TRANSPOSE_TILE_STRIDE + col] =
+                TILE[row * BOUNDED_TRANSPOSE_TILE_STRIDE + col] =
                     x[(source_row_base + row) * source_cols_usize + source_col_base + col];
             }
             load_offset += 256;
@@ -1004,10 +1122,10 @@ pub(crate) mod module {
 
         while col < TRANSPOSE_TILE_COLS {
             let lane_row = 4 * lane;
-            let mut value_0 = unsafe { TILE[lane_row * TRANSPOSE_TILE_STRIDE + col] };
-            let mut value_1 = unsafe { TILE[(lane_row + 1) * TRANSPOSE_TILE_STRIDE + col] };
-            let mut value_2 = unsafe { TILE[(lane_row + 2) * TRANSPOSE_TILE_STRIDE + col] };
-            let mut value_3 = unsafe { TILE[(lane_row + 3) * TRANSPOSE_TILE_STRIDE + col] };
+            let mut value_0 = unsafe { TILE[lane_row * BOUNDED_TRANSPOSE_TILE_STRIDE + col] };
+            let mut value_1 = unsafe { TILE[(lane_row + 1) * BOUNDED_TRANSPOSE_TILE_STRIDE + col] };
+            let mut value_2 = unsafe { TILE[(lane_row + 2) * BOUNDED_TRANSPOSE_TILE_STRIDE + col] };
+            let mut value_3 = unsafe { TILE[(lane_row + 3) * BOUNDED_TRANSPOSE_TILE_STRIDE + col] };
             if apply_bound != 0 {
                 value_0 *= scale;
                 value_1 *= scale;
