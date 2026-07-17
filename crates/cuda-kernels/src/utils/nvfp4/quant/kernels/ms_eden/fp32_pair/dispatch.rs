@@ -156,8 +156,12 @@ macro_rules! dispatch_fp32_pair_tiled_bias {
     ) => {{
         let block = cuda_device::thread::blockIdx_x();
         let warp_in_block = cuda_device::thread::threadIdx_x() / 32;
-        if block < $row_grid_dim {
-            let chunk = block * super::AMAX_WARPS_PER_BLOCK + warp_in_block;
+        let _ = $row_grid_dim;
+        let transpose_grid_dim =
+            $source_cols / super::FP32_PAIR_TRANSPOSE_TILE_COLS as u32;
+        if block >= transpose_grid_dim {
+            let row_block = block - transpose_grid_dim;
+            let chunk = row_block * super::AMAX_WARPS_PER_BLOCK + warp_in_block;
             $row_body(
                 $x,
                 &mut $out_fp4,
@@ -178,7 +182,7 @@ macro_rules! dispatch_fp32_pair_tiled_bias {
 
             let source_rows = $source_rows;
             let source_cols = $source_cols;
-            let source_col_tile = block - $row_grid_dim;
+            let source_col_tile = block;
             let source_row_tile_count =
                 source_rows / super::FP32_PAIR_TRANSPOSE_TILE_ROWS as u32;
             let source_col_base =

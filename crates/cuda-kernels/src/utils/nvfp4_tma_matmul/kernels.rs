@@ -9,7 +9,9 @@ use cuda_device::{
     tma::TmaDescriptor,
 };
 
-use crate::f16_tc_matmul::convert::{load_f16x2_global, load_f32x2_global_read_only};
+use crate::f16_tc_matmul::convert::{
+    load_f16x2_global, load_f32_global_read_only, load_f32x2_global_read_only,
+};
 use crate::float_ptx::{abs_f32, fma_f32, max_f32, sqrt_f32};
 use crate::nvfp4::nvfp4_values2;
 use crate::{
@@ -380,9 +382,10 @@ impl OutputScale {
         let (scalar_a, scalar_b) = if params.global_scale_mode == 0 {
             (1.0, 1.0)
         } else {
-            let scalar_b = unsafe { *(params.b_global_scale as usize as *const f32) };
+            let scalar_b =
+                load_f32_global_read_only(params.b_global_scale as usize as *const f32, 0);
             let scalar_a = if params.global_scale_mode == 1 {
-                unsafe { *(params.a_global_scale as usize as *const f32) }
+                load_f32_global_read_only(params.a_global_scale as usize as *const f32, 0)
             } else {
                 1.0
             };
@@ -401,7 +404,7 @@ impl OutputScale {
     fn row(self, row: u32) -> f32 {
         if self.mode == 2 {
             let row_scale =
-                unsafe { *((self.a_global_scale as usize as *const f32).add(row as usize)) };
+                load_f32_global_read_only(self.a_global_scale as usize as *const f32, row as usize);
             self.weight * row_scale * self.scalar_b
         } else {
             self.weight * self.scalar_a * self.scalar_b
@@ -1080,9 +1083,6 @@ fn store_acc_relu2_compact_scaled(
     let row1 = row0 + 8;
     let col0 = tile.mma_col_base(n_repeat) + tile.thread_in_group * 2;
     let output_dim = params.output_dim;
-    if col0 + 1 >= output_dim {
-        return;
-    }
 
     let (bias0, bias1) = nvfp4_values2(bias_bytes, bias_scales, bias_global_scale, col0 as usize);
     let pre00 = affine_from_stored_product(acc[0], scale0, bias0);

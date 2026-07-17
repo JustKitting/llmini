@@ -46,6 +46,101 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-17
 commit: accepted local jj commit after full gate
+experiment: Launch persistent MS-EDEN transpose/bias CTAs first and trim exact TMA scale epilogues.
+status: accepted_450s
+change:
+  The fused paired MS-EDEN bias kernels previously assigned all short row-pack
+  CTAs the lowest block IDs and the long persistent transpose/bias CTAs the
+  final block IDs. Remap the same grid so the persistent CTAs launch first and
+  overlap the large row-pack grid instead of forming a serialized tail. Chunk,
+  source-column, output, and bias ownership remain unchanged.
+  Route immutable TMA output global-scale reads through the existing
+  ld.global.nc.L2::128B scalar helper. Remove the compact ReLU2 epilogue's
+  output-column predicate because its launcher rejects output dimensions that
+  are not exact multiples of the 128-column tile.
+numerics:
+  The MS-EDEN change only changes CTA issue order. Row and transpose branches
+  write disjoint quantized outputs, the bias reduction remains inside the same
+  source-column CTA, and every reduction and quantization operation retains
+  its former order. Read-only scale loads return the same immutable FP32 bits.
+  The compact ReLU2 predicate is false for every supported launch. All focused
+  bitwise/tolerance comparisons pass after the exact rebuild, and the fixed-
+  wall run remains finite and nonzero with no skipped update.
+memory:
+  Persistent allocations, scratch capacities, launch counts, and peak logical
+  VRAM are unchanged. Both fused MS-EDEN bias variants remain at 30 registers,
+  one barrier, and 2304 bytes of static shared memory with no spills. The
+  compact ReLU2 TMA kernel remains at 143 registers and 93224 bytes of static
+  shared memory with no spills. This is not a batch-capacity win.
+minimum_impact_gate:
+  The accepted parent requires 20.282387ms over a reciprocal ten-step profile.
+  Parent profiles average 4051.536723ms and the final bundle averages
+  4018.415938ms, saving 33.120785ms/profile or 0.817487%. The fused MS-EDEN
+  bias family saves 26.431473ms/profile and the complete TMA family saves
+  9.772993ms/profile.
+profiles:
+  Accepted parent:
+    target/nsys/20260717_tma_exact_linear3_relu_a.nsys-rep:
+      total 4046.144711ms.
+    target/nsys/20260717_tma_exact_linear3_relu_b.nsys-rep:
+      total 4056.928734ms.
+  Final candidate:
+    target/nsys/20260717_ms_eden_bias_transpose_first_bundle_a.nsys-rep:
+      total 4014.783429ms.
+    target/nsys/20260717_ms_eden_bias_transpose_first_bundle_b.nsys-rep:
+      total 4022.048446ms.
+  The two fused MS-EDEN bias variants move from 230.337296 to
+  203.905824ms/profile, saving 11.475%. The final candidate contains the same
+  61428 launches as its parent.
+explored_subcandidates:
+  Removing per-CTA TMA descriptor prefetch regressed the reciprocal whole-
+  profile mean by 2.758332ms and was restored. Read-only TMA scale loads alone
+  saved 4.216790ms/profile, below the aggregate gate. Broadcasting those
+  scales with warp shuffles regressed the accepted mean by 10.720464ms and was
+  removed. Compile-time output-scale-mode specialization measured only a
+  1.208782ms saving and was 3.008008ms slower than read-only loads alone, so it
+  was removed. Bounds removal across residual and all ReLU2 stores saved only
+  7.943042ms/profile; residual regressed directly, so only the independently
+  positive compact ReLU2 predicate removal remains in the final bundle.
+verification:
+  cargo fmt --all, git diff --check, and the exact
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+  All five ignored ms_eden_transpose, all ten ignored nvfp4_quant, both
+  ignored linear_backward, and all eleven ignored projection_tma GPU tests
+  pass serially on GPU0. ptxas reports no spills in the changed kernels.
+gates:
+  Required 30-second screen:
+    target/runs/20260717_034419Z_fineweb_30s
+    stdout: target/gates/20260717_ms_eden_bias_transpose_first_bundle_30s.log
+    completed_steps=77, train_elapsed_s=30.107, val_loss=6.485697.
+  Required 450-second sustained gate:
+    target/runs/20260717_034500Z_fineweb_450s
+    stdout: target/gates/20260717_ms_eden_bias_transpose_first_bundle_450s.log
+    completed_steps=1118, train_elapsed_s=450.292, val_loss=5.022520.
+    All 23 high-fidelity samples are finite and nonzero. Every skip counter is
+    zero, loss ranges from 5.017881870 to 10.863180161, grad norm ranges from
+    1.042741418 to 16.889122009, and every sample retains batch 4, sequence
+    2048, and 8192 tokens per step.
+measured_effect:
+  Against the matched 30-second parent:
+    completed steps 77 -> 77;
+    average step time 393.896104 -> 391.000000ms (-0.735%);
+    held-out val_loss 6.485452 -> 6.485697 (+0.0038%).
+  Against the matched 450-second parent:
+    completed steps 1110 -> 1118 (+8, +0.721%);
+    average step time 405.647748 -> 402.765653ms (-2.882095ms, -0.710%);
+    held-out val_loss 5.018951 -> 5.022520 (+0.071%).
+decision:
+  Keep, promote, and commit. Reciprocal profiles clear the mathematical floor,
+  both fixed-wall gates preserve the speed signal, held-out loss stays far
+  inside the roughly +1% tolerance, and sustained stability is clean. The next
+  0.5% threshold is 2.013828ms per step, or 20.138283ms over a ten-step
+  profile.
+```
+
+```text
+date: 2026-07-17
+commit: accepted local jj commit after full gate
 experiment: Remove redundant output bounds from exact TMA Linear3 and ReLU2-backward epilogues.
 status: accepted_450s
 change:
