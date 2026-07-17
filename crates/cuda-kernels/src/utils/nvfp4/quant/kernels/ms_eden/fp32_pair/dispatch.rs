@@ -101,7 +101,10 @@ macro_rules! dispatch_fp32_pair_tiled {
 
             unsafe {
                 TILE[tile_row * super::FP32_PAIR_TRANSPOSE_TILE_STRIDE + tile_col] =
-                    $x[(source_row * source_cols + source_col) as usize];
+                    crate::f16_tc_matmul::convert::load_f32_global_read_only(
+                        $x.as_ptr(),
+                        (source_row * source_cols + source_col) as usize,
+                    );
             }
             cuda_device::thread::sync_threads();
 
@@ -193,7 +196,10 @@ macro_rules! dispatch_fp32_pair_tiled_bias {
             let first_source_row = tile_row as u32;
             unsafe {
                 TILE[tile_row * super::FP32_PAIR_TRANSPOSE_TILE_STRIDE + tile_col] =
-                    $x[(first_source_row * source_cols + source_col) as usize];
+                    crate::f16_tc_matmul::convert::load_f32_global_read_only(
+                        $x.as_ptr(),
+                        (first_source_row * source_cols + source_col) as usize,
+                    );
             }
             cuda_device::thread::sync_threads();
 
@@ -219,8 +225,10 @@ macro_rules! dispatch_fp32_pair_tiled_bias {
                     unsafe {
                         TILE[next_tile_offset
                             + tile_row * super::FP32_PAIR_TRANSPOSE_TILE_STRIDE
-                            + tile_col] =
-                            $x[(next_source_row * source_cols + source_col) as usize];
+                            + tile_col] = crate::f16_tc_matmul::convert::load_f32_global_read_only(
+                            $x.as_ptr(),
+                            (next_source_row * source_cols + source_col) as usize,
+                        );
                     }
                 }
 

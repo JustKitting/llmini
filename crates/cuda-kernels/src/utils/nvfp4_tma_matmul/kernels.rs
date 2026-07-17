@@ -9,7 +9,7 @@ use cuda_device::{
     tma::TmaDescriptor,
 };
 
-use crate::f16_tc_matmul::convert::{load_f16x2_global, load_f32x2_global};
+use crate::f16_tc_matmul::convert::{load_f16x2_global, load_f32x2_global_read_only};
 use crate::float_ptx::{abs_f32, fma_f32, max_f32, sqrt_f32};
 use crate::nvfp4::nvfp4_values2;
 use crate::{
@@ -729,10 +729,10 @@ fn store_acc_linear3_scaled_amax(
 
     let index0 = row0 * output_dim + col0;
     let index1 = row1 * output_dim + col0;
-    let (source00, source01) = load_f32x2_global(source.as_ptr(), index0 as usize);
-    let (source10, source11) = load_f32x2_global(source.as_ptr(), index1 as usize);
-    let (action00, action01) = load_f32x2_global(action.as_ptr(), index0 as usize);
-    let (action10, action11) = load_f32x2_global(action.as_ptr(), index1 as usize);
+    let (source00, source01) = load_f32x2_global_read_only(source.as_ptr(), index0 as usize);
+    let (source10, source11) = load_f32x2_global_read_only(source.as_ptr(), index1 as usize);
+    let (action00, action01) = load_f32x2_global_read_only(action.as_ptr(), index0 as usize);
+    let (action10, action11) = load_f32x2_global_read_only(action.as_ptr(), index1 as usize);
     let current00 = acc[0] * scale0;
     let current01 = acc[1] * scale0;
     let current10 = acc[2] * scale1;
@@ -796,10 +796,10 @@ fn store_acc_linear3_scaled_row_sumsq(
 
     let index0 = row0 * output_dim + col0;
     let index1 = row1 * output_dim + col0;
-    let (source00, source01) = load_f32x2_global(source.as_ptr(), index0 as usize);
-    let (source10, source11) = load_f32x2_global(source.as_ptr(), index1 as usize);
-    let (action00, action01) = load_f32x2_global(action.as_ptr(), index0 as usize);
-    let (action10, action11) = load_f32x2_global(action.as_ptr(), index1 as usize);
+    let (source00, source01) = load_f32x2_global_read_only(source.as_ptr(), index0 as usize);
+    let (source10, source11) = load_f32x2_global_read_only(source.as_ptr(), index1 as usize);
+    let (action00, action01) = load_f32x2_global_read_only(action.as_ptr(), index0 as usize);
+    let (action10, action11) = load_f32x2_global_read_only(action.as_ptr(), index1 as usize);
     let current00 = acc[0] * scale0;
     let current01 = acc[1] * scale0;
     let current10 = acc[2] * scale1;

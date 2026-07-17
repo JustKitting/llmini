@@ -77,6 +77,37 @@ pub(crate) fn load_f32x2_global(src: *const f32, index: usize) -> (f32, f32) {
 }
 
 #[inline(always)]
+pub(crate) fn load_f32_global_read_only(src: *const f32, index: usize) -> f32 {
+    let bits: u32;
+    unsafe {
+        ptx_asm!(
+            "ld.global.nc.L2::128B.u32 %0, [%1];",
+            out("=r") bits,
+            in("l") src.add(index) as u64,
+            options(register_only),
+        );
+    }
+    f32::from_bits(bits)
+}
+
+#[inline(always)]
+pub(crate) fn load_f32x2_global_read_only(src: *const f32, index: usize) -> (f32, f32) {
+    let packed: u64;
+    unsafe {
+        ptx_asm!(
+            "ld.global.nc.L2::128B.u64 %0, [%1];",
+            out("=l") packed,
+            in("l") src.add(index) as u64,
+            options(register_only),
+        );
+    }
+    (
+        f32::from_bits(packed as u32),
+        f32::from_bits((packed >> 32) as u32),
+    )
+}
+
+#[inline(always)]
 pub(crate) fn store_f32x2_global(dst: *mut f32, index: usize, lo: f32, hi: f32) {
     unsafe {
         ptx_asm!(

@@ -1,3 +1,4 @@
+use crate::f16_tc_matmul::convert::load_f32_global_read_only;
 use crate::nvfp4::nvfp4_rowwise_value;
 
 use super::input_position::padded_chunk_position;
@@ -68,7 +69,7 @@ pub(super) fn hadamard_input(
     let (row, input_col) = padded_chunk_position(chunk_base, lane, dst_row_len);
     let input = if input_col < src_row_len {
         let index = row * src_row_len + input_col;
-        x[index as usize]
+        load_f32_global_read_only(x.as_ptr(), index as usize)
     } else {
         0.0
     };
@@ -88,7 +89,7 @@ pub(super) fn transposed_hadamard_input(
     let (row, input_col) = padded_chunk_position(chunk_base, lane, dst_row_len);
     let input = if input_col < source_rows {
         let index = input_col * source_cols + row;
-        x[index as usize]
+        load_f32_global_read_only(x.as_ptr(), index as usize)
     } else {
         0.0
     };

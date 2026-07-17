@@ -44,6 +44,106 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```
 
 ```text
+date: 2026-07-17
+commit: accepted local jj commit after full gate
+experiment: Route immutable Linear3 and MS-EDEN FP32 operands through the read-only cache path.
+status: accepted_450s
+change:
+  Added scalar and aligned f32x2 helpers using ld.global.nc.L2::128B. The two
+  Linear3 TMA epilogues now read their immutable source/action pairs through
+  the packed helper. FP32 MS-EDEN row, transpose, padded, and tiled-pipeline
+  input reads use the scalar helper. Tile geometry, shared-memory layout,
+  random signs, reduction order, quantization math, optimizer math, and all
+  stored values are unchanged.
+numerics:
+  The new instructions return the same FP32 bits through a non-coherent
+  read-only cache path; every buffer routed through them is immutable for the
+  duration of its kernel. All focused GPU comparison suites pass. The full
+  fixed-wall run remains finite and nonzero with no skipped updates.
+memory:
+  Persistent allocations, temporary capacities, shared-memory use, and launch
+  counts are unchanged. No VRAM reduction is claimed.
+minimum_impact_gate:
+  Fresh accepted-parent reciprocal profiles average 4226.191940ms and the
+  combined candidate profiles average 4147.648656ms over the same ten steps,
+  saving 78.543284ms/profile, 7.854328ms/step, or 1.858%. This clears the
+  active 20.826688ms/profile floor by 3.77x. The Linear3 family falls from
+  427.921977 to 367.983456ms/profile, and FP32 paired MS-EDEN falls from
+  280.631808 to 251.411734ms/profile.
+profiles:
+  Fresh accepted parent:
+    target/nsys/20260716_linear3_readonly_fresh_parent_a.nsys-rep:
+      total 4222.661706ms; Linear3 426.491616ms; FP32 MS-EDEN 280.541179ms.
+    target/nsys/20260716_linear3_readonly_fresh_parent_b.nsys-rep:
+      total 4229.722175ms; Linear3 429.352338ms; FP32 MS-EDEN 280.722436ms.
+  Combined candidate:
+    target/nsys/20260717_readonly_linear3_ms_eden_a.nsys-rep:
+      total 4144.515325ms; Linear3 367.877719ms; FP32 MS-EDEN 251.103039ms.
+    target/nsys/20260717_readonly_linear3_ms_eden_b.nsys-rep:
+      total 4150.781987ms; Linear3 368.089193ms; FP32 MS-EDEN 251.720430ms.
+explored_subcandidates:
+  Read-only Four-Six inputs were bitwise-correct but saved only about
+  1.5-2.2ms in that entire family and did not improve whole-profile time;
+  target/nsys/20260717_readonly_linear3_four_six_{a,b}.nsys-rep measured
+  4164.860198/4170.113844ms total and 395.414001/396.096751ms Four-Six.
+  Read-only TMA bias bytes regressed the changed family from 207.198192ms to
+  207.848988/208.648610ms and was reverted. Packed residual plus FP16 ReLU2
+  read-only loads produced only about 1.7ms/profile net and were reverted.
+verification:
+  cargo fmt --all, git diff --check, a fresh
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a, all ten ignored
+  NVFP4 quantization tests, all five ignored MS-EDEN transpose tests, all
+  eleven ignored projection-TMA tests, and the nonuniform FP16 fragment test:
+  pass. The 450-second run contains 22 high-fidelity samples. Loss ranges
+  5.072133060..10.861670494 and grad norm 1.021401882..16.893762589; finite
+  and nonzero are always one, every skip metric is zero, batch is 4, sequence
+  length is 2048, and tokens per step are 8192.
+gates:
+  30s target/runs/20260717_000904Z_fineweb_30s:
+    heldout val_loss=6.501903, completed_steps=75, train_elapsed_s=30.244.
+    Control is 6.508593 / 74 / 30.039; the candidate completes one more step
+    and improves held-out loss by 0.103%.
+  450s target/runs/20260717_001003Z_fineweb_450s:
+    heldout val_loss=5.025898, completed_steps=1084, train_elapsed_s=450.067.
+    Control is 5.017801 / 1081 / 450.273. Loss moves +0.161%, inside the active
+    noise band, while completed steps increase by three (+0.278%) and average
+    step time falls from 416.533765 to 415.190959ms (-0.322%).
+decision:
+  Accept, promote, and commit. The sustained run crosses the next integer-step
+  boundary while preserving held-out quality inside the explicit one-percent
+  tolerance. Promote this gate in notes/sweep_baseline.env.
+```
+
+```text
+date: 2026-07-16
+commit: jj 66979298 Test nonuniform FP16 fragment layouts
+experiment: Protect restored FP16 staging with nonuniform fragment tests and reevaluate corrected K-major staging.
+status: regression_test_accepted_kmajor_candidate_rejected
+root_cause:
+  The removed K-major A-fragment mapping loaded its middle r1 and r2 fragment
+  registers in the opposite order required by mma.sync for nonuniform inputs.
+  Constant-input tests could not expose that permutation. The new 64x64x64
+  test covers regular, A-transposed, lower-triangular, and transposed-lower
+  FP16 tensor-core paths with nonuniform matrices.
+verification:
+  The new ignored GPU test passes all four paths on the restored row-major
+  implementation. Correcting the r1/r2 mapping also made the alternative
+  K-major implementation pass, proving the specific numerical bug.
+profile:
+  Corrected K-major samples
+  target/nsys/20260716_f16_kmajor_u32_{a,b}.nsys-rep measured
+  4202.593448/4204.050217ms total and 597.824104/598.529012ms for the broad
+  FP16 tensor-core family. The accepted restored row-major profiles measured
+  4169.652272/4173.228151ms total and 605.430555/606.364151ms for that family.
+  K-major saves 7.720795ms in the direct family but regresses whole-profile
+  time by 31.881621ms (+0.764%).
+decision:
+  Keep the regression test and the restored row-major implementation. The
+  exact fragment bug is now covered, but corrected K-major staging remains a
+  whole-training throughput regression and was fully reverted.
+```
+
+```text
 date: 2026-07-16
 commit: rejection record only; candidate source fully restored
 experiment: Eagerly materialize exact schedule-free Muon and Adam weights after updates.

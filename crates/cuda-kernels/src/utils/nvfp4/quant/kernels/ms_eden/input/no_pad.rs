@@ -1,5 +1,6 @@
 use super::input_position::{no_pad_chunk_position, no_pad_pow2_chunk_position};
 use super::random::random_sign;
+use crate::f16_tc_matmul::convert::load_f32_global_read_only;
 
 macro_rules! no_pad_hadamard_input_fn {
     ($name:ident, $position_fn:ident, $row_len_arg:ident, $chunks_arg:ident, |$row:ident, $col:ident| $index:expr) => {
@@ -51,7 +52,7 @@ no_pad_hadamard_input_fn!(
 fn no_pad_result(x: &[f32], index: u32, seed: u32, position: (u32, u32, bool)) -> (f32, u32, bool) {
     let (row, input_col, first_chunk_in_row) = position;
     (
-        x[index as usize] * random_sign(seed, input_col),
+        load_f32_global_read_only(x.as_ptr(), index as usize) * random_sign(seed, input_col),
         row,
         first_chunk_in_row,
     )
