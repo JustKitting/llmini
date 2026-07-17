@@ -104,8 +104,8 @@ minimum_step_saving = (TRAIN_ELAPSED_S / COMPLETED_STEPS) * 0.005
 ```
 
 For the current matched 450-second baseline,
-`450.378 / 1145 = 0.393343231` seconds per step, so a candidate batch must
-credibly be able to save at least `1.966716 ms/step`
+`450.142 / 1144 = 0.393480769` seconds per step, so a candidate batch must
+credibly be able to save at least `1.967404 ms/step`
 before a rebuild, GPU test, or training screen. Multiply a per-launch saving by
 the launch count per step and compare that aggregate saving with the threshold.
 
@@ -150,8 +150,8 @@ architecture.
 
 The restored pre-regression FP16 staging path plus the later accepted kernel
 and memory wins, positive `0.5` NextLat auxiliary coefficient, and retuned
-AMUSE initial interpolation is the current matched 450-second control: 1145
-steps in 450.378 seconds with held-out loss 4.984594.
+AMUSE initial interpolation and Adam learning rate is the current matched
+450-second control: 1144 steps in 450.142 seconds with held-out loss 4.968934.
 Do not compare future 450-second candidates with historical 900-second
 endpoints.
 

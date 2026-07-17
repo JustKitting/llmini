@@ -45,6 +45,62 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 
 ```text
 date: 2026-07-17
+commit: accepted local jj commit after full gate
+experiment: Retune Adam's non-matrix learning rate on the intact 1B model.
+status: accepted_450s
+change:
+  Change TRAIN_ADAM_LR_SCALE from the old sweep boundary 2.5 to 12.5 while
+  holding Muon LR, AMUSE, model, data, tokenizer, and objective fixed.
+matched_30s_sweep:
+  scale=2.5:
+    target/runs/20260717_071011Z_fineweb_30s
+    completed_steps=79, train_elapsed_s=30.363, val_loss=6.422213.
+  scale=3.25:
+    target/runs/20260717_073811Z_fineweb_30s
+    completed_steps=79, train_elapsed_s=30.355, val_loss=6.376473.
+  scale=4.0:
+    target/runs/20260717_073849Z_fineweb_30s
+    completed_steps=78, train_elapsed_s=30.166, val_loss=6.351080.
+  scale=5.0:
+    target/runs/20260717_073927Z_fineweb_30s
+    completed_steps=78, train_elapsed_s=30.314, val_loss=6.319020.
+  scale=7.5:
+    target/runs/20260717_074004Z_fineweb_30s
+    completed_steps=78, train_elapsed_s=30.386, val_loss=6.281162.
+  scale=10.0:
+    target/runs/20260717_074044Z_fineweb_30s
+    completed_steps=77, train_elapsed_s=30.000, val_loss=6.257828.
+  scale=12.5:
+    target/runs/20260717_074203Z_fineweb_30s
+    completed_steps=78, train_elapsed_s=30.365, val_loss=6.248105.
+  scale=15.0:
+    target/runs/20260717_074121Z_fineweb_30s
+    completed_steps=77, train_elapsed_s=30.039, val_loss=6.270934.
+gate:
+  target/runs/20260717_074244Z_fineweb_450s
+  scale=12.5, completed_steps=1144, train_elapsed_s=450.142,
+  val_loss=4.968934.
+  All 23 high-fidelity samples are finite and nonzero. Every update/skip
+  counter is zero, loss ranges from 5.079686165 to 10.666461945, and global
+  gradient norm ranges from 1.040985703 to 16.312370300. Every sample retains
+  batch 4, sequence 2048, and 8192 tokens per step.
+measured_effect:
+  The matched screen improves by 0.174108 (-2.71%) despite one fewer completed
+  step. The sustained gate improves by 0.015660 (-0.314%) despite one fewer
+  completed step than the 4.984594 / 1145-step baseline.
+decision:
+  Keep and promote scale=12.5. This is a direct optimizer-hyperparameter
+  improvement with the complete model, task, and gradient paths unchanged.
+verification:
+  cargo fmt --all, cargo check --all-targets, git diff --check, and exact
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+  The rebuilt promoted default, with no TRAIN_ADAM_LR_SCALE override, ran at
+  target/runs/20260717_075129Z_fineweb_30s and reproduced the screen win:
+  completed_steps=79, train_elapsed_s=30.351, val_loss=6.233296.
+```
+
+```text
+date: 2026-07-17
 commit: rejected runtime-only experiment
 experiment: Retune AMUSE rho with a post-warmup fixed-step screen.
 status: rejected_450s
