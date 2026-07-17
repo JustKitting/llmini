@@ -48,6 +48,81 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 
 ```text
 date: 2026-07-17
+commit: rejected working-copy experiment; source fully reverted
+experiment: Backward-aware dual-layout 4:8 sparsification at the ReLU2 boundary.
+status: rejected_450s_emulation; native_direction_numerically_plausible
+sources:
+  https://arxiv.org/abs/2503.16672
+  https://arxiv.org/abs/2602.06183
+rationale:
+  Test the general principle that nonlinear layout should be chosen for the
+  expensive backward graph. A squared-ReLU mask can make four of six MLP GEMMs
+  sparse: forward down, down dW, up dX, and up dW. The first forward up GEMM
+  and down dX remain dense. A standalone forward-only sparse path was not
+  considered because its whole-step ceiling is below the active 0.5% floor.
+implementation:
+  Emulated the SM120 native pairwise 4:8 format while retaining dense GEMMs.
+  A row-wise mask retained the two highest-energy adjacent pairs from every
+  eight ReLU2 values. The same saved f16 preactivation selected the mask in
+  forward and backward. For the two weight-gradient orientations, each layer
+  selected 2048 high-leverage features to remain dense and applied pairwise
+  sparsity to the other 6144 features after a fixed bit-reversed token
+  permutation. Both operands used the same permutation before MS-EDEN, bias
+  gradients remained active, and all model sections and parameters trained.
+  The feature-wise approximation used its own 1000-step dense warmup rather
+  than the 83-step learning-rate warmup.
+correctness:
+  cargo fmt --all, cargo check --workspace, and git diff --check: pass.
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+  The rebuilt-PTX GPU test
+  fp32_pair_feature_layout_matches_materialized_sparse_permutation passed
+  against a host-materialized masked and permuted reference.
+  A consistency diagnostic measured zero token-wise pair-energy mismatch
+  between the forward activation mask and post-ReLU2 backward gradient mask.
+bringup:
+  target/runs/20260717_230809Z_fineweb_30s
+  completed_steps=93, train_elapsed_s=30.379, val_loss=6.131801.
+  This was launch and numerical-health evidence only.
+gate:
+  target/runs/20260717_231004Z_fineweb_450s
+  completed_steps=1300, train_elapsed_s=450.095,
+  val_loss=4.870973.
+  Finite and nonzero remained one at every high-fidelity sample. Every
+  non-finite, loss-spike, gradient-spike, and update-skip counter remained
+  zero. Gradient norm remained finite and ended at 1.218431473.
+measured_effect:
+  Against the accepted detached-KDA baseline at 4.849991321563721 / 1350
+  steps / 333.359259 ms per step, held-out loss regressed by 0.020981678
+  (+0.432613%) while the dense emulation completed 50 fewer steps. Candidate
+  step time was 346.226923 ms, an added 12.867664 ms (+3.8600%).
+  At matched logged steps, sampled training loss remained effectively neutral
+  after the row-wise mask began and was lower than baseline at each logged
+  step from 1100 through 1250 after the feature-wise mask began. This supports
+  numerical plausibility but does not override the worse fixed-time held-out
+  endpoint.
+profile:
+  target/nsys/20260717_relu2_feature_emulation.nsys-rep
+  target/nsys/20260717_relu2_feature_emulation.sqlite
+  The matched 10-step trace used the feature layout from step zero for cost
+  attribution only. Total GPU-kernel time was 3542.023 ms versus 3347.617 ms
+  for the accepted trace. The standalone row-mask kernel alone cost 165.820
+  ms over the trace. A native implementation would have to fuse mask creation,
+  block-32 quantization, compression, metadata generation, and transpose
+  layout; materializing the dense masked tensor cannot win.
+decision:
+  Do not commit the dense emulation. Its semantics are close enough that a
+  native implementation remains technically plausible, but the local CUTLASS
+  measurement gives only a 2.162496 ms/step bare sparse-GEMM saving before
+  dual-layout preprocessing. The same accepted profile attributes about
+  42.3 ms/step to the four full-attention softmax cores and their adjacent
+  matrix products, including about 25.5 ms/step in backward. Therefore the
+  next backward-aware layout screen targets a hardware-aligned sparse softmax
+  support, whose credible whole-step ceiling is much larger. Restore the exact
+  accepted source before that screen.
+```
+
+```text
+date: 2026-07-17
 commit: diagnostic/research note; no model-semantic source retained
 experiment: Backward-aware ReLU2 layout and native SM120 sparse-NVFP4 ceiling.
 status: direction_retained_for_numerical_screen
