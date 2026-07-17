@@ -48,6 +48,78 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 
 ```text
 date: 2026-07-17
+commit: diagnostic/research note; no model-semantic source retained
+experiment: Backward-aware ReLU2 layout and native SM120 sparse-NVFP4 ceiling.
+status: direction_retained_for_numerical_screen
+sources:
+  https://arxiv.org/abs/2503.16672
+  https://arxiv.org/abs/2602.06183
+  /home/kit/Documents/Rust/cuda/cutlass/examples/80_blackwell_geforce_sparse_gemm/80b_blackwell_geforce_nvfp4_nvfp4_sparse_gemm.cu
+rationale:
+  Treat the nonlinearity as a layout boundary for the expensive backward
+  graph, rather than optimizing only the cheap forward activation. For the
+  squared-ReLU MLP, four of six GEMMs can consume a sparse nonlinear tensor:
+  forward down uses token-wise y2, down dW uses feature-wise y2.T, up dX uses
+  token-wise dy1, and up dW.T uses feature-wise dy1.T. The first forward up
+  GEMM and down dX remain dense. The current implementation materializes only
+  a dense/block-16 rowwise activation, so it cannot reuse the nonlinear mask
+  across these backward orientations.
+accepted_profile_context:
+  target/nsys/20260717_backward_layout_detached_candidate.nsys-rep
+  target/nsys/20260717_backward_layout_detached_candidate.sqlite
+  Accepted step time is 333.359259ms. The active 0.5% implementation floor is
+  1.666796ms/step.
+activation_diagnostic:
+  An environment-gated diagnostic measured raw f16 preactivations and the
+  actual saved block-16 NVFP4 MLP-down operand. This was diagnostic only and
+  never changed forward, backward, or optimizer math.
+  Mean encoded sparsity and the encoded energy removed by SM120's native
+  pairwise-4:8 mask were:
+    step 0:   sparsity 63.7744%, removed energy 2.9358%
+    step 250: sparsity 68.9390%, removed energy 1.7346%
+    step 500: sparsity 70.8763%, removed energy 1.3105%
+    step 750: sparsity 71.4128%, removed energy 1.1874%
+  At step 750, per-layer sparsity spans 66.8503%..78.6249% and removed energy
+  spans 0.2720%..1.8782%. The diagnostic run
+  target/runs/20260717_212218Z_fineweb_600s raised CUDA error 719 after step
+  800, with kernel log Xid 13. Therefore only the synchronized measurements
+  through step 750 are retained, the run is not stability or acceptance
+  evidence, and all diagnostic source was removed.
+native_format:
+  The exact SM120 instruction is
+  mma.sync.aligned.kind::mxf4nvf4.sp::ordered_metadata with K=128. It retains
+  two adjacent-value pairs from each four-pair/eight-value group and requires
+  UE4M3 scale-vector size 32. It cannot directly consume the active block-16
+  activation or weight scales. A real implementation must generate compressed
+  payload, metadata, and block-32 scales directly at the nonlinear boundary;
+  running a standalone compressor per GEMM would erase the small whole-step
+  margin.
+hardware_benchmark:
+  Local CUTLASS was built for sm_120 with GCC 15 and benchmarked on GPU1 at
+  M=8192, N=2048, K=8192, matching every eligible MLP GEMM after choosing the
+  appropriate transpose/output orientation.
+  NVFP4-output reference:
+    dense 0.173029ms; sparse 0.142987ms.
+  F32-output reference:
+    dense 0.179569ms; sparse 0.145780ms.
+  The f32-output saving is 0.033789ms/GEMM. Four GEMMs x 16 layers gives a
+  bare 2.162496ms/step or 0.6487% ceiling against the accepted step, before
+  preprocessing. This narrowly clears the mathematical floor. The current
+  general kernels are slower than the CUTLASS dense reference, so replacing
+  them with a fused sparse path may expose a larger practical saving.
+decision:
+  Continue only with a fused dual-layout design: produce token-wise and
+  feature-wise compressed views once where squared-ReLU or its derivative is
+  formed, and consume them in all four eligible GEMMs. First quantify direct
+  block-32 requantization error and pair-mask error for activations and weights.
+  Then run a semantics screen before writing the full sparse GEMM path. Do not
+  implement a forward-down-only sparse kernel: its ceiling is below 0.5%.
+  No diagnostic or candidate source is retained at this checkpoint, and the
+  exact accepted sm_120a tree is rebuilt.
+```
+
+```text
+date: 2026-07-17
 commit: rejected working-copy experiment; source fully reverted
 experiment: Uniform half-token sketch for dense linear weight gradients.
 status: rejected_450s
