@@ -48,6 +48,136 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 
 ```text
 date: 2026-07-17
+commit: rejected working-copy experiment; source fully reverted
+experiment: Query-dependent headwise sigmoid gates on attention outputs.
+status: rejected_450s
+source:
+  https://arxiv.org/abs/2505.06708
+  https://github.com/qiuzh20/gated_attention
+rationale:
+  The Gated Attention paper reports consistent perplexity improvements from
+  placing a query-dependent sigmoid gate after scaled-dot-product attention.
+  Its headwise G1 variant captures most of the reported gain with only one
+  scalar per token and head, making it the least invasive form to test on the
+  intact local 16-layer model.
+implementation:
+  Added 32 learned gate rows to each active QKV projection. For full attention
+  these followed Q/K/V; for KDA they occupied existing padded QKV capacity.
+  Applied one sigmoid scalar to each 64-wide attention head after the attention
+  core and before the output projection. Backward propagated both the scaled
+  attention-output gradient and the gate-score gradient. A dedicated FP16
+  pre-gate attention tape preserved the exact derivative path. No layer,
+  attention mode, MLP, NextLat branch, parameter floor, batch, sequence, or
+  dataset was removed or reduced.
+verification:
+  cargo fmt --all, cargo check --workspace, cargo test --workspace --lib, and
+  git diff --check: pass.
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+  Direct ignored GPU tests for the new gate forward/backward kernels, full
+  causal-attention backward, KDA tensor-core backward, and block-attention
+  backward: pass. The broad l2_attention integration test remains blocked by
+  its pre-existing stale AttentionForwardArgs initializer.
+bringup:
+  target/runs/20260717_120734Z_fineweb_30s
+  completed_steps=54, train_elapsed_s=30.332.
+  Both high-fidelity samples are finite and nonzero, all update/skip counters
+  are zero, and B4/S2048/8192 tokens per step remain intact. This was strictly
+  a launch/update health smoke. Its loss was not compared, ranked, tuned
+  against, or used for the keep/revert decision.
+gate:
+  target/runs/20260717_120920Z_fineweb_450s
+  completed_steps=792, train_elapsed_s=450.526, val_loss=5.301377.
+  All 16 high-fidelity samples are finite and nonzero, every update/skip
+  counter is zero, and global gradient norm remains finite. The run therefore
+  failed on held-out quality rather than numerical instability.
+measured_effect:
+  Against the accepted ResFormer control at 4.868333 / 1291 steps, held-out
+  loss regresses by 0.433044 (+8.895%). The candidate completes 792 rather than
+  1291 steps (-38.652%), so the unfused gate/tape implementation also spends
+  too much of the fixed budget outside the existing attention kernels.
+decision:
+  Reject and fully revert. This result rejects the tested implementation under
+  the fixed-time objective; it does not establish that the paper's gate is
+  intrinsically harmful at matched training exposure. Revisit only with a
+  fused implementation whose 450-second held-out result beats the active
+  baseline. Do not use the 30-second loss as evidence for a cheaper sweep.
+```
+
+```text
+date: 2026-07-17
+commit: rejected working-copy experiment; source fully reverted
+experiment: Cosine-tapered MLP widths under a fixed parameter/FLOP budget.
+status: rejected_450s_instability
+source:
+  https://arxiv.org/abs/2606.23670
+rationale:
+  Tapered Language Models reports that reallocating MLP capacity from later
+  layers to earlier layers improves perplexity and downstream accuracy at
+  matched parameters and FLOPs. Its selected default is a half-cosine decay
+  from 1.5x to 0.5x the uniform MLP width, transferred unchanged through its
+  1.3B experiments. Test that intact-model architectural intervention instead
+  of shrinking, deleting, bypassing, freezing, or loss-scaling any branch.
+implementation:
+  Replaced the sixteen uniform 8192-neuron MLPs with exact per-layer widths
+    12288, 12160, 11904, 11520, 10880, 10240, 9472, 8576,
+    7808, 6912, 6144, 5504, 4864, 4480, 4224, 4096.
+  These widths are the paper's cosine profile rounded symmetrically to this
+  SM120 NVFP4 kernel's 128-neuron tile. They are monotone and sum to 131072 =
+  16*8192 exactly, so MLP parameter count and mathematical FLOPs match the
+  control without padding-only neurons. Weights, gradients, forward tapes,
+  optimizer state, NorMuon state, clipping views, checkpoints, and Muon slot
+  descriptors used each layer's real allocation; only sequential shared
+  scratch used the 12288 maximum. All 16 layers and every active branch stayed
+  trainable, with B4/S2048 and 8192 tokens per step unchanged.
+verification:
+  cargo fmt --all --check, cargo check --workspace, cargo test --workspace
+  --lib, and git diff --check: pass.
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass twice, including
+  after run-info fidelity logging was added. The width invariant unit test
+  verifies monotonicity, 128 alignment, exact total budget, and 1.5x/0.5x
+  endpoints. The broad cargo test --workspace --no-run remains blocked by the
+  pre-existing stale forward/TMA integration-test initializers.
+bringup:
+  target/runs/20260717_113645Z_fineweb_30s
+  completed_steps=85, train_elapsed_s=30.140, val_loss=6.408467.
+  Both high-fidelity samples are finite and nonzero, global gradient norm is
+  finite, all update/skip counters are zero, and batch 4, sequence 2048, and
+  8192 tokens per step remain intact. This was strictly a launch/update health
+  smoke. Its loss was not compared, ranked, tuned against, or used for the
+  keep/revert decision.
+gate:
+  target/runs/20260717_113843Z_fineweb_450s
+  completed_steps=1241, train_elapsed_s=450.046, val_loss=7.327042.
+  All 25 high-fidelity samples are finite and nonzero and every skip counter
+  is zero. Training loss initially falls to 5.953945160 near step 350, then
+  reverses and finishes near 7.75. Global gradient norm rises persistently
+  from 3.111701965 to a maximum of 33.517467499 over the same tail. This is a
+  sustained optimization instability, not a single unlucky loss spike.
+measured_effect:
+  Against the accepted ResFormer control at 4.868333 / 1291 steps, held-out
+  loss regresses by 2.458709 (+50.504125%). The candidate completes 1241
+  rather than 1291 steps (-3.872967%) and processes 10166272 rather than
+  10575872 tokens, far too small an exposure change to explain the regression.
+fidelity_audit:
+  The live forward/backward dimensions, per-layer allocations, tape copies,
+  gradient lengths, checkpoint lengths, Muon matrix descriptors, and NorMuon
+  longer-axis state were source-audited after the failed gate. NorMuon selects
+  the correct 2048-by-d_ff polar orientation for both up and down projections,
+  while Moonlight scaling preserves per-element update scale across width.
+  No dimension truncation, out-of-bounds allocation, dead layer, or reversed
+  schedule was found. The paper trained with AdamW and much longer token
+  budgets; this extreme width redistribution does not transfer safely to the
+  current short-horizon SignMuon/NorMuon configuration without a separate
+  optimizer study.
+decision:
+  Reject and fully revert. Do not weaken the 450-second result by treating the
+  healthy 30-second loss as evidence or by tuning taper strength against it.
+  A future revisit would need a predeclared 450-second optimizer comparison,
+  not a short-loss coefficient sweep.
+```
+
+```text
+date: 2026-07-17
 commit: accepted local jj commit after full gate
 experiment: Identity-ResFormer fixed first-layer value residuals.
 status: accepted_450s
