@@ -75,6 +75,7 @@ fn run_block<'a, 'scratch, 'out>(
     let mut grads = current.reborrow();
     let use_full_attention = uses_full_attention(block_index);
     let d_residual_after_attention_amax_chunks = mlp_side_backward(BlockMlpBackwardArgs {
+        block_index,
         stream,
         modules: modules.mlp,
         saved: saved.blocks[block_index],

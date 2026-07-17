@@ -19,6 +19,7 @@ const COLS: usize = 32;
 #[test]
 fn layer_norm_backward_params_match_reference() -> Result<(), Box<dyn Error>> {
     let epsilon = 1.0e-5f32;
+    let output_scale = 0.25f32;
     let x = sample_rows(ROWS, COLS, 19, 9.0, 0.125, 0.25);
     let dy = sample_rows(ROWS, COLS, 13, 6.0, 0.03125, 0.0);
     let (mean, inv_std) = reference_row_stats(&x, ROWS, COLS, epsilon);
@@ -40,11 +41,13 @@ fn layer_norm_backward_params_match_reference() -> Result<(), Box<dyn Error>> {
         inv_std: &inv_std_dev,
         d_weight: &mut d_weight_dev,
         d_bias: &mut d_bias_dev,
+        output_scale,
         row_count: ROWS as u32,
         embedding_dim: COLS as u32,
     })?;
 
-    let (expected_weight, expected_bias) = reference_param_grads(&x, &dy, &mean, &inv_std);
+    let (expected_weight, expected_bias) =
+        reference_param_grads(&x, &dy, &mean, &inv_std, output_scale);
     common::assert_slice_close(
         &d_weight_dev.to_host_vec(&stream)?,
         &expected_weight,
@@ -61,6 +64,7 @@ fn layer_norm_backward_params_tiled_f16_match_reference() -> Result<(), Box<dyn 
     const TILED_COLS: usize = 32;
 
     let epsilon = 1.0e-5f32;
+    let output_scale = 0.25f32;
     let x = sample_rows(TILED_ROWS, TILED_COLS, 19, 9.0, 0.125, 0.25);
     let dy = sample_rows(TILED_ROWS, TILED_COLS, 13, 6.0, 0.03125, 0.0);
     let (mean, inv_std) = reference_row_stats(&x, TILED_ROWS, TILED_COLS, epsilon);
@@ -95,12 +99,20 @@ fn layer_norm_backward_params_tiled_f16_match_reference() -> Result<(), Box<dyn 
         inv_std: &inv_std_dev,
         d_weight: &mut d_weight_dev,
         d_bias: &mut d_bias_dev,
+        output_scale,
         row_count: TILED_ROWS as u32,
         embedding_dim: TILED_COLS as u32,
     })?;
 
-    let (expected_weight, expected_bias) =
-        reference_param_grads_for(&x_rounded, &dy, &mean, &inv_std, TILED_ROWS, TILED_COLS);
+    let (expected_weight, expected_bias) = reference_param_grads_for(
+        &x_rounded,
+        &dy,
+        &mean,
+        &inv_std,
+        output_scale,
+        TILED_ROWS,
+        TILED_COLS,
+    );
     common::assert_slice_close(
         &d_weight_dev.to_host_vec(&stream)?,
         &expected_weight,
@@ -115,8 +127,9 @@ fn reference_param_grads(
     dy: &[f32],
     mean: &[f32],
     inv_std: &[f32],
+    output_scale: f32,
 ) -> (Vec<f32>, Vec<f32>) {
-    reference_param_grads_for(x, dy, mean, inv_std, ROWS, COLS)
+    reference_param_grads_for(x, dy, mean, inv_std, output_scale, ROWS, COLS)
 }
 
 fn reference_param_grads_for(
@@ -124,6 +137,7 @@ fn reference_param_grads_for(
     dy: &[f32],
     mean: &[f32],
     inv_std: &[f32],
+    output_scale: f32,
     rows: usize,
     cols: usize,
 ) -> (Vec<f32>, Vec<f32>) {
@@ -133,8 +147,8 @@ fn reference_param_grads_for(
         for col in 0..cols {
             let offset = row * cols + col;
             let xhat = (x[offset] - mean[row]) * inv_std[row];
-            d_weight[col] += dy[offset] * xhat;
-            d_bias[col] += dy[offset];
+            d_weight[col] += dy[offset] * output_scale * xhat;
+            d_bias[col] += dy[offset] * output_scale;
         }
     }
     (d_weight, d_bias)

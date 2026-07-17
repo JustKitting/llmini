@@ -32,6 +32,7 @@ macro_rules! gpt_layer_norm_args {
             pub row_count: u32,
             pub embedding_dim: u32,
             pub epsilon: f32,
+            pub output_scale: f32,
         }
     };
 }
@@ -52,7 +53,7 @@ macro_rules! gpt_layer_norm_launcher {
                 args.residual, args.weight.bytes, args.weight.scales, args.bias.bytes,
                 args.bias.scales, args.weight.global_scale, args.bias.global_scale,
                 args.normalized, args.normalized_amax, args.mean, args.inv_std, $(args.$extra,)*
-                args.row_count, args.embedding_dim, args.epsilon,
+                args.row_count, args.embedding_dim, args.epsilon, args.output_scale,
             )
         }
     };

@@ -15,6 +15,7 @@ pub struct Gpt2LayerNormBackwardInputArgs<'a, 'out> {
     pub weights: LayerNormTensors<'a>,
     pub d_normalized: &'a DeviceBuffer<f32>,
     pub d_residual: &'out mut DeviceBuffer<f32>,
+    pub output_scale: f32,
 }
 
 pub struct Gpt2LayerNormBackwardInputAddArgs<'a, 'out> {
@@ -25,6 +26,7 @@ pub struct Gpt2LayerNormBackwardInputAddArgs<'a, 'out> {
     pub d_normalized: &'a DeviceBuffer<f32>,
     pub direct: &'a DeviceBuffer<f32>,
     pub d_residual: &'out mut DeviceBuffer<f32>,
+    pub output_scale: f32,
 }
 
 pub struct Gpt2LayerNormBackwardInputAmaxArgs<'a, 'out> {
@@ -35,6 +37,7 @@ pub struct Gpt2LayerNormBackwardInputAmaxArgs<'a, 'out> {
     pub d_normalized: &'a DeviceBuffer<f32>,
     pub d_residual: &'out mut DeviceBuffer<f32>,
     pub chunk_amax: &'out mut DeviceBuffer<f32>,
+    pub output_scale: f32,
 }
 
 pub struct Gpt2LayerNormBackwardInputAddAmaxArgs<'a, 'out> {
@@ -46,6 +49,7 @@ pub struct Gpt2LayerNormBackwardInputAddAmaxArgs<'a, 'out> {
     pub direct: &'a DeviceBuffer<f32>,
     pub d_residual: &'out mut DeviceBuffer<f32>,
     pub chunk_amax: &'out mut DeviceBuffer<f32>,
+    pub output_scale: f32,
 }
 
 pub struct Gpt2LayerNormBackwardParamArgs<'a, 'out> {
@@ -55,6 +59,7 @@ pub struct Gpt2LayerNormBackwardParamArgs<'a, 'out> {
     pub d_normalized: &'a DeviceBuffer<f32>,
     pub d_weight: &'out mut DeviceBuffer<f32>,
     pub d_bias: &'out mut DeviceBuffer<f32>,
+    pub output_scale: f32,
 }
 
 pub struct Gpt2LayerNormBackwardArgs<'a, 'out> {
@@ -65,6 +70,7 @@ pub struct Gpt2LayerNormBackwardArgs<'a, 'out> {
     pub grads: LayerNormGrads<'out>,
     pub d_normalized: &'a DeviceBuffer<f32>,
     pub d_residual: &'out mut DeviceBuffer<f32>,
+    pub output_scale: f32,
 }
 
 pub struct Gpt2LayerNormBackwardAddArgs<'a, 'out> {
@@ -76,6 +82,7 @@ pub struct Gpt2LayerNormBackwardAddArgs<'a, 'out> {
     pub d_normalized: &'a DeviceBuffer<f32>,
     pub direct: &'a DeviceBuffer<f32>,
     pub d_residual: &'out mut DeviceBuffer<f32>,
+    pub output_scale: f32,
 }
 
 pub struct Gpt2LayerNormBackwardAmaxArgs<'a, 'out> {
@@ -87,6 +94,7 @@ pub struct Gpt2LayerNormBackwardAmaxArgs<'a, 'out> {
     pub d_normalized: &'a DeviceBuffer<f32>,
     pub d_residual: &'out mut DeviceBuffer<f32>,
     pub chunk_amax: &'out mut DeviceBuffer<f32>,
+    pub output_scale: f32,
 }
 
 pub struct Gpt2LayerNormBackwardAddAmaxArgs<'a, 'out> {
@@ -99,6 +107,7 @@ pub struct Gpt2LayerNormBackwardAddAmaxArgs<'a, 'out> {
     pub direct: &'a DeviceBuffer<f32>,
     pub d_residual: &'out mut DeviceBuffer<f32>,
     pub chunk_amax: &'out mut DeviceBuffer<f32>,
+    pub output_scale: f32,
 }
 
 pub fn layer_norm_backward_input(
@@ -112,6 +121,7 @@ pub fn layer_norm_backward_input(
         inv_std: args.saved.inv_std,
         weight: args.weights.weight,
         d_residual: args.d_residual,
+        output_scale: args.output_scale,
         row_count: args.saved.row_count,
         embedding_dim: GPT2_EMBEDDING_DIM,
     })
@@ -130,6 +140,7 @@ pub fn layer_norm_backward_input_add(
             weight: args.weights.weight,
             direct: args.direct,
             d_residual: args.d_residual,
+            output_scale: args.output_scale,
             row_count: args.saved.row_count,
             embedding_dim: GPT2_EMBEDDING_DIM,
         })
@@ -148,6 +159,7 @@ pub fn layer_norm_backward_input_amax(
             weight: args.weights.weight,
             d_residual: args.d_residual,
             chunk_amax: args.chunk_amax,
+            output_scale: args.output_scale,
             row_count: args.saved.row_count,
             embedding_dim: GPT2_EMBEDDING_DIM,
         })
@@ -167,6 +179,7 @@ pub fn layer_norm_backward_input_add_amax(
             direct: args.direct,
             d_residual: args.d_residual,
             chunk_amax: args.chunk_amax,
+            output_scale: args.output_scale,
             row_count: args.saved.row_count,
             embedding_dim: GPT2_EMBEDDING_DIM,
         })
@@ -183,6 +196,7 @@ pub fn layer_norm_backward_params(
         inv_std: args.saved.inv_std,
         d_weight: args.d_weight,
         d_bias: args.d_bias,
+        output_scale: args.output_scale,
         row_count: args.saved.row_count,
         embedding_dim: GPT2_EMBEDDING_DIM,
     })
@@ -198,6 +212,7 @@ pub fn layer_norm_backward(args: Gpt2LayerNormBackwardArgs<'_, '_>) -> Result<()
         d_normalized: args.d_normalized,
         d_weight: grads.d_weight,
         d_bias: grads.d_bias,
+        output_scale: args.output_scale,
     })?;
     layer_norm_backward_input(Gpt2LayerNormBackwardInputArgs {
         stream: args.stream,
@@ -206,6 +221,7 @@ pub fn layer_norm_backward(args: Gpt2LayerNormBackwardArgs<'_, '_>) -> Result<()
         weights: args.weights,
         d_normalized: args.d_normalized,
         d_residual: args.d_residual,
+        output_scale: args.output_scale,
     })
 }
 
@@ -221,6 +237,7 @@ pub fn layer_norm_backward_amax(
         d_normalized: args.d_normalized,
         d_weight: grads.d_weight,
         d_bias: grads.d_bias,
+        output_scale: args.output_scale,
     })?;
     layer_norm_backward_input_amax(Gpt2LayerNormBackwardInputAmaxArgs {
         stream: args.stream,
@@ -230,6 +247,7 @@ pub fn layer_norm_backward_amax(
         d_normalized: args.d_normalized,
         d_residual: args.d_residual,
         chunk_amax: args.chunk_amax,
+        output_scale: args.output_scale,
     })
 }
 
@@ -245,6 +263,7 @@ pub fn layer_norm_backward_add(
         d_normalized: args.d_normalized,
         d_weight: grads.d_weight,
         d_bias: grads.d_bias,
+        output_scale: args.output_scale,
     })?;
     layer_norm_backward_input_add(Gpt2LayerNormBackwardInputAddArgs {
         stream: args.stream,
@@ -254,6 +273,7 @@ pub fn layer_norm_backward_add(
         d_normalized: args.d_normalized,
         direct: args.direct,
         d_residual: args.d_residual,
+        output_scale: args.output_scale,
     })
 }
 
@@ -269,6 +289,7 @@ pub fn layer_norm_backward_add_amax(
         d_normalized: args.d_normalized,
         d_weight: grads.d_weight,
         d_bias: grads.d_bias,
+        output_scale: args.output_scale,
     })?;
     layer_norm_backward_input_add_amax(Gpt2LayerNormBackwardInputAddAmaxArgs {
         stream: args.stream,
@@ -279,5 +300,6 @@ pub fn layer_norm_backward_add_amax(
         direct: args.direct,
         d_residual: args.d_residual,
         chunk_amax: args.chunk_amax,
+        output_scale: args.output_scale,
     })
 }

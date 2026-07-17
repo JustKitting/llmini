@@ -23,9 +23,14 @@ impl Gpt2BlockWeights {
         let tma_weight_scale_packed = args.tma_weight_scale_packed;
         let tma_weight_bytes_padded = args.tma_weight_bytes_padded;
         let mut tape = args.tape;
+        let layer_norm_scale = crate::layer_norm_scale(args.block_index);
 
-        let ln_1 =
-            LayerNormWeights::input_from_block(args.layer_norm_module, args.ln_1, args.hidden);
+        let ln_1 = LayerNormWeights::input_from_block(
+            args.layer_norm_module,
+            args.ln_1,
+            args.hidden,
+            layer_norm_scale,
+        );
         let hidden = self
             .ln_1
             .forward_with_tape(ln_1, tape.as_mut().map(|tape| &mut tape.ln_1))?;
@@ -59,7 +64,12 @@ impl Gpt2BlockWeights {
             tape.save_attention_log_sum_exp(hidden.stream, attention_log_sum_exp)?;
         }
 
-        let ln_2 = LayerNormWeights::input_from_block(args.layer_norm_module, args.ln_2, hidden);
+        let ln_2 = LayerNormWeights::input_from_block(
+            args.layer_norm_module,
+            args.ln_2,
+            hidden,
+            layer_norm_scale,
+        );
         let hidden = self
             .ln_2
             .forward_with_tape(ln_2, tape.as_mut().map(|tape| &mut tape.ln_2))?;

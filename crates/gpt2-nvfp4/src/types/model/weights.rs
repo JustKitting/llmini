@@ -19,7 +19,7 @@ pub struct Gpt2Weights {
 
 impl Gpt2Weights {
     pub(crate) fn init(rng: &mut InitRng) -> Self {
-        let residual_projection_scale = 0.02 / (2.0 * GPT2_N_LAYER as f32).sqrt();
+        let residual_projection_scale = 0.02;
         Self {
             config: Gpt2Config::gpt2_124m(),
             embeddings: EmbeddingWeights::init(rng),

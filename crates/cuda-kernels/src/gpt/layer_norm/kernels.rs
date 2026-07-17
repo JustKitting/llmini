@@ -61,12 +61,13 @@ mod module {
         row_count: u32,
         embedding_dim: u32,
         epsilon: f32,
+        output_scale: f32,
     ) {
         gpt_layer_norm_body!(
             residual weight_bytes weight_scales bias_bytes bias_scales;
             weight_global_scale bias_global_scale;
             normalized normalized_amax mean_out inv_std_out;
-            row_count embedding_dim epsilon;
+            row_count embedding_dim epsilon output_scale;
             none
         );
     }
@@ -88,12 +89,13 @@ mod module {
         row_count: u32,
         embedding_dim: u32,
         epsilon: f32,
+        output_scale: f32,
     ) {
         gpt_layer_norm_body!(
             residual weight_bytes weight_scales bias_bytes bias_scales;
             weight_global_scale bias_global_scale;
             normalized normalized_amax mean_out inv_std_out;
-            row_count embedding_dim epsilon;
+            row_count embedding_dim epsilon output_scale;
             residual_f16
         );
     }

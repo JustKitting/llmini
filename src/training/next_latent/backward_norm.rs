@@ -18,6 +18,7 @@ pub(super) fn layer_norm_backward(
             inv_std: &args.forward.inv_std,
             d_weight: &mut args.grads.d_norm_weight,
             d_bias: &mut args.grads.d_norm_bias,
+            output_scale: 1.0,
             row_count: args.row_count,
             embedding_dim: NEXTLAT_INPUT_DIM,
         })?;
@@ -30,6 +31,7 @@ pub(super) fn layer_norm_backward(
             inv_std: &args.forward.inv_std,
             weight: args.weights.norm.weight.device(),
             d_residual: &mut args.grads.d_pre2,
+            output_scale: 1.0,
             row_count: args.row_count,
             embedding_dim: NEXTLAT_INPUT_DIM,
         })

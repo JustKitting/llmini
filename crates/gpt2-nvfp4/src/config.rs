@@ -40,6 +40,10 @@ pub const fn uses_full_attention(block_index: usize) -> bool {
     block_index % KIMI_FULL_ATTENTION_PERIOD == KIMI_FULL_ATTENTION_PERIOD - 1
 }
 
+pub fn layer_norm_scale(block_index: usize) -> f32 {
+    1.0 / ((block_index + 1) as f32).sqrt()
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Gpt2Config;
 
@@ -89,5 +93,17 @@ impl Gpt2Config {
         } else {
             GPT2_QKV
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::layer_norm_scale;
+
+    #[test]
+    fn layer_norm_scale_uses_one_indexed_inverse_square_root() {
+        assert_eq!(layer_norm_scale(0), 1.0);
+        assert_eq!(layer_norm_scale(3), 0.5);
+        assert_eq!(layer_norm_scale(15), 0.25);
     }
 }

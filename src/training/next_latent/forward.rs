@@ -73,6 +73,7 @@ fn norm_and_quantize_input(args: &mut NextLatForwardArgs<'_, '_>) -> Result<(), 
         row_count: args.row_count,
         embedding_dim: NEXTLAT_INPUT_DIM,
         epsilon: GPT2_LAYER_NORM_EPSILON,
+        output_scale: 1.0,
     })?;
     quantize_input(args)
 }

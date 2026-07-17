@@ -21,6 +21,7 @@ const COLS: usize = 32;
 #[test]
 fn layer_norm_backward_input_matches_reference() -> Result<(), Box<dyn Error>> {
     let epsilon = 1.0e-5f32;
+    let output_scale = 0.25f32;
     let x = sample_rows(ROWS, COLS, 17, 8.0, 0.125, 0.25);
     let d_normalized = sample_rows(ROWS, COLS, 11, 5.0, 0.03125, 0.0);
     let (mean, inv_std) = reference_row_stats(&x, ROWS, COLS, epsilon);
@@ -48,12 +49,13 @@ fn layer_norm_backward_input_matches_reference() -> Result<(), Box<dyn Error>> {
             &weight_global_scale_dev,
         ),
         d_residual: &mut dx_dev,
+        output_scale,
         row_count: ROWS as u32,
         embedding_dim: COLS as u32,
     })?;
 
     let dx = dx_dev.to_host_vec(&stream)?;
-    let expected = reference_backward_input(&x, &d_normalized, &mean, &inv_std);
+    let expected = reference_backward_input(&x, &d_normalized, &mean, &inv_std, output_scale);
     common::assert_slice_close(&dx, &expected, 1.0e-8);
     Ok(())
 }
@@ -107,6 +109,7 @@ fn layer_norm_backward_input_add_amax_matches_output_tail() -> Result<(), Box<dy
         ),
         direct: &direct_dev,
         d_residual: &mut reference_dev,
+        output_scale: 0.25,
         row_count: AMAX_ROWS as u32,
         embedding_dim: AMAX_COLS as u32,
     })?;
@@ -124,6 +127,7 @@ fn layer_norm_backward_input_add_amax_matches_output_tail() -> Result<(), Box<dy
         direct: &direct_dev,
         d_residual: &mut candidate_dev,
         chunk_amax: &mut chunk_amax_dev,
+        output_scale: 0.25,
         row_count: AMAX_ROWS as u32,
         embedding_dim: AMAX_COLS as u32,
     })?;
@@ -141,7 +145,13 @@ fn layer_norm_backward_input_add_amax_matches_output_tail() -> Result<(), Box<dy
     Ok(())
 }
 
-fn reference_backward_input(x: &[f32], grad: &[f32], mean: &[f32], inv_std: &[f32]) -> Vec<f32> {
+fn reference_backward_input(
+    x: &[f32],
+    grad: &[f32],
+    mean: &[f32],
+    inv_std: &[f32],
+    output_scale: f32,
+) -> Vec<f32> {
     let mut out = vec![0.0f32; ROWS * COLS];
     for row in 0..ROWS {
         let base = row * COLS;
@@ -149,14 +159,17 @@ fn reference_backward_input(x: &[f32], grad: &[f32], mean: &[f32], inv_std: &[f3
             .iter()
             .map(|value| (value - mean[row]) * inv_std[row])
             .collect::<Vec<_>>();
-        let sum_grad = grad[base..base + COLS].iter().sum::<f32>();
+        let sum_grad = grad[base..base + COLS]
+            .iter()
+            .map(|grad| grad * output_scale)
+            .sum::<f32>();
         let sum_xhat_grad = xhat
             .iter()
             .zip(&grad[base..base + COLS])
-            .map(|(xhat, grad)| xhat * grad)
+            .map(|(xhat, grad)| xhat * grad * output_scale)
             .sum::<f32>();
         for col in 0..COLS {
-            out[base + col] = (grad[base + col]
+            out[base + col] = (grad[base + col] * output_scale
                 - sum_grad / COLS as f32
                 - xhat[col] * sum_xhat_grad / COLS as f32)
                 * inv_std[row];

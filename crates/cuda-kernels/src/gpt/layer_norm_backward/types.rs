@@ -35,6 +35,7 @@ macro_rules! backward_input_launcher {
                 args.weight.scales,
                 args.weight.global_scale,
                 args.d_residual,
+                args.output_scale,
                 args.row_count,
                 args.embedding_dim,
             )
@@ -54,6 +55,7 @@ macro_rules! backward_params_launcher {
                 args.inv_std,
                 args.d_weight,
                 args.d_bias,
+                args.output_scale,
                 args.row_count,
                 args.embedding_dim,
             )
@@ -100,6 +102,7 @@ impl LayerNormBackwardModule {
             args.weight.global_scale,
             args.d_residual,
             args.chunk_amax,
+            args.output_scale,
             args.row_count,
             args.embedding_dim,
         )?;
@@ -121,6 +124,7 @@ impl LayerNormBackwardModule {
             args.weight.global_scale,
             args.direct,
             args.d_residual,
+            args.output_scale,
             args.row_count,
             args.embedding_dim,
         )
@@ -147,6 +151,7 @@ impl LayerNormBackwardModule {
             args.direct,
             args.d_residual,
             args.chunk_amax,
+            args.output_scale,
             args.row_count,
             args.embedding_dim,
         )?;
@@ -184,6 +189,7 @@ impl LayerNormBackwardModule {
                 args.inv_std,
                 args.d_weight,
                 args.d_bias,
+                args.output_scale,
                 args.row_count,
                 args.embedding_dim,
             );
@@ -198,6 +204,7 @@ impl LayerNormBackwardModule {
             args.inv_std,
             args.d_weight,
             args.d_bias,
+            args.output_scale,
             args.row_count,
             args.embedding_dim,
         )

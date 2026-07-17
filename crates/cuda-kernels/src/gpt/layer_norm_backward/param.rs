@@ -23,7 +23,7 @@ pub(super) mod kernels {
         (
             $residual_column:path;
             $residual:ident $d_normalized:ident $mean:ident $inv_std:ident;
-            $d_weight:ident $d_bias:ident $row_count:ident $embedding_dim:ident
+            $d_weight:ident $d_bias:ident $output_scale:ident $row_count:ident $embedding_dim:ident
         ) => {{
             static mut WARP_SUMS: SharedArray<f32, { WARPS_PER_BLOCK as usize }> =
                 SharedArray::UNINIT;
@@ -40,7 +40,7 @@ pub(super) mod kernels {
                     ($weight:ident, $bias:ident, $row:expr) => {{
                         let row = $row;
                         let offset = row as usize * $embedding_dim as usize + col as usize;
-                        let grad = $d_normalized[offset];
+                        let grad = $d_normalized[offset] * $output_scale;
                         let row_base = row as usize * $embedding_dim as usize;
                         let xhat = ($residual_column($residual, row_base, col, $embedding_dim)
                             - $mean[row as usize])
@@ -102,6 +102,7 @@ pub(super) mod kernels {
         inv_std: &[f32],
         mut d_weight: DisjointSlice<f32>,
         mut d_bias: DisjointSlice<f32>,
+        output_scale: f32,
         row_count: u32,
         embedding_dim: u32,
     ) {
@@ -122,7 +123,7 @@ pub(super) mod kernels {
         if col < embedding_dim {
             while row < row_count {
                 let row_base = row as usize * embedding_dim as usize;
-                let grad = d_normalized[row_base + col as usize];
+                let grad = d_normalized[row_base + col as usize] * output_scale;
                 let row_mean =
                     warp::shuffle_f32(if lane == 0 { mean[row as usize] } else { 0.0 }, 0);
                 let row_inv_std = warp::shuffle_f32(
@@ -174,13 +175,14 @@ pub(super) mod kernels {
         inv_std: &[f32],
         mut d_weight: DisjointSlice<f32>,
         mut d_bias: DisjointSlice<f32>,
+        output_scale: f32,
         row_count: u32,
         embedding_dim: u32,
     ) {
         layer_norm_backward_params_body!(
             f16_column;
             residual d_normalized mean inv_std;
-            d_weight d_bias row_count embedding_dim
+            d_weight d_bias output_scale row_count embedding_dim
         );
     }
 
@@ -192,13 +194,14 @@ pub(super) mod kernels {
         inv_std: &[f32],
         mut d_weight: DisjointSlice<f32>,
         mut d_bias: DisjointSlice<f32>,
+        output_scale: f32,
         row_count: u32,
         embedding_dim: u32,
     ) {
         layer_norm_backward_params_body!(
             f32_column;
             residual d_normalized mean inv_std;
-            d_weight d_bias row_count embedding_dim
+            d_weight d_bias output_scale row_count embedding_dim
         );
     }
 }

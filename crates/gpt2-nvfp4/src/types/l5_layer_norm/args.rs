@@ -13,4 +13,5 @@ pub struct LayerNormForwardArgs<'a> {
     pub module: &'a LayerNormModule,
     pub tensors: LayerNormTensors<'a>,
     pub hidden: HiddenStateDevice<'a>,
+    pub output_scale: f32,
 }

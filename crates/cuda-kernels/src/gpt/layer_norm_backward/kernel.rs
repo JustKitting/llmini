@@ -51,7 +51,7 @@ pub(super) mod kernels {
             $residual_column:path;
             $residual:ident $d_normalized:ident $mean:ident $inv_std:ident;
             $weight_bytes:ident $weight_scales:ident $weight_global_scale:ident;
-            $d_residual:ident $row_count:ident $embedding_dim:ident;
+            $d_residual:ident $output_scale:ident $row_count:ident $embedding_dim:ident;
             $direct:expr;
             $chunk_amax:ident
         ) => {{
@@ -80,7 +80,7 @@ pub(super) mod kernels {
                         col,
                         $embedding_dim,
                     );
-                    grad * weight
+                    grad * weight * $output_scale
                 });
                 let dxhat_sum = layer_norm_block_reduce!(
                     WARP_SUMS,
@@ -146,6 +146,7 @@ pub(super) mod kernels {
         weight_scales: &[u8],
         weight_global_scale: &[f32],
         mut d_residual: DisjointSlice<f32>,
+        output_scale: f32,
         row_count: u32,
         embedding_dim: u32,
     ) {
@@ -153,7 +154,7 @@ pub(super) mod kernels {
             f16_column;
             residual d_normalized mean inv_std;
             weight_bytes weight_scales weight_global_scale;
-            d_residual row_count embedding_dim;
+            d_residual output_scale row_count embedding_dim;
             core::ptr::null();
             none
         );
@@ -170,6 +171,7 @@ pub(super) mod kernels {
         weight_global_scale: &[f32],
         mut d_residual: DisjointSlice<f32>,
         mut chunk_amax: DisjointSlice<f32>,
+        output_scale: f32,
         row_count: u32,
         embedding_dim: u32,
     ) {
@@ -177,7 +179,7 @@ pub(super) mod kernels {
             f16_column;
             residual d_normalized mean inv_std;
             weight_bytes weight_scales weight_global_scale;
-            d_residual row_count embedding_dim;
+            d_residual output_scale row_count embedding_dim;
             core::ptr::null();
             chunk_amax
         );
@@ -194,6 +196,7 @@ pub(super) mod kernels {
         weight_global_scale: &[f32],
         direct: &[f32],
         mut d_residual: DisjointSlice<f32>,
+        output_scale: f32,
         row_count: u32,
         embedding_dim: u32,
     ) {
@@ -201,7 +204,7 @@ pub(super) mod kernels {
             f16_column;
             residual d_normalized mean inv_std;
             weight_bytes weight_scales weight_global_scale;
-            d_residual row_count embedding_dim;
+            d_residual output_scale row_count embedding_dim;
             direct.as_ptr();
             none
         );
@@ -219,6 +222,7 @@ pub(super) mod kernels {
         direct: &[f32],
         mut d_residual: DisjointSlice<f32>,
         mut chunk_amax: DisjointSlice<f32>,
+        output_scale: f32,
         row_count: u32,
         embedding_dim: u32,
     ) {
@@ -226,7 +230,7 @@ pub(super) mod kernels {
             f16_column;
             residual d_normalized mean inv_std;
             weight_bytes weight_scales weight_global_scale;
-            d_residual row_count embedding_dim;
+            d_residual output_scale row_count embedding_dim;
             direct.as_ptr();
             chunk_amax
         );
@@ -242,6 +246,7 @@ pub(super) mod kernels {
         weight_scales: &[u8],
         weight_global_scale: &[f32],
         mut d_residual: DisjointSlice<f32>,
+        output_scale: f32,
         row_count: u32,
         embedding_dim: u32,
     ) {
@@ -249,7 +254,7 @@ pub(super) mod kernels {
             f32_column;
             residual d_normalized mean inv_std;
             weight_bytes weight_scales weight_global_scale;
-            d_residual row_count embedding_dim;
+            d_residual output_scale row_count embedding_dim;
             core::ptr::null();
             none
         );

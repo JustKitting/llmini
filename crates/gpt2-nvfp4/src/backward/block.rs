@@ -18,6 +18,7 @@ pub struct BlockMlpBackwardModules<'a> {
 }
 
 pub struct BlockMlpBackwardArgs<'a, 'scratch, 'out> {
+    pub block_index: usize,
     pub stream: &'a CudaStream,
     pub modules: BlockMlpBackwardModules<'a>,
     pub saved: BlockForwardSaved<'a>,
@@ -36,6 +37,7 @@ pub struct BlockMlpBackwardArgs<'a, 'scratch, 'out> {
 
 pub fn mlp_side_backward(args: BlockMlpBackwardArgs<'_, '_, '_>) -> Result<u32, DriverError> {
     let BlockMlpBackwardArgs {
+        block_index,
         stream,
         modules,
         saved,
@@ -88,5 +90,6 @@ pub fn mlp_side_backward(args: BlockMlpBackwardArgs<'_, '_, '_>) -> Result<u32, 
         direct: d_residual_out,
         d_residual: d_residual_after_attention,
         chunk_amax: d_residual_after_attention_chunk_amax,
+        output_scale: crate::layer_norm_scale(block_index),
     })
 }

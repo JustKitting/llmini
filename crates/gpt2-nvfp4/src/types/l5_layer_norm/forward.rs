@@ -13,11 +13,13 @@ impl LayerNormWeights {
         module: &'a LayerNormModule,
         tensors: LayerNormTensors<'a>,
         hidden: HiddenStateDevice<'a>,
+        output_scale: f32,
     ) -> LayerNormForwardArgs<'a> {
         LayerNormForwardArgs {
             module,
             tensors,
             hidden,
+            output_scale,
         }
     }
 
@@ -39,6 +41,7 @@ impl LayerNormWeights {
             row_count: hidden.row_count,
             embedding_dim: GPT2_EMBEDDING_DIM,
             epsilon: GPT2_LAYER_NORM_EPSILON,
+            output_scale: args.output_scale,
         })?;
 
         Ok(hidden)
@@ -79,6 +82,7 @@ impl LayerNormWeights {
                 row_count: hidden.row_count,
                 embedding_dim: GPT2_EMBEDDING_DIM,
                 epsilon: GPT2_LAYER_NORM_EPSILON,
+                output_scale: args.output_scale,
             })?;
 
         Ok(hidden)

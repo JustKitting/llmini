@@ -69,6 +69,7 @@ pub fn backward(args: Gpt2BackwardArgs<'_, '_, '_>) -> Result<(), DriverError> {
             d_normalized: &*d_hidden,
             d_residual: &mut *d_embedding_residual,
             chunk_amax: &mut *mlp_scratch.down_linear.e_h.chunk_amax,
+            output_scale: 1.0,
         })?;
     run_blocks(BlocksBackwardRun {
         stream,

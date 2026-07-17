@@ -48,6 +48,89 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 
 ```text
 date: 2026-07-17
+commit: accepted working-copy experiment after full gate
+experiment: LayerNorm Scaling without depth-scaled residual initialization.
+status: accepted_450s
+source:
+  https://arxiv.org/abs/2502.05795
+  https://github.com/lmsdss/LayerNorm-Scaling
+  https://github.com/lmsdss/LayerNorm-Scaling/blob/main/peft_pretraining/modeling_llama.py
+rationale:
+  The Curse of Depth attributes diminishing deep-block contribution in Pre-LN
+  transformers to residual-stream variance growth. Its LayerNorm Scaling
+  method scales each block's normalized inputs by the inverse square root of
+  one-indexed depth, adds no parameters or tuned scalar, and reports consistent
+  pretraining gains from 130M through 7B. In the paper's matched LLaMA-1B
+  experiment, perplexity improves from 17.02 to 15.71. The paper and official
+  implementation also recommend removing GPT-style Scaled Initialization
+  because combining it with LayerNorm Scaling diminishes the gain.
+implementation:
+  Applied the official fixed scale
+    scale(block_index) = 1 / sqrt(block_index + 1)
+  to both transformer pre-LayerNorm outputs in every block. Layer 1 therefore
+  uses 1.0, layer 4 uses 0.5, and layer 16 uses 0.25. The scale is fused after
+  the complete NVFP4 affine LayerNorm output, so its row amax and subsequent
+  activation quantization describe the actual scaled tensor without an extra
+  kernel launch.
+  Implemented the exact backward for y = scale * (gamma*xhat + beta):
+  input gradients use dy*gamma*scale, dgamma uses dy*scale*xhat, and dbeta
+  uses dy*scale. Both the ordinary and direct-residual-add paths, amax paths,
+  FP16 saved-residual parameter path, and FP32 reference path carry the same
+  scale. Final model LayerNorm and NextLat's separate LayerNorm remain at 1.0.
+  Removed depth-scaled residual initialization by changing attention and MLP
+  residual projection initialization from 0.02/sqrt(2*16) to 0.02, matching
+  the official LNS path's ordinary initialization.
+  ResFormer, NextLat, all attention and MLP paths, all 16 layers, d=2048,
+  32 heads, FineWeb, Llama-2 tokenization, B4/S2048, and 8192 tokens per step
+  remain intact.
+correctness:
+  cargo fmt --all --check, git diff --check,
+  cargo check --workspace --lib --bins, and
+  cargo test --workspace --lib --bins: pass; 51 library/binary tests pass.
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+  Six rebuilt-PTX GPU tests pass with a non-unit 0.25 scale: fused forward
+  output and amax, backward input, backward input plus direct residual and
+  amax, FP32 parameter gradients, and the tiled FP16 parameter-gradient path.
+  The forward reference initially exposed a stale test assumption: it
+  simulated 32 source warps although the fused GPT LayerNorm launches 8.
+  Restricting the host reduction reference to the actual 8 warps makes it
+  match the device and direct population mean/variance calculation; this was
+  a test-only correction, not a training-kernel change.
+bringup:
+  target/runs/20260717_181516Z_fineweb_30s
+  completed_steps=89, train_elapsed_s=30.110, val_loss=6.174480.
+  Both high-fidelity samples are finite and nonzero, every update/skip counter
+  is zero, gradient norm is finite, and B4/S2048/8192 tokens per step remain
+  intact. This run established only launchability, real updates, and immediate
+  numerical health. Its endpoint loss was ignored and was not compared,
+  ranked, tuned against, or used in the keep decision.
+gate:
+  target/runs/20260717_181621Z_fineweb_450s
+  completed_steps=1291, train_elapsed_s=450.131,
+  val_loss=4.8560075759887695.
+  All 26 high-fidelity samples are finite and nonzero and every update/skip
+  counter is zero. Sampled training loss ranges from 10.671360016 down to
+  4.824743271 and ends at 4.949600697. Global gradient norm remains finite,
+  ranges from 0.876942813 to 3.514682770, and ends at 1.249102116. Every
+  sample retains batch 4, sequence 2048, and 8192 tokens per step.
+measured_effect:
+  Against the accepted ResFormer/NorMuon/SignMuon control at
+  4.868333339691162 / 1291 steps, held-out loss improves by
+  0.012325763702393 (-0.253182411%). Both runs complete exactly 1291 steps
+  and process exactly 10575872 tokens, so the improvement has no exposure
+  advantage. Average step time is effectively unchanged:
+  348.697909 ms baseline versus 348.668474 ms candidate
+  (-0.029435 ms, -0.008441%).
+decision:
+  Keep and promote LayerNorm Scaling plus ordinary residual initialization as
+  the active baseline. The intact approximately 1B model reaches lower held-out
+  loss at identical step and token exposure with no measurable throughput
+  cost. notes/sweep_baseline.env now points to the sustained gate. The
+  30-second loss was health-only and played no role in acceptance.
+```
+
+```text
+date: 2026-07-17
 commit: rejected working-copy experiment; source fully reverted
 experiment: Muon-VS variance-scaled momentum before Polar orthogonalization.
 status: rejected_450s

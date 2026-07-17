@@ -132,6 +132,7 @@ pub fn attention_side_backward(
             d_normalized: &*d_hidden,
             direct: d_residual_after_attention,
             d_residual: d_residual_in,
+            output_scale: crate::layer_norm_scale(block_index),
         })?;
         Ok(None)
     } else {
@@ -145,6 +146,7 @@ pub fn attention_side_backward(
             direct: d_residual_after_attention,
             d_residual: d_residual_in,
             chunk_amax: d_residual_in_chunk_amax,
+            output_scale: crate::layer_norm_scale(block_index),
         })?;
         Ok(Some(chunk_count))
     }

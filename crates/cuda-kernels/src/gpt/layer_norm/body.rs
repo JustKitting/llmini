@@ -16,7 +16,7 @@ macro_rules! gpt_layer_norm_body {
         $residual:ident $weight_bytes:ident $weight_scales:ident $bias_bytes:ident $bias_scales:ident;
         $weight_global_scale:ident $bias_global_scale:ident;
         $normalized:ident $normalized_amax:ident $mean_out:ident $inv_std_out:ident;
-        $row_count:ident $embedding_dim:ident $epsilon:ident;
+        $row_count:ident $embedding_dim:ident $epsilon:ident $output_scale:ident;
         $residual_f16:ident
     ) => {{
         use cuda_device::{SharedArray, thread};
@@ -75,7 +75,7 @@ macro_rules! gpt_layer_norm_body {
             );
             let inv_std = 1.0 / sqrt_f32(variance_sum / $embedding_dim as f32 + $epsilon);
             layer_norm_store_row!(&mut $inv_std_out, row, lane, warp_in_block, inv_std);
-            let normalized_values =
+            let affine_values =
                 layer_norm_map3_indexed!(cols, |index, col| nvfp4_affine_normalized_column(
                     $weight_bytes,
                     $weight_scales,
@@ -88,6 +88,7 @@ macro_rules! gpt_layer_norm_body {
                     $weight_global_scale[0],
                     $bias_global_scale[0],
                 ));
+            let normalized_values = layer_norm_map3!(affine_values, |value| value * $output_scale);
 
             layer_norm_store3!(
                 &mut $normalized,

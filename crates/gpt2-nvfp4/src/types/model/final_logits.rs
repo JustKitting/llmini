@@ -35,7 +35,8 @@ pub(super) fn finish_forward<'a>(
 ) -> Result<HiddenStateDevice<'a>, DriverError> {
     let mut hidden_nvfp4 = args.hidden_nvfp4;
     let mut tape = args.tape;
-    let ln_f = LayerNormWeights::input_from_block(args.layer_norm_module, args.ln_f, args.hidden);
+    let ln_f =
+        LayerNormWeights::input_from_block(args.layer_norm_module, args.ln_f, args.hidden, 1.0);
     let hidden = args
         .ln_f_weights
         .forward_with_tape(ln_f, tape.as_mut().map(|tape| &mut tape.final_norm))?;

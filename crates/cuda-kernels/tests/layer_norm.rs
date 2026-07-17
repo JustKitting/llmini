@@ -59,6 +59,7 @@ fn layer_norm_matches_reference() -> Result<(), Box<dyn Error>> {
 fn gpt_layer_norm_matches_reference() -> Result<(), Box<dyn Error>> {
     let row_count = 2usize;
     let epsilon = 1.0e-5f32;
+    let output_scale = 0.25f32;
     let x = (0..row_count * GPT_EMBEDDING_DIM)
         .map(|i| {
             ((i % GPT_EMBEDDING_DIM) as f32 - 383.5) * 0.001 + (i / GPT_EMBEDDING_DIM) as f32 * 0.25
@@ -97,11 +98,15 @@ fn gpt_layer_norm_matches_reference() -> Result<(), Box<dyn Error>> {
         row_count: row_count as u32,
         embedding_dim: GPT_EMBEDDING_DIM as u32,
         epsilon,
+        output_scale,
     })?;
 
     let out = out_dev.to_host_vec(&stream)?;
     let amax = amax_dev.to_host_vec(&stream)?;
-    let expected = reference_layer_norm_rows(&x, row_count, GPT_EMBEDDING_DIM, epsilon);
+    let expected = reference_layer_norm_rows(&x, row_count, GPT_EMBEDDING_DIM, epsilon)
+        .into_iter()
+        .map(|value| value * output_scale)
+        .collect::<Vec<_>>();
     assert_slice_close(&out, &expected, 1.0e-7);
     assert_row_amax(&out, &amax, row_count, GPT_EMBEDDING_DIM);
     Ok(())
