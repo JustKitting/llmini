@@ -42,6 +42,8 @@ pub fn causal_attention_backward(
     if args.use_full_attention {
         args.module.causal_attention_backward_tc(tc_args).map(Some)
     } else {
-        args.module.kda_attention_backward_tc(tc_args).map(Some)
+        args.module
+            .kda_attention_backward_tc_detached_chunk_state(tc_args)
+            .map(Some)
     }
 }

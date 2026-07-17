@@ -68,33 +68,34 @@ fn causal_attention_backward_wrapper_matches_direct_kernel() -> Result<(), Box<d
     .expect("KDA backward must return producer amax chunks");
 
     let direct_core = direct_scratch.args();
-    let direct_chunk_count = module.kda_attention_backward_tc(CausalAttentionBackwardTcArgs {
-        reuse_forward_probs: false,
-        forward_probs_f16: None,
-        stream: &stream,
-        tc_module: &tc_module,
-        qkv: &qkv,
-        attention_out: &attention_out,
-        kda_v_new: None,
-        kda_akk_inv: None,
-        kda_w: None,
-        kda_aqk: None,
-        d_out: &d_out,
-        log_sum_exp: &log_sum_exp,
-        softmax_d: direct_core.softmax_d,
-        qk_norm_max: direct_core.qk_norm_max,
-        d_qkv: &mut direct_d_qkv,
-        d_qkv_chunk_amax: &mut direct_d_qkv_chunk_amax,
-        scratch: direct_core.tc,
-        row_count: GPT2_TOKEN_ROWS as u32,
-        seq_len: GPT2_SEQ_LEN as u32,
-        batch_size: GPT2_BATCH_SIZE as u32,
-        embedding_dim: GPT2_N_EMBD as u32,
-        qkv_dim: GPT2_QKV as u32,
-        head_count: GPT2_N_HEAD as u32,
-        head_dim: (GPT2_N_EMBD / GPT2_N_HEAD) as u32,
-        qk_norm_offset: 0,
-    })?;
+    let direct_chunk_count =
+        module.kda_attention_backward_tc_detached_chunk_state(CausalAttentionBackwardTcArgs {
+            reuse_forward_probs: false,
+            forward_probs_f16: None,
+            stream: &stream,
+            tc_module: &tc_module,
+            qkv: &qkv,
+            attention_out: &attention_out,
+            kda_v_new: None,
+            kda_akk_inv: None,
+            kda_w: None,
+            kda_aqk: None,
+            d_out: &d_out,
+            log_sum_exp: &log_sum_exp,
+            softmax_d: direct_core.softmax_d,
+            qk_norm_max: direct_core.qk_norm_max,
+            d_qkv: &mut direct_d_qkv,
+            d_qkv_chunk_amax: &mut direct_d_qkv_chunk_amax,
+            scratch: direct_core.tc,
+            row_count: GPT2_TOKEN_ROWS as u32,
+            seq_len: GPT2_SEQ_LEN as u32,
+            batch_size: GPT2_BATCH_SIZE as u32,
+            embedding_dim: GPT2_N_EMBD as u32,
+            qkv_dim: GPT2_QKV as u32,
+            head_count: GPT2_N_HEAD as u32,
+            head_dim: (GPT2_N_EMBD / GPT2_N_HEAD) as u32,
+            qk_norm_offset: 0,
+        })?;
 
     let wrapper = wrapper_d_qkv.to_host_vec(&stream)?;
     let direct = direct_d_qkv.to_host_vec(&stream)?;

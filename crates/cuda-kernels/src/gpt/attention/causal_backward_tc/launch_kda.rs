@@ -16,6 +16,26 @@ impl AttentionModule {
         &self,
         args: CausalAttentionBackwardTcArgs<'_, '_, '_>,
     ) -> Result<u32, DriverError> {
+        self.kda_attention_backward_tc_impl(args, false)
+    }
+
+    /// Runs the exact KDA backward inside each chunk while treating the saved
+    /// recurrent state entering that chunk as a backward constant.
+    ///
+    /// The forward recurrence is unchanged, and every KDA projection still
+    /// receives its within-chunk parameter gradient.
+    pub fn kda_attention_backward_tc_detached_chunk_state(
+        &self,
+        args: CausalAttentionBackwardTcArgs<'_, '_, '_>,
+    ) -> Result<u32, DriverError> {
+        self.kda_attention_backward_tc_impl(args, true)
+    }
+
+    fn kda_attention_backward_tc_impl(
+        &self,
+        args: CausalAttentionBackwardTcArgs<'_, '_, '_>,
+        detach_chunk_state: bool,
+    ) -> Result<u32, DriverError> {
         assert_eq!(
             args.head_dim, KDA_HEAD_DIM,
             "KDA path currently expects head_dim=64"
@@ -162,8 +182,15 @@ impl AttentionModule {
             kpos_u_dw,
             dims.chc()
         ));
-        launch!(bwd_tc.chunkwise_kda_backward_kernel(chunkwise_cfg; qg, kg, kpos_u_dw, w, aqk, g, chunk_states, d_out, dh_states_or_kneg, local_grad));
-        {
+        if detach_chunk_state {
+            fwd.zero_kda_f32_kernel(
+                stream,
+                linear_config(dims.compact_elems, threads),
+                &mut *dkg_from_state,
+                dims.compact_elems,
+            )?;
+        } else {
+            launch!(bwd_tc.chunkwise_kda_backward_kernel(chunkwise_cfg; qg, kg, kpos_u_dw, w, aqk, g, chunk_states, d_out, dh_states_or_kneg, local_grad));
             let v_new = kda_v_new.unwrap_or(&*kneg_vnew_dqg_dv);
             launch!(bwd_tc.chunk_kda_dkg_from_vnew_dh_kernel(tc_chunk_cfg; v_new, dh_states_or_kneg, dkg_from_state));
         }

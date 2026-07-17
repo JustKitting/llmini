@@ -48,6 +48,96 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 
 ```text
 date: 2026-07-17
+commit: accepted working-copy experiment after full gate
+experiment: Detach recurrent KDA state between 64-token chunks in backward.
+status: accepted_450s
+source:
+  https://medium.com/@larry36d/partial-model-freezing-and-optimizing-for-the-backwards-pass-df5b0713f219
+related_research:
+  https://arxiv.org/abs/2501.17086
+rationale:
+  A block-level profile showed that the backward pass, rather than the exact
+  forward recurrence, contained a high-cost gradient boundary. Across the 12
+  KDA blocks in each training step, propagating the recurrent state gradient
+  between chunks cost 14.8967 ms/step:
+    chunkwise_kda_backward_kernel: 11.0015 ms/step
+    chunk_kda_dkg_from_vnew_dh_kernel: 3.8952 ms/step
+  This exceeded the 1.7435 ms/step minimum-impact threshold of the previous
+  baseline. Test truncated recurrent credit assignment at the natural
+  64-token KDA chunk boundary while leaving the model's forward function and
+  every parameterized section intact.
+implementation:
+  Added an explicit detached-chunk-state KDA backward entry point. The forward
+  pass still computes the full 2048-token recurrent KDA sequence exactly. In
+  backward, every chunk treats its saved incoming recurrent state as a
+  constant. The within-chunk KDA backward, local state-dependent gradients,
+  q/k/v/g/beta projection gradients, attention output projection, and every
+  other model gradient still run on every step. The four full-attention blocks
+  retain their exact backward.
+  The detached path skips only chunkwise_kda_backward_kernel and
+  chunk_kda_dkg_from_vnew_dh_kernel, then explicitly zeros dkg_from_state
+  before the retained within-chunk backward consumes it. The original exact
+  KDA entry point remains available and the GPT training wrapper deliberately
+  selects the detached variant.
+  ResFormer, NextLat, every attention and MLP branch, all 16 layers, d=2048,
+  32 heads, FineWeb, Llama-2 tokenization, B4/S2048, and 8192 tokens per step
+  remain active.
+correctness:
+  cargo fmt --all --check, cargo check --workspace, and the focused
+  causal-attention test compile: pass.
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+  cargo test -p gpt2-nvfp4 --test causal_attention_backward --release --
+    --ignored --nocapture:
+    pass against rebuilt PTX.
+profile:
+  Matched 10-step traces:
+    target/nsys/20260717_backward_layout_baseline.nsys-rep
+    target/nsys/20260717_backward_layout_detached_candidate.nsys-rep
+  Baseline total GPU-kernel time: 3486.660 ms.
+  Candidate total GPU-kernel time: 3347.617 ms, a 3.988% reduction.
+  The launch-count diff contains exactly the intended changes:
+    chunkwise_kda_backward_kernel: 120 -> 0
+    chunk_kda_dkg_from_vnew_dh_kernel: 120 -> 0
+    zero_kda_f32_kernel: 132 -> 252
+  The removed kernels cost 148.967 ms in the baseline trace and the 120 added
+  zeroing launches add 3.960 ms relative to the existing zero launches. The
+  10-step diagnostic completed in 3.263 seconds versus 3.402 seconds for the
+  matched baseline. Its validation loss was not acceptance evidence.
+bringup:
+  target/runs/20260717_202216Z_fineweb_30s
+  completed_steps=93, train_elapsed_s=30.163, val_loss=6.142890.
+  The prior baseline completed 89 steps in 30.110 seconds. Both sampled
+  gradients are finite and nonzero, all optimizer learning rates are active,
+  and every update/skip counter is zero. This run established launchability,
+  real updates, and immediate numerical health only. Its loss delta played no
+  role in acceptance.
+gate:
+  target/runs/20260717_202325Z_fineweb_450s
+  completed_steps=1350, train_elapsed_s=450.035,
+  val_loss=4.849991321563721.
+  All 27 high-fidelity samples are finite and nonzero and every update/skip
+  counter is zero. Sampled training loss falls from 10.671360016 to
+  4.983140469, with a minimum of 4.8286 at step 1100. Global gradient norm is
+  finite throughout and ends at 1.356698155. Every sample retains B4/S2048
+  and 8192 tokens per step.
+measured_effect:
+  Against the accepted baseline at 4.8560075759887695 / 1291 steps /
+  10575872 tokens, held-out loss improves by 0.006016254 (-0.123893020%).
+  The candidate completes 59 more steps and processes 11059200 tokens, a
+  4.570100697% increase in training exposure. Average step time improves from
+  348.668474051 ms to 333.359259259 ms (-15.309214792 ms, -4.390765421%).
+decision:
+  Accept and promote this run as the active matched baseline. It preserves the
+  exact forward model and real per-step training signals for every declared
+  section, clears the whole-step impact threshold by a wide margin, remains
+  stable for the complete gate, and produces a lower held-out endpoint. This
+  acceptance is specific to the fixed 450-second FineWeb gate; the truncated
+  cross-chunk gradient remains an approximation whose longer-budget and
+  long-context behavior should be checked separately rather than assumed.
+```
+
+```text
+date: 2026-07-17
 commit: rejected working-copy experiment; source fully reverted
 experiment: Full single-way dynamic dense MUDDFormer with PrePostDANorm.
 status: rejected_450s
