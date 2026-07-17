@@ -678,9 +678,6 @@ fn store_acc_relu2_backward_f16_scaled_amax(
     let row1 = row0 + 8;
     let col0 = tile.mma_col_base(n_repeat) + tile.thread_in_group * 2;
     let output_dim = params.output_dim;
-    if col0 + 1 >= output_dim {
-        return;
-    }
 
     let index0 = row0 * output_dim + col0;
     let index1 = row1 * output_dim + col0;
@@ -723,9 +720,6 @@ fn store_acc_linear3_scaled_amax(
     let row1 = row0 + 8;
     let col0 = tile.mma_col_base(n_repeat) + tile.thread_in_group * 2;
     let output_dim = params.output_dim;
-    if col0 + 1 >= output_dim {
-        return;
-    }
 
     let index0 = row0 * output_dim + col0;
     let index1 = row1 * output_dim + col0;
@@ -790,9 +784,6 @@ fn store_acc_linear3_scaled_row_sumsq(
     let row1 = row0 + 8;
     let col0 = tile.mma_col_base(n_repeat) + tile.thread_in_group * 2;
     let output_dim = params.output_dim;
-    if col0 + 1 >= output_dim {
-        return;
-    }
 
     let index0 = row0 * output_dim + col0;
     let index1 = row1 * output_dim + col0;

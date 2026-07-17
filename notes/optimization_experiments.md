@@ -45,6 +45,92 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 
 ```text
 date: 2026-07-17
+commit: accepted local jj commit after full gate
+experiment: Remove redundant output bounds from exact TMA Linear3 and ReLU2-backward epilogues.
+status: accepted_450s
+change:
+  The retained TMA launchers require token_count and output_dim to be exact
+  multiples of the 128x128 output tile, but their per-accumulator epilogues
+  still repeated a col0 + 1 >= output_dim predicate. Remove that impossible
+  branch from the exact Linear3 amax, Linear3 row-sumsq, and ReLU2-backward
+  amax stores. Padded affine, residual, ReLU2, and raw-output paths retain
+  their bounds checks.
+numerics:
+  MMA issue order, accumulation order, output scaling, Linear3 recurrence,
+  row-sumsq association, ReLU2 derivative, amax reduction, and output addresses
+  are unchanged. The removed predicate is false for every retained launch by
+  the host-side divisibility contract. All focused projection-TMA comparisons
+  pass after the exact rebuild, and the full fixed-wall run stays finite and
+  nonzero with no skipped updates.
+memory:
+  Persistent allocations, scratch capacities, launch counts, and static shared
+  memory are unchanged. Linear3 register counts move from 143 to 168 for amax
+  and 166 for row-sumsq; ReLU2-backward remains at 143. These kernels are
+  already limited to one CTA per SM by roughly 93 KiB of static shared memory,
+  so the higher Linear3 register count does not reduce residency and is not a
+  batch-capacity change.
+minimum_impact_gate:
+  The accepted baseline requires 20.442325ms over a reciprocal ten-step
+  profile. The parent averages 4080.858471ms and the final candidate averages
+  4051.536722ms, saving 29.321748ms/profile or 0.718519%. This clears the
+  predeclared floor by 43.4%. The directly touched families save
+  32.774916ms/profile.
+profiles:
+  Accepted parent:
+    target/nsys/20260717_kda_state_ultra_stride_a.nsys-rep:
+      total 4076.900571ms.
+    target/nsys/20260717_kda_state_ultra_stride_b.nsys-rep:
+      total 4084.816370ms.
+  Final candidate:
+    target/nsys/20260717_tma_exact_linear3_relu_a.nsys-rep:
+      total 4046.144711ms.
+    target/nsys/20260717_tma_exact_linear3_relu_b.nsys-rep:
+      total 4056.928734ms.
+  Reciprocal family means move as follows:
+    Linear3 amax 293.625385 -> 268.963331ms, saving 24.662054ms / 8.399%;
+    Linear3 row-sumsq 74.877670 -> 68.782311ms, saving 6.095360ms / 8.140%;
+    ReLU2-backward amax 68.601197 -> 66.583693ms, saving 2.017503ms / 2.941%.
+explored_subcandidates:
+  Removing the raw-output guard failed the padded LM-head projection test at
+  index 163 because that kernel is shared with a genuinely partial final tile;
+  its guard was restored before profiling. Removing the plain amax guard was
+  correct but flat/slightly slower in reciprocal profiles, so it was also
+  restored before the final candidate.
+verification:
+  cargo fmt --all, git diff --check, cargo check -q -p rust-kernels-cuda, and
+  the exact TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+  All eleven ignored projection_tma GPU comparisons pass serially on GPU0.
+gates:
+  Required 30-second screen:
+    target/runs/20260717_031246Z_fineweb_30s
+    stdout: target/gates/20260717_tma_exact_linear3_relu_30s.log
+    completed_steps=77, train_elapsed_s=30.330, val_loss=6.485452.
+  Required 450-second sustained gate:
+    target/runs/20260717_031327Z_fineweb_450s
+    stdout: target/gates/20260717_tma_exact_linear3_relu_450s.log
+    completed_steps=1110, train_elapsed_s=450.269, val_loss=5.018951.
+    All 23 high-fidelity samples are finite and nonzero. Every skip counter is
+    zero, grad norm ranges from 1.032342911 to 16.889122009, and every sample
+    retains batch 4, sequence 2048, and 8192 tokens per step.
+measured_effect:
+  Against the matched 30-second parent:
+    completed steps 76 -> 77 (+1, +1.316%);
+    average step time 396.894737 -> 393.896104ms (-0.756%);
+    held-out val_loss 6.492160 -> 6.485452 (-0.103%).
+  Against the matched 450-second parent:
+    completed steps 1101 -> 1110 (+9, +0.817%);
+    average step time 408.846503 -> 405.647748ms (-3.198755ms, -0.782%);
+    held-out val_loss 5.016880 -> 5.018951 (+0.041%).
+decision:
+  Keep, promote, and commit. Reciprocal profiles clear the mathematical floor,
+  both fixed-wall gates preserve the speed signal, held-out loss stays well
+  inside the roughly +1% tolerance, and sustained stability is clean. The next
+  0.5% threshold is 2.028239ms per step, or 20.282387ms over a ten-step
+  profile.
+```
+
+```text
+date: 2026-07-17
 commit: rejection record only; candidate source reverted
 experiment: Restore eager optimizer requantization from the overridden 081256f5 batch.
 status: rejected_450s
