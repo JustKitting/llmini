@@ -49,6 +49,74 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-17
 commit: rejected working-copy experiment; source fully reverted
+experiment: Parameter-free Scalable-Softmax (SSMax) in full-attention layers.
+status: rejected_450s
+source:
+  https://arxiv.org/abs/2501.19399
+rationale:
+  Scalable-Softmax multiplies the attention logits for causal row n by
+  s*log(n), counteracting the tendency of standard softmax attention to flatten
+  as its key count grows. The paper reports consistently lower pretraining loss
+  and explicitly finds that its parameter-free s=1 ablation has nearly the
+  same learning curve as learned per-head s. That made s=1 a direct
+  architecture experiment without adding scalar parameters or special
+  optimizer state.
+implementation:
+  Replaced standard softmax with
+    softmax(log(query_position + 1) * QK^T / sqrt(head_dim))
+  in the model's four existing full-attention blocks 3, 7, 11, and 15. Applied
+  the corresponding log(query_position + 1) chain-rule factor to Q/K
+  gradients in both recomputed-probability and production saved-FP16-
+  probability backward paths. The remaining 12 KDA blocks do not contain
+  softmax and were unchanged. No learned s or bias term was added. ResFormer,
+  NextLat, both MLP projections, all 16 layers, FineWeb, Llama-2 tokenization,
+  B4/S2048, and 8192 tokens per step remained intact.
+correctness:
+  cargo fmt --all, git diff --check, and
+  cargo check --workspace --lib --bins: pass.
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+  A rebuilt-PTX tensor-core forward test matched CPU SSMax probabilities and
+  explicitly distinguished them from standard softmax: pass.
+  The rebuilt-PTX tensor-core backward reference covered both probability
+  recomputation and the saved-FP16-probability path used by training: pass.
+  Both rebuilt-PTX non-tensor-core forward log-sum-exp and batch-isolation
+  tests passed. The pre-existing full-workspace all-target check remains
+  blocked by stale TMA-era test constructors unrelated to this candidate.
+bringup:
+  target/runs/20260717_161639Z_fineweb_30s
+  completed_steps=89, train_elapsed_s=30.102, val_loss=6.240761.
+  Both high-fidelity samples are finite and nonzero, gradient norm moves from
+  14.555964470 to 2.910403490, every update/skip counter is zero, and the exact
+  16-layer B4/S2048/8192-token configuration remains intact. This run was used
+  only to establish launchability, real updates, and immediate numerical
+  health. Its endpoint loss was not compared, ranked, tuned against, or used
+  in the keep/revert decision.
+gate:
+  target/runs/20260717_161738Z_fineweb_450s
+  completed_steps=1296, train_elapsed_s=450.282, val_loss=5.134424.
+  All 26 high-fidelity samples are finite and nonzero, all 702 logged metric
+  values are finite, and every update/skip counter is zero. Global gradient
+  norm ranges from 1.093707561 to 14.555964470. Every sample retains batch 4,
+  sequence 2048, and 8192 tokens per step.
+measured_effect:
+  Against the accepted ResFormer/NorMuon control at 4.868333 / 1291 steps,
+  held-out loss regresses by 0.266091 (+5.465752%) despite completing five
+  more steps (+0.387297%). Average step time moves from 348.697909 to
+  347.439815 ms (-0.360798%), which is below the 0.5% runtime threshold and
+  cannot explain or compensate for the quality regression.
+decision:
+  Reject parameter-free SSMax and fully restore standard softmax. The
+  450-second held-out endpoint is the rejection evidence; the healthy
+  30-second loss played no role. This result rejects s=1 SSMax in the current
+  four-full-attention/twelve-KDA hybrid and short fixed-compute regime. It does
+  not reproduce the paper's all-softmax Transformer trained for 419B tokens,
+  and it does not by itself reject a learned-s variant, but the large local
+  regression makes that a low-priority follow-up rather than a nearby tune.
+```
+
+```text
+date: 2026-07-17
+commit: rejected working-copy experiment; source fully reverted
 experiment: Early upper-half Q/K learning-rate slowing with fixed step release.
 status: rejected_450s
 source:
