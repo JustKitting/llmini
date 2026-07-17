@@ -46,6 +46,86 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-17
 commit: accepted local jj commit after full gate
+experiment: Tile non-power-of-two exact NVFP4 transpose rows.
+status: accepted_450s
+change:
+  Extend the exact no-padding NVFP4 transpose route to the remaining QKV and
+  LM-head weight shapes whose source-column count is a power of two but whose
+  32-value chunks per output row are not. These launches use the same paired
+  NVFP4 decode and 32x8 shared transpose tile as the power-of-two-row path,
+  replacing the output-row shift with one row-stride multiply. The former
+  padded scalar kernel remains the fallback for genuinely unsupported shapes.
+numerics:
+  Source indices, decoded values, random signs, Hadamard lane order, local
+  scale selection, payload layout, and output ownership are unchanged. A new
+  96x32 focused regression forces the row-multiply route and matches a
+  materialized FP32 decode/transpose bit-for-bit for payloads and every scale.
+  The seven-test transpose suite and linear-backward integrations pass after
+  the exact rebuild.
+memory:
+  Persistent allocations, scratch capacities, launch counts, and peak logical
+  VRAM are unchanged. The row-multiply kernel uses 20 registers, one barrier,
+  and 1152 bytes of static shared memory with no spills, matching the retained
+  shift-based tiled kernel. This is not a batch-capacity win.
+minimum_impact_gate:
+  The accepted parent requires 19.822799ms over a reciprocal ten-step profile.
+  Parent profiles average 3959.726679ms and the candidate averages
+  3938.312982ms, saving 21.413698ms/profile or 0.540787%. Both reciprocal
+  samples improve. The 170-launch target moves from 45.112582 to
+  11.353474ms/profile, saving 33.759108ms or 74.833%.
+profiles:
+  Accepted parent:
+    target/nsys/20260717_nvfp4_transpose_tiled_a.nsys-rep:
+      total 3957.317332ms.
+    target/nsys/20260717_nvfp4_transpose_tiled_b.nsys-rep:
+      total 3962.136026ms.
+  Candidate:
+    target/nsys/20260717_nvfp4_transpose_all_tiled_a.nsys-rep:
+      total 3932.301291ms.
+    target/nsys/20260717_nvfp4_transpose_all_tiled_b.nsys-rep:
+      total 3944.324672ms.
+  Parent and candidate each contain 61428 launches.
+verification:
+  cargo fmt --all, git diff --check, and the exact
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+  All seven ignored ms_eden_transpose tests, including the new generic-row
+  bitwise comparison, both ignored linear_backward tests, the ignored QKV
+  projection-backward integration, and the ignored full block-attention
+  backward integration pass serially on GPU0. ptxas reports no spills.
+gates:
+  Required 30-second screen:
+    target/runs/20260717_041413Z_fineweb_30s
+    stdout: target/gates/20260717_nvfp4_transpose_all_tiled_30s.log
+    completed_steps=79, train_elapsed_s=30.221, val_loss=6.462834.
+  Required 450-second sustained gate:
+    target/runs/20260717_041451Z_fineweb_450s
+    stdout: target/gates/20260717_nvfp4_transpose_all_tiled_450s.log
+    completed_steps=1141, train_elapsed_s=450.184, val_loss=5.005571.
+    All 23 high-fidelity samples are finite and nonzero. Every skip counter is
+    zero, loss ranges from 5.017333031 to 10.863180161, grad norm ranges from
+    1.023236394 to 16.889122009, and every sample retains batch 4, sequence
+    2048, and 8192 tokens per step.
+measured_effect:
+  Against the matched 30-second parent:
+    completed steps 78 -> 79 (+1, +1.282%);
+    average step time 384.641026 -> 382.544304ms (-0.545%);
+    held-out val_loss 6.473764 -> 6.462834 (-0.169%).
+  Against the matched 450-second parent:
+    completed steps 1136 -> 1141 (+5, +0.440%);
+    average step time 396.455986 -> 394.552147ms (-1.903839ms, -0.480%);
+    held-out val_loss 5.008699 -> 5.005571 (-0.062%).
+decision:
+  Keep, promote, and commit. The pre-screened candidate clears the reciprocal
+  profile floor, both fixed-time gates preserve a real speed increase, held-
+  out loss improves, and sustained stability is clean. The sustained speedup
+  lands just below 0.5%, which is explicitly allowed after a candidate with a
+  credible pre-edit ceiling has been measured. The next 0.5% threshold is
+  1.972761ms per step, or 19.727607ms over a ten-step profile.
+```
+
+```text
+date: 2026-07-17
+commit: accepted local jj commit after full gate
 experiment: Tile exact non-rowwise NVFP4 transpose MS-EDEN quantization.
 status: accepted_450s
 change:
