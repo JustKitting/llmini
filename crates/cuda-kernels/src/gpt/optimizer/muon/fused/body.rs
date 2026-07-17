@@ -29,6 +29,7 @@ pub(super) fn muon_matrix_update_body(
         scalars.mu,
         scalars.grad_scale,
         transposed,
+        true,
     );
     grid::sync();
 

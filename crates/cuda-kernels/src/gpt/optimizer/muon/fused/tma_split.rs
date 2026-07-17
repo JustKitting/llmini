@@ -20,7 +20,7 @@ use super::super::polar::fused::{
 use super::momentum::momentum_orient;
 use super::quant::{encode_four_six, quantize_updated_master};
 use super::types::{MuonMatrixShape, MuonUpdateScalars};
-use super::update::update_master_chunks;
+use super::update::{update_master_chunks, update_sign_master_chunks};
 
 const NORMUON_BETA2: f32 = 0.95;
 const NORMUON_EPSILON: f32 = 1.0e-10;
@@ -39,6 +39,7 @@ pub(crate) mod module {
         slot_index: u32,
         mu: f32,
         grad_scale: f32,
+        nesterov: u32,
     ) {
         static mut WARP_SUMS: SharedArray<f32, { WARPS_PER_BLOCK as usize }> = SharedArray::UNINIT;
 
@@ -59,6 +60,7 @@ pub(crate) mod module {
             mu,
             grad_scale,
             transposed,
+            nesterov != 0,
         );
         grid::sync();
 
@@ -87,6 +89,7 @@ pub(crate) mod module {
         slot_index: u32,
         mu: f32,
         grad_scale: f32,
+        nesterov: u32,
     ) {
         let desc = slots[slot_index as usize];
         let shape = MuonMatrixShape {
@@ -102,6 +105,7 @@ pub(crate) mod module {
             mu,
             grad_scale,
             shape.polar_transposed(),
+            nesterov != 0,
         );
     }
 
@@ -440,6 +444,53 @@ pub(crate) mod module {
                 shape.len(),
                 shape.master_transposed(),
                 polar_update_scale,
+                learning_rate * desc.learning_rate_multiplier,
+                weight_decay,
+                average_coefficient,
+                schedule_beta,
+                &mut WARP_SUMS,
+                &mut WARP_MAX_PAIRS,
+                WorkGrid::x_axis(),
+            );
+        }
+    }
+
+    #[kernel]
+    pub fn muon_tma_sign_update_master_chunks_kernel(
+        slots: &[MuonSlotDescriptor],
+        mut update_chunks: DisjointSlice<f32>,
+        qk_clip_factors: &[f32],
+        slot_index: u32,
+        mu: f32,
+        grad_scale: f32,
+        learning_rate: f32,
+        weight_decay: f32,
+        average_coefficient: f32,
+        schedule_beta: f32,
+    ) {
+        static mut WARP_SUMS: SharedArray<f32, { WARPS_PER_BLOCK as usize }> = SharedArray::UNINIT;
+        static mut WARP_MAX_PAIRS: SharedArray<f32, { WARPS_PER_BLOCK as usize }> =
+            SharedArray::UNINIT;
+
+        let desc = slots[slot_index as usize];
+        let shape = MuonMatrixShape {
+            rows: desc.rows,
+            cols: desc.cols,
+        };
+        unsafe {
+            update_sign_master_chunks(
+                ptr_const(desc.grad),
+                ptr_mut(desc.z_master),
+                ptr_mut(desc.x_master),
+                ptr_mut(desc.momentum),
+                update_chunks.as_mut_ptr(),
+                qk_clip_factors.as_ptr(),
+                desc.qk_clip_factor_offset,
+                desc.qk_clip_head_dim,
+                shape.rows,
+                shape.len(),
+                mu,
+                grad_scale,
                 learning_rate * desc.learning_rate_multiplier,
                 weight_decay,
                 average_coefficient,

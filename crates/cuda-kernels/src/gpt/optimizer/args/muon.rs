@@ -53,6 +53,7 @@ pub struct MuonTmaPrepareArgs<'a> {
     pub matrix_len: u32,
     pub mu: f32,
     pub grad_scale: f32,
+    pub nesterov: u32,
 }
 
 pub struct MuonTmaFinishArgs<'a> {
@@ -72,4 +73,19 @@ pub struct MuonTmaFinishArgs<'a> {
     pub average_coefficient: f32,
     pub schedule_beta: f32,
     pub apply_polar_sqrt_bound: u32,
+}
+
+pub struct MuonTmaSignUpdateArgs<'a> {
+    pub stream: &'a CudaStream,
+    pub slots: &'a DeviceBuffer<MuonSlotDescriptor>,
+    pub update_chunks: &'a mut DeviceBuffer<f32>,
+    pub qk_clip_factors: &'a DeviceBuffer<f32>,
+    pub slot_index: u32,
+    pub matrix_len: u32,
+    pub mu: f32,
+    pub grad_scale: f32,
+    pub learning_rate: f32,
+    pub weight_decay: f32,
+    pub average_coefficient: f32,
+    pub schedule_beta: f32,
 }

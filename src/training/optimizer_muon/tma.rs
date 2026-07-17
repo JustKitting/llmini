@@ -11,10 +11,14 @@ use rust_kernels_cuda::nvfp4_tma_matmul::kernels::{TILE_K, TILE_M, TILE_N};
 use rust_kernels_cuda::nvfp4_tma_matmul::pad::F32CropArgs;
 use rust_kernels_cuda::nvfp4_tma_matmul::tma::TmaNvfp4DeviceScaleDescriptors;
 use rust_kernels_cuda::optimizer::{
-    MuonSlotDescriptor, MuonTmaFinishArgs, MuonTmaPrepareArgs, muon_polar_coefficients,
+    MuonSlotDescriptor, MuonTmaFinishArgs, MuonTmaPrepareArgs, MuonTmaSignUpdateArgs,
+    muon_polar_coefficients,
 };
 
-use super::{MU, MUON_WEIGHT_DECAY, MuonGroupTable, POLAR_ITERATIONS, muon_learning_rate};
+use super::{
+    MUON_WEIGHT_DECAY, MuonGroupTable, POLAR_ITERATIONS, SIGN_MUON_BETA, muon_learning_rate,
+    sign_muon_uses_polar,
+};
 use crate::training::env::{env_bool, env_usize};
 use crate::training::optimizer_tc_scratch::{
     MuonScratchBuffers, MuonTmaOperandScratch, MuonTmaScratch,
@@ -36,10 +40,30 @@ pub(in crate::training) fn apply_muon_tma(args: MuonTmaArgs<'_>) -> Result<(), D
     let stream = args.runtime.stream.as_ref();
     let learning_rate = muon_learning_rate(args.step);
     let schedule_beta = super::super::learning_rate::schedule_free_beta(args.step + 1);
+    let use_polar = sign_muon_uses_polar(args.step);
     let trace = TmaTraceConfig::from_env();
     for slot_index in 0..args.slot_count {
         let desc = args.table.host_slots[slot_index];
         if desc.rows == 0 || desc.cols == 0 {
+            continue;
+        }
+        if !use_polar {
+            args.runtime
+                .optimizer
+                .muon_tma_sign_update_deferred_quantization(MuonTmaSignUpdateArgs {
+                    stream,
+                    slots: &args.table.slots,
+                    update_chunks: &mut args.scratch.polar_chunks,
+                    qk_clip_factors: args.qk_clip_factors,
+                    slot_index: slot_index as u32,
+                    matrix_len: desc.rows * desc.cols,
+                    mu: SIGN_MUON_BETA,
+                    grad_scale: args.grad_scale,
+                    learning_rate,
+                    weight_decay: MUON_WEIGHT_DECAY,
+                    average_coefficient: args.average_coefficient,
+                    schedule_beta,
+                })?;
             continue;
         }
 
@@ -55,8 +79,9 @@ pub(in crate::training) fn apply_muon_tma(args: MuonTmaArgs<'_>) -> Result<(), D
                     polar_x_chunk_amax: &mut args.scratch.tma.a.chunk_amax,
                     slot_index: slot_index as u32,
                     matrix_len: desc.rows * desc.cols,
-                    mu: MU,
+                    mu: SIGN_MUON_BETA,
                     grad_scale: args.grad_scale,
+                    nesterov: 0,
                 })?;
         args.runtime.quant.tensor_amax_from_chunks_f32(
             stream,

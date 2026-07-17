@@ -49,6 +49,277 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-17
 commit: accepted local jj commit after full gate
+experiment: SignMuon period-2 alternating spectral and sign descent.
+status: accepted_450s
+source:
+  https://arxiv.org/abs/2605.19811
+  https://github.com/brain-lab-research/lion-muon
+rationale:
+  SignMuon shares a single EMA momentum between periodic full Muon directions
+  and cheap elementwise-sign directions. The paper reports that period 2
+  Pareto-dominates pure Muon across its tested data/model families. In the
+  released 355M FineWeb experiment, tuned period-2 SignMuon reaches validation
+  loss 3.045430 versus 3.063070 for pure Muon at nearly identical wall time.
+  Test the same optimizer family without changing this repo's approximately 1B
+  model, active branches, data, tokenizer, objective, context, batch, or
+  token count per step.
+implementation:
+  Optimizer steps 1,3,5,... run the full five-iteration Polar path and retain
+  the accepted NorMuon variance reduction. Steps 2,4,6,... apply the raw sign
+  of the shared EMA directly and leave NorMuon's second-moment state untouched.
+  Both directions use the released fixed-period SignMuon beta1=beta2=0.9
+  single-EMA recurrence. Following the tuned 355M period-2 prescription, full
+  spectral steps use 2x the former Muon learning rate and sign steps use 2.5%
+  of that full-step rate. Both rates follow the existing step-gated warmup.
+  The sign kernel retains gradient scaling, per-matrix learning-rate
+  multipliers, decoupled decay, AMUSE z/x averaging, Q/K clipping, schedule
+  amax, and deferred NVFP4 quantization.
+verification:
+  cargo fmt --all --check, cargo check --workspace, cargo test --workspace
+  --lib, and git diff --check: pass.
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+  All 11 focused release Muon GPU tests pass. New direct references verify the
+  period, beta=0.9 EMA, raw sign master update, per-matrix LR multiplier,
+  decay, AMUSE averaging, unchanged NorMuon state, schedule amax, and Q/K
+  clipping. Existing full-Muon split/cooperative, NorMuon, and Q/K tests remain
+  green for both plain-EMA and Nesterov preparation. The stabilized
+  Gram-Newton-Schulz direction test and the rust-kernels period unit test pass.
+  A broad filtered cargo test --workspace invocation still cannot compile the
+  existing stale gpt2-nvfp4 integration initializers for AttentionForwardArgs
+  and Gpt2ForwardArgs; the candidate's exact release/device build and targeted
+  tests pass.
+bringup:
+  target/runs/20260717_104718Z_fineweb_30s
+  completed_steps=91, train_elapsed_s=30.194, val_loss=6.237898.
+  Both high-fidelity samples are finite and nonzero, global gradient norm is
+  finite, every update/skip counter is zero, and batch 4, sequence 2048, and
+  8192 tokens per step remain intact. This run was used only to establish
+  launch, update, and immediate numerical health. Its loss was not compared
+  and played no role in parameter selection or acceptance.
+gate:
+  target/runs/20260717_104823Z_fineweb_450s
+  completed_steps=1317, train_elapsed_s=450.401, val_loss=4.880350.
+  All 27 high-fidelity samples are finite and nonzero. Every update/skip
+  counter is zero, loss ranges from 4.930173874 to 10.666461945, and global
+  gradient norm ranges from 0.853178144 to 16.312370300. Every sample retains
+  batch 4, sequence 2048, and 8192 tokens per step.
+measured_effect:
+  Against the accepted NorMuon control at 4.890027 / 1132 steps, held-out
+  validation loss improves by 0.009677 (-0.1979%). The candidate completes 185
+  more optimizer steps (+16.3428%) and processes 10788864 versus 9273344
+  training tokens in the fixed wall-clock window. Average step time moves from
+  397.667845 to 341.990129 ms (-55.677715 ms, -14.0011%). Throughput explains
+  the added exposure, but the lower held-out endpoint is the promotion
+  criterion.
+decision:
+  Keep, promote as the active baseline, and commit. This is a lower held-out
+  loss on the intact approximately 1B model and matched FineWeb task. The
+  30-second loss was not quality evidence.
+```
+
+```text
+date: 2026-07-17
+commit: rejected working-copy experiment; source fully reverted
+experiment: MONA curvature-aware gradient acceleration before Muon momentum.
+status: rejected_450s_instability
+source:
+  https://arxiv.org/abs/2605.26842
+rationale:
+  MONA reports lower validation loss than Muon across three language-model
+  pretraining scales by applying an EMA of gradient differences before Muon
+  momentum and orthogonalization. Test the paper's 1B beta_a=0.99 setting on
+  the intact approximately 1B model while retaining the accepted AMUSE,
+  NorMuon, Polar, data, tokenizer, objective, context, batch, and schedules.
+implementation:
+  With alpha=-1/(2*(1-beta_a)), the literal two-state MONA recurrence is
+  algebraically equivalent to
+    gradient_tilde = 0.5 * (gradient_t + gradient_ema_{t-1})
+    gradient_ema_t = 0.99 * gradient_ema_{t-1} + 0.01 * gradient_t.
+  Implemented that exact reduction with one full-size FP32 state buffer before
+  the existing AMUSE Nesterov momentum and Polar path. This saves one complete
+  FP32 optimizer-state buffer versus the paper's literal G_previous plus A
+  representation. Q/K clipping kept the new state synchronized with the
+  existing z, x, and momentum rescaling.
+verification:
+  cargo fmt --all, cargo check --workspace, and git diff --check: pass.
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+  All nine focused release Muon GPU tests pass. Direct CPU-reference tests
+  verify the EMA state, momentum state, and oriented matrix for both tall and
+  wide matrices and exact split/cooperative agreement. The stabilized
+  Gram-Newton-Schulz direction test also passes.
+memory_diagnostic:
+  target/runs/20260717_102358Z_fineweb_450s
+  TRAIN_REPORT_MEMORY=1 with one diagnostic update reported
+  used_bytes=47208136704. The accepted parent uses 43515052032 bytes, so the
+  single FP32 EMA adds exactly 3693084672 bytes = 3522 MiB = 3.439453 GiB,
+  covering 923271168 Muon matrix elements.
+bringup:
+  target/runs/20260717_102443Z_fineweb_30s
+  completed_steps=78, train_elapsed_s=30.290, val_loss=6.243181.
+  Both samples are finite and nonzero, all update/skip counters are zero, and
+  batch 4, sequence 2048, and 8192 tokens per step remain intact. This run was
+  used only as a launch/update/numerical-health smoke. Its endpoint loss was
+  not compared and played no role in the decision.
+gate:
+  target/runs/20260717_102544Z_fineweb_450s
+  completed_steps=1123, train_elapsed_s=450.044, val_loss=5.529544.
+  All 23 samples are finite and nonzero, every update/skip counter is zero,
+  batch 4, sequence 2048, and 8192 tokens per step remain intact. Sampled loss
+  ranges from 5.339956760 to 10.666461945 and global gradient norm ranges from
+  1.013046026 to 16.312370300.
+measured_effect:
+  Against the accepted NorMuon baseline at 4.890027 / 1132 steps, held-out
+  loss regresses by 0.639517 (+13.0780%) and the candidate completes nine
+  fewer steps. Average step time moves 397.667845 -> 400.751558 ms
+  (+3.083714 ms, +0.7754%). The matched training curves begin separating
+  materially after sample 10: candidate gradient norm rises from 1.441 at
+  step 500 to 7.022 at step 1050 while the control remains near 1, and the
+  candidate's sampled training loss stops improving. This is a sustained
+  optimization instability despite remaining finite, not seed-scale noise.
+decision:
+  Reject and fully revert MONA state, descriptor, kernel, and test changes.
+  The 450-second trajectory and held-out endpoint are the rejection evidence;
+  the healthy 30-second result demonstrates why short loss is not a viable
+  quality screen for a research-scale optimizer change.
+```
+
+```text
+date: 2026-07-17
+commit: rejected working-copy experiment; source fully reverted
+experiment: Cautious Weight Decay (CWD) for Adam and Muon parameters.
+status: rejected_450s
+source:
+  https://arxiv.org/abs/2510.12402
+rationale:
+  CWD reports improved language-model training by applying decoupled weight
+  decay only where the parameter and optimizer update have the same sign. Test
+  the paper's one-line rule across both optimizer families while keeping the
+  intact approximately 1B model, data, tokenizer, objective, context, batch,
+  learning-rate schedule, and all other optimizer settings fixed.
+implementation:
+  Replace unconditional decay with the exact paper mask
+  I(parameter * update >= 0) in both Adam and the active fused Muon/TMA master
+  update. Apply the rule to schedule-free AMUSE's fast z parameter before the
+  existing x average; preserve NorMuon, Polar, Q/K clipping, bounds, and NVFP4
+  quantization unchanged. Mirror the Adam rule in update diagnostics.
+verification:
+  cargo fmt --all, git diff --check, and cargo check --workspace: pass.
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+  All three focused Adam GPU tests and all ten focused Muon GPU tests pass,
+  including direct mixed-sign CWD tests on both optimizer paths. The stabilized
+  Gram-Newton-Schulz direction test also passes.
+bringup:
+  target/runs/20260717_100258Z_fineweb_30s
+  completed_steps=78, train_elapsed_s=30.031, val_loss=6.241513.
+  Both high-fidelity samples are finite and nonzero, every update/skip counter
+  is zero, and batch 4, sequence 2048, and 8192 tokens per step remain intact.
+  This was used only as a functional/numerical health smoke; its endpoint loss
+  was not compared or used to judge the candidate.
+gate:
+  target/runs/20260717_100436Z_fineweb_450s
+  completed_steps=1134, train_elapsed_s=450.304, val_loss=4.903468.
+  All 23 high-fidelity samples are finite and nonzero. Every update/skip
+  counter is zero, loss ranges from 4.835927963 to 10.666461945, and global
+  gradient norm ranges from 0.781435132 to 16.312370300. Every sample retains
+  batch 4, sequence 2048, and 8192 tokens per step.
+measured_effect:
+  Against the accepted NorMuon baseline at 4.890027 / 1132 steps, validation
+  loss regresses by 0.013441 (+0.2749%) despite completing two additional
+  steps. The candidate therefore loses on held-out convergence, not exposure.
+decision:
+  Reject and fully revert the CWD implementation, diagnostics, references, and
+  tests. The 450-second held-out result is the rejection evidence; the
+  30-second endpoint played no role in the quality decision.
+```
+
+```text
+date: 2026-07-17
+commit: aborted working-copy experiment; source fully reverted
+experiment: Remove AMUSE Nesterov look-ahead while retaining mu=0.95.
+status: aborted_source_audit
+source:
+  https://arxiv.org/abs/2605.22432v2
+  https://github.com/kjeiun/amuse/blob/main/src/optim/AMUSE.py
+rationale:
+  AMUSE v2's displayed recurrence and repository README write the
+  pre-orthogonalization direction as the plain EMA momentum. Test removing
+  only the inherited Nesterov look-ahead while retaining AMUSE's mu=0.95 and
+  every other accepted model, optimizer, data, and objective setting.
+verification:
+  cargo fmt --all, git diff --check, and cargo check --workspace: pass.
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+  All nine focused Muon GPU tests pass, including a direct numerical EMA
+  state/orientation reference.
+bringup:
+  target/runs/20260717_095103Z_fineweb_30s
+  completed_steps=78, train_elapsed_s=30.137, val_loss=6.287420.
+  Both samples are finite and nonzero, every skip counter is zero, and batch
+  4, sequence 2048, and 8192 tokens per step remain intact. The loss was not
+  compared or used to judge the candidate.
+source_audit:
+  After the bring-up, inspection of the released AMUSE optimizer found that
+  muon_update supports both recurrences but AMUSE.step explicitly passes
+  nesterov=True. Therefore the accepted local Nesterov recurrence already
+  matches the implementation used as the empirical reference, despite the
+  simplified displayed equation.
+  The just-started target/runs/20260717_095155Z_fineweb_450s process was
+  interrupted before evaluation; it has no held-out endpoint and is not
+  acceptance or rejection evidence.
+decision:
+  Abort for lack of empirical source support and fully revert. This decision
+  is based on the reference-code audit, not the 30-second loss. Do not describe
+  plain EMA at mu=0.95 as an AMUSE-faithfulness correction unless the upstream
+  implementation changes.
+```
+
+```text
+date: 2026-07-17
+commit: rejected working-copy experiment; source fully reverted
+experiment: SF-NorMuon plain-EMA momentum with mu=0.8.
+status: rejected_450s
+source:
+  https://arxiv.org/abs/2605.23061
+rationale:
+  The SF-NorMuon reference applies plain explicit EMA momentum before Polar
+  and selected mu=0.8 from {0.8, 0.9, 0.95, 0.99}. Test that coupled
+  prescription on the intact approximately 1B model while holding NorMuon
+  variance reduction, AMUSE z/x averaging, learning rates, decay, model,
+  objective, data, tokenizer, context, and batch fixed. This replaces the
+  inherited mu=0.95 Nesterov look-ahead as one coherent optimizer experiment.
+verification:
+  cargo fmt --all, git diff --check, and cargo check --workspace: pass.
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+  All nine focused Muon GPU tests pass. The prepare test was strengthened with
+  a direct numerical reference for the EMA state and oriented matrix so that
+  it distinguishes the candidate from the old Nesterov recurrence.
+bringup:
+  target/runs/20260717_093957Z_fineweb_30s
+  completed_steps=78, train_elapsed_s=30.038, val_loss=6.246863.
+  Both high-fidelity samples are finite and nonzero, every skip counter is
+  zero, and batch 4, sequence 2048, and 8192 tokens per step remain intact.
+  Per the research-change rule, this endpoint loss was observed only as a
+  functional and numerical health check and was not compared for acceptance.
+gate:
+  target/runs/20260717_094054Z_fineweb_450s
+  completed_steps=1132, train_elapsed_s=450.111, val_loss=4.902559.
+  All 23 high-fidelity samples are finite and nonzero. Every update/skip
+  counter is zero, loss ranges from 4.836007118 to 10.666461945, and global
+  gradient norm ranges from 1.097914457 to 16.312370300. Every sample retains
+  batch 4, sequence 2048, and 8192 tokens per step.
+measured_effect:
+  Against the accepted NorMuon baseline at 4.890027 / 1132 steps, validation
+  loss regresses by 0.012532 (+0.2563%) at exactly the same completed-step
+  count. The change therefore loses on convergence rather than throughput.
+decision:
+  Reject and fully revert the coupled mu=0.8/plain-EMA source and test changes.
+  The 30-second endpoint played no role in this decision. AMUSE v2 separately
+  specifies plain EMA with mu=0.95, so this result does not reject removing
+  Nesterov while retaining AMUSE's reference momentum coefficient.
+```
+
+```text
+date: 2026-07-17
+commit: accepted local jj commit after full gate
 experiment: NorMuon neuron-wise variance reduction after Polar/Muon.
 status: accepted_450s
 source:

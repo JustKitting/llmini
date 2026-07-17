@@ -4,7 +4,9 @@ use crate::f16_tc_matmul::cta_tile::CTA_THREADS;
 use crate::launch::{grid_x_config, launch_config};
 use crate::nvfp4_quant::NVFP4_TENSOR_AMAX_VALUES_PER_BLOCK;
 
-use super::super::args::{MuonMegaUpdateArgs, MuonTmaFinishArgs, MuonTmaPrepareArgs};
+use super::super::args::{
+    MuonMegaUpdateArgs, MuonTmaFinishArgs, MuonTmaPrepareArgs, MuonTmaSignUpdateArgs,
+};
 use super::super::{MUON_COOPERATIVE_BLOCKS, MUON_MATRIX_PHASES};
 use super::OptimizerModule;
 
@@ -58,6 +60,7 @@ impl OptimizerModule {
             args.slot_index,
             args.mu,
             args.grad_scale,
+            args.nesterov,
         )?;
 
         self.apply
@@ -112,6 +115,7 @@ impl OptimizerModule {
             args.slot_index,
             args.mu,
             args.grad_scale,
+            args.nesterov,
         )
     }
 
@@ -141,6 +145,49 @@ impl OptimizerModule {
     ) -> Result<(), DriverError> {
         self.muon_tma_normuon(&mut args)?;
         self.muon_tma_update_master_and_amax(&mut args)
+    }
+
+    pub fn muon_tma_sign_update_deferred_quantization(
+        &self,
+        args: MuonTmaSignUpdateArgs<'_>,
+    ) -> Result<(), DriverError> {
+        assert!(args.slot_index < args.slots.len() as u32);
+        assert!(args.matrix_len > 0);
+        assert_eq!(args.matrix_len % MUON_NVFP4_VALUES_PER_GROUP, 0);
+        let chunk_count = args
+            .matrix_len
+            .div_ceil(NVFP4_TENSOR_AMAX_VALUES_PER_BLOCK as u32);
+        assert!(args.update_chunks.len() >= 2 * chunk_count as usize);
+
+        self.apply
+            .muon
+            .tma_split
+            .muon_tma_sign_update_master_chunks_kernel(
+                args.stream,
+                grid_x_config(chunk_count, CTA_THREADS),
+                args.slots,
+                &mut *args.update_chunks,
+                args.qk_clip_factors,
+                args.slot_index,
+                args.mu,
+                args.grad_scale,
+                args.learning_rate,
+                args.weight_decay,
+                args.average_coefficient,
+                args.schedule_beta,
+            )?;
+
+        self.apply
+            .muon
+            .tma_split
+            .muon_tma_reduce_update_amax_kernel(
+                args.stream,
+                grid_x_config(1, CTA_THREADS),
+                args.slots,
+                &*args.update_chunks,
+                args.slot_index,
+                chunk_count,
+            )
     }
 
     fn muon_tma_normuon(&self, args: &mut MuonTmaFinishArgs<'_>) -> Result<(), DriverError> {

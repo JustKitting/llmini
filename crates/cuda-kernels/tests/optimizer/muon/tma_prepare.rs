@@ -9,8 +9,10 @@ use crate::common;
 
 pub fn run_split_matches_reference_case() -> Result<(), Box<dyn Error>> {
     let (_, stream, module) = common::cuda_test_module(OptimizerModule::from_module)?;
-    compare_shape(&stream, &module, 64, 128)?;
-    compare_shape(&stream, &module, 128, 64)
+    compare_shape(&stream, &module, 64, 128, true)?;
+    compare_shape(&stream, &module, 128, 64, true)?;
+    compare_shape(&stream, &module, 64, 128, false)?;
+    compare_shape(&stream, &module, 128, 64, false)
 }
 
 fn compare_shape(
@@ -18,9 +20,10 @@ fn compare_shape(
     module: &OptimizerModule,
     rows: usize,
     cols: usize,
+    nesterov: bool,
 ) -> Result<(), Box<dyn Error>> {
-    let split = run_prepare(stream, module, rows, cols, false)?;
-    let cooperative = run_prepare(stream, module, rows, cols, true)?;
+    let split = run_prepare(stream, module, rows, cols, false, nesterov)?;
+    let cooperative = run_prepare(stream, module, rows, cols, true, nesterov)?;
     assert_eq!(split.momentum, cooperative.momentum);
     assert_eq!(split.oriented, cooperative.oriented);
     assert_eq!(split.polar_x, cooperative.polar_x);
@@ -50,16 +53,17 @@ fn run_prepare(
     rows: usize,
     cols: usize,
     cooperative: bool,
+    nesterov: bool,
 ) -> Result<PrepareOutput, Box<dyn Error>> {
     let len = rows * cols;
-    let grad: Vec<_> = (0..len)
+    let grad_values: Vec<_> = (0..len)
         .map(|i| ((i * 73 % 257) as f32 - 128.0) / 211.0)
         .collect();
-    let momentum: Vec<_> = (0..len)
+    let momentum_values: Vec<_> = (0..len)
         .map(|i| ((i * 29 % 131) as f32 - 65.0) / 173.0)
         .collect();
-    let grad = DeviceBuffer::from_host(stream, &grad)?;
-    let momentum = DeviceBuffer::from_host(stream, &momentum)?;
+    let grad = DeviceBuffer::from_host(stream, &grad_values)?;
+    let momentum = DeviceBuffer::from_host(stream, &momentum_values)?;
     let z_master = DeviceBuffer::<f32>::zeroed(stream, 1)?;
     let x_master = DeviceBuffer::<f32>::zeroed(stream, 1)?;
     let schedule_amax = DeviceBuffer::<f32>::zeroed(stream, 1)?;
@@ -98,15 +102,33 @@ fn run_prepare(
         matrix_len: len as u32,
         mu: 0.9,
         grad_scale: 0.125,
+        nesterov: nesterov as u32,
     };
     if cooperative {
         module.muon_tma_prepare_polar_cooperative_reference(args)?;
     } else {
         module.muon_tma_prepare_polar(args)?;
     }
+    let actual_momentum = momentum.to_host_vec(stream)?;
+    let actual_oriented = oriented.to_host_vec(stream)?;
+    let mut expected_momentum = vec![0.0_f32; len];
+    let mut expected_oriented = vec![0.0_f32; len];
+    for index in 0..len {
+        let g = grad_values[index] * 0.125;
+        let next = 0.9 * momentum_values[index] + 0.1 * g;
+        let update = if nesterov { 0.9 * next + 0.1 * g } else { next };
+        expected_momentum[index] = next;
+        let row = index / cols;
+        let col = index % cols;
+        let dst = if rows > cols { col * rows + row } else { index };
+        expected_oriented[dst] = update;
+    }
+    common::assert_slice_close(&actual_momentum, &expected_momentum, 1.0e-6);
+    common::assert_slice_close(&actual_oriented, &expected_oriented, 1.0e-6);
+
     Ok(PrepareOutput {
-        momentum: momentum.to_host_vec(stream)?,
-        oriented: oriented.to_host_vec(stream)?,
+        momentum: actual_momentum,
+        oriented: actual_oriented,
         polar_x: polar_x.to_host_vec(stream)?,
         polar_chunks: polar_chunks.to_host_vec(stream)?,
         polar_x_chunk_amax: polar_x_chunk_amax.to_host_vec(stream)?,

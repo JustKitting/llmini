@@ -69,3 +69,58 @@ pub(super) fn update_one(
         }
     }
 }
+
+#[expect(clippy::too_many_arguments, reason = "CUDA ABI uses explicit buffers")]
+pub(super) fn update_one_sign(
+    grad: *const f32,
+    z_master: *mut f32,
+    x_master: *mut f32,
+    momentum: *mut f32,
+    len: u32,
+    mu: f32,
+    grad_scale: f32,
+    learning_rate: f32,
+    weight_decay: f32,
+    average_coefficient: f32,
+    schedule_beta: f32,
+    qk_clip_factor: f32,
+    index: u32,
+) -> UpdateAmax {
+    if index >= len {
+        return UpdateAmax {
+            master: 0.0,
+            schedule: 0.0,
+        };
+    }
+
+    unsafe {
+        let momentum_ptr = momentum.add(index as usize);
+        let g = *grad.add(index as usize) * grad_scale;
+        let next_momentum = mu * *momentum_ptr + (1.0 - mu) * g;
+        let direction = if next_momentum > 0.0 {
+            1.0
+        } else if next_momentum < 0.0 {
+            -1.0
+        } else {
+            0.0
+        };
+        let decay = 1.0 - learning_rate * weight_decay;
+        let z = z_master.add(index as usize);
+        let x = x_master.add(index as usize);
+        let mut next_z = *z * decay - learning_rate * direction;
+        let mut next_x = *x + average_coefficient * (next_z - *x);
+        let mut clipped_momentum = next_momentum;
+        if qk_clip_factor != 1.0 {
+            next_z *= qk_clip_factor;
+            next_x *= qk_clip_factor;
+            clipped_momentum *= qk_clip_factor;
+        }
+        *momentum_ptr = clipped_momentum;
+        *z = next_z;
+        *x = next_x;
+        UpdateAmax {
+            master: abs_f32(next_x),
+            schedule: abs_f32(next_z + schedule_beta * (next_x - next_z)),
+        }
+    }
+}

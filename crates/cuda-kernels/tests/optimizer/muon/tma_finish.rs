@@ -2,7 +2,8 @@ use std::error::Error;
 
 use cuda_core::DeviceBuffer;
 use rust_kernels_cuda::optimizer::{
-    MUON_COOPERATIVE_BLOCKS, MuonSlotDescriptor, MuonTmaFinishArgs, OptimizerModule,
+    MUON_COOPERATIVE_BLOCKS, MuonSlotDescriptor, MuonTmaFinishArgs, MuonTmaSignUpdateArgs,
+    OptimizerModule,
 };
 
 use crate::common;
@@ -293,6 +294,196 @@ pub fn run_normuon_variance_case() -> Result<(), Box<dyn Error>> {
         (transformed_sumsq - raw_sumsq).abs() <= raw_sumsq * 2.0e-5,
         "transformed_sumsq={transformed_sumsq} raw_sumsq={raw_sumsq}"
     );
+    Ok(())
+}
+
+pub fn run_sign_update_case() -> Result<(), Box<dyn Error>> {
+    const SIGN_ROWS: usize = 32;
+    const SIGN_COLS: usize = 32;
+    const SIGN_LEN: usize = SIGN_ROWS * SIGN_COLS;
+    const MU: f32 = 0.9;
+    const GRAD_SCALE: f32 = 0.25;
+    const LEARNING_RATE: f32 = 0.004;
+    const LR_MULTIPLIER: f32 = 0.75;
+    const WEIGHT_DECAY: f32 = 0.1;
+    const AVERAGE_COEFFICIENT: f32 = 0.3;
+
+    let (_, stream, module) = common::cuda_test_module(OptimizerModule::from_module)?;
+    let grad_values: Vec<_> = (0..SIGN_LEN)
+        .map(|index| ((index * 41 % 97) as f32 - 48.0) / 37.0)
+        .collect();
+    let momentum_values: Vec<_> = (0..SIGN_LEN)
+        .map(|index| ((index * 17 % 61) as f32 - 30.0) / 53.0)
+        .collect();
+    let second_values: Vec<_> = (0..SIGN_COLS)
+        .map(|index| 0.25 + index as f32 / 1000.0)
+        .collect();
+    let z_values: Vec<_> = (0..SIGN_LEN)
+        .map(|index| (index as f32 - 511.0) / 997.0)
+        .collect();
+    let x_values: Vec<_> = (0..SIGN_LEN)
+        .map(|index| (307.0 - index as f32) / 613.0)
+        .collect();
+
+    let grad = DeviceBuffer::from_host(&stream, &grad_values)?;
+    let momentum = DeviceBuffer::from_host(&stream, &momentum_values)?;
+    let second_momentum = DeviceBuffer::from_host(&stream, &second_values)?;
+    let z_master = DeviceBuffer::from_host(&stream, &z_values)?;
+    let x_master = DeviceBuffer::from_host(&stream, &x_values)?;
+    let schedule_amax = DeviceBuffer::<f32>::zeroed(&stream, 1)?;
+    let bytes = DeviceBuffer::<u8>::zeroed(&stream, SIGN_LEN / 2)?;
+    let scales = DeviceBuffer::<u8>::zeroed(&stream, SIGN_LEN / 16)?;
+    let global_scale = DeviceBuffer::<f32>::zeroed(&stream, 1)?;
+    let descriptor = MuonSlotDescriptor {
+        grad: grad.cu_deviceptr(),
+        momentum: momentum.cu_deviceptr(),
+        second_momentum: second_momentum.cu_deviceptr(),
+        z_master: z_master.cu_deviceptr(),
+        x_master: x_master.cu_deviceptr(),
+        schedule_amax: schedule_amax.cu_deviceptr(),
+        bytes: bytes.cu_deviceptr(),
+        scales: scales.cu_deviceptr(),
+        global_scale: global_scale.cu_deviceptr(),
+        rows: SIGN_ROWS as u32,
+        cols: SIGN_COLS as u32,
+        learning_rate_multiplier: LR_MULTIPLIER,
+        qk_clip_factor_offset: u32::MAX,
+        qk_clip_head_dim: 0,
+    };
+    let slots = DeviceBuffer::from_host(&stream, &[descriptor])?;
+    let mut update_chunks = DeviceBuffer::<f32>::zeroed(&stream, 2)?;
+    let qk_clip_factors = DeviceBuffer::from_host(&stream, &[1.0_f32])?;
+
+    module.muon_tma_sign_update_deferred_quantization(MuonTmaSignUpdateArgs {
+        stream: &stream,
+        slots: &slots,
+        update_chunks: &mut update_chunks,
+        qk_clip_factors: &qk_clip_factors,
+        slot_index: 0,
+        matrix_len: SIGN_LEN as u32,
+        mu: MU,
+        grad_scale: GRAD_SCALE,
+        learning_rate: LEARNING_RATE,
+        weight_decay: WEIGHT_DECAY,
+        average_coefficient: AVERAGE_COEFFICIENT,
+        schedule_beta: SCHEDULE_BETA,
+    })?;
+
+    let effective_lr = LEARNING_RATE * LR_MULTIPLIER;
+    let decay = 1.0 - effective_lr * WEIGHT_DECAY;
+    let mut expected_momentum = Vec::with_capacity(SIGN_LEN);
+    let mut expected_z = Vec::with_capacity(SIGN_LEN);
+    let mut expected_x = Vec::with_capacity(SIGN_LEN);
+    let mut expected_schedule_amax = 0.0_f32;
+    for index in 0..SIGN_LEN {
+        let next_momentum =
+            MU * momentum_values[index] + (1.0 - MU) * grad_values[index] * GRAD_SCALE;
+        let sign = if next_momentum > 0.0 {
+            1.0
+        } else if next_momentum < 0.0 {
+            -1.0
+        } else {
+            0.0
+        };
+        let next_z = z_values[index] * decay - effective_lr * sign;
+        let next_x = x_values[index] + AVERAGE_COEFFICIENT * (next_z - x_values[index]);
+        expected_momentum.push(next_momentum);
+        expected_z.push(next_z);
+        expected_x.push(next_x);
+        expected_schedule_amax =
+            expected_schedule_amax.max((next_z + SCHEDULE_BETA * (next_x - next_z)).abs());
+    }
+
+    common::assert_slice_close(&momentum.to_host_vec(&stream)?, &expected_momentum, 1.0e-6);
+    common::assert_slice_close(&z_master.to_host_vec(&stream)?, &expected_z, 1.0e-6);
+    common::assert_slice_close(&x_master.to_host_vec(&stream)?, &expected_x, 1.0e-6);
+    assert_eq!(second_momentum.to_host_vec(&stream)?, second_values);
+    assert!((schedule_amax.to_host_vec(&stream)?[0] - expected_schedule_amax).abs() <= 1.0e-6);
+    assert!(bytes.to_host_vec(&stream)?.iter().all(|&value| value == 0));
+    assert!(scales.to_host_vec(&stream)?.iter().all(|&value| value == 0));
+    Ok(())
+}
+
+pub fn run_sign_qk_clip_case() -> Result<(), Box<dyn Error>> {
+    const CLIP_ROWS: usize = 2048;
+    const CLIP_COLS: usize = 64;
+    const CLIP_LEN: usize = CLIP_ROWS * CLIP_COLS;
+    const HEAD_DIM: usize = 32;
+    const MU: f32 = 0.9;
+    const LEARNING_RATE: f32 = 0.01;
+    const AVERAGE_COEFFICIENT: f32 = 0.25;
+
+    let (_, stream, module) = common::cuda_test_module(OptimizerModule::from_module)?;
+    let grad_values = vec![1.0_f32; CLIP_LEN];
+    let momentum_values = vec![0.5_f32; CLIP_LEN];
+    let z_values = vec![1.0_f32; CLIP_LEN];
+    let x_values = vec![2.0_f32; CLIP_LEN];
+    let grad = DeviceBuffer::from_host(&stream, &grad_values)?;
+    let momentum = DeviceBuffer::from_host(&stream, &momentum_values)?;
+    let second_momentum = DeviceBuffer::<f32>::zeroed(&stream, CLIP_ROWS)?;
+    let z_master = DeviceBuffer::from_host(&stream, &z_values)?;
+    let x_master = DeviceBuffer::from_host(&stream, &x_values)?;
+    let schedule_amax = DeviceBuffer::<f32>::zeroed(&stream, 1)?;
+    let bytes = DeviceBuffer::<u8>::zeroed(&stream, CLIP_LEN / 2)?;
+    let scales = DeviceBuffer::<u8>::zeroed(&stream, CLIP_LEN / 16)?;
+    let global_scale = DeviceBuffer::<f32>::zeroed(&stream, 1)?;
+    let descriptor = MuonSlotDescriptor {
+        grad: grad.cu_deviceptr(),
+        momentum: momentum.cu_deviceptr(),
+        second_momentum: second_momentum.cu_deviceptr(),
+        z_master: z_master.cu_deviceptr(),
+        x_master: x_master.cu_deviceptr(),
+        schedule_amax: schedule_amax.cu_deviceptr(),
+        bytes: bytes.cu_deviceptr(),
+        scales: scales.cu_deviceptr(),
+        global_scale: global_scale.cu_deviceptr(),
+        rows: CLIP_ROWS as u32,
+        cols: CLIP_COLS as u32,
+        learning_rate_multiplier: 1.0,
+        qk_clip_factor_offset: 0,
+        qk_clip_head_dim: HEAD_DIM as u32,
+    };
+    let slots = DeviceBuffer::from_host(&stream, &[descriptor])?;
+    let mut update_chunks = DeviceBuffer::<f32>::zeroed(&stream, 2 * CLIP_COLS)?;
+    let qk_clip_factors = DeviceBuffer::from_host(&stream, &[0.5_f32, 0.25_f32])?;
+
+    module.muon_tma_sign_update_deferred_quantization(MuonTmaSignUpdateArgs {
+        stream: &stream,
+        slots: &slots,
+        update_chunks: &mut update_chunks,
+        qk_clip_factors: &qk_clip_factors,
+        slot_index: 0,
+        matrix_len: CLIP_LEN as u32,
+        mu: MU,
+        grad_scale: 1.0,
+        learning_rate: LEARNING_RATE,
+        weight_decay: 0.0,
+        average_coefficient: AVERAGE_COEFFICIENT,
+        schedule_beta: SCHEDULE_BETA,
+    })?;
+
+    let next_momentum = MU * 0.5 + (1.0 - MU);
+    let next_z = 1.0 - LEARNING_RATE;
+    let next_x = 2.0 + AVERAGE_COEFFICIENT * (next_z - 2.0);
+    let mut expected_momentum = vec![0.0_f32; CLIP_LEN];
+    let mut expected_z = vec![0.0_f32; CLIP_LEN];
+    let mut expected_x = vec![0.0_f32; CLIP_LEN];
+    let mut expected_schedule_amax = 0.0_f32;
+    for col in 0..CLIP_COLS {
+        let factor = if col < HEAD_DIM { 0.5 } else { 0.25 };
+        for index in col * CLIP_ROWS..(col + 1) * CLIP_ROWS {
+            expected_momentum[index] = next_momentum * factor;
+            expected_z[index] = next_z * factor;
+            expected_x[index] = next_x * factor;
+            expected_schedule_amax = expected_schedule_amax.max(
+                (expected_z[index] + SCHEDULE_BETA * (expected_x[index] - expected_z[index])).abs(),
+            );
+        }
+    }
+    common::assert_slice_close(&momentum.to_host_vec(&stream)?, &expected_momentum, 1.0e-7);
+    common::assert_slice_close(&z_master.to_host_vec(&stream)?, &expected_z, 1.0e-7);
+    common::assert_slice_close(&x_master.to_host_vec(&stream)?, &expected_x, 1.0e-7);
+    assert!((schedule_amax.to_host_vec(&stream)?[0] - expected_schedule_amax).abs() <= 1.0e-7);
     Ok(())
 }
 

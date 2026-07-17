@@ -55,6 +55,18 @@ fn muon_tma_finish_applies_normuon_variance_reduction() -> Result<(), Box<dyn Er
 
 #[ignore = "requires generated sm_120a PTX"]
 #[test]
+fn muon_tma_sign_update_matches_single_ema_reference() -> Result<(), Box<dyn Error>> {
+    tma_finish::run_sign_update_case()
+}
+
+#[ignore = "requires generated sm_120a PTX"]
+#[test]
+fn muon_tma_sign_update_applies_qk_clip() -> Result<(), Box<dyn Error>> {
+    tma_finish::run_sign_qk_clip_case()
+}
+
+#[ignore = "requires generated sm_120a PTX"]
+#[test]
 fn muon_tma_split_finish_matches_cooperative_reference() -> Result<(), Box<dyn Error>> {
     tma_finish::run_split_matches_reference_case()
 }

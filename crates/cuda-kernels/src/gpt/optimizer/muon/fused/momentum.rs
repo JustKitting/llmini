@@ -11,6 +11,7 @@ pub(super) fn momentum_orient(
     mu: f32,
     grad_scale: f32,
     transposed: bool,
+    nesterov: bool,
 ) {
     let len = shape.len();
     let mut index = work.thread();
@@ -21,14 +22,18 @@ pub(super) fn momentum_orient(
         unsafe {
             let momentum_ptr = momentum.add(index as usize);
             let next_momentum = mu * *momentum_ptr + (1.0 - mu) * g;
-            let nesterov = mu * next_momentum + (1.0 - mu) * g;
+            let update = if nesterov {
+                mu * next_momentum + (1.0 - mu) * g
+            } else {
+                next_momentum
+            };
             *momentum_ptr = next_momentum;
             let dst = if transposed {
                 col * shape.rows + row
             } else {
                 index
             };
-            write_f32(oriented, dst, nesterov);
+            write_f32(oriented, dst, update);
         }
         index += work.stride();
     }
