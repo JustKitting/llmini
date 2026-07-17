@@ -49,6 +49,82 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-17
 commit: rejected working-copy experiment; source fully reverted
+experiment: FFN-only sharpness-disparity Blockwise LR after warmup.
+status: rejected_450s
+source:
+  https://arxiv.org/abs/2502.19002
+  https://github.com/wang-jinbo/BlockwiseLearningRate
+rationale:
+  The Sharpness Disparity Principle finds a persistent ordering of block
+  curvature in transformers and accelerates low-sharpness blocks with larger
+  learning rates while leaving the sharpest normalization blocks at the base
+  rate. The paper validates Blockwise LR across GPT-2 and LLaMA models from
+  0.12B through 2B and reports that FFN supplies the largest incremental gain
+  after embeddings in its block-type ablation. Because this model's matrix
+  path is Muon/SignMuon rather than AdamW, and its fused QKV and tied
+  embedding/head make the paper's complete AdamW grouping ambiguous, the
+  clean major test was the paper's SGD-like x4 FFN ratio rather than a partial
+  mapping of every block type.
+implementation:
+  After the existing 83-step warmup, multiplied the final learning rate and
+  decoupled weight decay of every MLP up/down weight and bias by 4. Before
+  step 84, a host-side compensation exactly canceled the static Muon
+  descriptor multiplier, preserving the control update. At and after step 84,
+  both Polar and SignMuon matrix updates and both AdamW bias updates used the
+  x4 rate. Update diagnostics used the same effective bias rate. This changed
+  537034752 parameters, 55.687223% of the effective model, and was therefore
+  a model-wide research intervention rather than a scalar micro-tune.
+  Attention, normalization, embeddings/head, ResFormer, NextLat, all 16
+  layers, FineWeb, Llama-2 tokenization, B4/S2048, and 8192 tokens per step
+  remained intact.
+correctness:
+  cargo fmt --all and cargo check --all-targets: pass.
+  cargo test --workspace --lib and cargo test --workspace --bins: pass.
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+  CUDA_DEVICE_INDEX=0 cargo test -p rust-kernels-cuda --test optimizer
+    'muon::' -- --ignored --nocapture --test-threads=1:
+    11 passed, 0 failed.
+  Unit tests also verified that the static Muon descriptor multiplier was
+  exactly canceled through step 83 and activated at step 84.
+bringup:
+  target/runs/20260717_163606Z_fineweb_30s
+  completed_steps=89, train_elapsed_s=30.110, val_loss=6.246964.
+  The multiplier was active for steps 84 through 89; both high-fidelity
+  samples are finite and nonzero, gradient norm moves from 14.571924210 to
+  3.086113, every update/skip counter is zero, and the exact 16-layer
+  B4/S2048/8192-token configuration remains intact. This run was used only to
+  establish launchability, real post-activation updates, and immediate
+  numerical health. Its endpoint loss was not compared, ranked, tuned
+  against, or used in the keep/revert decision.
+gate:
+  target/runs/20260717_163706Z_fineweb_450s
+  completed_steps=1304, train_elapsed_s=450.017, val_loss=5.141436.
+  All 27 high-fidelity samples are finite and nonzero, all 729 logged metric
+  values are finite, and every update/skip counter is zero. Global gradient
+  norm ranges from 0.920671523 to 14.571924210. Every sample retains batch 4,
+  sequence 2048, and 8192 tokens per step.
+measured_effect:
+  Against the accepted ResFormer/NorMuon control at 4.868333 / 1291 steps,
+  held-out loss regresses by 0.273103 (+5.609785%) despite completing 13 more
+  steps and processing 10682368 rather than 10575872 tokens (+1.006971%).
+  Average step time improves from 348.697909 to 345.105061 ms (-1.030361%),
+  but the additional exposure does not recover the much larger convergence
+  regression.
+decision:
+  Reject the FFN-only x4 Blockwise LR composition and fully restore the
+  accepted optimizer. The 450-second held-out endpoint is the rejection
+  evidence; the healthy 30-second loss played no role. This result rejects
+  the paper's x4 SGD-like FFN ratio when composed with the current
+  period-2 SignMuon, NorMuon, and AMUSE stack in this short fixed-compute
+  regime. It does not reject the paper's complete AdamW ratios or a future
+  sharpness-measured mapping designed specifically for Muon's matrix
+  geometry. The restored source was rebuilt with
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+```
+
+```text
+date: 2026-07-17
+commit: rejected working-copy experiment; source fully reverted
 experiment: Parameter-free Scalable-Softmax (SSMax) in full-attention layers.
 status: rejected_450s
 source:
