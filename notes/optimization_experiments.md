@@ -49,6 +49,92 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-17
 commit: rejected working-copy experiment; source fully reverted
+experiment: Muon-VS variance-scaled momentum before Polar orthogonalization.
+status: rejected_450s
+source:
+  https://arxiv.org/abs/2601.14603
+  https://github.com/jingru-lee/Variance-Adaptive-Muon
+  https://github.com/jingru-lee/Variance-Adaptive-Muon/blob/main/Suite_B/muon_vs.py
+rationale:
+  Variance-Adaptive Muon interprets Muon as a matrix analogue of Signum and
+  adds Adam-like gradient-variance adaptation before orthogonalization. Its
+  Muon-VS variant introduces no sensitivity coefficient, requires one
+  full-size variance buffer, consistently beats tuned Muon in the paper's
+  GPT-2 and LLaMA suites, and reports 1.36x fewer iterations to a target loss
+  for LLaMA-1.2B. Test that substantive optimizer replacement while preserving
+  the intact approximately 1B model and every training objective.
+implementation:
+  Replaced the accepted period-2 SignMuon direction with paper-family Muon-VS
+  on every matrix update. For beta=0.95, each FP32 matrix element used
+    V_t = beta*V_(t-1) + beta*(1-beta)*(M_(t-1)-G_t)^2
+    M_t = beta*M_(t-1) + (1-beta)*G_t
+    M_bar = G_t + beta/(1-beta) * M_t/(1-beta^t)
+    D_t = M_bar / (sqrt(V_t/(1-beta^t)) + 1e-8)
+  before five Polar Express iterations. Beta=0.95 and epsilon=1e-8 match the
+  official Suite A Muon-VS configuration and preserve the accepted base
+  Muon momentum setting; the official Suite B 1.2B recipe instead uses
+  beta=0.98 and epsilon=1e-15 as part of a separately tuned optimizer recipe.
+  Retained NorMuon's post-Polar neuron-wise variance reduction, AMUSE
+  schedule-free z/x averaging, Q/K clipping, NVFP4 bounds, ResFormer, NextLat,
+  all 16 layers and active branches, FineWeb, Llama-2 tokenization, B4/S2048,
+  and 8192 tokens per step. Q/K clipping scaled V by the square of its
+  parameter/momentum factor so optimizer state stayed synchronized.
+correctness:
+  cargo fmt --all, git diff --check,
+  cargo check --workspace --lib --bins, and
+  cargo test --workspace --lib --bins: pass.
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+  Eleven rebuilt-PTX Muon GPU tests pass. Direct CPU references cover the exact
+  variance and bias-corrected momentum recurrence for tall and wide matrices,
+  both matrix orientations, split/cooperative equivalence, retained ordinary
+  preparation, and variance-state Q/K clipping. The transformed direction
+  uses 2e-5 absolute tolerance for device FMA/sqrt differences; persistent
+  momentum and variance states match at 1e-6.
+  After rejection, all 19 source/test files were fully restored. The exact
+  sm_120a rebuild, workspace library/binary check, and 51 library/binary unit
+  tests pass again on the accepted source.
+memory:
+  The added FP32 variance state covers 923271168 matrix elements, exactly
+  3693084672 bytes = 3.439453 GiB. During the sustained gate the process used
+  approximately 45076 MiB on a 97887 MiB GPU, so capacity was not the failure.
+bringup:
+  target/runs/20260717_175231Z_fineweb_30s
+  completed_steps=76, train_elapsed_s=30.117, val_loss=6.284873.
+  Both high-fidelity samples are finite and nonzero; training loss moves from
+  10.6769218 to 6.6465659; every update/skip counter is zero; and the exact
+  B4/S2048/8192-token configuration remains intact. This run established only
+  launchability, real updates, and immediate numerical health. Its endpoint
+  loss was ignored and was not compared, ranked, tuned against, or used in
+  the keep/revert decision.
+gate:
+  target/runs/20260717_175332Z_fineweb_450s
+  completed_steps=1101, train_elapsed_s=450.112,
+  val_loss=4.94970703125.
+  All 23 high-fidelity samples are finite and nonzero and every update/skip
+  counter is zero. Global gradient norm remains finite from 1.000290155 to
+  14.571924210 and ends at 1.657010794. Sampled training loss continues down
+  to 4.912581921, so this is a stable optimization run rather than a hidden
+  divergence or isolated loss spike.
+measured_effect:
+  Against the accepted ResFormer/NorMuon/SignMuon control at
+  4.868333339691162 / 1291 steps, held-out loss regresses by
+  0.081373691559 (+1.671489725%). The candidate completes 1101 rather than
+  1291 steps (-14.717273431%) and processes 9019392 rather than 10575872
+  tokens. Average step time moves from 348.697909 to 408.821072 ms
+  (+60.123163 ms, +17.242192%), primarily because Muon-VS requires Polar on
+  every update while the accepted SignMuon path orthogonalizes every other
+  update.
+decision:
+  Reject this Muon-VS composition. Its sustained trajectory is numerically
+  healthy, but the paper's sample-efficiency gain is not large enough here to
+  recover the 17.24% per-step overhead, and the resulting fixed-time held-out
+  loss is 1.67% worse. The source was fully restored and rebuilt before this
+  record was added; the accepted baseline remains unchanged.
+```
+
+```text
+date: 2026-07-17
+commit: rejected working-copy experiment; source fully reverted
 experiment: GPAS / Gradient-Preserving Activation Scaling.
 status: rejected_450s
 source:
