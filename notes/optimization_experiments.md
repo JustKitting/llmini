@@ -49,6 +49,74 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-17
 commit: rejected working-copy experiment; source fully reverted
+experiment: Muon²-F factorized preconditioning with three Polar Express iterations.
+status: rejected_450s
+source:
+  https://arxiv.org/abs/2604.09967
+rationale:
+  Muon² applies an Adam-style raw-gradient second-moment preconditioner to the
+  momentum before orthogonalization. The paper attributes its quality gain to
+  a better-conditioned Polar input and reports that three-step Muon²(-F)
+  outperforms five-step Muon across GPT and LLaMA models, including a
+  2048-wide LLaMA-1B with Llama-2 tokenization. Muon²-F reconstructs the
+  second moment from Adafactor-style row and column statistics, avoiding a
+  full parameter-sized optimizer buffer.
+implementation:
+  Added separate factorized row and column EMA statistics with beta2=0.95 for
+  every 2D Muon tensor. On every real optimizer step, CUDA kernels accumulated
+  the squared, gradient-scaled raw gradient by row and column and updated the
+  two EMAs. On period-2 polar steps, they reconstructed
+    V_hat[row,col] = row_ema[row] * col_ema[col] / sum(row_ema)
+  and fed momentum / (sqrt(V_hat) + 1e-10) into the existing Polar Express
+  path. Polar iterations changed from five to the paper's three. Existing
+  SignMuon steps, downstream NorMuon scaling, AMUSE, ResFormer, NextLat, all
+  16 layers, FineWeb, Llama-2 tokenization, B4/S2048, and 8192 tokens per step
+  remained intact. The added factor statistics occupied distinct storage and
+  did not alias the existing NorMuon state.
+correctness:
+  cargo fmt --all and cargo check --all-targets: pass.
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+  A focused GPU reference test covered both 64x128 and 128x64 matrices. It
+  matched CPU row/column EMA updates, reconstructed variance, preconditioned
+  momentum, tall-matrix orientation, factor sum, and untouched NorMuon state:
+  pass.
+  CUDA_DEVICE_INDEX=0 cargo test -p rust-kernels-cuda --test optimizer
+    'muon::' -- --ignored --nocapture --test-threads=1:
+    12 passed, 0 failed.
+bringup:
+  target/runs/20260717_152802Z_fineweb_30s
+  completed_steps=93, train_elapsed_s=30.252, val_loss=6.290719.
+  Both high-fidelity samples are finite and nonzero, every update/skip
+  counter is zero, and the exact 16-layer B4/S2048/8192-token configuration
+  remains intact. This run was used only to establish launchability, real
+  updates, and immediate numerical health. Its endpoint loss was not
+  compared, ranked, tuned against, or used in the keep/revert decision.
+gate:
+  target/runs/20260717_152926Z_fineweb_450s
+  completed_steps=1346, train_elapsed_s=450.256, val_loss=5.013974.
+  All 27 high-fidelity samples are finite and nonzero and every update/skip
+  counter is zero. Sampled loss ranges from 5.092260838 to 10.676921844 and
+  global gradient norm ranges from 0.967971385 to 14.571924210. Every sample
+  retains batch 4, sequence 2048, and 8192 tokens per step.
+measured_effect:
+  Against the accepted ResFormer/NorMuon control at 4.868333 / 1291 steps,
+  held-out loss regresses by 0.145641 (+2.9916%) despite completing 55 more
+  steps and processing 11026432 rather than 10575872 tokens. Average step
+  time improves from 348.697909 to 334.514116 ms (-4.0676%), but the 4.2603%
+  extra exposure does not recover the convergence loss.
+decision:
+  Reject this Muon²-F composition and fully restore the accepted five-step
+  SignMuon/NorMuon optimizer. The 450-second held-out endpoint is the
+  rejection evidence; the healthy 30-second loss played no role. This result
+  rejects combining pre-Polar Muon²-F and three Polar iterations with the
+  current period-2 SignMuon plus post-Polar NorMuon stack. It does not reject
+  the paper's plain-Muon recipe, where every step is orthogonalized and no
+  second post-Polar adaptive transform is composed with Muon²-F.
+```
+
+```text
+date: 2026-07-17
+commit: rejected working-copy experiment; source fully reverted
 experiment: Token-half-life Adam beta2 with accepted local weight decay.
 status: rejected_450s
 source:
