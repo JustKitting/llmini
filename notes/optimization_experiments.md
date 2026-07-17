@@ -48,6 +48,78 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 
 ```text
 date: 2026-07-17
+commit: rejected working-copy experiment; source fully reverted
+experiment: Uniform half-token sketch for dense linear weight gradients.
+status: rejected_450s
+source:
+  https://arxiv.org/abs/2602.14701
+rationale:
+  Unbiased Approximate Vector-Jacobian Products proposes randomized,
+  mask-and-rescale estimators that trade additional gradient variance for less
+  backward computation. A matched profile of the accepted baseline attributed
+  14.8607 ms/step to dense linear dW GEMMs. Computing dW from half of the token
+  rows therefore had a credible approximately 7.43 ms/step ceiling, well above
+  the active 1.666796 ms/step minimum-impact threshold.
+implementation:
+  Kept the complete forward model, activation gradients, and bias gradients
+  exact. For each dense linear backward, selected one of the two contiguous
+  halves of the 8192 token rows from the existing random sign seed, computed
+  dW with K=4096, and multiplied the result by 2. The full transposed NVFP4
+  operands and their global scales were retained, while a strided TMA view and
+  compact scale-plane packing exposed only the selected K window. The original
+  exact APIs remained available.
+  ResFormer, NextLat, every attention and MLP branch, all 16 layers, d=2048,
+  32 heads, FineWeb, Llama-2 tokenization, B4/S2048, and 8192 tokens per step
+  remained active.
+correctness:
+  cargo fmt --all --check, cargo check --workspace, and the focused linear
+  backward test compile passed.
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+  Rebuilt-PTX GPU tests verified that the strided K window exactly matched
+  physically compacted operands and scales, that the estimator's 2x output
+  scale was exact, and that sampled dW left dX and dbias bit-identical to the
+  exact route.
+profile:
+  Matched 10-step traces:
+    target/nsys/20260717_backward_layout_detached_candidate.nsys-rep
+    target/nsys/20260717_dweight_half_token_sample_candidate.nsys-rep
+  Total GPU-kernel time fell from 3347.617 ms to 3274.926 ms, a 2.171% whole-
+  step GPU reduction. nvfp4_gemm_tma_exact_kernel fell from 284.747 ms to
+  214.338 ms; this targeted 70.409 ms accounts for nearly all of the measured
+  72.691 ms saving.
+bringup:
+  target/runs/20260717_204912Z_fineweb_30s
+  completed_steps=95, train_elapsed_s=30.126, val_loss=6.288439.
+  Both high-fidelity samples have finite and nonzero gradients, both optimizer
+  learning rates are active, and every update/skip counter is zero. This run
+  established launchability, real updates, and immediate numerical health
+  only. Its loss was not acceptance evidence.
+gate:
+  target/runs/20260717_205017Z_fineweb_450s
+  completed_steps=1382, train_elapsed_s=450.145,
+  val_loss=5.027407.
+  All 28 high-fidelity samples are finite and nonzero and every update/skip
+  counter is zero. Sampled training loss falls from 10.671360016 to
+  5.178538799, with a minimum of 5.060087204. Global gradient norm remains
+  finite from 1.368712902 through 3.863222122 and ends at 2.116939306. Every
+  sample retains B4/S2048 and 8192 tokens per step.
+measured_effect:
+  Against the accepted detached-KDA baseline at 4.849991321563721 / 1350
+  steps, held-out loss regresses by 0.177415678 (+3.658062%). The candidate
+  completes 32 more steps (+2.370370%). Average step time improves from
+  333.359259 ms to 325.719971 ms (-7.639288 ms, -2.291608%).
+decision:
+  Reject and fully restore the exact dense weight-gradient implementation.
+  The estimator is numerically stable and realizes its intended backward
+  saving, but its added gradient variance costs substantially more held-out
+  quality than the extra fixed-time exposure recovers. This result rejects
+  this uniform half-token estimator under the active Muon training path; it
+  does not reject lower-variance importance sketches in general. The
+  30-second loss played no role.
+```
+
+```text
+date: 2026-07-17
 commit: accepted working-copy experiment after full gate
 experiment: Detach recurrent KDA state between 64-token chunks in backward.
 status: accepted_450s
