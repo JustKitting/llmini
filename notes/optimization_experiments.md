@@ -45,6 +45,50 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 
 ```text
 date: 2026-07-17
+commit: rejected runtime-only experiment
+experiment: Retune AMUSE rho with a post-warmup fixed-step screen.
+status: rejected_450s
+screening_correction:
+  TRAIN_LR_WARMUP_STEPS is already optimizer-step-gated at 83 steps. The
+  ordinary 30-second run ends at about 77-79 steps, so rho has not activated
+  and a time-matched result cannot compare it. Use exactly 200 completed steps
+  for schedule parameters that are dormant during the fast wall-clock screen.
+exploratory_90s:
+  rho=0.593588:
+    target/runs/20260717_071136Z_fineweb_90s
+    completed_steps=233, val_loss=5.872403.
+  rho=0.4:
+    target/runs/20260717_071451Z_fineweb_90s
+    completed_steps=230, val_loss=5.878969.
+  rho=0.8:
+    target/runs/20260717_071314Z_fineweb_90s
+    completed_steps=231, val_loss=5.872300.
+  rho=1.0:
+    target/runs/20260717_071631Z_fineweb_90s
+    completed_steps=230, val_loss=5.871900.
+matched_200_step_screen:
+  rho=0.593588:
+    target/runs/20260717_072638Z_fineweb_450s
+    completed_steps=200, train_elapsed_s=78.216, val_loss=5.949316.
+  rho=0.8:
+    target/runs/20260717_072801Z_fineweb_450s
+    completed_steps=200, train_elapsed_s=78.442, val_loss=5.944727.
+gates:
+  rho=1.0:
+    target/runs/20260717_071854Z_fineweb_450s
+    completed_steps=1146, train_elapsed_s=450.214, val_loss=5.065012.
+  rho=0.8:
+    target/runs/20260717_072931Z_fineweb_450s
+    completed_steps=1144, train_elapsed_s=450.386, val_loss=5.018924.
+decision:
+  Reject both sustained candidates. Although rho=0.8 improves the exact
+  200-step screen by 0.004589 (-0.0771%), its 450-second held-out loss is
+  0.034330 (+0.689%) worse than the active 4.984594 baseline. Keep
+  TRAIN_AMUSE_RHO=0.593588.
+```
+
+```text
+date: 2026-07-17
 commit: accepted local jj commit after full gate
 experiment: Retune AMUSE's initial interpolation on the intact 1B model.
 status: accepted_450s

@@ -9,6 +9,11 @@ Optimize for the lowest held-out validation loss after the fixed 450-second
 single-GPU candidate gate:
 
 - 30 seconds is the fast candidate screen.
+- A schedule parameter that is mathematically dormant for the entire
+  30-second window must instead use a matched fixed-step screen after the
+  parameter activates. For the current 83-step warmup, use 200 completed
+  optimizer steps for both control and candidate. The warmup itself remains
+  step-gated; do not convert it to elapsed-time logic.
 - 450 seconds is the mandatory sustained stability, regression, and held-out
   quality gate before a passing change is committed in JJ.
 - The 450-second duration is an iteration gate, not the final training budget
@@ -99,8 +104,8 @@ minimum_step_saving = (TRAIN_ELAPSED_S / COMPLETED_STEPS) * 0.005
 ```
 
 For the current matched 450-second baseline,
-`450.153 / 1151 = 0.391097307` seconds per step, so a candidate batch must
-credibly be able to save at least `1.955487 ms/step`
+`450.378 / 1145 = 0.393343231` seconds per step, so a candidate batch must
+credibly be able to save at least `1.966716 ms/step`
 before a rebuild, GPU test, or training screen. Multiply a per-launch saving by
 the launch count per step and compare that aggregate saving with the threshold.
 
