@@ -49,6 +49,105 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-17
 commit: rejected working-copy experiment; source fully reverted
+experiment: Dynamic Frac-Connections at frac-rate 4.
+status: rejected_30s_health
+source:
+  https://arxiv.org/abs/2503.14125
+  https://github.com/allenai/OLMo/blob/main/configs/official-0425/OLMo2-1B-stage1.yaml
+rationale:
+  Frac-Connections partitions each residual state into fractions and learns
+  both static and input-dependent width/depth routing. The paper reports
+  consistently lower training and validation loss for OLMo2-1B2-DFCx4, with
+  only 165056 controller parameters and 0.044% reported forward-FLOP overhead.
+  Its OLMo2-1B2 experiment is particularly relevant to this intact
+  16-layer/2048-wide model, so test the paper's complete DFCx4 architecture
+  rather than a static-only shortcut or a reduced model.
+implementation:
+  Added 32 DFC modules, one before attention and one before the MLP in each of
+  16 blocks. Every 2048-wide hidden state was split into four 512-wide
+  fractions. The implementation included the paper's learned static alpha and
+  beta matrices, per-fraction RMSNorm gamma, zero-initialized dynamic alpha and
+  beta projections, tanh, learned 0.01 dynamic scales, identity-equivalent
+  initialization, and the complete reverse-mode path. Controller tensors used
+  zero-centered NVFP4 deltas around identity/one values so early off-diagonal
+  updates remained representable. Forward tape, backward scratch, global
+  clipping, optimizer state, schedule-free materialization, evaluation,
+  checkpointing, upload, and run metadata were all wired. All 16 transformer
+  layers, ResFormer, NextLat, FineWeb, Llama-2 tokenization, B4/S2048, and 8192
+  tokens per step remained intact.
+correctness:
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass throughout.
+  cargo test -p gpt2-nvfp4 --lib
+    packed_controller_shapes_match_paper_parameter_count: pass; exact effective
+    controller count is 165056.
+  CUDA_DEVICE_INDEX=0 cargo test -p rust-kernels-cuda --test frac_connection
+    -- --ignored --nocapture: pass for both tests. These compare identity and
+    nontrivial dynamic/static forward, hidden-state backward, controller
+    backward, and every controller-parameter gradient against CPU references.
+  A CTA race found while tracing width-backward was fixed and both references
+  still passed. Frozen identity controllers then tracked a separately rebuilt
+  parent across ten matched diagnostic steps: step-1 loss
+  10.248392 versus 10.250242 and step-10 loss 7.735388 versus 7.734499.
+optimizer_fidelity:
+  The first attempt inherited this repo's fixed-time Adam tuning and therefore
+  moved routing parameters by about 5.24e-4 on the first update. That is not
+  representative of the DFC paper's matched OLMo2 recipe. The official
+  OLMo2-1B configuration uses AdamW at 4e-4 with zero-start linear warmup over
+  8.389B tokens, which is approximately 4000 optimizer steps at its stated
+  global batch. A corrected diagnostic used ordinary AdamW behavior, dynamic
+  weight decay 0.1, static weight decay 0, a 4e-4 peak, and 4000-step linear
+  warmup. Its first dynamic/static updates were exactly about 1e-7, more than
+  5000x smaller than the inherited local update.
+health_evidence:
+  Full controller with inherited local Adam:
+    target/runs/20260717_134539Z_fineweb_30s
+    non-finite gradients and repeated skipped updates begin at optimizer
+    candidate step 3; held-out loss is NaN.
+  Static-only routing diagnostic:
+    target/runs/20260717_140740Z_fineweb_900s
+    loss/grad-norm begins
+      10.676921844 / 14.572583199,
+      10.248449326 / 1580004.25,
+      9.353644371 / NaN.
+  Paper-aligned controller diagnostic:
+    target/runs/20260717_142021Z_fineweb_900s
+    loss/grad-norm begins
+      10.676921844 / 14.572583199,
+      10.250609398 / 638.281921,
+      9.313245773 / NaN.
+    TRAIN_TRACE artifact target/runs/20260717_142048Z_fineweb_900s confirms
+    finite decoded controller ranges of approximately +/-1e-7 after the first
+    update and +/-3e-7 after the second; the failure is not an oversized or
+    incorrectly decoded routing tensor.
+  Dynamic-only paper-aligned diagnostic:
+    target/runs/20260717_142306Z_fineweb_900s
+    loss/grad-norm begins
+      10.676921844 / 14.572583199,
+      10.248891830 / 356.864868,
+      9.285687447 / NaN.
+bringup:
+  target/runs/20260717_141931Z_fineweb_30s
+  The paper-aligned full controller repeatedly reports non-finite gradients
+  from optimizer candidate step 3 onward. It reaches 77 loop iterations only
+  because the same invalid update is skipped repeatedly, and held-out
+  evaluation is NaN. This run is a failed launch/update/numerical-health smoke;
+  its short-run loss was not compared, ranked, tuned against, or used as
+  quality evidence.
+decision:
+  Reject before the 450-second quality gate and fully restore the accepted
+  ResFormer/NorMuon model. The 30-second run failed the only questions it is
+  allowed to answer: finite real updates, zero unexpected skips, and immediate
+  numerical stability. Both learned static and learned dynamic routing trigger
+  the failure independently even under the paper-aligned first-update scale,
+  so another coefficient or LR sweep is not justified. This result only rejects
+  DFCx4 composed with the current aggressive SignMuon/NorMuon/NVFP4 training
+  dynamics; it is not evidence against Frac-Connections under the paper's
+  long-horizon OLMo2 optimizer and token budget.
+```
+
+```text
+date: 2026-07-17
+commit: rejected working-copy experiment; source fully reverted
 experiment: MuonEq-R pre-Polar row equilibration.
 status: rejected_450s
 source:
