@@ -32,8 +32,11 @@ Primary optimization target:
 - Lowest held-out validation loss after the active fixed-time single-GPU
   candidate gate. As of 2026-07-16 the gate is 450 seconds; this shorter gate
   is an iteration screen, not the final training budget.
-- A 30-second screen is the fast filter and the full 450-second sustained run
-  is the mandatory quality and stability gate before committing.
+- For research-scale changes, a 30-second screen checks only that the candidate
+  works: launches, finite/nonzero metrics, real updates, no unexpected skips,
+  and no immediate divergence. Its loss delta is not acceptance or rejection
+  evidence. The full 450-second sustained run is the first quality judgment and
+  remains mandatory before committing.
 - Training loss, fixed-step loss, tokens/s, memory, and isolated kernel timings
   are diagnostics. Tokens/s explains training exposure but does not override
   matched held-out or downstream quality.
@@ -41,6 +44,186 @@ Primary optimization target:
 
 ```text
 heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
+```
+
+```text
+date: 2026-07-17
+commit: accepted local jj commit after full gate
+experiment: NorMuon neuron-wise variance reduction after Polar/Muon.
+status: accepted_450s
+source:
+  https://arxiv.org/abs/2510.05491
+rationale:
+  Test a general optimizer improvement without changing model topology, data,
+  tokenizer, objective, or gradient reachability. NorMuon addresses unequal
+  neuron-wise update variance after Muon's Polar orthogonalization and reports
+  improved training efficiency across language-model scales and data regimes.
+implementation:
+  For every matrix update, maintain one FP32 second-moment scalar along the
+  longer matrix dimension, with rows winning the square-matrix tie as in the
+  reference implementation. After Polar, compute the mean square across the
+  other dimension, update v = 0.95*v + 0.05*mean(u^2), and multiply each neuron
+  by rsqrt(max(v, 1e-10)). Apply one final scalar that restores the raw Polar
+  update's Frobenius norm exactly, then pass the transformed update into the
+  unchanged AMUSE z/x update, Q/K clipping, bounds, and NVFP4 path.
+  The active TMA path fuses the per-neuron factor into the existing master
+  update, avoiding an additional full-matrix write pass.
+verification:
+  cargo fmt --all --check, cargo check --workspace, and git diff --check: pass.
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+  All five focused Muon TMA GPU tests: pass. The new numerical test verifies
+  beta2 state, neuron factors, Frobenius-norm preservation, the applied master
+  update, and split/cooperative compatibility; existing schedule-amax and Q/K
+  clipping tests remain green.
+  rust-kernels binary unit tests: 4 passed. Sweep binary unit tests: 45 passed.
+  A full cargo test --workspace compile remains blocked by pre-existing test API
+  drift in crates/gpt2-nvfp4/tests/forward.rs: Gpt2ForwardArgs no longer has
+  the test's mlp_pre_activation field. The exact release/device build passes.
+bringup:
+  target/runs/20260717_092326Z_fineweb_30s
+  completed_steps=78, train_elapsed_s=30.034, val_loss=6.245862.
+  Finite and nonzero are one, all update/skip counters are zero, and batch 4,
+  sequence 2048, and 8192 tokens per step are intact. Per the research-change
+  rule, the +0.012566 (+0.2016%) loss difference from the accepted bring-up run
+  was not used to judge the candidate.
+gate:
+  target/runs/20260717_092420Z_fineweb_450s
+  completed_steps=1132, train_elapsed_s=450.160, val_loss=4.890027.
+  All 23 high-fidelity samples are finite and nonzero. Every update/skip
+  counter is zero, loss ranges from 4.806806087 to 10.666461945, and global
+  gradient norm ranges from 0.813208878 to 16.312370300. Every sample retains
+  batch 4, sequence 2048, and 8192 tokens per step.
+measured_effect:
+  Against the accepted 4.968934 / 1144-step gate, validation loss improves by
+  0.078907 (-1.5880%) despite completing 12 fewer optimizer steps (-1.0490%).
+  The convergence gain more than offsets the added variance-statistics work in
+  the fixed wall-clock budget.
+fidelity_audit:
+  A provisional implementation normalized square matrices column-wise because
+  Polar stores nonsquare matrices short-by-long. It reached 4.911618 in 1131
+  steps at target/runs/20260717_091041Z_fineweb_450s, but was not committed.
+  Correcting square matrices to the reference's row-wise tie rule and using a
+  coalesced block-per-row reduction improved held-out loss by another 0.021591
+  (-0.4396%) in the exact rerun above.
+decision:
+  Keep, promote as the active baseline, and commit. This is a held-out quality
+  improvement on the intact approximately 1B model and matched FineWeb task.
+```
+
+```text
+date: 2026-07-17
+commit: rejected working-copy experiment; source control removed
+experiment: Early upper-layer Q/K learning-rate suppression.
+status: rejected_450s
+source:
+  https://arxiv.org/abs/2605.10504
+rationale:
+  Test the paper's fixed 3% release control without removing or bypassing any
+  model component. Multiply only upper-half attention Q/K Muon updates by
+  0.25 for the first 750k training tokens, then ramp to 1.0 over 250k tokens.
+  At 8192 tokens per step this is 92 suppressed steps plus a 31-step ramp.
+  The intervention was applied to both full-attention and KDA Q/K parameters;
+  all other updates, data, objective, and model dimensions remained fixed.
+verification:
+  Focused schedule unit test: pass.
+  Focused GPU test proving a 0.25 upper-Q/K update and unchanged lower-Q/K
+  update: pass.
+  All Muon TMA finish GPU tests and the split/cooperative equivalence test:
+  pass.
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+screen:
+  target/runs/20260717_084328Z_fineweb_30s
+  completed_steps=80, train_elapsed_s=30.307, val_loss=6.236940.
+  Against the accepted 79-step 6.233296 screen, loss was 0.003644 (+0.0585%)
+  worse while one extra step completed. This was close enough to run the
+  sustained gate because the intervention had not yet reached its release.
+gate:
+  target/runs/20260717_084843Z_fineweb_450s
+  completed_steps=1157, train_elapsed_s=450.367, val_loss=5.164936.
+  All 24 high-fidelity samples are finite and nonzero. Every update/skip
+  counter is zero, loss ranges from 5.385107994 to 10.666461945, and global
+  gradient norm ranges from 1.034002781 to 16.312370300. Every sample retains
+  batch 4, sequence 2048, and 8192 tokens per step.
+measured_effect:
+  Against the accepted 4.968934 / 1144-step gate, validation loss regressed by
+  0.196002 (+3.9446%) despite completing 13 more steps. After the Q/K release,
+  sampled gradient norms rise progressively and the raw-loss trajectory pulls
+  away from the baseline.
+decision:
+  Reject. The run is numerically finite but materially worse in held-out loss;
+  this is outside seed noise and provides no basis for retaining the change.
+  Restore uniform Q/K learning rates.
+```
+
+```text
+date: 2026-07-17
+commit: rejected working-copy experiment; source control removed
+experiment: Stochastic E2M1 payload rounding for backward error gradients.
+status: rejected_30s
+source:
+  https://arxiv.org/html/2509.25149
+rationale:
+  NVIDIA's NVFP4 pretraining study reports improved convergence when
+  stochastic rounding is restricted to gradients, while round-to-nearest
+  remains preferable for weights and forward activations. Route only the fused
+  backward error-pair quantizer through stochastic rounding; retain the
+  existing deterministic MS-EDEN packers everywhere else.
+implementation:
+  PTX ISA 8.7 defines cvt.rs.satfinite.e2m1x4, but CUDA 13.2 ptxas rejects it
+  for this workstation GPU with "Feature '.rs' not supported on .target
+  'sm_120a'". The tested candidate therefore used exact software stochastic
+  rounding between adjacent finite E2M1 values with a fresh per-backward seed.
+verification:
+  cargo fmt and git diff --check: pass.
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+  ptxas -arch=sm_120a rust_kernels_cuda.ptx: pass after replacing the
+  unsupported hardware instruction.
+  Focused fused backward-pair GPU metadata/layout test: pass.
+screen:
+  target/runs/20260717_082911Z_fineweb_30s
+  completed_steps=78, train_elapsed_s=30.006, val_loss=6.238652.
+decision:
+  Reject against the accepted 79-step 6.233296 screen. The candidate is
+  0.005356 (+0.086%) worse and completes one fewer step, so it has neither a
+  lower-loss signal nor enough fixed-wall throughput to justify the
+  450-second gate. Restore deterministic payload rounding.
+```
+
+```text
+date: 2026-07-17
+commit: rejected working-copy experiment; source control removed
+experiment: Exclude all one-dimensional vectors from AdamW weight decay.
+status: rejected_30s
+rationale:
+  Apply the standard matrix-only AdamW decay grouping across the intact model:
+  retain decay for embeddings and matrices, while excluding LayerNorm weights,
+  LayerNorm biases, and other vector parameters.
+screen:
+  target/runs/20260717_080935Z_fineweb_30s
+  completed_steps=79, train_elapsed_s=30.045, val_loss=6.245927.
+decision:
+  Reject against the exact 79-step 6.233296 baseline. Restore the existing
+  uniform Adam decay and do not run a 450-second gate.
+```
+
+```text
+date: 2026-07-17
+commit: rejected working-copy experiment; source control removed
+experiment: Correct the whole-transformer NVFP4 initialization RMS to 0.02.
+status: rejected_30s
+rationale:
+  The smooth NVFP4 payload is 25% zero and 75% split equally between +/-0.5,
+  so a 0.02 global scale has RMS 0.008660254 rather than the standard GPT
+  initialization target of 0.02. Apply 4/sqrt(3)=2.309401 to every transformer
+  embedding, attention, and MLP matrix while retaining the existing
+  1/sqrt(2L) residual-projection correction.
+screen:
+  target/runs/20260717_080614Z_fineweb_30s
+  completed_steps=79, train_elapsed_s=30.335, val_loss=6.380256.
+decision:
+  Reject against the exact 79-step 6.233296 baseline. The smaller NVFP4
+  initialization is materially better in this training regime. Restore the
+  original initialization and do not run a 450-second gate.
 ```
 
 ```text

@@ -16,6 +16,8 @@ pub struct MuonScratchBuffers {
     pub(super) polar_gram: DeviceBuffer<f32>,
     pub(super) polar_ax: DeviceBuffer<f32>,
     pub(super) polar_chunks: DeviceBuffer<f32>,
+    pub(super) normuon_factors: DeviceBuffer<f32>,
+    pub(super) normuon_chunks: DeviceBuffer<f32>,
     pub(super) tma: MuonTmaScratch,
 }
 
@@ -51,6 +53,8 @@ impl MuonScratchBuffers {
                     2 * nvfp4_tensor_amax_chunks(max_matrix_len()),
                 ),
             )?,
+            normuon_factors: DeviceBuffer::zeroed(stream, max_polar_cols())?,
+            normuon_chunks: DeviceBuffer::zeroed(stream, 2 * max_polar_cols())?,
             tma: MuonTmaScratch::new(stream)?,
         })
     }

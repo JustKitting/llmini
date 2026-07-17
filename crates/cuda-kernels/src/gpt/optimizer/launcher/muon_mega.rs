@@ -119,6 +119,7 @@ impl OptimizerModule {
         &self,
         mut args: MuonTmaFinishArgs<'_>,
     ) -> Result<(), DriverError> {
+        self.muon_tma_normuon(&mut args)?;
         self.muon_tma_update_master_and_amax(&mut args)?;
 
         let groups_per_block = CTA_THREADS / MUON_NVFP4_THREADS_PER_GROUP;
@@ -138,7 +139,44 @@ impl OptimizerModule {
         &self,
         mut args: MuonTmaFinishArgs<'_>,
     ) -> Result<(), DriverError> {
+        self.muon_tma_normuon(&mut args)?;
         self.muon_tma_update_master_and_amax(&mut args)
+    }
+
+    fn muon_tma_normuon(&self, args: &mut MuonTmaFinishArgs<'_>) -> Result<(), DriverError> {
+        assert!(args.slot_index < args.slots.len() as u32);
+        assert!(args.matrix_len > 0);
+        assert!(args.polar_cols > 0);
+        assert_eq!(args.matrix_len % args.polar_cols, 0);
+        let polar_rows = args.matrix_len / args.polar_cols;
+        let chunk_count = if polar_rows == args.polar_cols {
+            args.polar_cols
+        } else {
+            args.polar_cols.div_ceil(CTA_THREADS)
+        };
+        assert!(args.normuon_factors.len() >= args.polar_cols as usize);
+        assert!(args.normuon_chunks.len() >= 2 * chunk_count as usize);
+
+        self.apply.muon.tma_split.muon_tma_normuon_stats_kernel(
+            args.stream,
+            grid_x_config(chunk_count, CTA_THREADS),
+            args.slots,
+            args.polar_update,
+            &mut *args.normuon_factors,
+            &mut *args.normuon_chunks,
+            args.slot_index,
+            args.matrix_len,
+            args.polar_cols,
+        )?;
+        self.apply
+            .muon
+            .tma_split
+            .muon_tma_normuon_reduce_scale_kernel(
+                args.stream,
+                grid_x_config(1, CTA_THREADS),
+                &mut *args.normuon_chunks,
+                chunk_count,
+            )
     }
 
     fn muon_tma_update_master_and_amax(
@@ -163,6 +201,8 @@ impl OptimizerModule {
                 args.polar_update,
                 args.polar_bound_amax,
                 &mut *args.polar_chunks,
+                &*args.normuon_factors,
+                &*args.normuon_chunks,
                 args.qk_clip_factors,
                 args.slot_index,
                 args.learning_rate,
@@ -187,11 +227,12 @@ impl OptimizerModule {
 
     pub fn muon_tma_finish_update_cooperative_reference(
         &self,
-        args: MuonTmaFinishArgs<'_>,
+        mut args: MuonTmaFinishArgs<'_>,
     ) -> Result<(), DriverError> {
         assert!(args.slot_index < args.slots.len() as u32);
         assert!(args.matrix_len > 0);
         assert!(args.polar_chunks.len() >= 2 * MUON_COOPERATIVE_BLOCKS);
+        self.muon_tma_normuon(&mut args)?;
         self.apply.muon.tma_split.muon_tma_finish_update_kernel(
             args.stream,
             launch_config((MUON_COOPERATIVE_BLOCKS as u32, 1, 1), CTA_THREADS),
@@ -199,6 +240,8 @@ impl OptimizerModule {
             args.polar_update,
             args.polar_bound_amax,
             args.polar_chunks,
+            args.normuon_factors,
+            args.normuon_chunks,
             args.slot_index,
             args.learning_rate,
             args.weight_decay,

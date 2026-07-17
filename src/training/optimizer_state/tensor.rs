@@ -39,16 +39,22 @@ pub(in crate::training) struct MuonState {
     pub(in crate::training) z_master: DeviceBuffer<f32>,
     pub(in crate::training) x_master: DeviceBuffer<f32>,
     pub(in crate::training) momentum: DeviceBuffer<f32>,
+    pub(in crate::training) second_momentum: DeviceBuffer<f32>,
     pub(in crate::training) schedule_amax: DeviceBuffer<f32>,
 }
 
 impl MuonState {
-    pub(super) fn new(init: StateInit<'_>, tensor: &UploadedNvfp4) -> Result<Self, DriverError> {
+    pub(super) fn new(
+        init: StateInit<'_>,
+        tensor: &UploadedNvfp4,
+        normuon_neurons: usize,
+    ) -> Result<Self, DriverError> {
         let master = decode_master(init.stream, init.decode, tensor)?;
         Ok(Self {
             z_master: clone_device(init.stream, &master)?,
             x_master: master,
             momentum: zero(init.stream, tensor.len)?,
+            second_momentum: zero(init.stream, normuon_neurons)?,
             schedule_amax: zero(init.stream, 1)?,
         })
     }

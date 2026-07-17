@@ -2,10 +2,12 @@ use cuda_device::{
     DisjointSlice, SharedArray, cooperative_launch, cuda_module, grid, kernel, thread,
 };
 
-use crate::block_reduce::block_max_store_f32;
+use crate::block_reduce::{block_max_store_f32, block_sum_shared_f32};
 use crate::device_ptr::read_f32;
-use crate::f16_tc_matmul::convert::{load_f32x2_global, store_f32x2_global};
-use crate::float_ptx::{abs_f32, max_f32, sqrt_f32};
+use crate::f16_tc_matmul::convert::{
+    load_f32_global_read_only, load_f32x2_global, store_f32x2_global,
+};
+use crate::float_ptx::{abs_f32, fma_f32, max_f32, sqrt_f32};
 use crate::nvfp4_quant::kernels::four_six::helpers::four_six_global_scale;
 use crate::nvfp4_quant::kernels::row_amax::TENSOR_AMAX_VALUES_PER_BLOCK;
 use crate::optimizer::MuonSlotDescriptor;
@@ -19,6 +21,9 @@ use super::momentum::momentum_orient;
 use super::quant::{encode_four_six, quantize_updated_master};
 use super::types::{MuonMatrixShape, MuonUpdateScalars};
 use super::update::update_master_chunks;
+
+const NORMUON_BETA2: f32 = 0.95;
+const NORMUON_EPSILON: f32 = 1.0e-10;
 
 #[cuda_module]
 pub(crate) mod module {
@@ -179,12 +184,136 @@ pub(crate) mod module {
     }
 
     #[kernel]
+    pub fn muon_tma_normuon_stats_kernel(
+        slots: &[MuonSlotDescriptor],
+        polar_update: &[f32],
+        mut normuon_factors: DisjointSlice<f32>,
+        mut normuon_chunks: DisjointSlice<f32>,
+        slot_index: u32,
+        matrix_len: u32,
+        polar_cols: u32,
+    ) {
+        static mut RAW_SUMS: SharedArray<f32, { WARPS_PER_BLOCK as usize }> = SharedArray::UNINIT;
+        static mut SCALED_SUMS: SharedArray<f32, { WARPS_PER_BLOCK as usize }> =
+            SharedArray::UNINIT;
+
+        let block = thread::blockIdx_x();
+        let tid = thread::threadIdx_x();
+        let lane = tid & (WARP_SIZE - 1);
+        let warp = tid / WARP_SIZE;
+        let desc = slots[slot_index as usize];
+        let polar_rows = matrix_len / polar_cols;
+
+        if desc.rows == desc.cols {
+            let mut raw_sumsq = 0.0;
+            let mut inner_col = tid;
+            while inner_col < polar_cols {
+                let value = load_f32_global_read_only(
+                    polar_update.as_ptr(),
+                    (block * polar_cols + inner_col) as usize,
+                );
+                raw_sumsq = fma_f32(value, value, raw_sumsq);
+                inner_col += thread::blockDim_x();
+            }
+            let raw_total = unsafe { block_sum_shared_f32(&mut RAW_SUMS, raw_sumsq, lane, warp) };
+            if tid == 0 {
+                let state = ptr_mut::<f32>(desc.second_momentum);
+                let old = unsafe { *state.add(block as usize) };
+                let mean = raw_total / polar_cols as f32;
+                let next = NORMUON_BETA2 * old + (1.0 - NORMUON_BETA2) * mean;
+                let factor = 1.0 / sqrt_f32(max_f32(next, NORMUON_EPSILON));
+                let block_count = thread::gridDim_x();
+                unsafe {
+                    *state.add(block as usize) = next;
+                    *normuon_factors.as_mut_ptr().add(block as usize) = factor;
+                    *normuon_chunks.as_mut_ptr().add(block as usize) = raw_total;
+                    *normuon_chunks
+                        .as_mut_ptr()
+                        .add((block_count + block) as usize) = raw_total * factor * factor;
+                }
+            }
+        } else {
+            let col = block * thread::blockDim_x() + tid;
+            let mut raw_sumsq = 0.0;
+            let mut scaled_sumsq = 0.0;
+            if col < polar_cols {
+                let mut row = 0;
+                while row < polar_rows {
+                    let value = load_f32_global_read_only(
+                        polar_update.as_ptr(),
+                        (row * polar_cols + col) as usize,
+                    );
+                    raw_sumsq = fma_f32(value, value, raw_sumsq);
+                    row += 1;
+                }
+                let state = ptr_mut::<f32>(desc.second_momentum);
+                let old = unsafe { *state.add(col as usize) };
+                let mean = raw_sumsq / polar_rows as f32;
+                let next = NORMUON_BETA2 * old + (1.0 - NORMUON_BETA2) * mean;
+                let factor = 1.0 / sqrt_f32(max_f32(next, NORMUON_EPSILON));
+                unsafe {
+                    *state.add(col as usize) = next;
+                    *normuon_factors.as_mut_ptr().add(col as usize) = factor;
+                }
+                scaled_sumsq = raw_sumsq * factor * factor;
+            }
+
+            let raw_total = unsafe { block_sum_shared_f32(&mut RAW_SUMS, raw_sumsq, lane, warp) };
+            let scaled_total =
+                unsafe { block_sum_shared_f32(&mut SCALED_SUMS, scaled_sumsq, lane, warp) };
+            if tid == 0 {
+                let block_count = thread::gridDim_x();
+                unsafe {
+                    *normuon_chunks.as_mut_ptr().add(block as usize) = raw_total;
+                    *normuon_chunks
+                        .as_mut_ptr()
+                        .add((block_count + block) as usize) = scaled_total;
+                }
+            }
+        }
+    }
+
+    #[kernel]
+    pub fn muon_tma_normuon_reduce_scale_kernel(
+        mut normuon_chunks: DisjointSlice<f32>,
+        chunk_count: u32,
+    ) {
+        static mut RAW_SUMS: SharedArray<f32, { WARPS_PER_BLOCK as usize }> = SharedArray::UNINIT;
+        static mut SCALED_SUMS: SharedArray<f32, { WARPS_PER_BLOCK as usize }> =
+            SharedArray::UNINIT;
+
+        let tid = thread::threadIdx_x();
+        let lane = tid & (WARP_SIZE - 1);
+        let warp = tid / WARP_SIZE;
+        let mut raw_sumsq = 0.0;
+        let mut scaled_sumsq = 0.0;
+        let chunks = normuon_chunks.as_mut_ptr();
+        let mut chunk = tid;
+        while chunk < chunk_count {
+            raw_sumsq += read_f32(chunks, chunk);
+            scaled_sumsq += read_f32(chunks, chunk_count + chunk);
+            chunk += thread::blockDim_x();
+        }
+        let raw_total = unsafe { block_sum_shared_f32(&mut RAW_SUMS, raw_sumsq, lane, warp) };
+        let scaled_total =
+            unsafe { block_sum_shared_f32(&mut SCALED_SUMS, scaled_sumsq, lane, warp) };
+        if tid == 0 {
+            unsafe {
+                *normuon_chunks.as_mut_ptr() =
+                    sqrt_f32(raw_total / max_f32(scaled_total, NORMUON_EPSILON));
+            }
+        }
+    }
+
+    #[kernel]
     #[cooperative_launch]
     pub fn muon_tma_finish_update_kernel(
         slots: &[MuonSlotDescriptor],
         polar_update: &[f32],
         polar_bound_amax: &[f32],
         mut polar_chunks: DisjointSlice<f32>,
+        normuon_factors: &[f32],
+        normuon_chunks: &[f32],
         slot_index: u32,
         learning_rate: f32,
         weight_decay: f32,
@@ -225,6 +354,8 @@ pub(crate) mod module {
                 ptr_mut(desc.x_master),
                 ptr_mut(desc.momentum),
                 polar_chunks.as_mut_ptr(),
+                normuon_factors.as_ptr(),
+                normuon_chunks[0],
                 core::ptr::null(),
                 u32::MAX,
                 0,
@@ -266,6 +397,8 @@ pub(crate) mod module {
         polar_update: &[f32],
         polar_bound_amax: &[f32],
         mut polar_chunks: DisjointSlice<f32>,
+        normuon_factors: &[f32],
+        normuon_chunks: &[f32],
         qk_clip_factors: &[f32],
         slot_index: u32,
         learning_rate: f32,
@@ -297,6 +430,8 @@ pub(crate) mod module {
                 ptr_mut(desc.x_master),
                 ptr_mut(desc.momentum),
                 polar_chunks.as_mut_ptr(),
+                normuon_factors.as_ptr(),
+                normuon_chunks[0],
                 qk_clip_factors.as_ptr(),
                 desc.qk_clip_factor_offset,
                 desc.qk_clip_head_dim,

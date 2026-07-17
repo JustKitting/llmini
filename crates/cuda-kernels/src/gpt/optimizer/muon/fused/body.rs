@@ -59,6 +59,8 @@ pub(super) fn muon_matrix_update_body(
         state.momentum,
         scratch.polar_chunks,
         core::ptr::null(),
+        1.0,
+        core::ptr::null(),
         u32::MAX,
         0,
         shape.rows,

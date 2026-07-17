@@ -61,6 +61,7 @@ fn linear(weight: &UploadedNvfp4, grad: &DeviceBuffer<f32>, state: &MuonState) -
     HostPtrs {
         grad: grad.cu_deviceptr(),
         momentum: state.momentum.cu_deviceptr(),
+        second_momentum: state.second_momentum.cu_deviceptr(),
         z_master: state.z_master.cu_deviceptr(),
         x_master: state.x_master.cu_deviceptr(),
         schedule_amax: state.schedule_amax.cu_deviceptr(),

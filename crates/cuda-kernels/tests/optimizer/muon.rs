@@ -49,6 +49,12 @@ fn muon_tma_finish_applies_qk_clip_inside_master_update() -> Result<(), Box<dyn 
 
 #[ignore = "requires generated sm_120a PTX"]
 #[test]
+fn muon_tma_finish_applies_normuon_variance_reduction() -> Result<(), Box<dyn Error>> {
+    tma_finish::run_normuon_variance_case()
+}
+
+#[ignore = "requires generated sm_120a PTX"]
+#[test]
 fn muon_tma_split_finish_matches_cooperative_reference() -> Result<(), Box<dyn Error>> {
     tma_finish::run_split_matches_reference_case()
 }

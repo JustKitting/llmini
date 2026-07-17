@@ -1,4 +1,5 @@
 use cuda_core::DriverError;
+use gpt2_nvfp4::{GPT2_MLP, GPT2_N_EMBD, GPT2_QKV, NEXTLAT_HIDDEN, NEXTLAT_INPUT};
 
 use super::super::tensor::{AdamState, MuonState, StateInit};
 use crate::upload::{UploadedBlock, UploadedLayerNorm, UploadedLinear, UploadedNextLat};
@@ -16,11 +17,11 @@ impl BlockState {
     pub(super) fn new(init: StateInit<'_>, block: &UploadedBlock) -> Result<Self, DriverError> {
         Ok(Self {
             ln_1: LayerNormState::new(init, &block.ln_1)?,
-            attn_qkv: LinearState::new(init, &block.attn_qkv)?,
-            attn_c_proj: LinearState::new(init, &block.attn_c_proj)?,
+            attn_qkv: LinearState::new(init, &block.attn_qkv, GPT2_QKV)?,
+            attn_c_proj: LinearState::new(init, &block.attn_c_proj, GPT2_N_EMBD)?,
             ln_2: LayerNormState::new(init, &block.ln_2)?,
-            mlp_up: LinearState::new(init, &block.mlp_up)?,
-            mlp_down: LinearState::new(init, &block.mlp_down)?,
+            mlp_up: LinearState::new(init, &block.mlp_up, GPT2_MLP)?,
+            mlp_down: LinearState::new(init, &block.mlp_down, GPT2_MLP)?,
         })
     }
 }
@@ -39,9 +40,17 @@ impl NextLatState {
     ) -> Result<Self, DriverError> {
         Ok(Self {
             norm: LayerNormState::new(init, &next_latent.norm)?,
-            input_projection: LinearState::new(init, &next_latent.input_projection)?,
-            transition: LinearState::new(init, &next_latent.transition)?,
-            output_projection: LinearState::new(init, &next_latent.output_projection)?,
+            input_projection: LinearState::new(
+                init,
+                &next_latent.input_projection,
+                NEXTLAT_INPUT.max(NEXTLAT_HIDDEN),
+            )?,
+            transition: LinearState::new(init, &next_latent.transition, NEXTLAT_HIDDEN)?,
+            output_projection: LinearState::new(
+                init,
+                &next_latent.output_projection,
+                NEXTLAT_HIDDEN.max(GPT2_N_EMBD),
+            )?,
         })
     }
 }
@@ -69,9 +78,13 @@ pub(in crate::training) struct LinearState {
 }
 
 impl LinearState {
-    pub(super) fn new(init: StateInit<'_>, linear: &UploadedLinear) -> Result<Self, DriverError> {
+    pub(super) fn new(
+        init: StateInit<'_>,
+        linear: &UploadedLinear,
+        normuon_neurons: usize,
+    ) -> Result<Self, DriverError> {
         Ok(Self {
-            weight_muon: MuonState::new(init, &linear.weight)?,
+            weight_muon: MuonState::new(init, &linear.weight, normuon_neurons)?,
             bias: AdamState::new(init, &linear.bias)?,
         })
     }

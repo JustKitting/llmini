@@ -20,6 +20,8 @@ pub(super) fn update_one(
     transposed: bool,
     scale: f32,
     polar_update_scale: f32,
+    normuon_factors: *const f32,
+    normuon_scale: f32,
     learning_rate: f32,
     weight_decay: f32,
     average_coefficient: f32,
@@ -37,8 +39,16 @@ pub(super) fn update_one(
     let row = index / cols;
     let col = index - row * cols;
     let update_index = if transposed { col * rows + row } else { index };
-    let muon_update =
-        scale * (load_f32_global_read_only(u, update_index as usize) * polar_update_scale);
+    let normuon_factor = if normuon_factors.is_null() {
+        1.0
+    } else {
+        let neuron = if rows >= cols { row } else { col };
+        load_f32_global_read_only(normuon_factors, neuron as usize) * normuon_scale
+    };
+    let muon_update = scale
+        * (load_f32_global_read_only(u, update_index as usize)
+            * polar_update_scale
+            * normuon_factor);
     let decay = 1.0 - learning_rate * weight_decay;
 
     unsafe {

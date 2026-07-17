@@ -69,6 +69,7 @@ fn run_prepare(
     let descriptor = MuonSlotDescriptor {
         grad: grad.cu_deviceptr(),
         momentum: momentum.cu_deviceptr(),
+        second_momentum: 0,
         z_master: z_master.cu_deviceptr(),
         x_master: x_master.cu_deviceptr(),
         schedule_amax: schedule_amax.cu_deviceptr(),

@@ -8,12 +8,17 @@ They are not historical notes.
 Optimize for the lowest held-out validation loss after the fixed 450-second
 single-GPU candidate gate:
 
-- 30 seconds is the fast candidate screen.
+- For research-scale optimizer, architecture, objective, or numerical changes,
+  30 seconds is only a bring-up health check: verify launchability,
+  finite/nonzero metrics, real updates, zero unexpected skips, and absence of
+  immediate divergence. Do not accept or reject one of these larger changes
+  from its 30-second loss delta.
 - A schedule parameter that is mathematically dormant for the entire
-  30-second window must instead use a matched fixed-step screen after the
+  30-second window must instead use a matched fixed-step diagnostic after the
   parameter activates. For the current 83-step warmup, use 200 completed
   optimizer steps for both control and candidate. The warmup itself remains
-  step-gated; do not convert it to elapsed-time logic.
+  step-gated; do not convert it to elapsed-time logic. This diagnostic still
+  cannot replace the 450-second loss gate.
 - 450 seconds is the mandatory sustained stability, regression, and held-out
   quality gate before a passing change is committed in JJ.
 - The 450-second duration is an iteration gate, not the final training budget
@@ -104,8 +109,8 @@ minimum_step_saving = (TRAIN_ELAPSED_S / COMPLETED_STEPS) * 0.005
 ```
 
 For the current matched 450-second baseline,
-`450.142 / 1144 = 0.393480769` seconds per step, so a candidate batch must
-credibly be able to save at least `1.967404 ms/step`
+`450.160 / 1132 = 0.397667845` seconds per step, so a candidate batch must
+credibly be able to save at least `1.988339 ms/step`
 before a rebuild, GPU test, or training screen. Multiply a per-launch saving by
 the launch count per step and compare that aggregate saving with the threshold.
 
@@ -149,11 +154,11 @@ dataset, and current tokenizer, not a result from an older or smaller
 architecture.
 
 The restored pre-regression FP16 staging path plus the later accepted kernel
-and memory wins, positive `0.5` NextLat auxiliary coefficient, and retuned
-AMUSE initial interpolation and Adam learning rate is the current matched
-450-second control: 1144 steps in 450.142 seconds with held-out loss 4.968934.
-Do not compare future 450-second candidates with historical 900-second
-endpoints.
+and memory wins, positive `0.5` NextLat auxiliary coefficient, retuned AMUSE
+initial interpolation and Adam learning rate, and NorMuon variance reduction
+is the current matched 450-second control: 1132 steps in 450.160 seconds with
+held-out loss 4.890027. Do not compare future 450-second candidates with
+historical 900-second endpoints.
 
 ## Sweep Rule
 
