@@ -186,7 +186,7 @@ impl Nvfp4GemmModule {
             shared_mem_bytes: 0,
         };
 
-        self.module.nvfp4_gemm_tma_kernel(
+        self.module.nvfp4_gemm_tma_exact_kernel(
             stream,
             config,
             tma.a_deviceptr() as *const TmaDescriptor,
@@ -571,7 +571,7 @@ impl Nvfp4GemmModule {
             shared_mem_bytes: 0,
         };
 
-        self.module.nvfp4_gemm_tma_kernel(
+        self.module.nvfp4_gemm_tma_exact_kernel(
             stream,
             config,
             tma.a_deviceptr() as *const TmaDescriptor,

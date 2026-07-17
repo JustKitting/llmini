@@ -201,7 +201,7 @@ pub(crate) mod module {
             let value_base = base + 4 * lane_in_group;
             let (value_0, value_1) = load_f32x2_global(x.as_ptr(), value_base);
             let (value_2, value_3) = load_f32x2_global(x.as_ptr(), value_base + 2);
-            let (scale_bits, payload_word) = four_six_group_scale(
+            let (scale_bits, payload_word) = six_grid_group_scale(
                 value_0,
                 value_1,
                 value_2,
@@ -356,7 +356,7 @@ pub(crate) mod module {
             let group =
                 source_row * groups_per_source_row + (source_col_base + row_col) / GROUP_SIZE;
             let base = group * GROUP_SIZE;
-            let (scale_bits, payload_word) = four_six_group_scale(
+            let (scale_bits, payload_word) = six_grid_group_scale(
                 value_0,
                 value_1,
                 value_2,
@@ -393,7 +393,7 @@ pub(crate) mod module {
             let group =
                 (source_col_base + transpose_col) * groups_per_output_row + group_in_output_row;
             let base = group * GROUP_SIZE;
-            let (scale_bits, payload_word) = four_six_group_scale(
+            let (scale_bits, payload_word) = six_grid_group_scale(
                 value_0,
                 value_1,
                 value_2,
@@ -478,7 +478,7 @@ pub(crate) mod module {
             let k_group = (source_col_base + row_col) / GROUP_SIZE;
             let group = source_row * groups_per_source_row + k_group;
             let base = group * GROUP_SIZE;
-            let (scale_bits, payload_word) = four_six_group_scale(
+            let (scale_bits, payload_word) = six_grid_group_scale(
                 value_0,
                 value_1,
                 value_2,
@@ -521,7 +521,7 @@ pub(crate) mod module {
             let group_in_output_row = group_in_output_row_base + tile_row_group;
             let group = output_row * groups_per_output_row + group_in_output_row;
             let base = group * GROUP_SIZE;
-            let (scale_bits, payload_word) = four_six_group_scale(
+            let (scale_bits, payload_word) = six_grid_group_scale(
                 value_0,
                 value_1,
                 value_2,
@@ -649,7 +649,7 @@ pub(crate) mod module {
             let (value_0, value_1) = load_f32x2_global(x.as_ptr(), value_base);
             let (value_2, value_3) = load_f32x2_global(x.as_ptr(), value_base + 2);
             let global_scale = four_six_global_scale(bounded_amax, 1.0);
-            let (scale_bits, payload_word) = four_six_group_scale(
+            let (scale_bits, payload_word) = six_grid_group_scale(
                 value_0 * bound_scale,
                 value_1 * bound_scale,
                 value_2 * bound_scale,
@@ -713,7 +713,7 @@ pub(crate) mod module {
             let (value_0, value_1) = load_f32x2_global(x.as_ptr(), value_base);
             let (value_2, value_3) = load_f32x2_global(x.as_ptr(), value_base + 2);
             let global_scale = four_six_global_scale(bounded_amax, 1.0);
-            let (scale_bits, payload_word) = four_six_group_scale(
+            let (scale_bits, payload_word) = six_grid_group_scale(
                 value_0 * bound_scale,
                 value_1 * bound_scale,
                 value_2 * bound_scale,
@@ -971,7 +971,7 @@ pub(crate) mod module {
             let group_in_output_row = group_in_output_row_base + tile_row_group;
             let group = (source_col_base + col) * groups_per_output_row + group_in_output_row;
             let base = group * GROUP_SIZE;
-            let (scale_bits, payload_word) = four_six_group_scale(
+            let (scale_bits, payload_word) = six_grid_group_scale(
                 value_0,
                 value_1,
                 value_2,
@@ -1045,7 +1045,7 @@ pub(crate) mod module {
             let group_in_output_row = group_in_output_row_base + tile_row_group;
             let group = output_row * (source_rows as usize / GROUP_SIZE) + group_in_output_row;
             let base = group * GROUP_SIZE;
-            let (scale_bits, payload_word) = four_six_group_scale(
+            let (scale_bits, payload_word) = six_grid_group_scale(
                 value_0,
                 value_1,
                 value_2,
@@ -1134,7 +1134,7 @@ pub(crate) mod module {
             }
             let group = (source_col_base + col) * groups_per_output_row + group_in_output_row;
             let base = group * GROUP_SIZE;
-            let (scale_bits, payload_word) = four_six_group_scale(
+            let (scale_bits, payload_word) = six_grid_group_scale(
                 value_0,
                 value_1,
                 value_2,
@@ -1199,7 +1199,7 @@ pub(crate) mod module {
         value_3: f32,
     ) {
         let global_scale = four_six_global_scale(tensor_amax, scale_override);
-        let (scale_bits, payload_word) = four_six_group_scale(
+        let (scale_bits, payload_word) = six_grid_group_scale(
             value_0,
             value_1,
             value_2,

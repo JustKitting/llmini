@@ -1,7 +1,7 @@
 use cuda_device::DisjointSlice;
 
 use crate::nvfp4_quant::kernels::four_six::helpers::{
-    GROUP_SIZE, four_six_block_group, four_six_global_scale, four_six_group_scale, four_six_lane,
+    GROUP_SIZE, four_six_block_group, four_six_global_scale, four_six_lane, six_grid_group_scale,
     store_four_six_payload_word,
 };
 
@@ -31,7 +31,7 @@ pub(super) fn schedule_free_four_six_body(
 
             let (value_0, value_1, value_2, value_3) =
                 schedule_value_quad(z_master, x_master, beta, base + 4 * lane_in_group);
-            let (scale_bits, payload_word) = four_six_group_scale(
+            let (scale_bits, payload_word) = six_grid_group_scale(
                 value_0,
                 value_1,
                 value_2,

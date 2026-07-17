@@ -85,8 +85,8 @@ minimum_step_saving = (TRAIN_ELAPSED_S / COMPLETED_STEPS) * 0.005
 ```
 
 For the current matched 450-second baseline,
-`450.105 / 1093 = 0.411806953` seconds per step, so a candidate batch must
-credibly be able to save at least `2.059035 ms/step`
+`450.153 / 1151 = 0.391097307` seconds per step, so a candidate batch must
+credibly be able to save at least `1.955487 ms/step`
 before a rebuild, GPU test, or training screen. Multiply a per-launch saving by
 the launch count per step and compare that aggregate saving with the threshold.
 
@@ -130,8 +130,8 @@ dataset, and current tokenizer, not a result from an older or smaller
 architecture.
 
 The restored pre-regression FP16 staging path plus the later accepted kernel
-and memory wins is the current matched 450-second control: 1093 steps in
-450.105 seconds with held-out loss 5.021656.
+and memory wins is the current matched 450-second control: 1151 steps in
+450.153 seconds with held-out loss 4.997200.
 Do not compare future 450-second candidates with historical 900-second
 endpoints.
 

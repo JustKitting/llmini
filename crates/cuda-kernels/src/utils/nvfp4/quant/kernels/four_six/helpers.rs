@@ -1,7 +1,7 @@
 use cuda_device::{thread, warp};
 
 use crate::float_ptx::{abs_f32, max_f32};
-use crate::warp_reduce::{eighth_warp_sum_f32, half_warp_max_nonnegative_f32};
+use crate::warp_reduce::half_warp_max_nonnegative_f32;
 
 use super::super::convert::{
     candidate_pair_errors_and_payload_with_inv_scale, local_scale_bits, nonzero_global_scale,
@@ -39,7 +39,7 @@ pub(crate) fn four_six_global_scale(tensor_amax: f32, scale_override: f32) -> f3
 }
 
 #[inline(always)]
-pub(crate) fn four_six_group_scale(
+pub(crate) fn six_grid_group_scale(
     value_0: f32,
     value_1: f32,
     value_2: f32,
@@ -58,72 +58,38 @@ pub(crate) fn four_six_group_scale(
     );
     let group_amax = half_warp_max_nonnegative_f32(lane_amax, group_mask);
     let mut scale_bits_six = 0u16;
-    let mut scale_bits_four = 0u16;
     let mut scale_six = 0.0;
-    let mut scale_four = 0.0;
     let mut inv_scale_six = 0.0;
-    let mut inv_scale_four = 0.0;
 
     if lane_in_group == 0 {
         scale_bits_six = local_scale_bits(group_amax, global_scale, scale_override, 6.0);
-        scale_bits_four = local_scale_bits(group_amax, global_scale, scale_override, 4.0);
         scale_six = scale_value(scale_bits_six);
-        scale_four = scale_value(scale_bits_four);
         inv_scale_six = nvfp4_inv_scale(scale_six, global_scale);
-        inv_scale_four = nvfp4_inv_scale(scale_four, global_scale);
     }
 
-    // Every caller stores scale bits only from the group leader, where both
-    // candidates were produced. The candidate scales remain group-wide.
+    // Every caller stores scale bits only from the group leader. The selected
+    // scale and reciprocal remain group-wide.
     scale_six = warp::shuffle_f32_sync(group_mask, scale_six, group_leader);
-    scale_four = warp::shuffle_f32_sync(group_mask, scale_four, group_leader);
     inv_scale_six = warp::shuffle_f32_sync(group_mask, inv_scale_six, group_leader);
-    inv_scale_four = warp::shuffle_f32_sync(group_mask, inv_scale_four, group_leader);
 
-    let (err_six_0, err_six_1, payload_six_01) = candidate_pair_errors_and_payload_with_inv_scale(
+    let (_, _, payload_six_01) = candidate_pair_errors_and_payload_with_inv_scale(
         value_0,
         value_1,
         scale_six,
         global_scale,
         inv_scale_six,
     );
-    let (err_six_2, err_six_3, payload_six_23) = candidate_pair_errors_and_payload_with_inv_scale(
+    let (_, _, payload_six_23) = candidate_pair_errors_and_payload_with_inv_scale(
         value_2,
         value_3,
         scale_six,
         global_scale,
         inv_scale_six,
     );
-    let (err_four_0, err_four_1, payload_four_01) =
-        candidate_pair_errors_and_payload_with_inv_scale(
-            value_0,
-            value_1,
-            scale_four,
-            global_scale,
-            inv_scale_four,
-        );
-    let (err_four_2, err_four_3, payload_four_23) =
-        candidate_pair_errors_and_payload_with_inv_scale(
-            value_2,
-            value_3,
-            scale_four,
-            global_scale,
-            inv_scale_four,
-        );
-    let lane_delta = ((err_six_0 - err_four_0) + (err_six_1 - err_four_1))
-        + ((err_six_2 - err_four_2) + (err_six_3 - err_four_3));
-    let error_delta = eighth_warp_sum_f32(lane_delta, group_mask);
-    if error_delta <= 0.0 {
-        (
-            scale_bits_six as u8,
-            payload_six_01 as u16 | ((payload_six_23 as u16) << 8),
-        )
-    } else {
-        (
-            scale_bits_four as u8,
-            payload_four_01 as u16 | ((payload_four_23 as u16) << 8),
-        )
-    }
+    (
+        scale_bits_six as u8,
+        payload_six_01 as u16 | ((payload_six_23 as u16) << 8),
+    )
 }
 
 #[inline(always)]

@@ -46,6 +46,105 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-17
 commit: accepted local jj commit after full gate
+experiment: Use a single six-grid NVFP4 encoder and specialize exact raw TMA output.
+status: accepted_450s
+change:
+  Replace the former per-group Four-Six choice with an explicitly named
+  six_grid_group_scale encoder. Each four-lane subgroup now constructs only
+  the standard grid-max-six E4M3 local scale and its reciprocal, emits only
+  that E2M1 payload, and skips the grid-four scale, second payload, two
+  reconstruction-error vectors, and subgroup error reduction.
+  Separately add an exact-output raw TMA GEMM entry point whose epilogue omits
+  the impossible output-column predicate. The two launchers that require
+  output_dim to be a multiple of TILE_N use it; the padded-output launcher
+  remains on the original guarded kernel.
+numerics:
+  The exact TMA specialization is bitwise math-preserving. The six-grid change
+  intentionally changes local scales and payloads for groups where the former
+  reconstruction-error comparison selected grid four. It is therefore a
+  quantization-policy change, not a same-math optimization. The active helper
+  is named six_grid_group_scale rather than continuing to claim that it is a
+  Four-Six selector. All focused quantization, projection, Muon, schedule-free
+  Adam, and LM-head tests pass without tolerance changes. Both fixed-wall
+  gates improve held-out loss.
+memory:
+  Persistent allocations, scratch capacities, launch counts, and peak logical
+  VRAM are unchanged. ptxas reports no spills. The active paired and
+  transposed tiled encoders use 37 and 34 registers, one barrier, and 8320
+  bytes of static shared memory; schedule-free encoding uses 24 registers.
+  The exact TMA kernel uses 143 registers, one barrier, and 93224 bytes of
+  static shared memory. This is not a batch-capacity win.
+minimum_impact_gate:
+  The accepted parent requires 19.727607ms over a reciprocal ten-step profile.
+  Parent profiles average 3938.312982ms and the candidate averages
+  3905.685471ms, saving 32.627511ms/profile or 0.828464%. Both reciprocal
+  samples improve and launch count remains 61428.
+profiles:
+  Accepted parent:
+    target/nsys/20260717_nvfp4_transpose_all_tiled_a.nsys-rep:
+      total 3932.301291ms.
+    target/nsys/20260717_nvfp4_transpose_all_tiled_b.nsys-rep:
+      total 3944.324672ms.
+  Candidate:
+    target/nsys/20260717_six_grid_exact_raw_a.nsys-rep:
+      total 3901.973220ms.
+    target/nsys/20260717_six_grid_exact_raw_b.nsys-rep:
+      total 3909.397722ms.
+  The affected quantizer family moves from 376.549810 to 366.496516ms/profile,
+  saving 10.053293ms or 2.669844%. The raw TMA family moves from
+  287.727208 to 286.303778ms/profile.
+explored_subcandidates:
+  The exact raw-output TMA split alone measured
+  3928.032204/3932.952920ms in
+  target/nsys/20260717_tma_exact_output_{a,b}.nsys-rep, saving
+  7.820420ms/profile or 0.198572%, so it was retained only as a compatible
+  bundle component. Removing the exact TMA amax output guard regressed the
+  first combined sample to 3931.890582ms in
+  target/nsys/20260717_tma_exact_raw_amax_a.nsys-rep and was restored before
+  the accepted profiles and gates.
+verification:
+  cargo fmt --all, git diff --check, and the exact
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+  All ten ignored nvfp4_quant tests, all eleven ignored projection_tma tests,
+  four focused Muon TMA tests, four focused Muon recurrence tests, the
+  schedule-free Adam test, and both LM-head tests pass serially on GPU0.
+  target/ptxas_20260717_six_grid_exact_raw.log reports zero stack and spills
+  for the changed kernels.
+gates:
+  Required final-tree 30-second screen:
+    target/runs/20260717_044909Z_fineweb_30s
+    stdout: target/gates/20260717_six_grid_exact_raw_final_30s.log
+    completed_steps=80, train_elapsed_s=30.366, val_loss=6.454494.
+  Required final-tree 450-second sustained gate:
+    target/runs/20260717_044954Z_fineweb_450s
+    stdout: target/gates/20260717_six_grid_exact_raw_final_450s.log
+    completed_steps=1151, train_elapsed_s=450.153, val_loss=4.997200.
+    All 24 high-fidelity samples are finite and nonzero. Every skip counter is
+    zero, loss ranges from 5.020350456 to 10.864255905, grad norm ranges from
+    1.022145629 to 16.780443192, and every sample retains batch 4, sequence
+    2048, and 8192 tokens per step.
+measured_effect:
+  Against the matched 30-second parent:
+    completed steps 79 -> 80 (+1, +1.266%);
+    average step time 382.544304 -> 379.575000ms
+      (-2.969304ms, -0.776%);
+    held-out val_loss 6.462834 -> 6.454494 (-0.129%).
+  Against the matched 450-second parent:
+    completed steps 1141 -> 1151 (+10, +0.876%);
+    average step time 394.552147 -> 391.097307ms
+      (-3.454841ms, -0.876%);
+    held-out val_loss 5.005571 -> 4.997200 (-0.167%).
+decision:
+  Keep, promote, and commit. The combined profile clears the 0.5% whole-step
+  floor, both fixed-wall gates improve speed and held-out loss, and the exact
+  final tree completes the sustained gate with no numerical or runtime
+  instability. The next 0.5% threshold is 1.955487ms per step, or
+  19.554865ms over a ten-step profile.
+```
+
+```text
+date: 2026-07-17
+commit: accepted local jj commit after full gate
 experiment: Tile non-power-of-two exact NVFP4 transpose rows.
 status: accepted_450s
 change:

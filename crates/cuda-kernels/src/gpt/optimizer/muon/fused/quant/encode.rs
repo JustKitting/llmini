@@ -3,7 +3,7 @@ use cuda_device::thread;
 use crate::f16_tc_matmul::convert::load_f32x2_global;
 use crate::f16_tc_matmul::cta_tile::CTA_THREADS;
 use crate::nvfp4_quant::kernels::four_six::helpers::{
-    GROUP_SIZE, GROUP_THREADS, four_six_group_scale, four_six_lane, store_four_six_payload_word,
+    GROUP_SIZE, GROUP_THREADS, four_six_lane, six_grid_group_scale, store_four_six_payload_word,
 };
 
 use super::super::super::super::work_grid::WorkGrid;
@@ -42,7 +42,7 @@ fn encode_group(
     let value_base = (base + 4 * lane_in_group as u32) as usize;
     let (value_0, value_1) = load_f32x2_global(x, value_base);
     let (value_2, value_3) = load_f32x2_global(x, value_base + 2);
-    let (scale_bits, payload_word) = four_six_group_scale(
+    let (scale_bits, payload_word) = six_grid_group_scale(
         value_0,
         value_1,
         value_2,
