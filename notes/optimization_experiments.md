@@ -49,6 +49,99 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-17
 commit: rejected working-copy experiment; source fully reverted
+experiment: GPAS / Gradient-Preserving Activation Scaling.
+status: rejected_450s
+source:
+  https://arxiv.org/abs/2506.22049
+  https://github.com/dandingsky/GPAS
+  https://github.com/dandingsky/GPAS/blob/main/peft_pretraining/modeling_llama.py
+  https://github.com/dandingsky/GPAS/blob/main/scripts/run_1b.sh
+rationale:
+  GPAS adds a zero-initialized learned scalar after each residual sub-layer and
+  uses a stop-gradient branch so the forward residual stream can be rescaled
+  without scaling the identity-path gradient. The paper reports lower
+  perplexity for a 1B Pre-LN model, 16.92 to 16.25, and its ablation identifies
+  the stop-gradient branch as essential. This made it a substantive
+  architecture and optimization experiment that preserved every model path.
+implementation:
+  Applied the official operation
+    output = hidden - silu(alpha) * stop_gradient(hidden)
+  after each complete attention-plus-residual and MLP-plus-residual sub-layer,
+  with one shared FP32 alpha per layer, zero initialization, and an exact
+  scalar reduction for each alpha gradient. Added the gates to global clipping,
+  optimizer state, schedule-free train/eval materialization, and checkpoint
+  save/load. ResFormer, NextLat, all attention and MLP paths, all 16 layers,
+  FineWeb, Llama-2 tokenization, B4/S2048, and 8192 tokens per step remained
+  intact.
+correctness:
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+  Rebuilt-PTX GPU reference tests verified zero-gate identity, the nonzero
+  forward formula, the shared gate-gradient reduction, preservation of the
+  upstream activation gradient, FP32 Adam, and schedule-free materialization:
+  pass.
+  cargo check --workspace --lib --bins and
+  cargo test --workspace --lib --bins: pass after full source restoration.
+  The restored source was rebuilt again with the exact sm_120a command: pass.
+  Full all-target checks remain blocked by pre-existing stale GPT integration
+  fixtures; clippy -D warnings remains blocked by the pre-existing
+  manual_is_multiple_of warning in build_nvfp4_config.rs.
+validation_policy:
+  The 30-second runs below were health smokes only. Their losses were not
+  compared with the control, ranked, used for tuning, or used to accept or
+  reject GPAS. The 450-second held-out endpoints were the first quality
+  decisions.
+trial_1:
+  Used the locally tuned schedule-free Adam path and its 0.0025 peak learning
+  rate for the new scalar gates.
+  health: target/runs/20260717_171837Z_fineweb_30s
+    completed_steps=89, train_elapsed_s=30.376, val_loss=6.233168.
+    Finite/nonzero metrics, real gate updates, zero unexpected skips, and no
+    immediate divergence. Gate values reached -0.0667 through -0.0254. The
+    endpoint loss was ignored because this was only a working check.
+  gate: target/runs/20260717_171959Z_fineweb_450s
+    completed_steps=1286, train_elapsed_s=450.311, val_loss=7.308813.
+    The run remained finite with no skipped updates, but training loss bottomed
+    around step 350 and then climbed toward 8 while gradient norm grew into the
+    15-23 range. All 16 gates became negative, reaching approximately -0.538
+    through -0.070, so every residual scale exceeded one. This was cumulative
+    residual amplification and optimizer runaway rather than a singular NaN or
+    isolated spike. Held-out loss regressed by 2.440480 (+50.1297%).
+trial_2:
+  Corrected the scalar optimizer to the paper and official 1B recipe: ordinary
+  Adam behavior rather than schedule-free averaging, zero gate weight decay,
+  and a 0.0005 peak gate learning rate.
+  health: target/runs/20260717_173001Z_fineweb_30s
+    completed_steps=88, train_elapsed_s=30.178, val_loss=6.241270.
+    Finite/nonzero metrics, real but restrained gate updates from -0.02449
+    through -0.00880, zero unexpected skips, and no immediate divergence. The
+    endpoint loss was ignored because this was only a working check.
+  gate: target/runs/20260717_173050Z_fineweb_450s
+    completed_steps=1277, train_elapsed_s=450.407,
+    val_loss=4.986501693725586.
+    All 26 high-fidelity samples are finite and nonzero, every update/skip
+    counter is zero, and global gradient norm ranges from 0.724740505 to
+    14.571937561 and ends at 1.867891431. All gates remain negative but
+    bounded, from -0.107054 through -0.031335, corresponding to residual
+    scales of approximately 1.0154 through 1.0507.
+measured_effect:
+  Against the accepted ResFormer/NorMuon control at 4.868333 / 1291 steps,
+  the stable paper-faithful trial regresses by 0.118169 (+2.427299%) and
+  completes 14 fewer steps (-1.084431%). Average step time moves from
+  348.697909 to 352.707126 ms (+1.149768%), so the candidate is both lower
+  quality at the matched held-out endpoint and slower.
+decision:
+  Reject GPAS in the current Pre-LN ResFormer/NextLat and
+  period-2 SignMuon/NorMuon/AMUSE composition. Trial 1 shows that giving the
+  gates the locally tuned schedule-free Adam rate causes sustained residual
+  amplification; trial 2 removes that instability but still fails the
+  450-second quality gate by more than 2% and adds measurable overhead. The
+  source was fully restored before this record was added, and the accepted
+  baseline remains unchanged.
+```
+
+```text
+date: 2026-07-17
+commit: rejected working-copy experiment; source fully reverted
 experiment: Memory-efficient approximate MARS-M direction estimator.
 status: rejected_450s
 source:
