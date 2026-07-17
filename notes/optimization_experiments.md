@@ -49,6 +49,79 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-17
 commit: rejected working-copy experiment; source fully reverted
+experiment: Memory-efficient approximate MARS-M direction estimator.
+status: rejected_450s
+source:
+  https://arxiv.org/abs/2510.21800
+  https://github.com/AGI-Arena/MARS/tree/main/MARS_M
+  https://github.com/AGI-Arena/MARS/blob/main/MARS_M/optimizers/mars_m_efficient.py
+rationale:
+  MARS-M combines MARS-style variance reduction with Muon/Moonlight. Its LLM
+  experiments use the approximate form and report consistently lower training
+  and validation loss than learning-rate-tuned Moonlight across GPT-2 models
+  from 125M through 1.5B on OpenWebText and FineWeb-Edu. The official
+  memory-efficient implementation needs no additional optimizer buffer and
+  defaults to momentum=0.95 and gamma=0.025, making it a substantial but
+  memory-neutral optimizer experiment for the current approximately 1B model.
+implementation:
+  Replaced the matrix-gradient EMA consumed by the existing Muon branches with
+  the official no-clipping, memory-efficient approximate MARS-M recurrence:
+    momentum_factor = (1 - gamma) * (1 - mu) / mu
+    buffer = mu * buffer + momentum_factor * gradient
+    direction = gamma * gradient + mu * buffer
+  with mu=0.95 and gamma=0.025. Polar steps applied Polar Express and NorMuon
+  to this direction; alternating SignMuon steps applied sign(direction).
+  Therefore this was an adaptation of the paper's direction estimator to the
+  current period-2 SignMuon/NorMuon/AMUSE composition, not a claim to reproduce
+  its every-step Moonlight optimizer exactly. Vector parameters remained on
+  the accepted AdamW path. ResFormer, NextLat, all attention and MLP paths,
+  all 16 layers, FineWeb, Llama-2 tokenization, B4/S2048, and 8192 tokens per
+  step remained intact.
+correctness:
+  cargo fmt --all, git diff --check, and cargo check --all-targets: pass.
+  cargo test --workspace --lib and cargo test --workspace --bins: pass.
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+  Rebuilt-PTX GPU reference tests covered exact MARS-M recurrence for tall and
+  wide polar preparation, split versus cooperative preparation, SignMuon,
+  Q/K clipping, and the retained NorMuon behavior: 11 passed, 0 failed.
+bringup:
+  target/runs/20260717_165340Z_fineweb_30s
+  completed_steps=89, train_elapsed_s=30.084, val_loss=6.233897.
+  Both high-fidelity samples are finite and nonzero, all 54 logged values are
+  finite, gradient norm ranges from 2.641389132 to 14.571924210, and every
+  update/skip counter is zero. The exact 16-layer B4/S2048/8192-token
+  configuration remained intact. This run was used only to establish
+  launchability, real updates, and immediate numerical health. Its endpoint
+  loss was not compared, ranked, tuned against, or used in the keep/revert
+  decision.
+gate:
+  target/runs/20260717_165437Z_fineweb_450s
+  completed_steps=1294, train_elapsed_s=450.022, val_loss=4.959561.
+  All 26 high-fidelity samples are finite and nonzero, all 702 logged metric
+  values are finite, and every update/skip counter is zero. Global gradient
+  norm ranges from 0.764966547 to 14.571924210. Every sample retains batch 4,
+  sequence 2048, and 8192 tokens per step.
+measured_effect:
+  Against the accepted ResFormer/NorMuon control at 4.868333 / 1291 steps,
+  held-out loss regresses by 0.091228 (+1.873906%) despite completing three
+  more steps and processing 10600448 rather than 10575872 tokens
+  (+0.232378%). Average step time improves from 348.697909 to 347.775889 ms
+  (-0.264418%), below the 0.5% runtime threshold and far too small to offset
+  the quality regression.
+decision:
+  Reject the approximate MARS-M direction estimator in this current
+  period-2 SignMuon/NorMuon/AMUSE composition and fully restore the accepted
+  optimizer. The clean 450-second held-out endpoint is the rejection evidence;
+  the healthy 30-second loss played no role. This rejects the tested
+  composition and official default mu/gamma under the current short
+  fixed-compute regime; it does not reject exact two-gradient MARS-M or the
+  paper's every-step Moonlight composition. The restored source was rebuilt
+  with TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+```
+
+```text
+date: 2026-07-17
+commit: rejected working-copy experiment; source fully reverted
 experiment: FFN-only sharpness-disparity Blockwise LR after warmup.
 status: rejected_450s
 source:
