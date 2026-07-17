@@ -49,6 +49,77 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-17
 commit: rejected working-copy experiment; source fully reverted
+experiment: Muon+ bidirectional post-polar normalization.
+status: rejected_450s
+source:
+  https://arxiv.org/abs/2602.21545
+  https://github.com/K1seki221/MuonPlus
+rationale:
+  Muon+ reports that practical polar iterations leave imbalanced row and
+  column update norms, and improves GPT/LLaMA validation perplexity by applying
+  one or two directional L2 normalizations after Polar. Its paper directly
+  beats tuned NorMuon on GPT-Small and GPT-Base while requiring no persistent
+  optimizer state. Test that recent optimizer replacement on the intact local
+  model without changing the task, topology, tokenizer, batch, context, or
+  learning-rate schedule.
+implementation:
+  Replaced stateful NorMuon on full-Polar steps with column normalization
+  followed by row normalization of the canonical short-by-long Polar buffer,
+  using epsilon=1e-8 inside each square root. Restored the pre-normalization
+  Frobenius norm after the composed transform, matching the paper's
+  norm-controlled ablation and preserving this repo's existing layerwise
+  Moonlight update scale. Three reduction kernels produced column factors,
+  the raw Frobenius scale, and row factors; the existing master-update kernel
+  applied their product without another full-matrix write. For descriptor
+  matrices transposed into Polar's short-by-long orientation, this canonical
+  col-row order is row-col in descriptor coordinates. Period-2 SignMuon,
+  AMUSE z/x averaging, Q/K clipping, PolarExpress, NVFP4 bounds, all 16 layers,
+  every active branch, FineWeb, Llama-2 tokenization, B4/S2048, and 8192 tokens
+  per step remained unchanged.
+  Removing NorMuon's longer-axis second moment eliminated 431616 FP32 values,
+  exactly 1726464 bytes = 1.646484375 MiB. This is real but far too small to
+  unlock another batch or materially change model capacity.
+verification:
+  cargo fmt --all --check, cargo check --workspace, cargo test --workspace
+  --lib, and git diff --check: pass.
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+  Seven focused ignored CUDA tests pass: the new direct col-row mathematical
+  reference, Q/K clipping, schedule-amax retention, both SignMuon references,
+  and split/cooperative prepare and finish agreement.
+bringup:
+  target/runs/20260717_123343Z_fineweb_30s
+  completed_steps=89, train_elapsed_s=30.251.
+  Both high-fidelity samples are finite and nonzero, every update/skip counter
+  is zero, and batch 4, sequence 2048, and 8192 tokens per step remain intact.
+  This run was used strictly as a launch, update, and immediate numerical
+  health smoke. Its held-out loss was not compared, ranked, tuned against, or
+  used in the keep/revert decision.
+gate:
+  target/runs/20260717_123434Z_fineweb_450s
+  completed_steps=1287, train_elapsed_s=450.059, val_loss=5.048879.
+  All 26 high-fidelity samples are finite and nonzero, every update/skip
+  counter is zero, and B4/S2048/8192 tokens per step remains intact. Sampled
+  loss ranges from 5.105349541 to 10.676921844 and global gradient norm ranges
+  from 0.992256343 to 14.571924210. The trajectory is numerically stable, but
+  separates steadily from the control after the early training phase.
+measured_effect:
+  Against the accepted ResFormer/NorMuon control at 4.868333 / 1291 steps,
+  held-out loss regresses by 0.180546 (+3.708580%). The candidate completes
+  only four fewer steps (-0.309837%) and processes 10543104 rather than
+  10575872 tokens, so exposure cannot explain the quality loss. Average step
+  time moves from 348.697909 to 349.696193 ms (+0.286289%).
+decision:
+  Reject and fully restore the accepted NorMuon implementation. This result
+  rejects the tested Frobenius-matched, canonical-polar col-row replacement
+  under the local period-2 SignMuon/AMUSE stack; it does not claim that every
+  Muon+ direction, learning-rate retune, or plain-Muon configuration is
+  intrinsically worse. Do not use the healthy 30-second loss as evidence for
+  a directional or coefficient sweep.
+```
+
+```text
+date: 2026-07-17
+commit: rejected working-copy experiment; source fully reverted
 experiment: Query-dependent headwise sigmoid gates on attention outputs.
 status: rejected_450s
 source:
