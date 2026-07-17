@@ -39,6 +39,7 @@ pub struct Gpt2BackwardScratch<'scratch> {
     pub d_residual_after_attention: &'scratch mut DeviceBuffer<f32>,
     pub d_hidden: &'scratch mut DeviceBuffer<f32>,
     pub d_qkv: &'scratch mut DeviceBuffer<f32>,
+    pub d_value_residual: &'scratch mut DeviceBuffer<f32>,
     pub d_mlp_up: &'scratch mut DeviceBuffer<f32>,
 }
 

@@ -4,6 +4,7 @@ mod causal_tc;
 pub(crate) mod layout;
 mod qkv_projection;
 mod rope;
+mod value_residual;
 
 use std::sync::Arc;
 
@@ -14,6 +15,10 @@ pub use causal_backward_tc::{CausalAttentionBackwardTcArgs, CausalAttentionBackw
 pub use causal_tc::{CausalAttentionTcArgs, CausalAttentionTcScratch};
 pub use qkv_projection::{CProjArgs, QkvProjectionArgs, QkvProjectionParams};
 pub use rope::{ApplyRopeArgs, ApplyRopeParams};
+pub use value_residual::{
+    AccumulateValueResidualGradArgs, CaptureValueResidualArgs, FinishValueResidualGradArgs,
+    InitializeValueResidualGradArgs, MixValueResidualArgs,
+};
 
 pub struct AttentionModule {
     qkv_projection: qkv_projection::kernels::LoadedModule,
@@ -21,6 +26,7 @@ pub struct AttentionModule {
     causal_attention_backward_tc: causal_backward_tc::kernels::LoadedModule,
     causal_attention_tc: causal_tc::kernels::LoadedModule,
     rope: rope::kernels::LoadedModule,
+    value_residual: value_residual::kernels::LoadedModule,
 }
 
 impl AttentionModule {
@@ -30,7 +36,8 @@ impl AttentionModule {
             causal_attention: causal::kernels::from_module(module.clone())?,
             causal_attention_backward_tc: causal_backward_tc::kernels::from_module(module.clone())?,
             causal_attention_tc: causal_tc::kernels::from_module(module.clone())?,
-            rope: rope::kernels::from_module(module)?,
+            rope: rope::kernels::from_module(module.clone())?,
+            value_residual: value_residual::kernels::from_module(module)?,
         })
     }
 }

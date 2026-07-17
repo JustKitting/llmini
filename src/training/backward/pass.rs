@@ -22,10 +22,11 @@ impl Trainer {
             );
             let weights = self.uploaded.backward_weights();
             let backward = self.buffers.backward.parts();
-            let scratch = self
-                .buffers
-                .scratch
-                .scratch(&mut self.buffers.normalized, &mut self.buffers.mlp_act);
+            let scratch = self.buffers.scratch.scratch(
+                &mut self.buffers.normalized,
+                &mut self.buffers.value_residual,
+                &mut self.buffers.mlp_act,
+            );
 
             next_latent_backward(NextLatBackwardArgs {
                 stream,

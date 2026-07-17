@@ -15,6 +15,7 @@ use crate::types::{
 };
 
 pub struct BlockForwardArgs<'a, 'scratch> {
+    pub block_index: usize,
     pub use_full_attention: bool,
     pub attention_module: &'a AttentionModule,
     pub attention_tc_module: &'a F16TcMatmulModule,
@@ -37,6 +38,7 @@ pub struct BlockForwardArgs<'a, 'scratch> {
     pub ln_2: LayerNormTensors<'a>,
     pub mlp: MlpProjectionTensors<'a>,
     pub qkv: &'scratch mut DeviceBuffer<f32>,
+    pub value_residual: &'scratch mut DeviceBuffer<f32>,
     pub attention_log_sum_exp: &'scratch mut DeviceBuffer<f32>,
     pub mlp_activation: &'scratch mut DeviceBuffer<f32>,
     pub hidden: HiddenStateDevice<'a>,

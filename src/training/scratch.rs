@@ -37,6 +37,7 @@ impl BackwardScratchBuffers {
     pub fn scratch<'a>(
         &'a mut self,
         d_hidden: &'a mut DeviceBuffer<f32>,
+        d_value_residual: &'a mut DeviceBuffer<f32>,
         d_mlp_up: &'a mut DeviceBuffer<f32>,
     ) -> Gpt2BackwardScratch<'a> {
         let down_linear = self.mlp_down.parts();
@@ -55,6 +56,7 @@ impl BackwardScratchBuffers {
             d_residual_after_attention: &mut self.d_residual_after_attention,
             d_hidden,
             d_qkv: &mut self.d_qkv,
+            d_value_residual,
             d_mlp_up,
         }
     }

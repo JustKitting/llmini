@@ -13,6 +13,7 @@ impl Gpt2BlockWeights {
         args: BlockForwardArgs<'a, 'scratch>,
     ) -> Result<HiddenStateDevice<'a>, DriverError> {
         let qkv = args.qkv;
+        let value_residual = args.value_residual;
         let attention_log_sum_exp = args.attention_log_sum_exp;
         let mlp_activation = args.mlp_activation;
         let mut hidden_nvfp4 = args.hidden_nvfp4;
@@ -32,6 +33,7 @@ impl Gpt2BlockWeights {
         let attention_tape = tape.as_mut().map(|tape| tape.attention_forward());
 
         let hidden = AttentionWeights::forward(AttentionForwardArgs {
+            block_index: args.block_index,
             use_full_attention: args.use_full_attention,
             module: args.attention_module,
             tc_module: args.attention_tc_module,
@@ -47,6 +49,7 @@ impl Gpt2BlockWeights {
             tma_weight_bytes_padded: &mut *tma_weight_bytes_padded,
             projections: args.projections,
             qkv: &mut *qkv,
+            value_residual: &mut *value_residual,
             attention_log_sum_exp: &mut *attention_log_sum_exp,
             hidden,
             tape: attention_tape,

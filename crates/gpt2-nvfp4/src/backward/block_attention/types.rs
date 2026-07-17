@@ -67,6 +67,7 @@ pub struct BlockAttentionBackwardArgs<'a, 'scratch, 'out> {
     pub d_residual_in_chunk_amax: &'scratch mut DeviceBuffer<f32>,
     pub d_hidden: &'scratch mut DeviceBuffer<f32>,
     pub d_qkv: &'scratch mut DeviceBuffer<f32>,
+    pub d_value_residual: &'scratch mut DeviceBuffer<f32>,
     pub grads: BlockBackwardGrads<'out>,
     pub scratch: BlockAttentionBackwardScratch<'scratch>,
     pub seeds: BlockAttentionBackwardSeeds,

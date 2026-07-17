@@ -49,6 +49,78 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-17
 commit: accepted local jj commit after full gate
+experiment: Identity-ResFormer fixed first-layer value residuals.
+status: accepted_450s
+source:
+  https://arxiv.org/abs/2410.17897
+  https://github.com/Zcchill/Value-Residual-Learning
+rationale:
+  ResFormer gives every later attention layer direct access to the first
+  layer's value projection, targeting the attention-concentration and
+  value-state-drain behavior identified in the paper. The released plain
+  ResFormer implementation leaves layer 0 unchanged and uses exactly
+    V_n = 0.5 * V_1 + 0.5 * V_n
+  for every later layer. Test that fixed, parameter-free architecture change
+  on this repo's hybrid KDA/full-attention stack without reducing the
+  approximately 1B model, any active branch, data, tokenizer, context, batch,
+  or tokens per step.
+implementation:
+  After each QKV projection, block 0 captures its FP32 V segment and blocks
+  1-15 mix that saved V with their own V before either KDA or full attention.
+  Reverse mode scales each later layer's local dV by 0.5, accumulates the other
+  0.5 into the first-layer value path, and adds the complete cross-layer
+  gradient to block 0 before its QKV projection backward. The post-attention
+  dQKV amax is recomputed after this transform so NVFP4 gradient quantization
+  never consumes the attention core's now-stale pre-transform amax.
+  One 64 MiB FP32 workspace is reused for V_1 during forward and dV_1 during
+  backward. Parameter count, 16-layer/2048-wide/32-head geometry, all model
+  branches, FineWeb, Llama-2 tokenization, batch 4, sequence 2048, and 8192
+  tokens per optimizer step remain unchanged.
+verification:
+  cargo fmt --all --check, cargo check --workspace, cargo test --workspace
+  --lib, and git diff --check: pass.
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+  The focused release CUDA reference test passes and verifies layer-0 capture,
+  exact 50/50 forward mixing, unchanged non-V QKV fields, reverse initialization
+  and accumulation, 0.5 local gradients in later layers, and the complete
+  summed gradient reaching layer 0. The focused release
+  block_attention_backward full-chain GPU test also passes. A broad cargo test
+  --workspace --no-run still cannot compile the existing stale gpt2-nvfp4
+  integration initializers for the prior TMA forward and MLP scratch APIs; the
+  candidate's exact release/device build, focused GPU tests, and workspace
+  library tests pass.
+bringup:
+  target/runs/20260717_111422Z_fineweb_30s
+  completed_steps=89, train_elapsed_s=30.100, val_loss=6.236378.
+  Both high-fidelity samples are finite and nonzero, global gradient norm is
+  finite, every update/skip counter is zero, and batch 4, sequence 2048, and
+  8192 tokens per step remain intact. This run was used only to establish
+  launch, update, and immediate numerical health. Its loss was not compared
+  with the control and played no role in selection or acceptance.
+gate:
+  target/runs/20260717_111529Z_fineweb_450s
+  completed_steps=1291, train_elapsed_s=450.169, val_loss=4.868333.
+  All 26 high-fidelity samples are finite and nonzero. Every update/skip
+  counter is zero, loss ranges from 4.871433258 to 10.676921844, and global
+  gradient norm ranges from 0.819662094 to 14.571924210. Every sample retains
+  batch 4, sequence 2048, and 8192 tokens per step.
+measured_effect:
+  Against the accepted SignMuon control at 4.880350 / 1317 steps, held-out
+  validation loss improves by 0.012017 (-0.246232%). The candidate completes
+  1291 rather than 1317 steps (-1.974184%) and processes 10575872 rather than
+  10788864 tokens, so the quality gain is not extra exposure. Average step
+  time moves from 341.990129 to 348.697909 ms (+1.961396%), including the
+  value-mixing kernels and required post-transform dQKV amax recomputation.
+decision:
+  Keep, promote as the active baseline, and commit. The 450-second held-out
+  endpoint is lower on the intact approximately 1B model despite fewer
+  completed steps. The 30-second loss was health-only and was not quality
+  evidence.
+```
+
+```text
+date: 2026-07-17
+commit: accepted local jj commit after full gate
 experiment: SignMuon period-2 alternating spectral and sign descent.
 status: accepted_450s
 source:

@@ -34,6 +34,7 @@ pub(super) fn forward<'a>(
         mlp,
         ln_f,
         attention_qkv,
+        attention_value_residual,
         attention_log_sum_exp,
         mlp_activation,
         logits,
@@ -46,6 +47,7 @@ pub(super) fn forward<'a>(
 
     for (block_index, block) in weights.h.iter().enumerate() {
         hidden = block.forward(BlockForwardArgs {
+            block_index,
             use_full_attention: uses_full_attention(block_index),
             attention_module,
             attention_tc_module,
@@ -68,6 +70,7 @@ pub(super) fn forward<'a>(
             ln_2: block_ln_2[block_index],
             mlp: mlp[block_index],
             qkv: &mut *attention_qkv,
+            value_residual: &mut *attention_value_residual,
             attention_log_sum_exp: &mut *attention_log_sum_exp,
             mlp_activation: &mut *mlp_activation,
             hidden,

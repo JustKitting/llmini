@@ -23,6 +23,7 @@ pub struct AttentionProjectionTensors<'a> {
 }
 
 pub struct AttentionForwardArgs<'a, 'scratch> {
+    pub block_index: usize,
     pub use_full_attention: bool,
     pub module: &'a AttentionModule,
     pub tc_module: &'a F16TcMatmulModule,
@@ -38,6 +39,7 @@ pub struct AttentionForwardArgs<'a, 'scratch> {
     pub tma_weight_bytes_padded: &'scratch mut DeviceBuffer<u8>,
     pub projections: AttentionProjectionTensors<'a>,
     pub qkv: &'scratch mut DeviceBuffer<f32>,
+    pub value_residual: &'scratch mut DeviceBuffer<f32>,
     pub attention_log_sum_exp: &'scratch mut DeviceBuffer<f32>,
     pub hidden: HiddenStateDevice<'a>,
     pub tape: Option<AttentionForwardTape<'scratch>>,

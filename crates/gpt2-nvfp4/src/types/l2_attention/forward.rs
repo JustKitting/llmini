@@ -1,5 +1,7 @@
 use cuda_core::DriverError;
-use rust_kernels_cuda::attention::{ApplyRopeArgs, CausalAttentionTcArgs};
+use rust_kernels_cuda::attention::{
+    ApplyRopeArgs, CaptureValueResidualArgs, CausalAttentionTcArgs, MixValueResidualArgs,
+};
 use rust_kernels_cuda::nvfp4_tma_matmul::{
     pad::U4RowPadArgs, scale_layout::sm120_scale_padded_mn_extent,
 };
@@ -76,6 +78,27 @@ pub(super) fn forward<'a, 'scratch>(
             input.global_scales,
             args.projections.qkv_weight_device.global_scale,
         )?;
+
+    if args.block_index == 0 {
+        args.module
+            .capture_value_residual(CaptureValueResidualArgs {
+                stream: hidden.stream,
+                qkv: &*args.qkv,
+                first_value: args.value_residual,
+                row_count: hidden.row_count,
+                embedding_dim: dims.embedding_dim,
+                qkv_dim: dims.qkv_dim,
+            })?;
+    } else {
+        args.module.mix_value_residual(MixValueResidualArgs {
+            stream: hidden.stream,
+            qkv: args.qkv,
+            first_value: &*args.value_residual,
+            row_count: hidden.row_count,
+            embedding_dim: dims.embedding_dim,
+            qkv_dim: dims.qkv_dim,
+        })?;
+    }
 
     if args.use_full_attention {
         args.module.apply_rope(ApplyRopeArgs {
