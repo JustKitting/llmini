@@ -12,9 +12,17 @@ pub(in super::super) struct SourceScratch {
 
 impl SourceScratch {
     pub(in super::super) fn new(stream: &CudaStream) -> Result<Self, DriverError> {
+        Self::new_for_shape(stream, ROWS, COLS)
+    }
+
+    pub(in super::super) fn new_for_shape(
+        stream: &CudaStream,
+        rows: usize,
+        cols: usize,
+    ) -> Result<Self, DriverError> {
         Ok(Self {
-            bytes: DeviceBuffer::zeroed(stream, ROWS * COLS / 2)?,
-            scales: DeviceBuffer::zeroed(stream, ROWS * COLS / 16)?,
+            bytes: DeviceBuffer::zeroed(stream, rows * cols / 2)?,
+            scales: DeviceBuffer::zeroed(stream, rows * cols / 16)?,
             global_scale: DeviceBuffer::zeroed(stream, 1)?,
         })
     }

@@ -2,7 +2,7 @@ use cuda_core::DriverError;
 
 use super::args::Nvfp4TransposeMsEdenDeviceScaleQuantArgs;
 use super::launcher::Nvfp4QuantModule;
-use super::shape::MsEdenPackGrid;
+use super::shape::{MsEdenPackGrid, RowwiseTransposeNoPad, ms_eden_rowwise_transpose_tiled_config};
 use crate::quartet::QUARTET_MS_EDEN_SCALE_OVERRIDE;
 
 impl Nvfp4QuantModule {
@@ -41,6 +41,34 @@ impl Nvfp4QuantModule {
         self.derive_nvfp4_transpose_global_scale(&mut args)?;
         let pack = MsEdenPackGrid::for_elements(args.source_cols * args.dst_row_len);
         if pack.is_exact() {
+            if let Some(no_pad) =
+                RowwiseTransposeNoPad::new(args.source_rows, args.source_cols, args.dst_row_len)
+                && let Some(source_cols_shift) = no_pad.source_cols_shift()
+                && args.source_rows.is_multiple_of(32)
+                && args.source_cols.is_multiple_of(8)
+            {
+                return self
+                    .ms_eden_nvfp4_transpose
+                    .nvfp4_transpose_to_nvfp4_ms_eden_device_scale_no_chunk_amax_exact_no_pad_source_cols_pow2_tiled_kernel(
+                        args.stream,
+                        ms_eden_rowwise_transpose_tiled_config(
+                            args.source_rows,
+                            args.source_cols,
+                        ),
+                        args.input.bytes,
+                        args.input.scales,
+                        args.input.global_scale,
+                        args.out_fp4,
+                        args.out_scales,
+                        args.out_global_scales,
+                        &*args.out_global_scale,
+                        source_cols_shift,
+                        no_pad.chunks_per_row_shift,
+                        QUARTET_MS_EDEN_SCALE_OVERRIDE,
+                        args.sign_seed,
+                        args.scale_seed,
+                    );
+            }
             return self
                 .ms_eden_nvfp4_transpose
                 .nvfp4_transpose_to_nvfp4_ms_eden_device_scale_no_chunk_amax_exact_kernel(

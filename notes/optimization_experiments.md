@@ -46,6 +46,87 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-17
 commit: accepted local jj commit after full gate
+experiment: Tile exact non-rowwise NVFP4 transpose MS-EDEN quantization.
+status: accepted_450s
+change:
+  Exact no-padding NVFP4 weight-transpose shapes with power-of-two source
+  dimensions now use the established 32x8 shared transpose geometry already
+  used by the rowwise path. Even source-column threads decode adjacent NVFP4
+  values as a pair into a padded shared tile; each warp then consumes one
+  transposed 32-value chunk. This removes padded row division, the source-row
+  bounds predicate, and duplicate scalar byte/scale loads. Unsupported shapes
+  retain the former exact padded kernel.
+numerics:
+  Source indices, decoded FP4 values, random signs, Hadamard lane order, local
+  scale selection, payload layout, and output chunk ownership are unchanged.
+  The added focused test compares the tiled direct NVFP4 transpose against a
+  materialized FP32 decode/transpose and matches bytes, scales, row global
+  scales, and tensor global scale bit-for-bit. Linear-backward integrations
+  and both fixed-wall gates preserve the training trajectory.
+memory:
+  Persistent allocations, scratch capacities, launch counts, and peak logical
+  VRAM are unchanged. The new kernel uses 20 registers, one barrier, and
+  1152 bytes of static shared memory with no spills; the fallback uses 19
+  registers and no static shared memory. This is not a batch-capacity win.
+minimum_impact_gate:
+  The accepted parent requires 20.138283ms over a reciprocal ten-step profile.
+  Parent profiles average 4018.415938ms and the candidate averages
+  3959.726679ms, saving 58.689259ms/profile or 1.460507%. The complete target
+  family falls from 131.241066 to 67.871219ms/profile, saving 63.369848ms or
+  48.285%.
+profiles:
+  Accepted parent:
+    target/nsys/20260717_ms_eden_bias_transpose_first_bundle_a.nsys-rep:
+      total 4014.783429ms.
+    target/nsys/20260717_ms_eden_bias_transpose_first_bundle_b.nsys-rep:
+      total 4022.048446ms.
+  Candidate:
+    target/nsys/20260717_nvfp4_transpose_tiled_a.nsys-rep:
+      total 3957.317332ms.
+    target/nsys/20260717_nvfp4_transpose_tiled_b.nsys-rep:
+      total 3962.136026ms.
+  Of 680 target launches, 510 aligned launches take the new tiled kernel at
+  22.758637ms/profile and 170 unsupported launches retain the old kernel at
+  45.112582ms/profile. Both parent and candidate contain 61428 launches.
+verification:
+  cargo fmt --all, git diff --check, and the exact
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+  All six ignored ms_eden_transpose tests, including the new exact tiled
+  bitwise comparison, both ignored linear_backward tests, the ignored QKV
+  projection-backward integration, and the ignored full block-attention
+  backward integration pass serially on GPU0. ptxas reports no spills.
+gates:
+  Required 30-second screen:
+    target/runs/20260717_040037Z_fineweb_30s
+    stdout: target/gates/20260717_nvfp4_transpose_tiled_30s.log
+    completed_steps=78, train_elapsed_s=30.002, val_loss=6.473764.
+  Required 450-second sustained gate:
+    target/runs/20260717_040115Z_fineweb_450s
+    stdout: target/gates/20260717_nvfp4_transpose_tiled_450s.log
+    completed_steps=1136, train_elapsed_s=450.374, val_loss=5.008699.
+    All 23 high-fidelity samples are finite and nonzero. Every skip counter is
+    zero, loss ranges from 5.031724930 to 10.863180161, grad norm ranges from
+    1.016826272 to 16.889122009, and every sample retains batch 4, sequence
+    2048, and 8192 tokens per step.
+measured_effect:
+  Against the matched 30-second parent:
+    completed steps 77 -> 78 (+1, +1.299%);
+    average step time 391.000000 -> 384.641026ms (-1.626%);
+    held-out val_loss 6.485697 -> 6.473764 (-0.184%).
+  Against the matched 450-second parent:
+    completed steps 1118 -> 1136 (+18, +1.610%);
+    average step time 402.765653 -> 396.455986ms (-6.309667ms, -1.567%);
+    held-out val_loss 5.022520 -> 5.008699 (-0.275%).
+decision:
+  Keep, promote, and commit. Reciprocal profiles and both fixed-wall gates
+  agree on a large real speed win, held-out loss improves, and sustained
+  stability is clean. The next 0.5% threshold is 1.982280ms per step, or
+  19.822799ms over a ten-step profile.
+```
+
+```text
+date: 2026-07-17
+commit: accepted local jj commit after full gate
 experiment: Launch persistent MS-EDEN transpose/bias CTAs first and trim exact TMA scale epilogues.
 status: accepted_450s
 change:
