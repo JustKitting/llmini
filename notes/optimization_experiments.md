@@ -49,6 +49,97 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-17
 commit: rejected working-copy experiment; source fully reverted
+experiment: Full single-way dynamic dense MUDDFormer with PrePostDANorm.
+status: rejected_450s
+source:
+  https://arxiv.org/abs/2502.12170
+  https://github.com/Caiyun-AI/MUDDFormer
+rationale:
+  MUDDFormer's Table 5 reports that dynamic DDFormer improves validation
+  perplexity from 11.44 for static DDFormer and 11.68 for the Transformer
+  baseline to 11.09, while the complete multiway model reaches 10.83. Test the
+  paper's dynamic dense inter-layer mixing as a substantive loss candidate.
+  This adaptation used the full single-way dense path to limit its already
+  material runtime and memory cost; it did not remove, freeze, shorten, or
+  bypass any original model layer or branch.
+implementation:
+  After the embedding and every transformer block, retained all earlier raw
+  layer outputs as sources. At each block, generated one coefficient per
+  source from the current representation with
+    GELU(RMSNorm(X_i) W1) W2 / sqrt(K) + bias
+  and formed a dense weighted combination of every preceding source.
+  The initial identity-residual and normalized-source formulations failed the
+  health screen. The final tested formulation implements the paper's
+  PrePostDANorm stabilization: each raw source has a trainable pre-aggregation
+  RMS scale initialized to 1, and the dense result passes through a trainable
+  post-aggregation RMS scale initialized to 1e-3 before its residual addition
+  to the current stream. Controller W2 and bias initialize to zero; W1 uses
+  the standard normal initialization. A separate 135-step controller warmup
+  was retained.
+  Implemented and trained the complete reverse dense DAG: source RMS norms,
+  post-aggregation RMS norms, every dense edge, controller W1/W2/bias, and all
+  original model parameters receive their exact gradients. The controller
+  parameters and Adam state remain FP32 and add 380816 trainable parameters.
+  ResFormer, NextLat, every attention and MLP branch, all 16 layers, d=2048,
+  32 heads, FineWeb, Llama-2 tokenization, B4/S2048, and 8192 tokens per step
+  remained intact.
+correctness:
+  cargo fmt --all, cargo check --workspace, and
+  cargo test --workspace --lib --bins --release: pass.
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+  The rebuilt-PTX CUDA reference test covers forward aggregation and every
+  backward gradient family. The FP32 Adam/materialization CUDA reference test
+  also passes with the added parameter range.
+diagnostic_history:
+  target/runs/20260717_191643Z_fineweb_30s:
+    plain DDFormer diverged by step 50
+    (train_loss approximately 1.47e15, grad_norm approximately 4.85e13).
+  target/runs/20260717_192229Z_fineweb_30s:
+    zero-start controller with separate warmup still diverged by step 50
+    (train_loss approximately 1.73e11, grad_norm approximately 5.80e9).
+  target/runs/20260717_192620Z_fineweb_30s:
+    adding the official repository's optional 1/sqrt(K) scale still diverged
+    by step 50 (train_loss approximately 139097, grad_norm approximately 5530).
+  These short runs diagnosed immediate numerical failure only. Their endpoint
+  losses were not compared, ranked, tuned against, or used as quality evidence.
+bringup:
+  target/runs/20260717_193532Z_fineweb_900s
+  One-step memory diagnostic allocated 48177020928 bytes and left
+  53796470784 bytes free. It was diagnostic only.
+  target/runs/20260717_193544Z_fineweb_30s
+  completed_steps=71, train_elapsed_s=30.167, val_loss=6.348423.
+  At step 50, train_loss=6.6366925 and grad_norm=1.9236478; metrics are finite
+  and nonzero, both optimizer learning rates are active, and all update/skip
+  counters are zero. This established launchability, real updates, and
+  immediate numerical health only. Its endpoint loss was ignored.
+gate:
+  target/runs/20260717_193701Z_fineweb_450s
+  completed_steps=1031, train_elapsed_s=450.005,
+  val_loss=5.066144.
+  All 21 high-fidelity samples are finite and nonzero. Training loss ranges
+  from 10.670940399 down to 5.045145035 and ends at 5.045145035. Global
+  gradient norm ranges from 1.008510351 to 8.463853836 and ends at
+  1.506140232. One update was skipped at the sample with grad_norm
+  8.463853836; there were no nonfinite values or corresponding loss
+  divergence. Every sample retained B4/S2048 and 8192 tokens per step.
+measured_effect:
+  Against the accepted baseline at 4.8560075759887695 / 1291 steps /
+  10575872 tokens, held-out loss regresses by 0.210136424 (+4.327349592%).
+  The candidate completes 1031 steps and processes 8445952 tokens, a
+  20.139426801% reduction in training exposure. Average step time increases
+  from 348.668474051 ms to 436.474296799 ms.
+decision:
+  Reject and fully restore the accepted implementation. PrePostDANorm makes
+  this complete single-way dynamic dense formulation trainable, but its
+  convergence benefit does not repay the 20.1% loss of fixed-time exposure:
+  sustained held-out quality is materially worse. This rejects the tested
+  full single-way implementation, not every possible fused or complete
+  multiway MUDDFormer implementation. The 30-second loss played no role.
+```
+
+```text
+date: 2026-07-17
+commit: rejected working-copy experiment; source fully reverted
 experiment: Exact-statistics BHyT at both transformer pre-norm sites.
 status: rejected_450s
 source:
