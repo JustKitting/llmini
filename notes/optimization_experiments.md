@@ -49,6 +49,69 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-17
 commit: rejected working-copy experiment; source fully reverted
+experiment: Token-half-life Adam beta2 plus zero Adam-side weight decay.
+status: rejected_450s
+source:
+  https://arxiv.org/abs/2507.07101
+  https://github.com/martin-marek/batch-size
+rationale:
+  The small-batch language-model study reports that Adam's second-moment
+  decay should preserve its half-life in training tokens rather than retain a
+  fixed per-step beta2. Its official 1.3B FineWeb experiment uses sequence
+  length 2048, beta2=0.95 at batch 512, beta2=0.9999 at batch 1, and no
+  weight decay for the small-batch Adam run. This is unusually close to the
+  active 1B/FineWeb/S2048/B4 regime, so test the corresponding coupled
+  prescription without changing Muon or the model.
+implementation:
+  Changed Adam beta2 from 0.95 to
+    0.95^(4/512) = 0.9995993514...
+  so the second-moment half-life remains 14169835 training tokens at the
+  active 8192-token optimizer step. Changed only Adam-side weight decay from
+  0.005 to zero, matching the official small-batch configuration. Muon and
+  NorMuon coefficients and matrix weight decay remained unchanged. The token
+  embedding, layer-norm tensors, linear biases, and NextLat Adam tensors still
+  received full gradients and updates. All 16 transformer layers, ResFormer,
+  NextLat, FineWeb, Llama-2 tokenization, B4/S2048, and 8192 tokens per step
+  remained intact.
+verification:
+  A focused unit test recomputed 0.95^(4/512), checked the stored f32 beta2 to
+  within 1e-7, and checked zero Adam-side decay: pass.
+  cargo fmt --all --check and git diff --check: pass.
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+bringup:
+  target/runs/20260717_143301Z_fineweb_30s
+  completed_steps=89, train_elapsed_s=30.095, val_loss=6.218307.
+  Both high-fidelity samples are finite and nonzero, every update/skip
+  counter is zero, and B4/S2048/8192 tokens per step remains intact. This run
+  was used only to establish launchability, real updates, and immediate
+  numerical health. Its endpoint loss was not compared, ranked, tuned
+  against, or used in the keep/revert decision.
+gate:
+  target/runs/20260717_143357Z_fineweb_450s
+  completed_steps=1292, train_elapsed_s=450.258, val_loss=4.917588.
+  All 26 high-fidelity samples are finite and nonzero and every update/skip
+  counter is zero. Sampled loss ranges from 4.904741764 to 10.676921844 and
+  global gradient norm ranges from 0.724009752 to 14.571924210. Every sample
+  retains batch 4, sequence 2048, and 8192 tokens per step.
+measured_effect:
+  Against the accepted ResFormer/NorMuon control at 4.868333 / 1291 steps,
+  held-out loss regresses by 0.049255 (+1.011743%) despite completing one
+  additional step and processing 10584064 rather than 10575872 tokens.
+  Average step time is effectively unchanged, moving from 348.697909 to
+  348.496904 ms (-0.057644%). The result therefore loses on convergence, not
+  exposure or runtime.
+decision:
+  Reject the coupled small-batch prescription and fully restore the accepted
+  Adam configuration. The 450-second held-out endpoint is the rejection
+  evidence; the healthy 30-second loss played no role. Because this run
+  changed both beta2 and Adam-side decay, it does not isolate the paper's
+  central token-half-life rule. A justified follow-up may restore the locally
+  tuned 0.005 decay and test beta2 scaling alone before ruling that rule out.
+```
+
+```text
+date: 2026-07-17
+commit: rejected working-copy experiment; source fully reverted
 experiment: Dynamic Frac-Connections at frac-rate 4.
 status: rejected_30s_health
 source:
