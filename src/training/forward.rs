@@ -1,6 +1,8 @@
 use gpt2_nvfp4::{GPT2_VOCAB_SIZE, Gpt2ForwardArgs, TokenEmbeddingArgs};
 
-use super::next_latent::{NextLatForwardArgs, forward as next_latent_forward};
+use super::next_latent::{
+    NextLatForwardArgs, forward as next_latent_forward, loss_weight as next_latent_loss_weight,
+};
 use super::{TokenBatch, TrainStats, Trainer};
 use crate::AppResult;
 
@@ -70,7 +72,7 @@ impl Trainer {
             batch_size: batch.batch_size as u32,
             seq_len: batch.seq_len as u32,
             row_count: batch.token_count as u32,
-            lambda: 1.0,
+            lambda: next_latent_loss_weight(),
         })?;
 
         Ok(TrainStats {

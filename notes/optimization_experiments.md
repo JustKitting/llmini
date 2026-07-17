@@ -45,6 +45,81 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 
 ```text
 date: 2026-07-17
+commit: accepted local jj commit after full gate
+experiment: Retune the intact model's NextLat auxiliary coefficient.
+status: accepted_450s
+change:
+  Add TRAIN_NEXTLAT_LOSS_WEIGHT as a bounded [0.1, 4.0] runtime control and
+  promote 0.5 as the default. The positive lower bound prevents disabling the
+  branch. NextLat retains all parameters, allocations, forward work, backward
+  work, optimizer work, and direct Smooth-L1 task gradients.
+matched_control:
+  target/runs/20260717_062613Z_fineweb_30s
+  lambda=1.0, completed_steps=79, train_elapsed_s=30.272,
+  val_loss=6.462689.
+candidate_screen:
+  target/runs/20260717_063526Z_fineweb_30s
+  lambda=0.5, completed_steps=77, train_elapsed_s=30.007,
+  val_loss=6.439716.
+gate:
+  target/runs/20260717_063605Z_fineweb_450s
+  lambda=0.5, completed_steps=1143, train_elapsed_s=450.093,
+  val_loss=4.996589.
+  All 23 high-fidelity samples are finite and nonzero. Every update/skip
+  counter is zero, loss ranges from 4.966486930 to 10.666461945, and global
+  gradient norm ranges from 1.017454147 to 16.312370300. Every sample retains
+  batch 4, sequence 2048, and 8192 tokens per step.
+rejected_neighbor:
+  lambda=0.25 screened at 6.424937 in
+  target/runs/20260717_062650Z_fineweb_30s, but its required sustained gate
+  target/runs/20260717_062738Z_fineweb_450s ended at val_loss=4.997718 after
+  1148 steps in 450.315s. Reject it because it is above the 4.997200 baseline.
+measured_effect:
+  Against the matched unit-weight screen, lambda=0.5 lowers held-out loss by
+  0.022973 (-0.356%) despite completing two fewer steps. Against the active
+  sustained baseline, it lowers held-out loss by 0.000611 (-0.0122%).
+decision:
+  Keep and promote lambda=0.5. This is a genuine objective-hyperparameter tune
+  on the unchanged 1B FineWeb/Llama-2 task, not a capacity or task reduction:
+  the auxiliary branch receives half-strength direct task gradients.
+verification:
+  cargo fmt --all, cargo check --all-targets, git diff --check, and exact
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+  The rebuilt promoted default, with no TRAIN_NEXTLAT_LOSS_WEIGHT override,
+  records nextlat_loss_weight=0.5 at
+  target/runs/20260717_064529Z_fineweb_30s and reproduces the screen win:
+  completed_steps=79, train_elapsed_s=30.189, val_loss=6.427493.
+```
+
+```text
+date: 2026-07-17
+commit: rejected working-copy experiment; source control removed
+experiment: Retune the intact model's global gradient-clipping threshold.
+status: rejected_30s
+change:
+  Temporarily expose the hard-coded 1.0 global-norm threshold as
+  TRAIN_GLOBAL_GRAD_CLIP_NORM. No model, data, loss, or optimizer path changed.
+matched_30s_sweep:
+  clip=0.50:
+    target/runs/20260717_062230Z_fineweb_30s
+    completed_steps=80, train_elapsed_s=30.329, val_loss=6.457333.
+  clip=0.75:
+    target/runs/20260717_062412Z_fineweb_30s
+    completed_steps=79, train_elapsed_s=30.271, val_loss=6.466051.
+  clip=1.25:
+    target/runs/20260717_062452Z_fineweb_30s
+    completed_steps=78, train_elapsed_s=30.107, val_loss=6.473192.
+  clip=2.00:
+    target/runs/20260717_062311Z_fineweb_30s
+    completed_steps=79, train_elapsed_s=30.246, val_loss=6.463597.
+decision:
+  Reject every candidate against the active 1.0 threshold's 6.454494 screen.
+  The sweep brackets the existing threshold without finding a lower-loss
+  direction. Restore the hard-coded 1.0 path and do not run a 450-second gate.
+```
+
+```text
+date: 2026-07-17
 commit: rejected jj a3535871; commit abandoned and source restored
 experiment: Set the NextLat auxiliary-loss weight to zero.
 status: rejected_invalid_objective

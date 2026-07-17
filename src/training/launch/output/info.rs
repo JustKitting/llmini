@@ -20,6 +20,11 @@ pub(in crate::training::launch) fn build_run_info(dataset: &str, config: &TrainC
     push_info(&mut info, "gpt2_n_embd", GPT2_N_EMBD);
     push_info(
         &mut info,
+        "nextlat_loss_weight",
+        crate::training::next_latent::loss_weight(),
+    );
+    push_info(
+        &mut info,
         "muon_cooperative_blocks",
         MUON_COOPERATIVE_BLOCKS,
     );
@@ -55,6 +60,7 @@ fn push_run_env(info: &mut String) {
         "TRAIN_LR_START_RATIO",
         "TRAIN_AMUSE_BETA1",
         "TRAIN_AMUSE_RHO",
+        "TRAIN_NEXTLAT_LOSS_WEIGHT",
         "TRAIN_SKIP_UNSTABLE_UPDATES",
         "TRAIN_SKIP_ROLLING_INTERVAL",
         "TRAIN_SKIP_SIGMA_FACTOR",

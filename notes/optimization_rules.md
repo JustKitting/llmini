@@ -144,8 +144,9 @@ dataset, and current tokenizer, not a result from an older or smaller
 architecture.
 
 The restored pre-regression FP16 staging path plus the later accepted kernel
-and memory wins is the current matched 450-second control: 1151 steps in
-450.153 seconds with held-out loss 4.997200.
+and memory wins and positive `0.5` NextLat auxiliary coefficient is the current
+matched 450-second control: 1143 steps in 450.093 seconds with held-out loss
+4.996589.
 Do not compare future 450-second candidates with historical 900-second
 endpoints.
 
