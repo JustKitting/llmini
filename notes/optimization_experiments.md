@@ -45,6 +45,61 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 
 ```text
 date: 2026-07-17
+commit: rejection record only; candidate source reverted
+experiment: Restore eager optimizer requantization from the overridden 081256f5 batch.
+status: rejected_450s
+context:
+  Commit 081256f54609 combined deferred end-of-step optimizer requantization
+  with a packed K-major FP16 tensor-core staging rewrite, then moved the
+  450-second endpoint from 5.108639 to 5.263548 (+3.032%). Commit 322be85b9dc7
+  already cleanly inverted the staging half and recovered 3.255% held-out loss,
+  proving that the apparent spike was a causal staging regression. This test
+  isolates the only active behavioral half left from 081256f5.
+change:
+  Temporarily route active Adam and Muon training updates through their eager
+  requantizing launchers instead of the deferred variants. KDA no longer uses
+  the former update launcher, and held-out evaluation already materializes
+  schedule-free evaluation weights explicitly, so no unrelated later behavior
+  is reverted.
+verification:
+  cargo fmt --all, git diff --check, cargo check -q -p rust-kernels-cuda, and
+  the exact TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+  The two ignored Adam update tests, both Muon TMA finish tests, and the Muon
+  split-finish cooperative-reference test pass serially on GPU0. After the
+  candidate was rejected, the two source call sites were restored and the
+  accepted source was rebuilt successfully with the same exact command.
+gates:
+  30-second candidate screen:
+    target/runs/20260717_025530Z_fineweb_30s
+    completed_steps=76, train_elapsed_s=30.262, val_loss=6.489671.
+  450-second candidate gate:
+    target/runs/20260717_025652Z_fineweb_450s
+    stdout: target/gates/20260717_eager_requant_450s.log
+    completed_steps=1099, train_elapsed_s=450.253, val_loss=5.020674.
+    All 22 high-fidelity samples are finite and nonzero. Every skip counter is
+    zero, batch remains 4, sequence remains 2048, and tokens per step remain
+    8192.
+measured_effect:
+  Against the accepted 30-second baseline, completed steps remain 76, average
+  step time moves from 396.894737 to 398.184211ms (+0.325%), and validation
+  loss moves from 6.492160 to 6.489671 (-0.038%).
+  Against the accepted 450-second baseline, completed steps fall from 1101 to
+  1099, average step time moves from 408.846503 to 409.693358ms (+0.207%), and
+  validation loss moves from 5.016880 to 5.020674 (+0.076%). Matched training
+  loss differs by -0.132% at step 150, +0.093% at step 300, -0.034% at step
+  600, -0.152% at step 850, and -0.079% at step 1050. There is no growing loss
+  divergence like the original staging regression.
+decision:
+  Reject and fully revert the eager-requantization candidate. Deferred
+  end-of-step requantization is not the hidden quality bug: it preserves the
+  training trajectory while avoiding redundant work. The damaging half of
+  081256f5 was the FP16 staging rewrite, which 322be85b9dc7 already removed.
+  Keep notes/sweep_baseline.env unchanged at the accepted 5.016880 / 1101-step
+  baseline.
+```
+
+```text
+date: 2026-07-17
 commit: accepted local jj commit after full gate
 experiment: Correct recurrent KDA state decay ownership and use all 32 CTA warps.
 status: accepted_450s
