@@ -46,6 +46,88 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-17
 commit: accepted local jj commit after full gate
+experiment: Retune AMUSE's initial interpolation on the intact 1B model.
+status: accepted_450s
+change:
+  Change TRAIN_AMUSE_BETA1 from the inherited 0.245698 setting to 0.2 while
+  holding TRAIN_AMUSE_RHO=0.593588 and every model/task setting fixed.
+rationale:
+  The AMUSE paper tunes its interpolation parameters separately for LLM scale
+  and uses no explicit LR decay. The active values came from an older,
+  smaller-model sweep, so beta1 was bracketed directly on the current model.
+matched_30s_sweep:
+  beta1=0.245698:
+    target/runs/20260717_064529Z_fineweb_30s
+    completed_steps=79, train_elapsed_s=30.189, val_loss=6.427493.
+  beta1=0.4:
+    target/runs/20260717_065853Z_fineweb_30s
+    completed_steps=79, train_elapsed_s=30.227, val_loss=6.436230.
+  beta1=0.2:
+    target/runs/20260717_065953Z_fineweb_30s
+    completed_steps=79, train_elapsed_s=30.339, val_loss=6.423314.
+  beta1=0.1:
+    target/runs/20260717_070034Z_fineweb_30s
+    completed_steps=78, train_elapsed_s=30.150, val_loss=6.426004.
+gate:
+  target/runs/20260717_070122Z_fineweb_450s
+  beta1=0.2, completed_steps=1145, train_elapsed_s=450.378,
+  val_loss=4.984594.
+  All 23 high-fidelity samples are finite and nonzero. Every update/skip
+  counter is zero, loss ranges from 4.961493969 to 10.666461945, and global
+  gradient norm ranges from 1.033105254 to 16.312370300. Every sample retains
+  batch 4, sequence 2048, and 8192 tokens per step.
+measured_effect:
+  The matched screen improves by 0.004179 (-0.0650%) at the same completed
+  step count. The sustained gate improves by 0.011995 (-0.240%) and completes
+  two more steps than the 4.996589 / 1143-step baseline.
+decision:
+  Keep and promote beta1=0.2. This is a direct optimizer-hyperparameter
+  improvement with the complete model, task, and gradient paths unchanged.
+verification:
+  cargo fmt --all, cargo check --all-targets, git diff --check, and exact
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+  The rebuilt promoted default, with no TRAIN_AMUSE_BETA1 override, ran at
+  target/runs/20260717_071011Z_fineweb_30s and reproduced the screen win:
+  completed_steps=79, train_elapsed_s=30.363, val_loss=6.422213.
+```
+
+```text
+date: 2026-07-17
+commit: rejected runtime-only experiment
+experiment: Raise Muon's matrix learning-rate scale on the intact 1B model.
+status: rejected_450s
+matched_30s_sweep:
+  scale=2.5:
+    target/runs/20260717_064529Z_fineweb_30s
+    completed_steps=79, train_elapsed_s=30.189, val_loss=6.427493.
+  scale=3.0:
+    target/runs/20260717_064900Z_fineweb_30s
+    completed_steps=78, train_elapsed_s=30.277, val_loss=6.423496.
+  scale=3.25:
+    target/runs/20260717_064705Z_fineweb_30s
+    completed_steps=79, train_elapsed_s=30.186, val_loss=6.411078.
+  scale=3.5:
+    target/runs/20260717_064819Z_fineweb_30s
+    completed_steps=78, train_elapsed_s=30.233, val_loss=6.422519.
+  scale=4.0:
+    target/runs/20260717_064742Z_fineweb_30s
+    completed_steps=78, train_elapsed_s=30.072, val_loss=6.422553.
+gate:
+  target/runs/20260717_064939Z_fineweb_450s
+  scale=3.25, completed_steps=1145, train_elapsed_s=450.121,
+  val_loss=5.048352.
+analysis:
+  Matched raw-loss samples favor 3.25 through roughly step 400, cross around
+  steps 450-550, and then degrade steadily; at step 1100 its training loss is
+  0.101517 above the 2.5 control.
+decision:
+  Reject. The 450-second held-out endpoint is 0.051763 (+1.04%) worse than the
+  active 4.996589 baseline. Keep TRAIN_LR_SCALE=2.5.
+```
+
+```text
+date: 2026-07-17
+commit: accepted local jj commit after full gate
 experiment: Retune the intact model's NextLat auxiliary coefficient.
 status: accepted_450s
 change:
