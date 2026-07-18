@@ -5,17 +5,23 @@ They are not historical notes.
 
 ## Primary Objective
 
-Optimize for the lowest held-out validation loss after the fixed 450-second
-single-GPU candidate gate:
+Optimize for the lowest held-out validation loss after the final fixed
+450-second single-GPU promotion gate. This is not a requirement to run every
+working structural candidate for 450 seconds:
 
 - For research-scale optimizer, architecture, objective, or numerical changes,
-  the 30-second run has two distinct uses: verify launchability,
+  the 30-second run has two screening uses: verify launchability,
   finite/nonzero metrics, real updates, zero unexpected skips, and absence of
   immediate divergence; then compare loss at matched optimizer-step indices
   against the control. The fixed-time endpoint alone is not comparable when
   step throughput differs, but a clearly worse matched-step curve is valid
   screening evidence to stop the candidate before expensive profiling or a
   450-second run.
+- Merely being a structural or architecture candidate never triggers a
+  450-second run. A meaningful loss improvement at identical optimizer steps,
+  such as candidate step 30 against control step 30 or candidate step 50
+  against control step 50, is the prerequisite for due-diligence profiling and
+  implementation optimization.
 - A schedule parameter that is mathematically dormant for the entire
   30-second window must instead use a matched fixed-step diagnostic after the
   parameter activates. For the current 83-step warmup, use 200 completed
@@ -36,11 +42,12 @@ For a research-scale optimizer, architecture, objective, numerical, or
 nonlinearity-layout method, do not treat the first working implementation as
 the final performance of the method:
 
-- The 30-second run is a correctness and health check only. It verifies that
-  the implementation launches, updates the intended intact model, remains
-  finite, and does not immediately diverge. Its fixed-time endpoint is not an
-  acceptance result, but its samples must be compared at identical optimizer
-  steps (for example, candidate step 50 against control step 50).
+- The 30-second run is a correctness/health check and matched-step quality
+  screen only. It verifies that the implementation launches, updates the
+  intended intact model, remains finite, and does not immediately diverge. Its
+  fixed-time endpoint is not an acceptance result; compare its samples at
+  identical optimizer steps (for example, candidate step 50 against control
+  step 50).
 - A structural candidate earns profiling and implementation optimization when
   it shows a real matched-step loss improvement. If different throughput or
   logging cadence makes the 30-second samples insufficient, run the smallest
@@ -56,10 +63,11 @@ the final performance of the method:
   fails to show a credible improvement. Kernel optimization can recover
   throughput; it cannot turn a same-step loss regression into an algorithmic
   quality win.
-- A short matched-step win never promotes a change. After the implementation is
-  optimized, it must pass a fresh 30-second health and matched-step screen and
-  then the normal 450-second fixed-wall-clock held-out gate before it may be
-  committed in JJ.
+- A short matched-step win earns optimization work; it does not yet promote the
+  change. After due-diligence optimization, the implementation must repeat the
+  matched-step win in a fresh health screen. Only that optimized survivor
+  consumes the normal 450-second fixed-wall-clock held-out gate before it may
+  be committed in JJ.
 
 This rule prevents an unoptimized implementation from being mistaken for an
 algorithmic failure, avoids spending 450 seconds on candidates with no
