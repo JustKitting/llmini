@@ -49,6 +49,95 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-18
 commit: rejected source reverted; note only
+experiment: AngularMuown row geometry combined with the accepted NorMuon conditioner.
+status: rejected_450s
+sources:
+  https://arxiv.org/abs/2606.23637
+  https://github.com/fhueb/angular-muown
+  https://raw.githubusercontent.com/fhueb/angular-muown/main/angular_muown.py
+rationale:
+  Test a recent loss-first optimizer result after the backward-layout audit
+  exhausted cheap scalar-nonlinearity changes. AngularMuown reports lower
+  language-model validation loss than tuned Muown, NorMuon, and AdamW by
+  separating each hidden matrix into learned output-row magnitudes and unit-row
+  directions, then scheduling the meaningful angular step explicitly. Retain
+  the accepted NorMuon direction conditioner as a deliberate combination; this
+  experiment is therefore not labeled plain AngularMuown.
+implementation:
+  Interpret each physical hidden weight as W=diag(g)U with one g per output
+  neuron. Fuse each output row's norm, radial dot product, Riemannian tangent
+  projection, beta=0.95 direction momentum, and Nesterov lookahead into one
+  CUDA block without materializing U or grad_U. Run five Polar Express
+  iterations and the accepted NorMuon conditioner on every step, then retract
+  every updated direction to unit row norm and recompose W.
+  Update g with Adam betas=(0.9,0.95), epsilon=1e-8, and no matrix weight
+  decay. The active TRAIN_LR_SCALE=2.5 makes the base radial and angular
+  learning rate 0.04 after the existing 83-step warmup. Use the paper's
+  sqrt(max(1, output/input)) shape scale and inverse-polynomial angular-only
+  multiplier 1/(1+0.001*(step-warmup)).
+  Apply the decomposition to the AMUSE z fast sequence, preserve the existing
+  x averaging exactly, and scale g plus its moments consistently with Q/K
+  clipping. Keep NorMuon variance state separate. Five short output-row state
+  vectors reuse the schedule-amax allocation, adding only a few megabytes and
+  no weight/gradient ABI field.
+model_integrity:
+  FineWeb/Llama-2, B4/S2048, 8192 tokens/step, d2048, 32 heads, all 16 blocks,
+  all twelve KDA paths, all four full-attention paths, every MLP, NextLat,
+  parameter tensor, gradient family, and optimizer slot remain active.
+correctness:
+  cargo fmt --all, TMPDIR=$PWD/target/tmp cargo check --workspace, and git
+  diff --check: pass.
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+  Two release-mode rebuilt-GPU tests pass. The preparation kernel matches a CPU
+  physical-output-row reference for g, grad_g, tangent momentum, Nesterov
+  direction, and wide-matrix transpose layout. The finish kernel restores every
+  physical output row to its learned magnitude after the AngularMuown+NorMuon
+  direction step and matches x/schedule-amax invariants.
+health:
+  target/runs/20260718_074734Z_fineweb_30s
+  completed_steps=82, train_elapsed_s=30.239,
+  val_loss=6.142541885375977.
+  Both high-fidelity samples are finite and nonzero. Gradient norm moves from
+  3.733595 to 1.496771, with every non-finite, loss-spike, gradient-spike, and
+  update-skip counter zero. This was health evidence only.
+gate:
+  target/runs/20260718_074835Z_fineweb_450s
+  completed_steps=1193, train_elapsed_s=450.085,
+  val_loss=4.979366302490234.
+  All 24 high-fidelity samples are finite and nonzero and every skip/failure
+  counter remains zero. Gradient norm ranges from 1.218393 to 9.370972 and
+  ends at the maximum, showing that the aggressive direction schedule remains
+  finite but is still growing at the endpoint.
+measured_effect:
+  Against the accepted SignMuon/NorMuon baseline at 1451 steps / 450.193s /
+  4.7384748458862305, this candidate completes 258 fewer steps (-17.780841%).
+  Mean wall time rises from 310.263956 to 377.271584ms/step, adding
+  67.007628ms (+21.596979%). Sampled Muon time rises from 67.848108 to
+  127.049344ms because Polar/NorMuon now runs every step instead of alternating
+  with the cheap sign update.
+  Held-out loss worsens by 0.240891457 (+5.083734%), far outside seed noise.
+decision:
+  Reject and fully revert the AngularMuown+NorMuon source. The exact row
+  geometry is numerically functional, but its full per-step Polar cost removes
+  too much fixed-time exposure and the recommended 0.04 schedule also shows a
+  rising late gradient norm. The candidate loses decisively on the active
+  fixed-time held-out objective. Do not retry this exact full-Polar 0.04
+  combination unchanged; any future row-geometry experiment must preserve the
+  cheap-step cadence or first justify a lower angular learning rate as a new
+  loss hypothesis.
+revert:
+  Restored every candidate source and test file to the accepted parent, then
+  reran cargo fmt --all, TMPDIR=$PWD/target/tmp cargo check --workspace, git
+  diff --check, and TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a:
+  pass. A rebuilt-binary launch diagnostic at
+  target/runs/20260718_075922Z_fineweb_2s completes seven finite, non-skipped
+  steps and shows the accepted alternating Muon LR/timing cadence
+  (step 1: 0.000104819 / 108.905ms; step 2: 0.000002741 / 0.167ms).
+```
+
+```text
+date: 2026-07-18
+commit: rejected source reverted; note only
 experiment: Half-active content-derived ReLU2 block layout.
 status: rejected_450s
 sources:
