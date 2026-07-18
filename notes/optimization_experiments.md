@@ -28546,3 +28546,64 @@ decision:
   structural-screening rule. Restore the source and rebuild the accepted
   FP16-attention baseline artifact.
 ```
+
+```text
+date: 2026-07-18
+commit: rejected source reverted; note only
+experiment: Isolated parameter-matched SwiGLU MLP.
+status: rejected_matched_step_screen
+source:
+  https://arxiv.org/abs/2002.05202
+  https://arxiv.org/abs/2302.13971
+rationale:
+  Isolate the gated nonlinearity and hardware-aligned MLP shape from the
+  previously rejected all-at-once normalized-residual package. This tests
+  whether a LLaMA-style SwiGLU MLP improves loss per optimizer step on the
+  otherwise intact local model.
+implementation:
+  Replaced each 8192-wide ReLU-squared MLP with a parameter-matched
+  5504-wide SwiGLU MLP. The up projection emitted 11008 interleaved value/gate
+  channels and a fused epilogue compacted u*SiLU(z) to 5504 channels; the
+  fused backward epilogue emitted the exact interleaved value/gate gradients.
+  The 5504 width is 43 128-column tiles, nearest to the parameter-neutral
+  8*d/3 width without padded GEMM tails. Physical route expansion kept each
+  logical sparse feature tile's value and gate pair together. This changes
+  MLP weights from 33,554,432 to 33,816,576 per layer, only +0.78125%.
+  All 16 layers, four full-attention layers, twelve KDA layers, value
+  residuals, NextLat, normalization layers, optimizer, schedule, dataset,
+  tokenizer, B4/S2048/d2048/h32 shape, and backward block sampling remained
+  active and unchanged.
+correctness:
+  cargo fmt --all: pass.
+  TMPDIR=$PWD/target/tmp cargo check --workspace: pass.
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+  TMPDIR=$PWD/target/tmp CUDA_DEVICE_INDEX=0 cargo test
+    -p rust-kernels-cuda --test projection_tma tma_swiglu
+    -- --ignored --nocapture --test-threads=1:
+    2 passed, covering fused forward and analytical fused backward.
+  TMPDIR=$PWD/target/tmp CUDA_DEVICE_INDEX=0 cargo test
+    -p rust-kernels-cuda --test projection_tma route
+    -- --ignored --nocapture --test-threads=1:
+    3 passed, covering dynamic block-Top-K and paired expanded routing.
+  TMPDIR=$PWD/target/tmp CUDA_DEVICE_INDEX=0 cargo test
+    -p gpt2-nvfp4 --test block_attention_backward
+    -- --ignored --nocapture --test-threads=1:
+    1 passed.
+  The broad l3_mlp, l2_attention, and forward test targets remain stale
+  against unrelated pre-existing TMA host-API changes and fail to compile
+  before exercising this candidate; they are not claimed as passing.
+health_and_matched_step_screen:
+  target/runs/20260718_140216Z_fineweb_30s completed 95 steps in 30.276s
+  with held-out val_loss=6.264009. Every logged update was finite/nonzero and
+  all skip metrics were zero.
+  Against target/runs/20260718_044552Z_fineweb_30s at the identical logged
+  optimizer step:
+    step 50: 6.7648301 versus 6.6291599, 2.046567% worse.
+  The candidate's unequal-step held-out endpoint and 95-versus-100 step
+  throughput were not used as the quality decision.
+decision:
+  Reject without profiling, implementation optimization, a fixed-200-step
+  diagnostic, or a 450-second gate. The clear 2.05% same-step regression
+  fails the sole prerequisite for optimizing a structural candidate. This is
+  not a rejection based on the first implementation's speed.
+```
