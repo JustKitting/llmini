@@ -53,6 +53,78 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 
 ```text
 date: 2026-07-18
+commit: rejected source reverted; note only
+experiment: Exact Newton-Muon activation right-preconditioner.
+status: rejected_matched_step_screen
+sources:
+  https://arxiv.org/abs/2604.01472
+  https://github.com/zhehangdu/Newton-Muon
+rationale:
+  Newton-Muon reports reaching the Modded-NanoGPT Record #4 target loss in
+  6% fewer optimizer steps by right-preconditioning each matrix gradient with
+  the inverse second moment of that matrix's input activations before ordinary
+  Muon momentum and polar orthogonalization. The method was not present in the
+  prior experiment ledger and directly targets loss per optimizer step.
+implementation:
+  Preserved the active B4/S2048/L16/d2048/h32 approximately 1B model and every
+  attention/KDA, MLP, value-residual, NextLat, normalization, objective,
+  schedule-free AMUSE, and Hyperball/NorMuon path. For all 16 transformer
+  blocks, copied the official short-run Newton-Muon-2 layout and constants:
+  refresh interval 16, covariance EWMA 0.80, initial diagonal 1e-3, and
+  trace-mean ridge multiplier 0.2. QKV, attention output, and MLP expansion
+  each used one full 2048x2048 covariance. MLP contraction used four
+  independent contiguous 2048x2048 covariance blocks. NextLat retained its
+  existing Muon update because the paper and official implementation define no
+  activation-covariance mapping for it.
+  Covariances were formed from the saved rowwise-NVFP4 tapes, which are exact
+  copies of the quantized activations consumed by the forward GEMMs. The
+  implementation used FP32 cuBLAS second moments, FP32 EWMA state, FP32
+  cuSOLVER Cholesky factorization/solve, and pedantic-FP32 cuBLAS
+  preconditioning before momentum on both polar and sign-update steps. The
+  inverse remained identity until the first refresh at step 16.
+correctness:
+  cargo check --workspace: pass.
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+  training::optimizer_newton_muon::tests::
+    fp32_cholesky_inverse_and_left_precondition_match_reference:
+    1 passed.
+  muon_tma_split_prepare_matches_cooperative_reference, including nonzero
+    gradient-override cases in both matrix orientations:
+    1 passed.
+  muon_tma_sign_update_matches_single_ema_reference with a nonzero
+    gradient override:
+    1 passed.
+  target/runs/20260718_214034Z_fineweb_8s crossed the first covariance refresh
+  and completed 21 steps in 8.115s with finite/nonzero updates and zero skips.
+  The earlier target/runs/20260718_213749Z_fineweb_8s diagnostic exposed
+  reduced-precision cuBLAS identity preconditioning before step 16; forcing
+  CUBLAS_PEDANTIC_MATH corrected the immediate step-2 drift before the
+  matched-step screen.
+memory:
+  With TRAIN_REPORT_MEMORY=1, the Newton-Muon diagnostic used
+  47,830,990,848 device bytes versus 43,754,127,360 for the disabled control,
+  an additional 4,076,863,488 bytes (3.797 GiB). The active candidate still
+  left 54,142,500,864 bytes free.
+health_and_matched_step_screen:
+  target/runs/20260718_214152Z_fineweb_30s completed 76 steps in 30.108s with
+  held-out val_loss=6.1268201. Both high-fidelity samples were finite/nonzero
+  and every skip metric was zero.
+  Fresh same-binary control target/runs/20260718_214230Z_fineweb_30s completed
+  91 steps in 30.091s with held-out val_loss=6.0179429.
+  At the identical logged optimizer step:
+    step 50: 6.5499363 versus 6.5397067, 0.156423% worse.
+  The unequal-step held-out endpoints and 76-versus-91 completed steps were
+  not used as the algorithmic-quality decision.
+decision:
+  Reject without profiling, implementation optimization, a fixed-step
+  extension, or a 450-second gate. The fresh common-step sample is worse and
+  supplies no loss-per-step improvement, so it fails the sole admission
+  criterion for an optimization pass. Restore the accepted optimizer source
+  and exact sm_120a artifact; retain only this result.
+```
+
+```text
+date: 2026-07-18
 commit: rejected working-copy experiment; source fully reverted
 experiment: parameter-class Adam second-moment horizons for auxiliary tensors
 status: rejected_matched_step; no_profile; no_450s
