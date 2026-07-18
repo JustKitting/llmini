@@ -29912,3 +29912,73 @@ decision:
   loss-per-step improvement. Restore and exactly rebuild the accepted
   ReLU-squared baseline; retain only this result.
 ```
+
+```text
+date: 2026-07-19
+commit: rejected source reverted; note only
+experiment: Paper-faithful cosine Tapered Language Model MLP widths.
+status: rejected_matched_step_screen; no_profile; no_450s
+sources:
+  https://arxiv.org/abs/2606.23670
+rationale:
+  Test the paper's strongest default static allocation: move MLP capacity from
+  later layers into earlier layers with a cosine 1.5x-to-0.5x width schedule
+  while preserving the exact aggregate parameter and dense-compute budget.
+  The primary paper and its TeX source specify that optimizer state, learning
+  rate, and every other training hyperparameter remain constant between paired
+  runs; they do not specify width-dependent initialization.
+implementation:
+  Kept the intact FineWeb/Llama-2 B4/S2048/L16/d2048/h32 model, all four
+  full-attention and twelve KDA blocks, value residuals, NextLat, block Top-K,
+  normalization, optimizer, and schedule. The sixteen MLP widths were
+  12288, 12160, 11904, 11520, 10880, 10240, 9472, 8576, 7808, 6912, 6144,
+  5504, 4864, 4480, 4224, and 4096. Every symmetric pair sums to 16384, so
+  the total width is exactly 131072, identical to sixteen uniform 8192-wide
+  MLPs.
+  Host/device weights, gradients, optimizer states, checkpoint validation, and
+  runtime GEMM dimensions used each layer's actual width rather than padded
+  uniform matrices. Shared scratch used the largest width. The existing
+  feature-tile Top-K route was extended from 64 to 96 feature tiles and from
+  one to two u64 token-mask words so the wider early layers retained the same
+  routing algorithm instead of silently disabling or truncating it.
+  Separate deterministic MLP RNG streams preserved baseline initialization
+  semantics while advancing every non-MLP tensor along the original RNG
+  stream.
+correctness:
+  cargo fmt --all: pass.
+  cargo check --workspace --lib --bins: pass.
+  cargo check -p rust-kernels-cuda --tests: pass.
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+  CUDA_DEVICE_INDEX=0 cargo test -p rust-kernels-cuda --test projection_tma
+    mlp_block_topk_route_selects_and_transposes_exact_tiles
+    -- --ignored --nocapture --test-threads=1:
+    1 passed, covering the 96-feature/two-word route against a CPU reference.
+  CUDA_DEVICE_INDEX=0 cargo test -p rust-kernels-cuda --test projection_tma
+    tma_feature_routes_use_transposed_popcount_and_zero_empty_tiles
+    -- --ignored --nocapture --test-threads=1:
+    1 passed.
+  The broader gpt2-nvfp4 test target remains blocked by unrelated pre-existing
+  stale attention/MLP test initializers.
+  target/runs/20260718_235750Z_fineweb_30s was a one-step diagnostic that
+  exposed the old 64-feature route assertion; it was not screening evidence.
+  After extending the route, target/runs/20260719_000307Z_fineweb_30s was a
+  one-step launch diagnostic only. It completed the intact graph with finite
+  train_loss=10.736456, grad_norm=3.412893, held-out val_loss=9.886602, and
+  zero unexpected skips.
+matched_step_screen:
+  target/runs/20260719_000329Z_fineweb_30s completed 88 steps and produced
+  held-out val_loss=6.349509. Its high-fidelity samples were finite/nonzero
+  with zero unexpected skips.
+  Against active control target/runs/20260718_200249Z_fineweb_30s at the
+  identical logged optimizer step:
+    step 0:  10.7364559 versus 10.7418480, 0.050197% better.
+    step 50:  6.7602458 versus  6.5319114, 3.495676% worse.
+  The unequal-step held-out endpoints and first implementation's throughput
+  were not used as the quality decision.
+decision:
+  Reject without profiling, implementation optimization, a fixed-step
+  extension, or a 450-second gate. The clear 3.50% same-step loss regression
+  fails the sole prerequisite for optimizing a structural candidate. Restore
+  and exactly rebuild the accepted uniform-width baseline; retain only this
+  result.
+```
