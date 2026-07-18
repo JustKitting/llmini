@@ -49,6 +49,77 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-18
 commit: rejected uncommitted source candidate; code reverted and baseline rebuilt
+experiment: Hardware-aligned deterministic two-expert MLP routing.
+status: rejected_450s
+sources:
+  https://medium.com/@larry36d/partial-model-freezing-and-optimizing-for-the-backwards-pass-df5b0713f219
+  https://arxiv.org/abs/2506.12119
+  https://arxiv.org/abs/2106.04426
+rationale:
+  Test the article's general backward-layout principle at a dominant nonlinear
+  boundary without freezing a layer or deleting a model section. The candidate
+  aligned the ReLU2 support with whole 128-row NVFP4 TMA tiles so inactive
+  work could be removed from the expensive backward matrix products rather
+  than computed densely and masked afterward. Equal-resource MoE results and
+  Hash Layers motivated conditional MLP capacity, but the fixed position-block
+  router below is a local hardware-oriented inference, not an implementation
+  claimed by either paper or by the article.
+implementation:
+  Kept the existing 8192-neuron MLP parameters and split them into two
+  contiguous 4096-neuron experts. Block 0 remained dense. In blocks 1-15,
+  each 128-token tile selected expert `(token_tile + block_index) & 1`.
+  Forward up projection skipped the inactive expert-N CTAs and forward down
+  projection reduced over only the selected expert-K half. Exact backward used
+  matching routes for down dX, down dW, up dX, and up dW; inactive activation,
+  f16 tape, gradient, and output-amax tiles were explicitly zeroed. Both
+  experts and every original weight received real gradients every step, and
+  all 16 attention/KDA/MLP blocks plus NextLat remained active. Routed blocks'
+  down-projection initialization was multiplied by sqrt(2) to compensate for
+  the halved active fan-in. There was no learned router, shared expert, load
+  loss, or parameter-count reduction. The static MLP-GEMM FLOP reduction was
+  46.875% across the 16 blocks.
+correctness:
+  cargo fmt --all and TMPDIR=/dev/shm/rust-kernels-tmp cargo check --workspace:
+  pass.
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+  Rebuilt-PTX GPU tests covered forward activation/tape masking, fused ReLU2
+  backward and amax zeroing, token-M/expert-K selection, expert-M/token-K
+  selection, and expert-N/token-K selection: 2 passed.
+  Compile-time and launch-time guards required equal forward/backward token
+  tile sizes and two-tile-aligned expert boundaries.
+health:
+  target/runs/20260718_020312Z_fineweb_30s
+  completed_steps=100, train_elapsed_s=30.203,
+  val_loss=6.135505199432373.
+  Gradient norm was 2.998374 -> 1.916504. Finite/nonzero remained one and every
+  non-finite, loss-spike, gradient-spike, and update-skip counter remained zero.
+  The accepted baseline health run is 97 steps / 30.323s / 6.128153; this
+  passed the health-only screen.
+gate:
+  target/runs/20260718_020444Z_fineweb_450s
+  completed_steps=1452, train_elapsed_s=450.091,
+  val_loss=4.865566253662109.
+  Gradient norm ended at 2.780856. Every high-fidelity sample was finite and
+  nonzero, and every skip/failure counter remained zero.
+measured_effect:
+  Against the accepted native-window baseline at 1400 steps / 450.020s /
+  4.827326774597168, the routed MLP completed 52 more steps (+3.714286%) but
+  regressed held-out loss by 0.038239479 (+0.792146%). Mean step time improved
+  from 321.442857ms to 309.980028ms, saving 11.462830ms (-3.566055%). The
+  conditional layout therefore removed substantial real backward work, but
+  halving active MLP width per token cost more quality than the added
+  fixed-time exposure recovered.
+decision:
+  Reject the candidate and commit no routed-MLP source. This result rejects
+  the tested half-width, no-shared-expert, deterministic position-block layout;
+  it does not reject content routing or shared-dense-plus-expert layouts.
+  Candidate source was fully reverted, and the exact accepted sm_120a
+  PTX/release baseline was rebuilt successfully.
+```
+
+```text
+date: 2026-07-18
+commit: rejected uncommitted source candidate; code reverted and baseline rebuilt
 experiment: Learned cubic PolyReLU in the existing two-projection MLP.
 status: rejected_450s
 sources:
