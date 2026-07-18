@@ -53,6 +53,71 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 
 ```text
 date: 2026-07-18
+commit: rejected before commit
+experiment: Elementwise sigmoid gate after SDPA and before the output projection.
+status: rejected_matched_step
+sources:
+  https://arxiv.org/abs/2505.06708
+  https://github.com/qiuzh20/gated_attention
+rationale:
+  Gated Attention reports its strongest placement as an elementwise
+  multiplicative sigmoid gate on the raw SDPA output before the output
+  projection. Four full-attention blocks had 2048 inactive rows inside their
+  already allocated 8320-row QKV storage, so the paper's extra d2048 gate
+  projection could be activated without shrinking an existing branch or
+  increasing allocated parameter memory. This would raise effective trainable
+  parameters from 964376960 to 981154176 while retaining B4/S2048/L16/d2048/h32,
+  every KDA/full-attention/MLP/value-residual/NextLat path, data, tokenizer,
+  objective, and optimizer.
+implementation:
+  Set the active full-attention projection to 4*d and use its fourth contiguous
+  section as the gate logits. Forward saved the raw SDPA output, multiplied it
+  by sigmoid(g) before c_proj, and saved the gate logits in the existing FP16
+  QKV tape. Backward used d_raw=d_output*sigmoid(g) for the attention core and
+  d_g=d_output*raw_output*sigmoid(g)*(1-sigmoid(g)) for the fourth projection
+  section. The three-section legacy full-attention kernel path remained
+  unchanged.
+verification:
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a
+    passed and regenerated rust_kernels_cuda.ptx plus the release binary.
+  CUDA_DEVICE_INDEX=0 cargo test -p rust-kernels-cuda --release
+    --test causal_attention_backward_tc
+    materialized_tc_backward_matches_reference -- --ignored --nocapture
+    passed for the unchanged three-section path.
+  CUDA_DEVICE_INDEX=0 cargo test -p rust-kernels-cuda --release
+    --test causal_attention_backward_tc
+    gated_tc_backward_matches_chain_rule_reference -- --ignored --nocapture
+    passed for both d_raw and d_gate with the real FP16 tape rounding.
+health_screen:
+  target/runs/20260718_161908Z_fineweb_30s completed 97 steps in 30.317s
+  with held-out val_loss=6.027902. Finite and Nonzero remained one; all skip
+  counters remained zero. At the common step-50 sample, training loss was
+  6.595452785491943 versus 6.583034992218018 in the active 450-second control,
+  a 0.188630% regression. One post-initialization common sample was not enough
+  to resolve a structural candidate, so it received the smallest fixed-step
+  diagnostic rather than a 450-second run.
+matched_200_step_diagnostic:
+  Candidate target/runs/20260718_162014Z_fineweb_120s completed exactly
+  200 steps in 63.116s with held-out val_loss=5.636641.
+  Control target/runs/20260718_154636Z_fineweb_120s completed exactly
+  200 steps in 63.161s with held-out val_loss=5.645723819732666.
+  The candidate endpoint is 0.160881% lower, but its sampled training loss is
+  worse at steps 50, 150, and 199 and better only at step 100:
+    step 50:  6.595274448394775 versus 6.5804595947265625
+    step 100: 6.4629597663879395 versus 6.475680351257324
+    step 150: 5.87022066116333 versus 5.8598456382751465
+    step 199: 6.546164512634277 versus 6.526413917541504
+  Finite and Nonzero remained one and all skip counters remained zero at all
+  five samples.
+decision:
+  Reject without profiling or a 450-second gate. The 0.160881% held-out
+  movement is not supported by the matched training curve and is not a
+  credible same-step quality improvement. Restore the accepted three-section
+  full-attention baseline before investigating the next research candidate.
+```
+
+```text
+date: 2026-07-18
 commit: accepted local jj commit after matched-step bracket and 450-second gate
 experiment: Retune Muon's matrix learning rate after restoring full-width execution.
 status: accepted_450s
