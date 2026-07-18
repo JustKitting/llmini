@@ -54,6 +54,68 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-18
 commit: rejected source reverted; note only
+experiment: Independent Q/K/V polar geometry for fused full-attention weights.
+status: rejected_matched_step_screen; no_profile; no_450s
+source:
+  https://verenalabs.com/posts/evaluating_muon__moe_in_llms/
+rationale:
+  Verena Labs reported that applying Muon's orthogonalization independently to
+  Q, K, and V improved validation loss over treating a fused QKV projection as
+  one matrix, while splitting fused MLP projections did not help. Test that
+  optimizer geometry without changing the local fused parameter storage or any
+  forward/backward GEMM.
+implementation:
+  Kept each full-attention QKV weight fused in its existing 2048x6144 row-major
+  allocation. On polar-update steps only, gathered the three 2048x2048 Q/K/V
+  momentum segments independently, normalized and ran the existing five polar
+  iterations on each square, applied the existing magnitude bound, and
+  scattered the three directions into one fused update. The ordinary combined
+  NorMuon, Hyperball, AMUSE, schedule-free update, sign-update steps, and all
+  KDA fused QKV matrices were unchanged.
+model_integrity:
+  FineWeb/Llama-2, B4/S2048/L16/d2048/h32, all four full-attention and twelve
+  KDA blocks, ReLU-squared MLPs, value residuals, NextLat, LayerNorm, block
+  Top-K, and every existing loss target remained active.
+correctness:
+  cargo fmt --all -- --check: pass.
+  cargo check --workspace --lib --bins: pass.
+  cargo check -p rust-kernels-cuda --test optimizer: pass.
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+  The rebuilt-PTX
+    muon_tma_segment_prepare_scatter_matches_strided_reference
+  GPU test passed. It checked untouched columns, exact strided Nesterov
+  momentum, per-segment normalization, scatter offsets, and bound scaling.
+screen:
+  The healthy 30-second candidate
+  target/runs/20260718_221503Z_fineweb_30s completed 92 steps in 30.185s.
+  Its step-50 training loss was 6.5734043 versus 6.5319114 for the active
+  control, 0.635240% worse, while its same-92-step held-out endpoint was
+  6.014268 versus 6.020638, 0.105799% better. Because those signals disagreed,
+  the candidate received the smallest fixed-step discriminator rather than a
+  profile or 450-second gate.
+matched_step_discriminator:
+  Exact-200 candidate target/runs/20260718_221613Z_fineweb_120s completed 200
+  steps in 65.936s with held-out val_loss=5.6099315. Exact-200 control
+  target/runs/20260718_194550Z_fineweb_120s completed 200 steps in 65.968s
+  with held-out val_loss=5.5910559, making the candidate 0.337603% worse.
+  Candidate versus control training-loss deltas at common logged steps were:
+    step 50: 6.5832901 versus 6.5534897, +0.454726%.
+    step 100: 6.4435549 versus 6.4395809, +0.061711%.
+    step 150: 5.8083367 versus 5.8112059, -0.049372%.
+    final sample: 6.4550233 versus 6.4616308, -0.102258%.
+  Every sample had Finite=1 and Nonzero=1; all update/skip counters were zero.
+decision:
+  Reject without profiling, implementation optimization, or a 450-second run.
+  The exact fixed-step curve moves from slightly worse to noise around parity
+  and the matched held-out endpoint is worse, so there is no credible
+  loss-per-step improvement admitting this candidate to an optimization pass.
+  Restore the accepted source and exact sm_120a artifact; retain only this
+  rejection record.
+```
+
+```text
+date: 2026-07-18
+commit: rejected source reverted; note only
 experiment: Zeta coordinate-whitened matrix direction inside Hyperball/NorMuon.
 status: rejected_matched_step_screen; no_profile; no_450s
 sources:
