@@ -24,6 +24,45 @@ single-GPU candidate gate:
 - The 450-second duration is an iteration gate, not the final training budget
   or a redefinition of the longer-run loss target.
 
+### Structural-Method Characterization and Optimization
+
+For a research-scale optimizer, architecture, objective, numerical, or
+nonlinearity-layout method, do not treat the first working implementation as
+the final performance of the method:
+
+- The 30-second run is a correctness and health check only. It verifies that
+  the implementation launches, updates the intended intact model, remains
+  finite, and does not immediately diverge. Its fixed-time loss is not
+  acceptance or rejection evidence for a structural method.
+- The first sustained 450-second run of an unoptimized structural
+  implementation is a characterization run. Record same-step convergence,
+  fixed-wall-clock convergence, operation and kernel timings, memory use, and
+  stability separately. Do not reject the method merely because recoverable
+  implementation overhead causes fewer completed steps or a worse fixed-time
+  endpoint.
+- When same-step held-out or training quality improves, or remains competitive
+  enough to preserve a credible quality signal, identify whether the measured
+  slowdown is inherent to the method or is caused by recoverable implementation
+  overhead such as extra launches, materialized intermediates, redundant
+  quantization, unfused pointwise work, poor layout, or avoidable memory
+  traffic.
+- If the quality signal is credible and the slowdown is plausibly recoverable,
+  perform at least one justified profiling and optimization pass before making
+  a keep/reject decision. This applies even when the unoptimized
+  characterization run loses the fixed-time gate.
+- Reject before optimization only when the algorithmic signal itself is
+  clearly bad or the added cost is mathematically inherent and too large to
+  recover. After an optimization pass, rejection is appropriate when the
+  remaining overhead is measured to be inherent or the optimized method still
+  lacks a credible quality benefit.
+- A characterization run never promotes a change. The optimized implementation
+  must still pass a fresh 30-second health check and the normal 450-second
+  fixed-wall-clock held-out gate before it may be committed in JJ.
+
+This rule prevents an unoptimized implementation from being mistaken for an
+algorithmic failure without weakening the final fixed-time acceptance
+criterion.
+
 Use this validation line as the comparable endpoint:
 
 ```text

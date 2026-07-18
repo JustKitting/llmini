@@ -48,6 +48,121 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 
 ```text
 date: 2026-07-18
+commit: rejected source reverted; rule and note only
+experiment: Hardware-aligned Spark FFN split-predictor/value routing with optimized TMA epilogues.
+status: rejected_optimized_450s
+source:
+  https://arxiv.org/html/2506.06644
+rationale:
+  Test the backward-first layout principle with a structural MLP whose
+  content-derived nonlinear route can skip complete value/down-projection
+  forward and backward tiles. Spark FFN reuses one dense up-projection by
+  splitting its input into predictor and value halves, applying GELU to the
+  predictor, and multiplying it by the value. This keeps the declared MLP
+  output width and all parameter tensors trainable while creating a structured
+  Jacobian that can avoid expensive backward work.
+adaptation:
+  Preserve block 0 as the accepted dense ReLU2 path. In blocks 1-15, split each
+  existing [8192,2048] up-projection at input column 1024. Use the first half
+  for the predictor and the second half for the value, then compute
+    activation = GELU(predictor) * value.
+  Rank one score per 128x128 token/feature tile and retain 48 of 64 feature
+  tiles per token tile. The same transposed mask skips inactive value, down,
+  and up-backward TMA tiles. Predictor and value gradients are exact for the
+  selected route, and the two error branches update their corresponding input
+  halves of the original up matrix.
+  This is a hardware adaptation, not the paper's exact method: the paper uses
+  statistical differentiable soft Top-K at approximately 8% active neurons,
+  while this candidate uses coarse hard 128x128 routes at 75% support.
+model_integrity:
+  The 16-layer, d2048, 32-head approximately 1B model, B4/S2048 geometry,
+  FineWeb/Llama-2 task, attention/KDA paths, NextLat objective, every MLP
+  projection, and every parameter tensor remain active and trainable. A
+  TRAIN_TRACE=1 diagnostic showed all 195 parameter tensors updated; block 15
+  mlp_up had 15466496 nonzero finite gradient entries out of 16777216.
+unoptimized_characterization:
+  The health-only run target/runs/20260718_095458Z_fineweb_30s completed
+  89 steps in 30.061s with val_loss=6.226640.
+  The first sustained characterization at
+  target/runs/20260718_095645Z_fineweb_450s completed 1301 steps in 450.168s
+  with val_loss=4.850454807281494.
+  Against the accepted control's sampled training losses at steps 100-1300,
+  mean relative loss was 0.560971% worse, RMS relative loss was 0.673434%,
+  and the candidate won 3 of 25 samples. The step-800-and-later mean was
+  0.818297% worse. This was a mildly negative but still characterization-worthy
+  same-step signal; it was not rejected from the prototype's fixed-time result.
+profile_and_optimization:
+  The unoptimized ten-step profile is
+    target/nsys/20260718_spark_unoptimized_characterization.nsys-rep.
+  It measured standalone Spark predictor scoring, gate, and backward kernels at
+  77.495ms, 124.878ms, and 96.342ms respectively over ten training steps plus
+  held-out evaluation. The extra alternate-error quantizer cost 71.051ms.
+  Fuse the routed down GEMM with the GELU-product backward and both branch-amax
+  outputs. Then fuse predictor GEMM, bias, f16 tape storage, and route scoring;
+  fuse value GEMM, f16 tape storage, and GELU multiplication. These passes
+  remove all three standalone Spark kernels from the real training path.
+  In target/nsys/20260718_spark_fused_epilogues.nsys-rep, total GPU kernel time
+  falls from 3503.225ms to 3287.887ms and launch count falls from 46560 to
+  46080. Profiled training elapsed falls from 3.405s to 3.205s, recovering
+  approximately 20ms per step from the first implementation.
+memory:
+  This is not a memory win. The uniform tape allocation adds one
+  8192x8192-u16 value tape to each of 16 blocks (2GiB), and shared forward and
+  backward scratch add one 8192x8192-u16 predictor (128MiB) plus one
+  8192x8192-f32 value gradient (256MiB). That is at least 2.375GiB of explicit
+  additional storage before the dual-error NVFP4 quantization scratch.
+correctness:
+  cargo fmt --all, cargo check --workspace, git diff --check, and
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+  The following exact ignored GPU tests pass after the rebuild:
+    tma_k_windows_partition_the_exact_dot_product
+    tma_dual_a_selects_the_error_branch_by_output_half_with_routing
+    tma_spark_backward_f16_amax_matches_standalone_epilogue
+    tma_spark_forward_epilogues_match_standalone_paths
+    spark_gate_and_backward_match_the_gelu_product_rule.
+  The forward test compares fused predictor/value f16 tapes, route score, and
+  GELU-product activation against the former standalone paths. The backward
+  test compares both fused f32 gradient branches and their amax streams.
+optimized_health:
+  target/runs/20260718_103123Z_fineweb_30s
+  completed_steps=95, train_elapsed_s=30.314, val_loss=6.179396.
+  The run is finite/nonzero and has no unexpected skip or stability event.
+optimized_gate:
+  target/runs/20260718_103213Z_fineweb_450s
+  completed_steps=1378, train_elapsed_s=450.118,
+  val_loss=4.845512.
+  Every recorded Finite and Nonzero sample is one. Update_skipped,
+  Skip_grad_norm_spike, Skip_loss_spike, and Skip_non_finite remain zero.
+measured_effect:
+  Against the accepted control at 1451 steps / 450.193s /
+  val_loss=4.7384748458862305, optimized Spark completes 73 fewer steps
+  (-5.031013%). Mean step time moves from 310.263956ms to 326.645864ms,
+  a 16.381908ms (+5.279991%) regression. Held-out loss worsens by
+  0.107037154 (+2.258895%).
+  At matched sampled training steps 100-1350, the optimized candidate is
+  0.629842% worse on average, has 0.762436% RMS relative error, and wins only
+  2 of 26 samples. From step 800 onward it is 0.911301% worse. Optimization
+  changes the prototype curve by only 0.036817% on average over their 27 common
+  samples, confirming that the implementation pass recovered throughput
+  without manufacturing the negative convergence result.
+decision:
+  Reject this exact coarse hard-routed Spark adaptation after the required
+  characterization and optimization pass. The candidate remains materially
+  slower, uses more memory, and lacks a same-step quality benefit; the final
+  fixed-time loss is outside the promotion tolerance. This does not reject the
+  paper's differentiable statistical soft-Top-K method, whose support and
+  routing granularity differ substantially.
+revert:
+  Restore all candidate source under crates/ and src/ from the accepted parent
+  while preserving the structural-method characterization rule. cargo fmt
+  --all, cargo check --workspace, and the exact sm_120a rebuild pass.
+  The rebuilt accepted-source launch diagnostic at
+  target/runs/20260718_104309Z_fineweb_900s completes one finite step and is
+  diagnostic only, not promotion evidence.
+```
+
+```text
+date: 2026-07-18
 commit: rejected source reverted; note only
 experiment: SpanNorm inter-block residual topology with FP16-safe static loss scaling.
 status: rejected_450s
