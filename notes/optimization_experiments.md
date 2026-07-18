@@ -49,6 +49,75 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-18
 commit: rejected source reverted; note only
+experiment: Half-active content-derived ReLU2 block layout.
+status: rejected_450s
+sources:
+  https://medium.com/@larry36d/partial-model-freezing-and-optimizing-for-the-backwards-pass-df5b0713f219
+  https://arxiv.org/abs/2602.06183
+rationale:
+  Continue the backward-oriented nonlinear-layout audit at the only remaining
+  boundary with a credible whole-step ceiling. The ReLU2 derivative is already
+  fused into the MLP-down data-gradient epilogue, so changing its scalar
+  arithmetic cannot materially reduce step time. The hardware-visible support
+  mask is reusable by five of the six MLP GEMMs and can remove actual tensor-
+  core work in both forward and backward. The sparsity paper reports that
+  activation-only 2:4 sparsification retained dense-baseline training loss in
+  its 1B ablation. Its full recipe uses 2:4 weights, Venom activations, and a
+  later dense phase; this local experiment tests only the directly available
+  block-aligned activation-support analogue and is not claimed to reproduce
+  that recipe.
+implementation:
+  Tighten the existing content-derived route in blocks 1-15 from the top 48 of
+  64 feature tiles to the top 32 of 64 for each 128-token tile. Block 0 remains
+  dense. The up projection still computes every one of the 8192 neurons, and
+  activation mass still selects support independently for every token tile and
+  layer. Reuse the exact dual mask in forward down, down dX output support,
+  down dW, up dX, and up dW. Every neuron and parameter remains present and can
+  be selected; no layer, attention/KDA/MLP/NextLat branch, gradient family, or
+  parameter update is frozen or removed.
+  Relative to the accepted 48/64 layout, this removes another 19.53125% of the
+  static work across the six MLP GEMMs model-wide. Relative to a fully dense
+  MLP layout, the routed five-GEMM reduction is 39.0625%.
+correctness:
+  cargo fmt --all, TMPDIR=$PWD/target/tmp cargo check --workspace, and git
+  diff --check: pass.
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+  The rebuilt-PTX full 64x64 route test recomputed the CPU top-32 masks from
+  GPU scores and matched every token mask plus its feature-wise transpose:
+  pass.
+health:
+  target/runs/20260718_070846Z_fineweb_30s
+  completed_steps=101, train_elapsed_s=30.107,
+  val_loss=6.120635986328125.
+  All three high-fidelity samples were finite and nonzero. Gradient norm moved
+  from 3.719470 to 1.832225, and every non-finite, loss-spike,
+  gradient-spike, and update-skip counter remained zero. This was health
+  evidence only.
+gate:
+  target/runs/20260718_070949Z_fineweb_450s
+  completed_steps=1474, train_elapsed_s=450.312,
+  val_loss=4.76206111907959.
+  All 30 high-fidelity samples were finite and nonzero. Gradient norm stayed
+  in [0.995915, 3.719470] and ended at 2.455580. Every non-finite,
+  loss-spike, gradient-spike, and update-skip counter remained zero.
+measured_effect:
+  Against the accepted 48/64 baseline at 1451 steps / 450.193s /
+  4.7384748458862305, the half-active route completes 23 more steps
+  (+1.585114%) and lowers mean step time from 310.263956 to 305.503392ms,
+  saving 4.760564ms (-1.534359%). Held-out loss worsens by 0.023586273
+  (+0.497761%).
+decision:
+  Reject and fully revert the 32/64 support. It is a substantial, stable
+  backward-compute win, but the active objective is lower fixed-time held-out
+  loss rather than speed within a tolerance. The additional exposure does not
+  recover the quality removed by the coarser half-active block support. Keep
+  the accepted content-derived 48/64 route and do not retry this density
+  unchanged.
+```
+
+```text
+date: 2026-07-18
+commit: rejected source reverted; note only
 experiment: Unbiased 64-token by one-head KDA backward block sampling.
 status: rejected_450s
 sources:
