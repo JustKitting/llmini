@@ -47,6 +47,83 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```
 
 ```text
+date: 2026-07-18
+commit: rejected uncommitted source candidates; code reverted and baseline rebuilt
+experiment: Reconfigure nonlinear block boundaries for cheaper backward graphs.
+status: rejected_stability_gate
+sources:
+  https://medium.com/@larry36d/partial-model-freezing-and-optimizing-for-the-backwards-pass-df5b0713f219
+  https://arxiv.org/abs/2510.14614
+  https://github.com/CASL-KU/FAL
+rationale:
+  Apply the article's actual general principle at block scale: arrange the
+  nonlinear boundary so an expensive branch does not force an avoidable
+  backward path. A clean baseline nsys audit at
+  target/nsys/20260718_fal_boundary_audit.nsys-rep measured about
+  317.937ms of GPU kernels per step. Removing fifteen later-block LN2 forward,
+  parameter-backward, and input-backward calls had an estimated bare ceiling of
+  about 2.58ms/step (0.81%), clearing the project's 0.5% experiment floor.
+  Every attention, KDA, MLP, NextLat, context, batch, and layer remained active.
+implementation:
+  First tested the official FAL graph: block 0 forms
+  LN1(x)+LN2(attention_1) for its MLP, later MLPs consume
+  LN1(x_i)+LN2(attention_1), and every attention branch remains in the residual
+  stream. Exact backward accumulated all MLP contributions into the normalized
+  first-attention signal. Because this model applies inverse-square-root
+  LayerNorm Scaling and ReLU2 rather than the paper's ordinary GPT-2
+  LayerNorm/GELU stack, the shared input was variance-preserving scaled before
+  the final health run.
+  A diagnostic found and fixed an implementation error before judgment:
+  attention had consumed an amax count whose values lived in the disjoint MLP
+  error-quantization scratch. The signature was nonzero raw bias gradients but
+  zero attention weight gradients in blocks 1-15. After making attention
+  derive its own amax, all attention weight gradients were finite and nonzero.
+  FAL still failed the health gate on its own dynamics.
+  The second candidate used the paper's simpler parallel control:
+  y=x+Attention(LN1(x))+MLP(LN1(x)). MLP activation amax received a separate
+  row buffer so MLP could execute first without destroying the normalized-input
+  amax required by attention. Exact backward merged the two LN1 branch
+  gradients and omitted LN2 while preserving both branches.
+verification:
+  cargo fmt --all, cargo check --workspace, and cargo test --workspace --lib:
+  pass during candidate bring-up.
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass after each
+  candidate revision and again after restoring the accepted baseline.
+  Diagnostic TRAIN_TRACE runs were used only to verify gradient routing:
+    target/runs/20260718_003825Z_fineweb_60s
+    corrected FAL attention weights were finite/nonzero in all 16 blocks.
+    target/runs/20260718_004421Z_fineweb_60s
+    parallel attention and MLP weights were finite/nonzero in all 16 blocks.
+fal_health:
+  target/runs/20260718_003848Z_fineweb_30s
+  completed_steps=95, train_elapsed_s=30.181, val_loss=7.588943.
+  Gradient norm grew from 219.247101 at step 0 to 99254.984375 at step 50.
+  The accepted baseline health run is 97 steps / 30.323s / 6.128153 with
+  gradient norm 3.492387 -> 1.858597. Reject FAL before a sustained gate: it
+  launches and has nonzero gradients, but is already diverging rather than
+  satisfying the 30-second numerical-health criterion.
+parallel_health:
+  target/runs/20260718_004443Z_fineweb_30s
+  completed_steps=96, train_elapsed_s=30.142, val_loss=6.138946.
+  Gradient norm was 3.235531 -> 1.664650, and all skip/non-finite counters
+  remained zero. This passed health and advanced to the sustained gate.
+parallel_gate:
+  target/runs/20260718_004549Z_fineweb_450s
+  The run became non-finite at optimizer_step_candidate=509 and was stopped
+  rather than spending the remaining gate on repeated NaNs. The last finite
+  high-fidelity sample had train loss 5.444986 and gradient norm 16.104095;
+  every following sample was NaN with Skip_non_finite=1 and Update_skipped=1.
+  No endpoint validation loss from this aborted run is valid.
+decision:
+  Reject both layouts and commit no candidate source. FAL's shared signal
+  creates an unstable cross-layer gradient funnel in this ReLU2/NVFP4 stack;
+  the simpler parallel graph passes a short screen but fails sustained
+  stability. Do not retry either graph unchanged. All candidate source was
+  reverted, jj returned to a clean child of cd6d92c4, and the exact sm_120a
+  PTX/release baseline was rebuilt successfully.
+```
+
+```text
 date: 2026-07-17
 commit: passing source candidate; committed after the required gate
 experiment: Native windowed tensor-core products around full-attention softmax.
