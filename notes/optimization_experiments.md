@@ -49,6 +49,117 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-18
 commit: rejected source reverted; note only
+experiment: Unbiased 64-token by one-head KDA backward block sampling.
+status: rejected_450s
+sources:
+  https://medium.com/@larry36d/partial-model-freezing-and-optimizing-for-the-backwards-pass-df5b0713f219
+  https://arxiv.org/abs/2602.14701
+  https://arxiv.org/abs/2505.15080
+  https://arxiv.org/abs/1806.00512
+rationale:
+  Move the backward-oriented audit from scalar nonlinear recomputation to
+  hardware-sized reverse subgraphs. The accepted KDA backward already treats
+  every incoming 64-token recurrent chunk state as a constant. Therefore each
+  batch/head/chunk local VJP is independent after dOut is formed, and can be
+  sampled as one unit without changing forward KDA, any parameter tensor, or
+  any layer. U-AVJP and SUS Backprop motivate unbiased randomized VJPs; the
+  structurally sparse LSTM paper specifically identifies recurrent gate
+  gradients and block-regular GPU work as a useful backward sparsification
+  boundary.
+implementation:
+  Generate one independent Bernoulli scale for each 64-token by one-head KDA
+  block from the existing per-layer/per-step attention seed:
+    scale = 1/q with probability q, else 0.
+  Retained blocks execute the complete local reverse graph and apply scale once
+  to final q/k/v/g/beta gradients. Dropped blocks skip the three bespoke KDA
+  tensor-core kernels and every batched F16 tensor-core product in that local
+  reverse graph, then write exact zero local QKV gradients. Dense preparation,
+  forward q/k norms used by KDA clipping, all attention-output projection
+  gradients, and the exact forward model remain unchanged.
+  The scale map reuses otherwise-unused full-attention p_half scratch, so no
+  persistent allocation is added. Two probabilities were tested: q=7/8 and
+  the lower-variance q=15/16.
+model_integrity:
+  FineWeb/Llama-2, B4/S2048, 8192 tokens/step, d2048, 32 heads, all 16 blocks,
+  all twelve KDA forward paths, all four full-attention paths, every MLP,
+  NextLat, and every parameter remain present. This is stochastic backward
+  approximation rather than layer freezing: at q=15/16 approximately 46,080
+  of the 49,152 local KDA blocks per step retain their exact local VJP, and
+  independent masks let every block train throughout the run.
+correctness:
+  cargo fmt --all, TMPDIR=$PWD/target/tmp cargo check --workspace, git diff
+  --check, and TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+  The rebuilt wrapper/direct KDA backward test passes with production sampling.
+  A dedicated rebuilt-GPU test compares sampled KDA against dense KDA for a
+  mixed retained/dropped mask: every retained q/k/v/g/beta gradient equals the
+  dense local gradient times 1/q, every dropped local gradient is exactly zero,
+  q/k norm statistics remain dense and bit-identical, and producer amax chunks
+  exactly match the sampled output.
+q_7_of_8_profile:
+  Baseline:
+    target/nsys/20260718_attention_backward_block_sus_candidate.nsys-rep
+    eight directly affected KDA families=41.583871ms/step
+    total GPU kernel time=307.620195ms/step
+  Candidate:
+    target/nsys/20260718_kda_chunk_sample_candidate.nsys-rep
+    eight directly affected KDA families=36.853678ms/step
+    total GPU kernel time=302.189376ms/step
+  Focused saving=4.730193ms/step; whole-profile saving=5.430819ms/step.
+q_7_of_8_health:
+  target/runs/20260718_061846Z_fineweb_30s
+  completed_steps=101, train_elapsed_s=30.047,
+  val_loss=6.103231430053711.
+  All three high-fidelity samples are finite and nonzero. Gradient norm moves
+  from 3.737303 to 1.710105, and every non-finite, loss-spike,
+  gradient-spike, and update-skip counter remains zero.
+q_7_of_8_gate:
+  target/runs/20260718_061955Z_fineweb_450s
+  completed_steps=1478, train_elapsed_s=450.127,
+  val_loss=4.746159553527832.
+  All 30 high-fidelity samples are finite and nonzero. Gradient norm remains
+  in [0.937412, 3.737303] and ends at 2.369700. Every stability and skipped
+  update counter remains zero.
+q_7_of_8_effect:
+  Against 1451 steps / 450.193s / 4.7384748458862305, q=7/8 completes
+  27 more steps (+1.860786%) and lowers mean step time from 310.263956 to
+  304.551421ms, saving 5.712535ms (-1.841824%). Held-out loss worsens by
+  0.007684708 (+0.162177%).
+q_15_of_16_profile:
+  Candidate:
+    target/nsys/20260718_kda_chunk_sample_15of16_candidate.nsys-rep
+    eight directly affected KDA families=39.304873ms/step
+  Focused saving=2.278998ms/step, above the 1.551320ms/step floor. Unrelated
+  short-profile families were clock-noisy, so the sustained wall result below
+  is the decisive throughput measurement.
+q_15_of_16_health:
+  target/runs/20260718_063018Z_fineweb_30s
+  completed_steps=100, train_elapsed_s=30.133,
+  val_loss=6.117033004760742.
+  Both high-fidelity samples are finite and nonzero. Gradient norm moves from
+  3.736181 to 1.859544, with every stability and skipped-update counter zero.
+q_15_of_16_gate:
+  target/runs/20260718_063127Z_fineweb_450s
+  completed_steps=1460, train_elapsed_s=450.206,
+  val_loss=4.747818470001221.
+  All 30 high-fidelity samples are finite and nonzero. Gradient norm remains
+  in [0.966604, 3.736181] and ends at 2.406184. Every stability and skipped
+  update counter remains zero.
+q_15_of_16_effect:
+  Against the same active baseline, q=15/16 completes nine more steps
+  (+0.620262%) and lowers mean step time from 310.263956 to 308.360274ms,
+  saving 1.903682ms (-0.613568%). Held-out loss worsens by 0.009343624
+  (+0.197186%).
+decision:
+  Reject both probabilities and fully revert the sampler. Both candidates are
+  numerically stable, mathematically structured, and measurably faster, but
+  their fixed-time held-out losses are worse. Projecting the sustained q=15/16
+  saving linearly to q=31/32 yields approximately 0.952ms/step, below the
+  mandatory 1.551320ms/step floor, so no denser variant qualifies for testing.
+```
+
+```text
+date: 2026-07-18
+commit: rejected source reverted; note only
 experiment: Backward-oriented KDA nonlinear tangent tapes.
 status: rejected_profile
 sources:
