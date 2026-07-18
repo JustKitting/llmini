@@ -48,6 +48,75 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 
 ```text
 date: 2026-07-18
+commit: rejected source reverted; note only
+experiment: Backward-oriented KDA nonlinear tangent tapes.
+status: rejected_profile
+sources:
+  https://medium.com/@larry36d/partial-model-freezing-and-optimizing-for-the-backwards-pass-df5b0713f219
+rationale:
+  Test the article's general graph-layout principle at the largest remaining
+  nonlinear backward boundary. The accepted profile spends approximately
+  8.347457ms/step in KDA backward preparation plus final SiLU, sigmoid,
+  softplus, and q/k normalization differentiation. Forward already writes a
+  padded F16 QKV tape. Its 96 unused u16 values per token can hold the 64 q/k
+  inverse norms without another allocation, so a forward-produced tangent tape
+  could remove redundant nonlinear evaluation from backward while preserving
+  every KDA head, chunk, layer, parameter, and forward output.
+implementation:
+  Two materially different tape encodings were built and profiled.
+  The first stored F16 normalized q/k and SiLU v outputs, one SiLU inverse
+  branch bit, F16 softplus(g), F16 sigmoid(beta), and F16 q/k inverse norms.
+  Backward reconstructed each SiLU derivative from its output using a
+  piecewise degree-five approximation.
+  The second stored each normalized q/k or SiLU v output together with its
+  directly computed derivative as an E4M3 pair in the original 16-bit slot.
+  It retained the F16 gate, beta, and inverse-norm representation but removed
+  all inverse-SiLU approximation work from backward.
+correctness:
+  Both variants passed cargo fmt --all, TMPDIR=$PWD/target/tmp cargo check
+  --workspace, and TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a.
+  The existing ignored KDA backward reference passed after the first rebuild.
+  Rebuilt production-path 2-second diagnostics were finite:
+    target/runs/20260718_053728Z_fineweb_2s
+    target/runs/20260718_054123Z_fineweb_2s
+    target/runs/20260718_054901Z_fineweb_2s
+profile:
+  Baseline:
+    target/nsys/20260718_attention_backward_block_sus_candidate.nsys-rep
+    completed training steps=32
+    total GPU kernel time=307.620195ms/step
+    prepare backward=3.283141ms/step
+    finish backward=5.064316ms/step
+  F16 output plus inverse-SiLU candidate:
+    target/nsys/20260718_kda_tangent_tape_candidate.nsys-rep
+    completed training steps=33
+    total GPU kernel time=310.648544ms/step
+    prepare backward=3.240537ms/step
+    finish backward=6.251843ms/step
+  Direct E4M3 output plus derivative candidate:
+    target/nsys/20260718_kda_direct_tangent_candidate.nsys-rep
+    completed training steps=33
+    total GPU kernel time=309.151975ms/step
+    prepare backward=3.239516ms/step
+    finish backward=5.022249ms/step
+measured_effect:
+  The inverse-SiLU representation makes the targeted backward pair
+  1.144922ms/step slower and the whole profile 3.028349ms/step slower.
+  Direct derivative storage reduces the targeted pair by only
+  0.085692ms/step, while the whole profile remains 1.531780ms/step slower.
+  The direct form therefore realizes only 5.52% of the required
+  1.551320ms/step whole-step saving even before accounting for its E4M3
+  gradient approximation.
+decision:
+  Reject and revert both encodings before timed gates. The preparation kernel
+  is dominated by reading and materializing the compact q/k/v/g arrays, not
+  by recomputing these scalar nonlinearities. A tangent tape cannot clear the
+  current 0.5% whole-step floor on this layout, so no 30-second health run or
+  450-second held-out run is warranted.
+```
+
+```text
+date: 2026-07-18
 commit: passing source candidate; committed after the required gate
 experiment: Probability-mass sampled 64x64 full-attention backward.
 status: accepted_450s; active_baseline
