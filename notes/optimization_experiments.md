@@ -28607,3 +28607,58 @@ decision:
   fails the sole prerequisite for optimizing a structural candidate. This is
   not a rejection based on the first implementation's speed.
 ```
+
+```text
+date: 2026-07-18
+commit: rejected source reverted; note only
+experiment: Exact 1.2B-style HybridNorm* topology with affine QKV RMSNorm.
+status: rejected_matched_step_screen
+sources:
+  https://papers.neurips.cc/paper_files/paper/2025/file/23a1e7765b22c7e2ffdabf2e6b5dbc44-Paper-Conference.pdf
+  https://github.com/BryceZhuo/HybridNorm
+rationale:
+  Test the authors' complete HybridNorm* block equations rather than a partial
+  normalization tweak. Their official 1.2B configuration matches this model's
+  16-layer, d2048, 32-head geometry and specifies affine RMSNorm with epsilon
+  1e-5 plus independently normalized Q, K, and V head vectors.
+implementation:
+  Kept the active B4/S2048/L16/d2048/h32 approximately 1B model and every
+  attention/KDA, MLP, value-residual, NextLat, and projection path. Block 0
+  used the paper's stabilizing pre-attention RMSNorm exception and conventional
+  residual bases. Blocks 1-15 fed the raw residual into attention, then used
+  affine RMSNorm(attention_output + input) as both the MLP input and residual
+  base. Final normalization became affine RMSNorm. Each block added separate
+  learned 64-element Q/K/V RMS scales shared across heads, applied after value
+  residual mixing and before RoPE/KDA, with exact backward Jacobians before
+  value-residual gradient routing. Optimizer, schedule-free materialization,
+  diagnostics, clipping, and checkpoint topology included the new scales.
+  The new RMS kernels explicitly covered all 2048 columns; they did not inherit
+  the existing GPT LayerNorm primitive's 256-thread by 3-column limitation.
+correctness:
+  cargo check --workspace: pass.
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+  Focused sm_120a GPU tests passed for full 2048-column RMS forward,
+  post-residual save, analytical input/parameter backward, per-head QKV RMS
+  forward/backward, and inverse-RoPE reconstruction.
+  The end-to-end KDA block-attention backward test passed with QKV RMS and
+  value-residual routing.
+  target/runs/20260718_144719Z_fineweb_900s was a five-step diagnostic only:
+    train losses 10.687009, 10.412257, 8.970120, 8.980204, 8.695435;
+    all updates finite/nonzero with no skips.
+health_and_matched_step_screen:
+  target/runs/20260718_145148Z_fineweb_30s completed 90 steps in 30.193s
+  with held-out val_loss=7.580828. Both high-fidelity samples were
+  finite/nonzero and no update was skipped.
+  Against target/runs/20260718_044552Z_fineweb_30s at the identical logged
+  optimizer step:
+    step 50: 7.7901578 versus 6.6291599, 17.513519% worse.
+  The candidate also completed 10% fewer steps, but speed was not used to
+  reject it because it had already failed the matched-step quality criterion.
+decision:
+  Reject without profiling, implementation optimization, a longer fixed-step
+  diagnostic, or a 450-second gate. The 17.51% same-step loss regression fails
+  the sole prerequisite for optimizing a structural candidate. Restore the
+  source and rebuild the accepted ReLU-squared/LayerNorm baseline; retain the
+  full-width limitation found in the inherited LayerNorm primitive as a
+  separate correctness candidate rather than conflating it with HybridNorm*.
+```
