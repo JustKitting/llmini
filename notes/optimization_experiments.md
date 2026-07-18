@@ -28365,3 +28365,117 @@ decision:
   experiment must implement the complete chosen method, including its
   paper-defined MLP activation/layout and scaling rules, before evaluation.
 ```
+
+```text
+date: 2026-07-18
+commit: rejected combined source; isolate QK normalization separately
+experiment: anGPT-inspired normalized residual, SwiGLU, QK norm, and logit-scale package.
+status: rejected_matched_step_screen
+sources:
+  https://arxiv.org/abs/2505.22014
+  https://github.com/NVIDIA/ngpt
+rationale:
+  Test a substantially more complete normalized-transformer architecture
+  rather than infer the method's quality from the previously rejected partial
+  residual-only core. Preserve the active approximately 1B model and every
+  attention/KDA, MLP, value-residual, and NextLat path.
+implementation:
+  Replaced the 4d ReLU-squared MLP with a parameter-matched 5504-wide fused
+  SwiGLU, removed classical block/final normalization, exactly L2-normalized
+  attention and MLP branch outputs, applied learned per-channel LERP residual
+  updates with the paper's correction factor and effective alpha initialization
+  of 0.01, exactly normalized full-attention Q/K vectors, and added a learned
+  per-vocabulary logit scale. All 16 layers, d2048 width, 32 heads, B4/S2048
+  tokens, attention/KDA, value residuals, NextLat, and projections remained
+  active and trainable.
+scope_limit:
+  This formulation retained the control optimizer and 83-step warmup, used a
+  fixed sqrt(head_dim) full-attention logit factor, and did not implement the
+  paper's post-update parameter-norm bounds. It therefore rejects this exact
+  combined formulation, not anGPT itself. The paper explicitly specifies an
+  effective scaling-parameter initialization of 0.01; its later alpha values
+  around 0.05 are learned evolution and do not justify relabelling 0.05 as the
+  paper initialization.
+correctness:
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+  cargo check -p rust-kernels-cuda --tests: pass.
+  cargo check --workspace: pass.
+  Focused compact-residual, loss, fused-SwiGLU projection, and full-attention
+  forward/backward GPU tests: pass.
+  target/runs/20260718_130450Z_fineweb_30s was a one-step launch diagnostic:
+    val_loss=10.365018, train_loss=10.373896, grad_norm=1.321419, finite and
+    nonzero with no skipped update. It is not decision evidence.
+matched_step_screen:
+  target/runs/20260718_130523Z_fineweb_30s completed 89 steps in 30.156s with
+  held-out val_loss=7.518137. It remained finite/nonzero with no skipped
+  updates.
+  Against target/runs/20260718_044552Z_fineweb_30s at the same logged step:
+    step 50: 7.6179309 versus 6.6291599, 14.915479% worse.
+  A mistakenly launched longer run was stopped as soon as the screening rule
+  was corrected. Its partial logs are diagnostic only:
+    target/runs/20260718_130638Z_fineweb_450s
+    step 100: 7.6134381 versus the control's 6.5710568, 15.863221% worse.
+    The process was interrupted near step 500 and produced no held-out
+    endpoint; it is not a 450-second gate.
+decision:
+  Reject the combined formulation without profiling, optimization, or a
+  450-second gate. The 14.9-15.9% same-step loss regression fails the sole
+  prerequisite for spending implementation-optimization effort on a
+  structural candidate. Separate the paper-supported exact QK-normalization
+  ablation from the rejected package and screen it independently at matched
+  optimizer steps.
+```
+
+```text
+date: 2026-07-18
+commit: rejected source reverted; note only
+experiment: Exact per-head QK normalization for full-attention layers.
+status: rejected_matched_step_screen
+source:
+  https://arxiv.org/abs/2505.22014
+rationale:
+  The anGPT paper's 0.5B ablation reports a quality improvement from adding QK
+  normalization to its GPT+ control. Isolate that operation from the rejected
+  normalized-residual/SwiGLU package so its loss-per-step effect is measurable
+  on the intact local model.
+implementation:
+  Exactly L2-normalized each 64-element Q and K vector in the four
+  full-attention layers, restored score variance with sqrt(head_dim), and
+  applied the exact normalization Jacobian to Q/K gradients before inverse
+  RoPE. The twelve KDA layers retained their existing SiLU-plus-L2-normalized
+  Q/K formulation. Every baseline LayerNorm, ReLU-squared MLP, optimizer,
+  schedule, value-residual, NextLat, and model-shape setting was unchanged.
+correctness:
+  cargo fmt --all -- --check: pass.
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+  cargo check --workspace: pass.
+  TMPDIR=$PWD/target/tmp CUDA_DEVICE_INDEX=0 cargo test
+    -p rust-kernels-cuda --release --test causal_attention_backward_tc
+    -- --ignored --nocapture --test-threads=1:
+    3 passed, including forward scale invariance and analytical backward.
+  Rebuilt shape:
+    GPT2_SEQ_LEN=2048, GPT2_BATCH_SIZE=4, GPT2_N_LAYER=16,
+    GPT2_N_EMBD=2048, GPT2_N_HEAD=32, GPT2_FULL_ATTENTION_WINDOW=1024.
+health_screen:
+  target/runs/20260718_131703Z_fineweb_30s completed 99 steps in 30.318s with
+  held-out val_loss=6.1074629. All sampled updates were finite/nonzero and all
+  skip metrics were zero. At step 50 its training loss was 6.6262140 versus
+  6.6291599 for target/runs/20260718_044552Z_fineweb_30s, only 0.044439%
+  lower and not a credible quality signal.
+matched_step_diagnostic:
+  target/runs/20260718_131821Z_fineweb_120s completed the fixed 200-step
+  diagnostic in 61.387s with held-out val_loss=5.7211838.
+  Against the accepted control's same-seed logged training losses:
+    step 50:  6.6288686 versus 6.6236825, 0.078296% worse.
+    step 100: 6.5760098 versus 6.5710568, 0.075375% worse.
+    step 150: 5.9327688 versus 5.9148984, 0.302126% worse.
+    step 200: 6.5406866 versus 5.9054227, 10.757298% worse.
+  The decision does not depend on the isolated step-200 bump: the candidate
+  already failed to produce a sustained improvement at steps 50-150.
+decision:
+  Reject without profiling, implementation optimization, or a 450-second
+  gate. The repeated matched-step curve is tied-to-worse and never supplies
+  the loss-per-step improvement required to justify optimization. Restore the
+  source, rebuild the accepted baseline artifact, and retain only this result
+  and the corrected structural-screening rule.
+```

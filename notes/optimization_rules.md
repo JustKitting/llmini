@@ -9,10 +9,13 @@ Optimize for the lowest held-out validation loss after the fixed 450-second
 single-GPU candidate gate:
 
 - For research-scale optimizer, architecture, objective, or numerical changes,
-  30 seconds is only a bring-up health check: verify launchability,
+  the 30-second run has two distinct uses: verify launchability,
   finite/nonzero metrics, real updates, zero unexpected skips, and absence of
-  immediate divergence. Do not accept or reject one of these larger changes
-  from its 30-second loss delta.
+  immediate divergence; then compare loss at matched optimizer-step indices
+  against the control. The fixed-time endpoint alone is not comparable when
+  step throughput differs, but a clearly worse matched-step curve is valid
+  screening evidence to stop the candidate before expensive profiling or a
+  450-second run.
 - A schedule parameter that is mathematically dormant for the entire
   30-second window must instead use a matched fixed-step diagnostic after the
   parameter activates. For the current 83-step warmup, use 200 completed
@@ -20,7 +23,10 @@ single-GPU candidate gate:
   step-gated; do not convert it to elapsed-time logic. This diagnostic still
   cannot replace the 450-second loss gate.
 - 450 seconds is the mandatory sustained stability, regression, and held-out
-  quality gate before a passing change is committed in JJ.
+  quality gate before a passing change is committed in JJ. It is not mandatory
+  for every working candidate; only candidates that first clear the
+  matched-step quality screen and any needed implementation optimization
+  should consume this gate.
 - The 450-second duration is an iteration gate, not the final training budget
   or a redefinition of the longer-run loss target.
 
@@ -32,35 +38,32 @@ the final performance of the method:
 
 - The 30-second run is a correctness and health check only. It verifies that
   the implementation launches, updates the intended intact model, remains
-  finite, and does not immediately diverge. Its fixed-time loss is not
-  acceptance or rejection evidence for a structural method.
-- The first sustained 450-second run of an unoptimized structural
-  implementation is a characterization run. Record same-step convergence,
-  fixed-wall-clock convergence, operation and kernel timings, memory use, and
-  stability separately. Do not reject the method merely because recoverable
-  implementation overhead causes fewer completed steps or a worse fixed-time
-  endpoint.
-- When same-step held-out or training quality improves, or remains competitive
-  enough to preserve a credible quality signal, identify whether the measured
-  slowdown is inherent to the method or is caused by recoverable implementation
-  overhead such as extra launches, materialized intermediates, redundant
-  quantization, unfused pointwise work, poor layout, or avoidable memory
-  traffic.
-- If the quality signal is credible and the slowdown is plausibly recoverable,
-  perform at least one justified profiling and optimization pass before making
-  a keep/reject decision. This applies even when the unoptimized
-  characterization run loses the fixed-time gate.
-- Reject before optimization only when the algorithmic signal itself is
-  clearly bad or the added cost is mathematically inherent and too large to
-  recover. After an optimization pass, rejection is appropriate when the
-  remaining overhead is measured to be inherent or the optimized method still
-  lacks a credible quality benefit.
-- A characterization run never promotes a change. The optimized implementation
-  must still pass a fresh 30-second health check and the normal 450-second
-  fixed-wall-clock held-out gate before it may be committed in JJ.
+  finite, and does not immediately diverge. Its fixed-time endpoint is not an
+  acceptance result, but its samples must be compared at identical optimizer
+  steps (for example, candidate step 50 against control step 50).
+- A structural candidate earns profiling and implementation optimization when
+  it shows a real matched-step loss improvement. If different throughput or
+  logging cadence makes the 30-second samples insufficient, run the smallest
+  matched fixed-step diagnostic needed to resolve the comparison; do not jump
+  directly to 450 seconds.
+- When matched-step quality improves, identify whether any measured slowdown is
+  inherent to the method or caused by recoverable implementation overhead such
+  as extra launches, materialized intermediates, redundant quantization,
+  unfused pointwise work, poor layout, or avoidable memory traffic. Perform the
+  justified profiling and optimization pass even when the unoptimized
+  fixed-time endpoint is worse.
+- Reject without a 450-second run when matched-step quality is clearly worse or
+  fails to show a credible improvement. Kernel optimization can recover
+  throughput; it cannot turn a same-step loss regression into an algorithmic
+  quality win.
+- A short matched-step win never promotes a change. After the implementation is
+  optimized, it must pass a fresh 30-second health and matched-step screen and
+  then the normal 450-second fixed-wall-clock held-out gate before it may be
+  committed in JJ.
 
 This rule prevents an unoptimized implementation from being mistaken for an
-algorithmic failure without weakening the final fixed-time acceptance
+algorithmic failure, avoids spending 450 seconds on candidates with no
+same-step quality signal, and does not weaken the final fixed-time acceptance
 criterion.
 
 Use this validation line as the comparable endpoint:
