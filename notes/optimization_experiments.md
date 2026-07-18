@@ -53,6 +53,58 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 
 ```text
 date: 2026-07-18
+commit: rejected working-copy experiment; source fully reverted
+experiment: scale-invariant per-output-row update flooring inside Hyperball
+status: rejected_matched_step; no_profile; no_450s
+source:
+  https://github.com/KellerJordan/modded-nanogpt/tree/master/records/track_3_optimization
+rationale:
+  The official Modded-NanoGPT optimization track's RowUpdateFloor rescales
+  each output-row update by
+    max(target * ||W_i|| / ||U_i||, 1)
+  before its global radius constraint. Test whether preserving a minimum
+  relative update for locally quiet rows improves the accepted
+  Hyperball-constrained NorMuon schedule. Because both W and U have a global
+  normalization in this implementation, use the algebraically scale-invariant
+  equivalent
+    max(target * ||W_i|| * ||U||_F / (||U_i|| * ||W||_F), 1)
+  with the record's target=0.3825.
+implementation:
+  A correctness-first implementation used one warp per output row to measure
+  row weight/update norms, a separate reduction for the globally rescaled
+  update norm, and the existing Hyperball projection to preserve the pre-step
+  Frobenius radius. It handled both stored matrix orientations and was gated by
+  TRAIN_HYPERBALL_ROWFLOOR=1 so the accepted default remained unchanged.
+correctness:
+  cargo fmt --all: pass.
+  cargo check --workspace: pass.
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+  Existing Hyperball radius and rectangular-orientation GPU tests: pass.
+  A direct CPU/GPU RowFloor reference test passed for both 32x64 and 64x32
+  matrices and verified that the target actually lifted under-floor rows.
+matched_step_screen:
+  Health run target/runs/20260718_201632Z_fineweb_30s completed 91 steps in
+  30.010s with held-out loss 6.024433. It remained finite/nonzero with zero
+  skip counters, but step-50 training loss was 6.5409808 versus 6.5319114 for
+  current control target/runs/20260718_200249Z_fineweb_30s, 0.138855% worse.
+  Because that single warmup sample was a small difference, use the smallest
+  fixed-step discriminator rather than profiling or a 450-second run.
+  Candidate target/runs/20260718_201903Z_fineweb_120s completed exactly 200
+  steps in 66.165s with held-out loss 5.5936760. Exact-200 current control
+  target/runs/20260718_194550Z_fineweb_120s completed in 65.968s with held-out
+  loss 5.5910559. At matched training samples 50, 100, 150, and 199, the
+  candidate was respectively 0.056601%, 0.052722%, 0.017108%, and 0.086827%
+  worse; matched held-out loss was 0.046862% worse.
+decision:
+  Reject. The candidate was healthy, but it produced no loss-to-step
+  improvement at any measured common step or at exact-200 held-out evaluation.
+  Under the structural-method rule it therefore earns neither implementation
+  profiling/optimization nor a 450-second promotion gate. Restore and rebuild
+  the accepted Hyperball baseline.
+```
+
+```text
+date: 2026-07-18
 commit: accepted local JJ commit after matched-step screening, implementation
   optimization, optimizer-state/LR bracketing, and the 450-second gate
 experiment: Hyperball-constrained NorMuon with AMUSE and a two-of-three polar
