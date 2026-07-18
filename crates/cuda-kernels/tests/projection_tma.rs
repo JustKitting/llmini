@@ -26,7 +26,7 @@ use rust_kernels_cuda::nvfp4_tma_matmul::{
 
 mod common;
 
-use common::nvfp4::{one_pair_bytes, one_scales, set_e2m1_one};
+use common::nvfp4::{one_scales, set_e2m1_one};
 
 const ROWS: usize = 128;
 const K: usize = 128;
@@ -46,10 +46,15 @@ fn mlp_block_topk_route_selects_and_transposes_exact_tiles() -> Result<(), Box<d
 
     let (_, stream, ptx) = common::cuda_test_context()?;
     let module = MlpModule::from_module(ptx)?;
-    let mut bytes = one_pair_bytes(ELEMENTS);
-    let zero_prefix_bytes = (FEATURE_TILES - ACTIVE_FEATURE_TILES) * TILE / 2;
-    for row in bytes.chunks_exact_mut(FEATURES / 2) {
-        row[..zero_prefix_bytes].fill(0);
+    let mut bytes = vec![0_u8; ELEMENTS / 2];
+    for (row_index, row) in bytes.chunks_exact_mut(FEATURES / 2).enumerate() {
+        let token_tile = row_index / TILE;
+        for feature_tile in 0..FEATURE_TILES {
+            let e2m1 = ((feature_tile * 5 + token_tile * 3) % 8) as u8;
+            let pair = e2m1 | (e2m1 << 4);
+            let byte_base = feature_tile * TILE / 2;
+            row[byte_base..byte_base + TILE / 2].fill(pair);
+        }
     }
     let bytes = DeviceBuffer::from_host(&stream, &bytes)?;
     let scales = DeviceBuffer::from_host(&stream, &one_scales(ELEMENTS))?;
@@ -66,23 +71,23 @@ fn mlp_block_topk_route_selects_and_transposes_exact_tiles() -> Result<(), Box<d
         feature_count: FEATURES as u32,
     })?;
 
+    let scores = scores.to_host_vec(&stream)?;
     let masks = masks.to_host_vec(&stream)?;
-    let expected_token_mask = u64::MAX << (FEATURE_TILES - ACTIVE_FEATURE_TILES);
-    assert!(
-        masks[..TOKEN_TILES]
-            .iter()
-            .all(|mask| *mask == expected_token_mask)
-    );
-    assert!(
-        masks[TOKEN_TILES..TOKEN_TILES + FEATURE_TILES - ACTIVE_FEATURE_TILES]
-            .iter()
-            .all(|mask| *mask == 0)
-    );
-    assert!(
-        masks[TOKEN_TILES + FEATURE_TILES - ACTIVE_FEATURE_TILES..]
-            .iter()
-            .all(|mask| *mask == u64::MAX)
-    );
+    let mut expected_masks = vec![0_u64; TOKEN_TILES + FEATURE_TILES];
+    for token_tile in 0..TOKEN_TILES {
+        let score_base = token_tile * FEATURE_TILES;
+        let mut ranked_features: Vec<_> = (0..FEATURE_TILES).collect();
+        ranked_features.sort_unstable_by(|left, right| {
+            scores[score_base + *right]
+                .total_cmp(&scores[score_base + *left])
+                .then_with(|| left.cmp(right))
+        });
+        for feature_tile in ranked_features[..ACTIVE_FEATURE_TILES].iter().copied() {
+            expected_masks[token_tile] |= 1_u64 << feature_tile;
+            expected_masks[TOKEN_TILES + feature_tile] |= 1_u64 << token_tile;
+        }
+    }
+    assert_eq!(masks, expected_masks);
     Ok(())
 }
 

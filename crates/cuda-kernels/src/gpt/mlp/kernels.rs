@@ -1,4 +1,4 @@
-use cuda_device::{DisjointSlice, SharedArray, cuda_module, kernel, thread};
+use cuda_device::{DisjointSlice, SharedArray, cuda_module, kernel, thread, warp};
 
 use crate::amax::max4_f32;
 use crate::block_reduce::{block_max_store_f32, block_sum_shared_f32};
@@ -20,8 +20,10 @@ pub(super) const BLOCK_TOPK_FEATURE_TILES: u32 = 64;
 pub(super) const BLOCK_TOPK_TOKEN_TILES: u32 = 64;
 pub(super) const BLOCK_TOPK_ACTIVE_FEATURE_TILES: u32 = 48;
 pub(super) const BLOCK_TOPK_SCORE_THREADS: u32 = 256;
-pub(super) const BLOCK_TOPK_MASK_THREADS: u32 = 64;
+pub(super) const BLOCK_TOPK_MASK_THREADS: u32 = 1024;
 const BLOCK_TOPK_SCORE_WARPS: usize = (BLOCK_TOPK_SCORE_THREADS / 32) as usize;
+const BLOCK_TOPK_MASK_WARPS: u32 = BLOCK_TOPK_MASK_THREADS / 32;
+const FULL_WARP_MASK: u32 = u32::MAX;
 
 #[expect(clippy::too_many_arguments, reason = "CUDA ABI uses explicit buffers")]
 #[cuda_module]
@@ -206,49 +208,67 @@ mod module {
         static mut TOKEN_MASKS: SharedArray<u64, { BLOCK_TOPK_TOKEN_TILES as usize }> =
             SharedArray::UNINIT;
 
-        let tile = thread::threadIdx_x();
-        if tile < token_tiles {
-            let score_base = tile * feature_tiles;
-            let mut mask = 0_u64;
-            let mut feature = 0_u32;
-            while feature < feature_tiles {
-                let score = scores[(score_base + feature) as usize];
-                let mut rank = 0_u32;
-                let mut other = 0_u32;
-                while other < feature_tiles {
-                    let other_score = scores[(score_base + other) as usize];
-                    if other_score > score || (other_score == score && other < feature) {
-                        rank += 1;
-                    }
-                    other += 1;
-                }
-                if rank < active_feature_tiles {
-                    mask |= 1_u64 << feature;
-                }
-                feature += 1;
+        let thread_id = thread::threadIdx_x();
+        let lane = warp::lane_id();
+        let warp_in_block = thread_id / 32;
+        let mut token_tile = warp_in_block;
+        while token_tile < token_tiles {
+            let score_base = token_tile * feature_tiles;
+            let low_feature = lane;
+            let high_feature = lane + 32;
+            let low_score = scores[(score_base + low_feature) as usize];
+            let high_score = scores[(score_base + high_feature) as usize];
+            let mut low_rank = 0_u32;
+            let mut high_rank = 0_u32;
+            let mut source_lane = 0_u32;
+            while source_lane < 32 {
+                let other_low_score =
+                    warp::shuffle_f32_sync(FULL_WARP_MASK, low_score, source_lane);
+                let other_high_score =
+                    warp::shuffle_f32_sync(FULL_WARP_MASK, high_score, source_lane);
+                low_rank += outranks(other_low_score, source_lane, low_score, low_feature) as u32;
+                low_rank +=
+                    outranks(other_high_score, source_lane + 32, low_score, low_feature) as u32;
+                high_rank +=
+                    outranks(other_low_score, source_lane, high_score, high_feature) as u32;
+                high_rank +=
+                    outranks(other_high_score, source_lane + 32, high_score, high_feature) as u32;
+                source_lane += 1;
             }
-            unsafe {
-                TOKEN_MASKS[tile as usize] = mask;
-                *masks.get_unchecked_mut(tile as usize) = mask;
+
+            let low_mask = warp::ballot_sync(FULL_WARP_MASK, low_rank < active_feature_tiles);
+            let high_mask = warp::ballot_sync(FULL_WARP_MASK, high_rank < active_feature_tiles);
+            if lane == 0 {
+                let mask = low_mask as u64 | ((high_mask as u64) << 32);
+                unsafe {
+                    TOKEN_MASKS[token_tile as usize] = mask;
+                    *masks.get_unchecked_mut(token_tile as usize) = mask;
+                }
             }
+            token_tile += BLOCK_TOPK_MASK_WARPS;
         }
 
         thread::sync_threads();
 
-        if tile < feature_tiles {
+        if thread_id < feature_tiles {
             let mut feature_mask = 0_u64;
             let mut token = 0_u32;
             while token < token_tiles {
                 let token_mask = unsafe { TOKEN_MASKS[token as usize] };
-                if token_mask & (1_u64 << tile) != 0 {
+                if token_mask & (1_u64 << thread_id) != 0 {
                     feature_mask |= 1_u64 << token;
                 }
                 token += 1;
             }
             unsafe {
-                *masks.get_unchecked_mut((token_tiles + tile) as usize) = feature_mask;
+                *masks.get_unchecked_mut((token_tiles + thread_id) as usize) = feature_mask;
             }
         }
+    }
+
+    #[inline(always)]
+    fn outranks(other_score: f32, other_feature: u32, score: f32, feature: u32) -> bool {
+        other_score > score || (other_score == score && other_feature < feature)
     }
 
     #[inline(always)]

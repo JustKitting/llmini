@@ -49,8 +49,94 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-18
 commit: passing source candidate; committed after the required gate
-experiment: Content-derived block-Top-K ReLU2 layout for backward-efficient MLPs.
+experiment: Warp-parallel exact ranking for the block-Top-K dual-mask layout.
 status: accepted_450s; active_baseline
+rationale:
+  Profile the new nonlinear boundary before attempting the proposed score
+  fusion. In target/nsys/20260718_block_topk_score_baseline.nsys-rep, the
+  standalone score kernel averaged only 18.7199us per routed block, or about
+  0.281ms over all 15 routed blocks in one model pass. Its 0.09% whole-step
+  ceiling fails the project's 0.5% experiment floor, so score/ReLU2 epilogue
+  fusion was not implemented.
+  The same profile exposed the actual layout bottleneck: exact mask generation
+  averaged 129.1879us per routed block, or about 1.938ms/model pass. The
+  original kernel assigned one thread to each token tile, then serially ranked
+  all 64 feature tiles with nested global-memory score reads. Removing most of
+  that serialized latency had a whole-step ceiling above 0.5% without changing
+  the content-derived route or any model math.
+implementation:
+  Preserve the same 64-by-64 score grid, top 48 of 64 selection, deterministic
+  score-descending/feature-index-ascending tie rule, and exact token-to-feature
+  plus feature-to-token masks. Launch 32 warps in one CTA. Each warp handles
+  two token tiles; each lane holds two feature scores in registers, broadcasts
+  the 64 scores with 32 paired warp shuffles, computes the exact two ranks in
+  parallel, and forms the two 32-bit halves with warp ballots. Lane zero writes
+  the token mask, then the CTA transposes all 64 token masks from shared memory
+  exactly as before. This reduces global score loads per token tile from the
+  serial nested-ranking pattern to 64 coalesced loads while leaving the
+  selected support bit-identical.
+  No model dimension, parameter, activation, gradient, optimizer,
+  initialization, route density, attention/KDA/MLP/NextLat section, dataset,
+  tokenizer, batch, sequence length, or loss term changed.
+correctness:
+  cargo fmt --all, TMPDIR=$PWD/target/tmp cargo check --workspace, and
+  git diff --check: pass before and after the sustained gates.
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass twice,
+  including the final rebuilt source used by the GPU test.
+  The rebuilt-PTX full 64-by-64 GPU route test passed after being strengthened:
+  it generates eight interleaved NVFP4 score levels with token-dependent
+  rotations, computes the exact CPU top-48 mask from the GPU scores, and
+  compares all 64 token masks plus all 64 transposed feature masks.
+  cargo test --workspace --lib: 3 passed; cargo test -p rust-kernels:
+  5 main-training tests and 45 sweep tests passed. The broader pre-existing
+  gpt2-nvfp4 integration-test fixtures still do not compile because their
+  struct initializers omit TMA and route fields introduced before this
+  candidate; this change does not touch those fixtures or interfaces.
+profile:
+  Baseline:
+    target/nsys/20260718_block_topk_score_baseline.nsys-rep
+    495 mask calls, 63.948030ms total, 129.1879us average.
+  Candidate:
+    target/nsys/20260718_block_topk_warp_masks_candidate.nsys-rep
+    495 mask calls, 2.758232ms total, 5.5722us average.
+  The exact ranking kernel improved by 95.69%, saving 123.6157us per routed
+  block and about 1.854ms over 15 blocks in one model pass. The adjacent score
+  kernel remained effectively unchanged at 18.7445us average.
+health:
+  target/runs/20260718_033455Z_fineweb_30s
+  completed_steps=97, train_elapsed_s=30.050,
+  val_loss=6.126008033752441.
+  Final gradient norm was 1.818116. Every sample was finite and nonzero, and
+  every non-finite, loss-spike, gradient-spike, and update-skip counter was
+  zero. This was health evidence only.
+gate:
+  target/runs/20260718_033557Z_fineweb_450s
+  completed_steps=1415, train_elapsed_s=450.101,
+  val_loss=4.754519462585449.
+  All 29 high-fidelity samples were finite and nonzero. Every non-finite,
+  loss-spike, gradient-spike, and update-skip counter remained zero. Gradient
+  norm ranged from 0.916507 to 3.439085 and ended at 1.546249.
+measured_effect:
+  Against the accepted content block-Top-K baseline at 1408 steps / 450.140s /
+  4.7617411613464355, the candidate completed seven more steps (+0.497159%)
+  and lowered held-out loss by 0.007221699 (-0.151661%). Mean step time
+  improved from 319.701705ms to 318.092580ms, saving 1.609125ms (-0.503321%).
+  The sustained wall-clock result therefore clears the 0.5% whole-step rule
+  as well as the held-out-loss tolerance.
+decision:
+  Accept and promote as the active baseline. This is the intended nonlinear
+  layout principle applied to the expensive training graph: retain the exact
+  content-derived support and all model capacity, but express its ranking in a
+  warp-parallel form instead of serial scalar work. Do not pursue score fusion
+  alone unless it can be bundled with another independently justified change;
+  its measured standalone ceiling is below the experiment floor.
+```
+
+```text
+date: 2026-07-18
+commit: passing source candidate; committed after the required gate
+experiment: Content-derived block-Top-K ReLU2 layout for backward-efficient MLPs.
+status: accepted_450s; superseded_baseline
 sources:
   https://medium.com/@larry36d/partial-model-freezing-and-optimizing-for-the-backwards-pass-df5b0713f219
   https://arxiv.org/abs/2310.10837
