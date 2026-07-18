@@ -54,6 +54,112 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-18
 commit: rejected working-copy experiment; source fully reverted
+experiment: Delta Attention Residuals / Delta Block depth routing.
+status: rejected_after_optimization_due_diligence
+sources:
+  https://arxiv.org/html/2605.18855
+  https://github.com/wdlctc/delta-attention-residuals-code
+rationale:
+  Delta Block preserves the ordinary residual stream while routing a learned
+  softmax mixture of the embedding, completed block deltas, and the current
+  partial block delta into each attention and MLP branch. The paper reports
+  validation-perplexity improvements across 220M through 7.6B models,
+  including 29.19 versus 29.70 at 1044M, and uses four blocks by default.
+  Test the paper's direct approximately-1B configuration without removing,
+  freezing, bypassing, or loss-scaling any existing model branch.
+implementation:
+  The 16 layers were divided into four four-layer Delta Blocks. The stored
+  sources were the FP16 embedding plus the completed deltas captured at layers
+  4, 8, and 12; every layer also routed its live partial delta. Attention and
+  MLP had independent learned d2048 query and RMSNorm-gamma vectors. The
+  routed input was
+    h_hat = h + sum_i softmax(q^T RMSNorm(delta_i))_i * delta_i,
+  while the true residual stream h remained unchanged. Queries were
+  zero-initialized and RMSNorm gamma was initialized to one. Exact reverse mode
+  covered the softmax, RMS normalization, query/gamma parameters, stored
+  sources, partial deltas, direct residuals, and all four block boundaries.
+  The 131072 route parameters used the existing NVFP4 AdamW, schedule-free,
+  clipping, diagnostics, checkpoint, and upload paths.
+model_integrity:
+  B4/S2048/L16/d2048/h32, all four full-attention and twelve KDA blocks, all
+  ReLU-squared MLPs, value residuals, NextLat, LayerNorm, FineWeb, Llama-2
+  tokenization, QK normalization, and the accepted optimizer remained active.
+  No model section or training target was deleted or reduced.
+correctness:
+  cargo fmt --all and cargo check --workspace: pass.
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+  CUDA_DEVICE_INDEX=0 cargo test -p rust-kernels-cuda --test delta_block
+    -- --ignored --nocapture:
+    pass. The isolated GPU reference checked forward logits, softmax weights,
+    RMS statistics, source/query/gamma gradients, direct residual addition,
+    amax, and all Delta Block boundary signs.
+  One-step target/runs/20260718_182440Z_fineweb_120s and TRAIN_TRACE=1
+  target/runs/20260718_182859Z_fineweb_120s were diagnostics only. The trace
+  verified finite nonzero gradients and first-update movement for all 32 route
+  queries; zero first-step gamma gradients were expected because the queries
+  initialize to zero.
+initial_health_and_matched_step_screen:
+  target/runs/20260718_183020Z_fineweb_30s completed 86 steps in 30.116s
+  with held-out val_loss=6.1206985. Step-50 training loss was 6.5923281
+  versus 6.5967746 for accepted control
+  target/runs/20260718_170945Z_fineweb_30s, 0.067405% better and inconclusive.
+  The smallest resolving diagnostic,
+  target/runs/20260718_183126Z_fineweb_120s, completed exactly 200 steps in
+  70.464s with held-out val_loss=5.6381645. Against exact-200-step QKNorm
+  control target/runs/20260718_171025Z_fineweb_120s, the candidate was
+  0.398017% better at step 50, 0.135470% worse at step 100, 0.029412% worse
+  at step 150, and 0.562299% better at step 199; matched held-out loss was
+  0.341527% worse. The repeated step-50 and step-199 improvements were enough
+  under the structural-candidate rule to require profiling and an optimization
+  pass rather than immediate rejection.
+optimization_due_diligence:
+  Unoptimized 20-step nsys profile:
+    target/nsys/20260718_delta_block_unoptimized.nsys-rep
+    target/nsys/20260718_delta_block_unoptimized_cuda_gpu_kern_sum.csv
+  Delta-family GPU time was 900.252548ms, or 45.012627ms per training step
+  including the associated evaluation work. Parameter backward cost
+  363.785990ms, source backward 310.027330ms, forward 147.624208ms, and the
+  separate direct-residual/amax pass 58.302848ms.
+  The optimized implementation changed the parameter-gradient geometry from
+  one strided 256-thread CTA per column to coalesced 32-column tiles over 16
+  row partitions, with warp-local partials and one atomic accumulation per
+  partition/column. It also fused direct-residual addition and amax into source
+  backward. These transformations retained the same architecture and exact
+  derivatives; the focused GPU reference still passed after the change.
+  Optimized 20-step nsys profile:
+    target/nsys/20260718_delta_block_tiled_fused.nsys-rep
+    target/nsys/20260718_delta_block_tiled_fused_cuda_gpu_kern_sum.csv
+  Delta-family GPU time fell to 581.036199ms, or 29.051810ms per step, saving
+  15.960817ms per step. Parameter backward fell to 79.907750ms total. The
+  fused source backward cost 333.084872ms total and removed the separate
+  58.302848ms pass.
+optimized_matched_step_screen:
+  target/runs/20260718_184020Z_fineweb_30s completed 90 steps in 30.131s.
+  Step-50 training loss was 6.5947151 versus 6.5967746 for QKNorm, only
+  0.031219% better, so the endpoint remained inconclusive.
+  target/runs/20260718_184134Z_fineweb_120s completed exactly 200 steps in
+  67.234s with held-out val_loss=5.6402607. The exact-200-step QKNorm control
+  completed in 61.924s with val_loss=5.6189742. At identical steps, optimized
+  candidate versus control training loss was:
+    step 50:  6.5913968 versus 6.6100225, 0.281780% better.
+    step 100: 6.4656067 versus 6.4579020, 0.119307% worse.
+    step 150: 5.8267937 versus 5.8298936, 0.053173% better.
+    step 199: 6.4759002 versus 6.4855175, 0.148289% better.
+  Matched held-out loss regressed 0.378832%. Every sample was finite/nonzero,
+  all skip counters were zero, and grad_norm remained finite. Optimization
+  reduced the fixed-step slowdown from 13.791099% to 8.575027%.
+decision:
+  Reject without a 450-second gate. Due-diligence optimization was performed
+  because the initial implementation showed repeated same-step training-loss
+  improvements. After optimization, however, those movements remained small
+  and mixed while the matched held-out endpoint was reproducibly worse. This
+  is not a credible loss-per-step improvement worthy of promotion. Fully
+  restore and rebuild the accepted QKNorm baseline.
+```
+
+```text
+date: 2026-07-18
+commit: rejected working-copy experiment; source fully reverted
 experiment: SATFormer selective per-token and per-head access to first-layer values.
 status: rejected_matched_step_screen
 sources:
