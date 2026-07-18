@@ -1,7 +1,7 @@
 use cuda_device::DisjointSlice;
 
 use crate::f16_tc_matmul::convert::{cvt_f32_f16, cvt_rn_f16_f32};
-use crate::float_ptx::{abs_f32, fma_f32, max_f32};
+use crate::float_ptx::fma_f32;
 use crate::nvfp4::nvfp4_value;
 
 #[inline(always)]
@@ -38,11 +38,6 @@ pub fn nvfp4_column(
     }
 }
 
-#[inline(always)]
-pub fn centered_column(col: u32, row_len: u32, value: f32, mean: f32) -> f32 {
-    if col < row_len { value - mean } else { 0.0 }
-}
-
 #[expect(clippy::too_many_arguments, reason = "CUDA ABI uses explicit buffers")]
 #[inline(always)]
 pub fn nvfp4_affine_normalized_column(
@@ -72,21 +67,6 @@ pub fn nvfp4_affine_normalized_column(
 }
 
 #[inline(always)]
-pub fn store_column(
-    values: &mut DisjointSlice<'_, f32>,
-    row_base: usize,
-    col: u32,
-    row_len: u32,
-    value: f32,
-) {
-    if col < row_len {
-        unsafe {
-            *values.get_unchecked_mut(row_base + col as usize) = value;
-        }
-    }
-}
-
-#[inline(always)]
 pub fn store_f16_column(
     values: &mut DisjointSlice<'_, u16>,
     row_base: usize,
@@ -99,9 +79,4 @@ pub fn store_f16_column(
             *values.get_unchecked_mut(row_base + col as usize) = cvt_rn_f16_f32(value);
         }
     }
-}
-
-#[inline(always)]
-pub fn max_abs3(a: f32, b: f32, c: f32) -> f32 {
-    max_f32(abs_f32(a), max_f32(abs_f32(b), abs_f32(c)))
 }

@@ -4,9 +4,7 @@ use cuda_core::{CudaModule, CudaStream, DeviceBuffer, DeviceCopy, DriverError};
 use cuda_device::{DisjointSlice, cuda_module, kernel, thread};
 
 use crate::launch::grid_x_config;
-use crate::layer_norm_utils::{
-    layer_norm_columns3, layer_norm_map3, layer_norm_store3, nvfp4_column,
-};
+use crate::layer_norm_utils::nvfp4_column;
 use crate::nvfp4::Nvfp4DeviceTensor;
 
 const EMBEDDING_THREADS_PER_BLOCK: u32 = 256;
@@ -81,17 +79,21 @@ pub mod kernels {
             let row_base = row as usize * params.embedding_dim as usize;
             let token_base = token as usize * params.embedding_dim as usize;
 
-            let cols = layer_norm_columns3!(thread, EMBEDDING_THREADS_PER_BLOCK);
-            let values = layer_norm_map3!(cols, |col| nvfp4_column(
-                token_embedding_bytes,
-                token_embedding_scales,
-                token_embedding_global_scale[0],
-                token_base,
-                col,
-                params.embedding_dim,
-            ));
-
-            layer_norm_store3!(&mut residual, row_base, cols, params.embedding_dim, values);
+            let mut col = thread;
+            while col < params.embedding_dim {
+                let value = nvfp4_column(
+                    token_embedding_bytes,
+                    token_embedding_scales,
+                    token_embedding_global_scale[0],
+                    token_base,
+                    col,
+                    params.embedding_dim,
+                );
+                unsafe {
+                    *residual.get_unchecked_mut(row_base + col as usize) = value;
+                }
+                col += EMBEDDING_THREADS_PER_BLOCK;
+            }
         }
     }
 }

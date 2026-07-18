@@ -1,7 +1,9 @@
 use std::error::Error;
 
 use cuda_core::DeviceBuffer;
-use gpt2_nvfp4::{GPT2_CONTEXT_LEN, GPT2_N_EMBD, HiddenState, Nvfp4Shape, TokenEmbeddingShape};
+use gpt2_nvfp4::{
+    GPT2_CONTEXT_LEN, GPT2_N_EMBD, GPT2_TOKEN_ROWS, HiddenState, Nvfp4Shape, TokenEmbeddingShape,
+};
 use rust_kernels_cuda::embedding::{EmbeddingArgs, EmbeddingModule};
 use rust_kernels_cuda::nvfp4::Nvfp4DeviceTensor;
 
@@ -18,13 +20,14 @@ fn embedding_forward_decodes_token_embeddings_to_residual_only() -> Result<(), B
     let (_, stream, ptx) = cuda_test_context()?;
     let module = EmbeddingModule::from_module(ptx)?;
 
-    let mut tokens = vec![0_u32; GPT2_CONTEXT_LEN];
+    let mut tokens = vec![0_u32; GPT2_TOKEN_ROWS];
     tokens[0] = 7;
     tokens[1] = 11;
 
     let mut token_embedding_bytes = vec![0_u8; TokenEmbeddingShape::BYTE_LEN];
     set_e2m1_one(&mut token_embedding_bytes, 7 * GPT2_N_EMBD);
     set_e2m1_one(&mut token_embedding_bytes, 7 * GPT2_N_EMBD + 37);
+    set_e2m1_one(&mut token_embedding_bytes, 7 * GPT2_N_EMBD + 1900);
     set_e2m1_one(&mut token_embedding_bytes, 11 * GPT2_N_EMBD + 2);
 
     let token_embedding_scales = vec![E4M3_ONE; TokenEmbeddingShape::SCALE_LEN];
@@ -58,6 +61,7 @@ fn embedding_forward_decodes_token_embeddings_to_residual_only() -> Result<(), B
 
     assert_value(residual[0], 1.0);
     assert_value(residual[37], 1.0);
+    assert_value(residual[1900], 1.0);
     assert_value(residual[2], 0.0);
     assert_value(residual[GPT2_N_EMBD + 2], 1.0);
     assert_value(residual[GPT2_N_EMBD], 0.0);

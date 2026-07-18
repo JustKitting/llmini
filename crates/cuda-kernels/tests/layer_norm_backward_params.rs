@@ -60,8 +60,8 @@ fn layer_norm_backward_params_match_reference() -> Result<(), Box<dyn Error>> {
 #[ignore = "requires generated sm_120a PTX"]
 #[test]
 fn layer_norm_backward_params_tiled_f16_match_reference() -> Result<(), Box<dyn Error>> {
-    const TILED_ROWS: usize = 64;
-    const TILED_COLS: usize = 32;
+    const TILED_ROWS: usize = 128;
+    const TILED_COLS: usize = 2048;
 
     let epsilon = 1.0e-5f32;
     let output_scale = 0.25f32;

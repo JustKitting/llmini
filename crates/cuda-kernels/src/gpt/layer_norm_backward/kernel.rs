@@ -2,10 +2,7 @@ use cuda_device::{DisjointSlice, SharedArray, cuda_module, kernel, thread};
 
 use crate::float_ptx::{abs_f32, max_f32};
 use crate::layer_norm_reduce::{layer_norm_block_reduce, layer_norm_store_row};
-use crate::layer_norm_utils::{
-    f16_column, f32_column, layer_norm_columns3, layer_norm_map3, layer_norm_map3_indexed,
-    layer_norm_store3, layer_norm_sum3, max_abs3, nvfp4_column,
-};
+use crate::layer_norm_utils::{f16_column, f32_column, nvfp4_column};
 use crate::warp_reduce::{thread_lane_warp, warp_max_f32, warp_sum_f32};
 
 pub const THREADS_PER_BLOCK: u32 = 256;
@@ -19,25 +16,11 @@ pub(super) mod kernels {
 
     macro_rules! maybe_store_input_amax {
         (none; $($ignored:ident),+) => {};
-        ($chunk_amax:ident; $dx:ident, $cols:ident, $d_residual:ident, $row_base:ident, $row:ident, $embedding_dim:ident, $thread:ident, $lane:ident, $warp_in_block:ident) => {{
-            let valid_dx = layer_norm_map3_indexed!($dx, |index, value| {
-                if $cols[index] < $embedding_dim {
-                    value
-                } else {
-                    0.0
-                }
-            });
-            let mut local_amax = max_abs3(valid_dx[0], valid_dx[1], valid_dx[2]);
-            let mut col = $thread + THREADS_PER_BLOCK * 3;
-            while col < $embedding_dim {
-                let value = unsafe { *$d_residual.as_mut_ptr().add($row_base + col as usize) };
-                local_amax = max_f32(local_amax, abs_f32(value));
-                col += THREADS_PER_BLOCK;
-            }
+        ($chunk_amax:ident; $local_amax:ident, $row:ident, $lane:ident, $warp_in_block:ident) => {{
             let row_amax = layer_norm_block_reduce!(
                 WARP_SUMS,
                 WARPS_PER_BLOCK,
-                local_amax,
+                $local_amax,
                 $lane,
                 $warp_in_block,
                 warp_max_f32
@@ -63,14 +46,19 @@ pub(super) mod kernels {
 
             if row < $row_count {
                 let row_base = row as usize * $embedding_dim as usize;
-                let cols = layer_norm_columns3!(thread, THREADS_PER_BLOCK);
                 let row_mean = $mean[row as usize];
                 let row_inv_std = $inv_std[row as usize];
-                let xhat = layer_norm_map3!(cols, |col| {
-                    ($residual_column($residual, row_base, col, $embedding_dim) - row_mean)
-                        * row_inv_std
-                });
-                let dxhat = layer_norm_map3!(cols, |col| {
+                let mut dxhat_local = 0.0f32;
+                let mut xhat_dxhat_local = 0.0f32;
+                let mut col = thread;
+                while col < $embedding_dim {
+                    let xhat = ($residual_column(
+                        $residual,
+                        row_base,
+                        col,
+                        $embedding_dim,
+                    ) - row_mean)
+                        * row_inv_std;
                     let grad = f32_column($d_normalized, row_base, col, $embedding_dim);
                     let weight = nvfp4_column(
                         $weight_bytes,
@@ -80,55 +68,66 @@ pub(super) mod kernels {
                         col,
                         $embedding_dim,
                     );
-                    grad * weight * $output_scale
-                });
+                    let dxhat = grad * weight * $output_scale;
+                    dxhat_local += dxhat;
+                    xhat_dxhat_local += xhat * dxhat;
+                    col += THREADS_PER_BLOCK;
+                }
                 let dxhat_sum = layer_norm_block_reduce!(
                     WARP_SUMS,
                     WARPS_PER_BLOCK,
-                    layer_norm_sum3!(dxhat),
+                    dxhat_local,
                     lane,
                     warp_in_block,
                     warp_sum_f32
                 );
-                let xhat_dxhat =
-                    layer_norm_map3_indexed!(xhat, |index, value| value * dxhat[index]);
                 let xhat_dxhat_sum = layer_norm_block_reduce!(
                     WARP_SUMS,
                     WARPS_PER_BLOCK,
-                    layer_norm_sum3!(xhat_dxhat),
+                    xhat_dxhat_local,
                     lane,
                     warp_in_block,
                     warp_sum_f32
                 );
                 let inv_dim = 1.0 / $embedding_dim as f32;
-                let dx = layer_norm_map3_indexed!(dxhat, |index, value| {
-                    (value - dxhat_sum * inv_dim - xhat[index] * xhat_dxhat_sum * inv_dim)
-                        * row_inv_std
-                });
                 let direct: *const f32 = $direct;
-                let dx = if direct.is_null() {
-                    dx
-                } else {
-                    layer_norm_map3_indexed!(dx, |index, value| {
-                        let col = cols[index];
-                        if col < $embedding_dim {
-                            unsafe { *direct.add(row_base + col as usize) + value }
-                        } else {
-                            value
-                        }
-                    })
-                };
-
-                layer_norm_store3!(&mut $d_residual, row_base, cols, $embedding_dim, dx);
+                let mut local_amax = 0.0f32;
+                let mut col = thread;
+                while col < $embedding_dim {
+                    let xhat = ($residual_column(
+                        $residual,
+                        row_base,
+                        col,
+                        $embedding_dim,
+                    ) - row_mean)
+                        * row_inv_std;
+                    let grad = f32_column($d_normalized, row_base, col, $embedding_dim);
+                    let weight = nvfp4_column(
+                        $weight_bytes,
+                        $weight_scales,
+                        $weight_global_scale[0],
+                        0,
+                        col,
+                        $embedding_dim,
+                    );
+                    let dxhat = grad * weight * $output_scale;
+                    let mut dx = (dxhat
+                        - dxhat_sum * inv_dim
+                        - xhat * xhat_dxhat_sum * inv_dim)
+                        * row_inv_std;
+                    if !direct.is_null() {
+                        dx += unsafe { *direct.add(row_base + col as usize) };
+                    }
+                    unsafe {
+                        *$d_residual.get_unchecked_mut(row_base + col as usize) = dx;
+                    }
+                    local_amax = max_f32(local_amax, abs_f32(dx));
+                    col += THREADS_PER_BLOCK;
+                }
                 maybe_store_input_amax!(
                     $chunk_amax;
-                    dx,
-                    cols,
-                    $d_residual,
-                    row_base,
+                    local_amax,
                     row,
-                    $embedding_dim,
-                    thread,
                     lane,
                     warp_in_block
                 );

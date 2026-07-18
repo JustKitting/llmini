@@ -15,7 +15,7 @@ use common::nvfp4::{one_pair_bytes, one_scales};
 use stats::{reference_row_stats, sample_rows};
 
 const ROWS: usize = 2;
-const COLS: usize = 32;
+const COLS: usize = 4096;
 
 #[ignore = "requires generated sm_120a PTX"]
 #[test]
@@ -56,7 +56,7 @@ fn layer_norm_backward_input_matches_reference() -> Result<(), Box<dyn Error>> {
 
     let dx = dx_dev.to_host_vec(&stream)?;
     let expected = reference_backward_input(&x, &d_normalized, &mean, &inv_std, output_scale);
-    common::assert_slice_close(&dx, &expected, 1.0e-8);
+    common::assert_slice_close(&dx, &expected, 2.0e-6);
     Ok(())
 }
 

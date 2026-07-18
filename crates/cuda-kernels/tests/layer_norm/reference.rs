@@ -1,5 +1,7 @@
 use rust_kernels_cuda::layer_norm::ROW_SIZE;
 
+const GPT_THREADS_PER_BLOCK: usize = 256;
+
 pub(super) fn sample_row_0(col: usize) -> f32 {
     -3.875 + col as f32 * 0.25
 }
@@ -64,11 +66,10 @@ fn gpt_kernel_row_reduce(
 ) -> f32 {
     gpt_block_reduce_sum(|thread| {
         let mut sum = 0.0;
-        for offset in [0, 256, 512] {
-            let col = thread + offset;
-            if col < row_len {
-                sum += value(x[base + col]);
-            }
+        let mut col = thread;
+        while col < row_len {
+            sum += value(x[base + col]);
+            col += GPT_THREADS_PER_BLOCK;
         }
         sum
     })
@@ -76,7 +77,11 @@ fn gpt_kernel_row_reduce(
 
 fn gpt_block_reduce_sum(local: impl Fn(usize) -> f32) -> f32 {
     let mut warp_totals = [0.0_f32; 32];
-    for (warp, warp_total) in warp_totals.iter_mut().enumerate().take(8) {
+    for (warp, warp_total) in warp_totals
+        .iter_mut()
+        .enumerate()
+        .take(GPT_THREADS_PER_BLOCK / 32)
+    {
         let mut lanes = [0.0_f32; 32];
         for (lane, value) in lanes.iter_mut().enumerate() {
             *value = local(warp * 32 + lane);

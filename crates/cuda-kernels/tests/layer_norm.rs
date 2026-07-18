@@ -1,7 +1,9 @@
 use std::error::Error;
 
 use cuda_core::DeviceBuffer;
-use rust_kernels_cuda::layer_norm::{GptLayerNormArgs, LayerNormArgs, LayerNormModule, ROW_SIZE};
+use rust_kernels_cuda::layer_norm::{
+    GptLayerNormArgs, GptLayerNormSaveResidualF16Args, LayerNormArgs, LayerNormModule, ROW_SIZE,
+};
 use rust_kernels_cuda::nvfp4::Nvfp4DeviceTensor;
 
 mod common;
@@ -14,7 +16,7 @@ use reference::{
     assert_row_amax, reference_layer_norm, reference_layer_norm_rows, sample_row_0, sample_row_1,
 };
 
-const GPT_EMBEDDING_DIM: usize = 768;
+const GPT_EMBEDDING_DIM: usize = 4096;
 
 #[ignore = "requires generated sm_120a PTX"]
 #[test]
@@ -109,5 +111,56 @@ fn gpt_layer_norm_matches_reference() -> Result<(), Box<dyn Error>> {
         .collect::<Vec<_>>();
     assert_slice_close(&out, &expected, 1.0e-7);
     assert_row_amax(&out, &amax, row_count, GPT_EMBEDDING_DIM);
+
+    let mut residual_f16_dev = DeviceBuffer::<u16>::zeroed(&stream, x.len())?;
+    module.gpt_layer_norm_save_residual_f16(GptLayerNormSaveResidualF16Args {
+        stream: &stream,
+        residual: &x_dev,
+        weight: Nvfp4DeviceTensor::new(
+            &weight_bytes_dev,
+            &weight_scales_dev,
+            &weight_global_scale_dev,
+        ),
+        bias: Nvfp4DeviceTensor::new(&bias_bytes_dev, &bias_scales_dev, &bias_global_scale_dev),
+        normalized: &mut out_dev,
+        normalized_amax: &mut amax_dev,
+        mean: &mut mean_dev,
+        inv_std: &mut inv_std_dev,
+        residual_f16: &mut residual_f16_dev,
+        row_count: row_count as u32,
+        embedding_dim: GPT_EMBEDDING_DIM as u32,
+        epsilon,
+        output_scale,
+    })?;
+
+    let saved = residual_f16_dev
+        .to_host_vec(&stream)?
+        .into_iter()
+        .map(f16_bits_to_f32)
+        .collect::<Vec<_>>();
+    for index in [
+        0,
+        1900,
+        GPT_EMBEDDING_DIM - 1,
+        GPT_EMBEDDING_DIM + 1900,
+        x.len() - 1,
+    ] {
+        let error = (saved[index] - x[index]).abs();
+        assert!(error <= 1.0e-3, "index={index} error={error:.8e}");
+    }
     Ok(())
+}
+
+fn f16_bits_to_f32(bits: u16) -> f32 {
+    let sign = if bits & 0x8000 == 0 { 1.0 } else { -1.0 };
+    let exponent = ((bits >> 10) & 0x1f) as i32;
+    let mantissa = (bits & 0x03ff) as u32;
+
+    match exponent {
+        0 if mantissa == 0 => sign * 0.0,
+        0 => sign * (mantissa as f32) * 2.0_f32.powi(-24),
+        31 if mantissa == 0 => sign * f32::INFINITY,
+        31 => f32::NAN,
+        _ => sign * (1.0 + mantissa as f32 / 1024.0) * 2.0_f32.powi(exponent - 15),
+    }
 }

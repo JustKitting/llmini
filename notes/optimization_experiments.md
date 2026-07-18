@@ -32,11 +32,16 @@ Primary optimization target:
 - Lowest held-out validation loss after the active fixed-time single-GPU
   candidate gate. As of 2026-07-16 the gate is 450 seconds; this shorter gate
   is an iteration screen, not the final training budget.
-- For research-scale changes, a 30-second screen checks only that the candidate
-  works: launches, finite/nonzero metrics, real updates, no unexpected skips,
-  and no immediate divergence. Its loss delta is not acceptance or rejection
-  evidence. The full 450-second sustained run is the first quality judgment and
-  remains mandatory before committing.
+- For research-scale changes, a 30-second screen checks health and compares
+  loss at identical optimizer steps. A real matched-step improvement earns
+  profiling and implementation optimization even when the first version is
+  slower. A clearly worse matched-step curve rejects the candidate without a
+  450-second run; use the smallest fixed-step diagnostic needed when the short
+  screen has no adequate common sample.
+- The 450-second sustained run is reserved for candidates that survive the
+  matched-step screen and any justified optimization pass. It remains mandatory
+  before a passing change is promoted or committed, but is not run on every
+  working structural implementation.
 - Training loss, fixed-step loss, tokens/s, memory, and isolated kernel timings
   are diagnostics. Tokens/s explains training exposure but does not override
   matched held-out or downstream quality.
@@ -44,6 +49,115 @@ Primary optimization target:
 
 ```text
 heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
+```
+
+```text
+date: 2026-07-18
+commit: accepted local jj commit after matched-step screen, optimization due
+  diligence, and 450-second gate
+experiment: Restore full d2048/d4096 token-embedding and LayerNorm coverage.
+status: accepted_correctness_and_quality
+rationale:
+  The inherited GPT token-embedding and LayerNorm primitives were still the
+  original 256-thread by three-column implementation. The active model is
+  B4/S2048/L16/d2048/h32 and NextLat normalizes a d4096 concatenated state, so
+  those kernels only executed columns 0-767. This was not a smaller benchmark
+  model: it was a partially executed approximately 1B model and violated the
+  requirement that all active channels remain trainable.
+pre_edit_bug:
+  token_embedding_kernel wrote only
+    thread, thread + 256, thread + 512,
+  leaving embedding columns 768-2047 stale for every token row.
+  GPT LayerNorm forward accumulated mean and variance from only those same 768
+  columns, divided by the declared d2048/d4096 width, normalized only those
+  columns, and saved only those columns to the FP16 backward tape.
+  LayerNorm input backward computed d_residual for only columns 0-767. Its amax
+  path scanned the remaining stale tail, which masked the missing-gradient
+  coverage in aggregate diagnostics. The generic parameter-gradient kernels
+  traversed the declared width, but their FP16 residual tape was incomplete.
+  The same primitive also served NextLat's d4096 normalization.
+implementation:
+  Token embedding now strides each of 256 threads across every column up to
+  embedding_dim. LayerNorm forward independently traverses the complete row
+  for mean, variance, affine output, row amax, and optional FP16 tape save.
+  LayerNorm input backward traverses the complete row for both exact Jacobian
+  reductions and every output gradient, including direct-residual addition and
+  row amax. Parameter gradients retain their existing generic/tiled kernels.
+  Removed the obsolete fixed-three-column helper macros and dead helpers.
+  No layer, attention/KDA path, MLP, value residual, NextLat path, optimizer,
+  schedule, model shape, dataset, tokenizer, or training token count changed.
+correctness:
+  cargo fmt --all: pass.
+  cargo check --workspace: pass.
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+  Focused sm_120a GPU LayerNorm forward tests pass at d4096, including affine
+  output, row amax, row statistics, and saved-FP16 values at columns 1900,
+  4095, 5996, and 8191 across two rows.
+  Analytical LayerNorm input backward and direct-add+amax tests pass at d4096.
+  The actual tiled FP16 parameter-gradient route passes at 128 rows by d2048;
+  the former 64-row test had silently selected the fallback kernel.
+  Token embedding now explicitly decodes token 7 column 1900. Its test token
+  buffer was also corrected from one 2048-token context to all 8192 B4 rows,
+  eliminating a stale test-only out-of-bounds read exposed by Compute
+  Sanitizer.
+  Five-step diagnostic:
+    target/runs/20260718_150638Z_fineweb_120s
+    train loss 10.7404146 -> 8.2340107,
+    grad_norm range 3.5685570 to 5.6373191,
+    every update finite/nonzero with no skip signal.
+  This five-step run is diagnostic only.
+health_and_matched_step_screen:
+  target/runs/20260718_150657Z_fineweb_30s completed 98 steps in 30.231s
+  with held-out val_loss=6.093770. The accepted partial-width screen completed
+  100 steps in 30.245s with val_loss=6.106686.
+  At the shared logged step 50, training loss was 6.6498981 versus 6.6291599,
+  +0.312832% and effectively flat. The unequal-step endpoint was not used as
+  the structural-quality decision.
+  The exact fixed-100-step comparison
+    target/runs/20260718_150757Z_fineweb_120s
+  reached held-out val_loss=6.0782166 versus 6.1066856 for the 100-step
+  control, a 0.466195% same-step improvement. All logged gradients and updates
+  remained finite/nonzero with no skips.
+optimization_due_diligence:
+  Baseline full-width 10-step nsys profile:
+    target/nsys/20260718_full_width_correctness_candidate.nsys-rep
+    target/nsys/20260718_full_width_correctness_candidate_cuda_gpu_kern_sum.csv
+    total LayerNorm family=98.337658ms.
+  Exact register caching was rejected and reverted. It raised forward registers
+  from 28 to 48 and the hot backward kernel from 40 to 60. Saved forward
+  regressed 0.496%, add+amax backward regressed 3.695%, and total LayerNorm
+  time regressed to 99.444589ms.
+  A 512-thread geometry was rejected and reverted. Saved forward regressed
+  5.512%, add+amax backward regressed 1.664%, and total LayerNorm time regressed
+  to 100.280085ms.
+  A 128-thread geometry reduced total LayerNorm time to 96.952374ms, only
+  1.385284ms over ten steps or 0.138528ms per step. That is far below the
+  approximately 1.55ms per-step 0.5% whole-step impact floor, so it was also
+  reverted. The accepted source retains 256 threads and no speculative cache.
+promotion_gate:
+  target/runs/20260718_152529Z_fineweb_450s completed 1430 steps in 450.255s
+  with held-out val_loss=4.6900172.
+  The accepted partial-width control
+    target/runs/20260718_044657Z_fineweb_450s
+  completed 1451 steps in 450.193s with val_loss=4.7384748.
+  Held-out validation improves 1.022642% even though completed steps fall
+  1.447278% and mean step time rises from 310.263956ms to 314.863636ms
+  (+1.482506%). At identical logged steps, the corrected model is better at
+  every sample from step 100 through step 1400; the advantage reaches 3.160574%
+  at step 1400.
+stability:
+  All 29 high-fidelity samples have Finite=1 and Nonzero=1.
+  Update_skipped, Skip_non_finite, Skip_loss_spike, and
+  Skip_grad_norm_spike are zero throughout. Sampled grad_norm remains finite
+  from 0.8687651 to 3.5685570.
+decision:
+  Keep and promote. This repairs partial model execution, improves validation
+  loss at identical step count, and improves held-out loss after the fixed
+  450-second budget despite lower throughput. notes/sweep_baseline.env now
+  points to this intact full-width model. Future architecture and optimizer
+  candidates must compare against this corrected lineage, not the invalid
+  768-column path. A fused LayerNorm-to-rowwise-NVFP4 path remains a possible
+  future speed project, but no sub-threshold thread-count change is retained.
 ```
 
 ```text
