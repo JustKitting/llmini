@@ -29843,3 +29843,72 @@ decision:
   fails the sole prerequisite for optimizing a structural candidate. Restore
   the source and rebuild the accepted baseline; retain only this result.
 ```
+
+```text
+date: 2026-07-18
+commit: rejected source reverted; note only
+experiment: Type-I sigmoid-gated Mixture of Activations (MoA).
+status: rejected_matched_step_screen; no_profile; no_450s
+sources:
+  https://arxiv.org/abs/2605.26647
+rationale:
+  Test the paper's Type-I MoA inside the existing two-projection MLP. This is
+  the directly compatible form f(x)=W2 sum_k sigmoid(u_k^T x) sigma_k(W1 x),
+  and the paper reports better validation loss than its ReLU-squared baseline
+  with only a small implementation-level runtime premium.
+implementation:
+  Kept the intact FineWeb/Llama-2 B4/S2048/L16/d2048/h32 model, all four
+  full-attention and twelve KDA blocks, value residuals, NextLat, block Top-K,
+  both MLP projections, optimizer, and schedule. Each layer added a d-by-5
+  gate projection initialized at RMS 0.02 and mixed GELU, SiLU, ReLU-squared,
+  LeakyReLU, and ReLU with per-token sigmoid gates. Gate parameters used AdamW
+  as allowed by the paper and participated in clipping, schedule-free
+  materialization, diagnostics, and checkpoints. The first implementation
+  deliberately materialized separate gate and activation kernels; fusing them
+  into the up-projection epilogue was reserved for a candidate that first
+  demonstrated a matched-step loss improvement. Because MoA activations can
+  be signed, block Top-K ranked absolute activation mass; that is identical to
+  the existing score for nonnegative ReLU-squared activations.
+  GELU used the repository's existing tanh approximation. The paper does not
+  state its LeakyReLU negative slope, so this test used the PyTorch default
+  0.01.
+correctness:
+  cargo fmt --all: pass before the exact CUDA rebuild.
+  cargo check --workspace --lib --bins: pass.
+  cargo check -p rust-kernels-cuda --tests: pass.
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+  CUDA_DEVICE_INDEX=0 cargo test -p rust-kernels-cuda --test mlp
+    moa_forward_and_backward_match_type_i_sigmoid_reference
+    -- --ignored --nocapture:
+    1 passed, covering gate projection, all five activation formulas, saved
+    FP16 preactivations, activation and gate derivatives, chunk amax, gate
+    weight gradients, and the gate input-gradient add.
+  The broader gpt2-nvfp4 test targets remain blocked by unrelated pre-existing
+  stale attention/MLP test initializers.
+  target/runs/20260718_234024Z_fineweb_900s was launched with an incorrect
+  TRAIN_MAX_STEPS variable and manually stopped after 339 updates. It remained
+  finite/nonzero with zero skips, but it is classified only as a launch and
+  sustained-health diagnostic and was not used as promotion evidence.
+matched_step_screen:
+  target/runs/20260718_234331Z_fineweb_120s used the correct TRAIN_STEPS=200
+  cap, completed exactly 200 steps in 73.167s, and produced held-out
+  val_loss=5.622602. All five high-fidelity samples were finite/nonzero and
+  every skip metric was zero.
+  Against target/runs/20260718_194550Z_fineweb_120s at identical optimizer
+  steps:
+    step 0:   10.7416258 versus 10.7418480, 0.002069% better.
+    step 50:   6.5573945 versus  6.5534897, 0.059584% worse.
+    step 100:  6.4766831 versus  6.4395809, 0.576159% worse.
+    step 150:  5.8360858 versus  5.8112059, 0.428137% worse.
+    step 199:  6.4448199 versus  6.4616308, 0.260165% better.
+  The isolated final minibatch improvement did not repeat in the 339-step
+  diagnostic, where step 199 was 0.244% worse than control. The clean
+  candidate's held-out loss was also 0.5642% worse than the control's
+  5.5910559. Candidate runtime was recorded but was not a rejection criterion.
+decision:
+  Reject without profiling, implementation optimization, or a 450-second
+  gate. The candidate was consistently worse at the three informative
+  intermediate matched steps and supplied no credible, repeatable
+  loss-per-step improvement. Restore and exactly rebuild the accepted
+  ReLU-squared baseline; retain only this result.
+```
