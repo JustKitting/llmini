@@ -53,6 +53,78 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 
 ```text
 date: 2026-07-18
+commit: accepted local jj commit after matched-step bracket and 450-second gate
+experiment: Retune Muon's matrix learning rate after restoring full-width execution.
+status: accepted_450s
+sources:
+  https://arxiv.org/abs/2505.16932
+  https://arxiv.org/abs/2605.22432v2
+rationale:
+  The active TRAIN_LR_SCALE=2.5 was selected while token embedding and every
+  transformer/NextLat LayerNorm covered only columns 0-767. Restoring all
+  d2048/d4096 channels materially changed the matrix-gradient regime, so the
+  old matrix-LR optimum was no longer valid evidence for the corrected model.
+  Polar Express reports Muon comparisons across learning rates, while AMUSE
+  tunes its interpolation behavior for LLM training; neither source supplies
+  this repository-specific scale, so the local setting was remeasured rather
+  than inferred from the papers.
+scope:
+  Hold the complete B4/S2048/L16/d2048/h32 model, full-width embedding and
+  normalization, all attention/KDA and MLP paths, value residuals, NextLat,
+  dataset, tokenizer, Adam LR, AMUSE coefficients, warmup, and every kernel
+  fixed. Change only TRAIN_LR_SCALE, which multiplies the Muon matrix update.
+matched_200_step_bracket:
+  scale=2.5:
+    target/runs/20260718_154245Z_fineweb_120s
+    completed_steps=200, train_elapsed_s=61.907,
+    val_loss=5.709729194641113.
+  scale=3.25:
+    target/runs/20260718_154404Z_fineweb_120s
+    completed_steps=200, train_elapsed_s=62.618,
+    val_loss=5.691929817199707 (-0.311742%).
+  scale=4.0:
+    target/runs/20260718_154521Z_fineweb_120s
+    completed_steps=200, train_elapsed_s=62.970,
+    val_loss=5.663097858428955 (-0.816700%).
+  scale=5.0:
+    target/runs/20260718_154636Z_fineweb_120s
+    completed_steps=200, train_elapsed_s=63.161,
+    val_loss=5.645723819732666 (-1.121000%).
+  These are exact matched-optimizer-step held-out comparisons. Only the best
+  bracket consumed the sustained promotion gate.
+promotion_gate:
+  target/runs/20260718_154755Z_fineweb_450s completed 1432 steps in 450.219s
+  with held-out val_loss=4.6698198318481445.
+  The scale=2.5 full-width control
+    target/runs/20260718_152529Z_fineweb_450s
+  completed 1430 steps in 450.255s with val_loss=4.690017223358154.
+  Held-out loss improves 0.430646%. The candidate completes two additional
+  steps (+0.139860%); mean step time improves from 314.863636ms to
+  314.398743ms (-0.147649%), so the quality result is not bought with a
+  throughput regression.
+matched_step_curve:
+  Ignoring the identical step-0 initialization, scale=5.0 has lower sampled
+  training loss at every common 50-step sample from step 50 through step 1400
+  (28 of 28). Its mean relative advantage over those samples is 0.776781%;
+  the individual advantages range from 0.333744% to 1.214032%.
+stability:
+  All 29 high-fidelity samples have Finite=1 and Nonzero=1.
+  Update_skipped, Skip_non_finite, Skip_loss_spike, and
+  Skip_grad_norm_spike are zero throughout. Sampled grad_norm remains finite
+  from 0.7771274 to 3.5685570.
+reproduction_screen:
+  target/runs/20260718_155603Z_fineweb_30s completed 96 steps in 30.046s
+  with held-out val_loss=6.0468111. This is the active short health baseline;
+  it is not the evidence that selected the optimizer setting.
+decision:
+  Keep TRAIN_LR_SCALE=5.0 and promote this run in notes/sweep_baseline.env.
+  The candidate first earned the sustained run from exact same-step loss,
+  rather than receiving a blanket 450-second test. Future research candidates
+  compare against this full-width, post-repair optimizer baseline.
+```
+
+```text
+date: 2026-07-18
 commit: accepted local jj commit after matched-step screen, optimization due
   diligence, and 450-second gate
 experiment: Restore full d2048/d4096 token-embedding and LayerNorm coverage.
