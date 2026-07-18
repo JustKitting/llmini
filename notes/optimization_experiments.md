@@ -29450,3 +29450,62 @@ decision:
   full-width limitation found in the inherited LayerNorm primitive as a
   separate correctness candidate rather than conflating it with HybridNorm*.
 ```
+
+```text
+date: 2026-07-18
+commit: rejected source reverted; note only
+experiment: Fixed-affine Peri-LN branch-output normalization.
+status: rejected_matched_step_screen
+sources:
+  https://arxiv.org/abs/2502.02732
+  https://github.com/allenai/OLMo-core
+rationale:
+  Test the Peri-LN block topology as a distinct candidate from the previously
+  rejected HybridNorm* equations. The existing learned pre-LayerNorms remain
+  in place while each attention and MLP branch output is normalized before
+  its residual addition. The paper explicitly evaluates fixed affine scale as
+  well as learned affine parameters, so the fixed unit-scale form isolates
+  the structural placement without adding optimizer-state variables.
+implementation:
+  Kept the active B4/S2048/L16/d2048/h32 approximately 1B model and every
+  attention/KDA, MLP, value-residual, NextLat, projection, optimizer, and
+  schedule path. Attention c_proj and MLP down projections produced their
+  ordinary affine outputs into scratch. A fused full-width LayerNorm then
+  saved the FP16 branch for backward, saved row statistics, normalized the
+  branch with fixed gamma=1 and beta=0, and added it to the identity residual.
+  Backward applied the exact fixed-affine LayerNorm Jacobian before each
+  existing projection backward. The implementation reused freed gradient
+  buffers and forwarded exact row-amax values into the NVFP4 linear backward.
+correctness:
+  cargo fmt --all: pass.
+  cargo check --workspace: pass.
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+  cargo test -p rust-kernels-cuda --test layer_norm
+    gpt_branch_layer_norm_residual_add_matches_reference
+    -- --ignored --nocapture:
+    1 passed.
+  cargo test -p rust-kernels-cuda --test layer_norm_backward
+    layer_norm_backward_input_fixed_amax_matches_reference
+    -- --ignored --nocapture:
+    1 passed.
+  target/runs/20260718_210829Z_fineweb_30s was a one-step launch diagnostic
+  only: the intact graph allocated, completed forward/backward/update, and
+  produced finite held-out val_loss=9.702031.
+  The broad all-target check remains blocked by unrelated pre-existing stale
+  l2_attention, l3_mlp, forward, and causal-attention test initializers; the
+  workspace libraries and the candidate's focused GPU targets compile/pass.
+health_and_matched_step_screen:
+  target/runs/20260718_210842Z_fineweb_30s completed 91 steps in 30.122s with
+  held-out val_loss=6.291299. Both high-fidelity samples were finite/nonzero
+  and all skip metrics were zero.
+  Against target/runs/20260718_200249Z_fineweb_30s at the identical logged
+  optimizer step:
+    step 50: 6.7331362 versus 6.5319114, 3.080642% worse.
+  The candidate completed 91 versus 92 steps, but speed and unequal-step
+  held-out endpoints were not used for the quality decision.
+decision:
+  Reject without profiling, implementation optimization, a fixed-step
+  extension, or a 450-second gate. The clear 3.08% same-step loss regression
+  fails the sole prerequisite for optimizing a structural candidate. Restore
+  the source and rebuild the accepted baseline; retain only this result.
+```
