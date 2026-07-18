@@ -11,12 +11,30 @@ pub(super) fn cta_matmul_lower_ds_body(
     b_t: &[u16],
     probs: &[u16],
     softmax_d: &[f32],
-    mut out: DisjointSlice<u16>,
+    out: DisjointSlice<u16>,
     a_tile: &mut super::CtaATile,
     b_tile: &mut super::CtaBTile,
     dims: CtaMatmulDims,
 ) {
-    if thread::blockIdx_x() > thread::blockIdx_y() {
+    cta_matmul_windowed_lower_ds_body(a, b_t, probs, softmax_d, out, a_tile, b_tile, dims, dims.m);
+}
+
+#[expect(clippy::too_many_arguments, reason = "CUDA ABI uses explicit buffers")]
+pub(super) fn cta_matmul_windowed_lower_ds_body(
+    a: &[u16],
+    b_t: &[u16],
+    probs: &[u16],
+    softmax_d: &[f32],
+    mut out: DisjointSlice<u16>,
+    a_tile: &mut super::CtaATile,
+    b_tile: &mut super::CtaBTile,
+    dims: CtaMatmulDims,
+    window: u32,
+) {
+    let tile_col = thread::blockIdx_x();
+    let tile_row = thread::blockIdx_y();
+    let window_tiles = window / super::cta_tile::CTA_N;
+    if tile_col > tile_row || tile_row > tile_col + window_tiles {
         return;
     }
     let Some(tile) = super::cta_tile::active_wide_tile(dims.batch_count) else {

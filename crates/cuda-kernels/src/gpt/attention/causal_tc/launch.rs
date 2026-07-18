@@ -3,7 +3,10 @@ use cuda_core::DriverError;
 use super::gather::TC_FORWARD_THREADS_PER_BLOCK;
 use super::types::CausalAttentionTcArgs;
 use crate::attention::AttentionModule;
-use crate::f16_tc_matmul::{F16TcMatmulF32Args, F16TcMatmulHalfRhsArgs};
+use crate::f16_tc_matmul::{
+    F16TcMatmulF32Args, F16TcMatmulF32WindowArgs, F16TcMatmulHalfRhsArgs,
+    F16TcMatmulHalfRhsWindowArgs,
+};
 use crate::launch::{launch_config, linear_config};
 
 impl AttentionModule {
@@ -30,17 +33,32 @@ impl AttentionModule {
                 &mut *scratch.chunk_states,
                 params,
             )?;
-        args.tc_module
-            .batched_matmul_f32_input_lower(F16TcMatmulF32Args {
-                stream: args.stream,
-                a: &*scratch.q,
-                b_t: &*scratch.k,
-                out: &mut *scratch.scores,
-                batch_count: batch_head,
-                m: args.seq_len,
-                n: args.seq_len,
-                k: args.head_dim,
-            })?;
+        if params.attention_window == args.seq_len {
+            args.tc_module
+                .batched_matmul_f32_input_lower(F16TcMatmulF32Args {
+                    stream: args.stream,
+                    a: &*scratch.q,
+                    b_t: &*scratch.k,
+                    out: &mut *scratch.scores,
+                    batch_count: batch_head,
+                    m: args.seq_len,
+                    n: args.seq_len,
+                    k: args.head_dim,
+                })?;
+        } else {
+            args.tc_module
+                .batched_matmul_f32_input_windowed_lower(F16TcMatmulF32WindowArgs {
+                    stream: args.stream,
+                    a: &*scratch.q,
+                    b_t: &*scratch.k,
+                    out: &mut *scratch.scores,
+                    batch_count: batch_head,
+                    m: args.seq_len,
+                    n: args.seq_len,
+                    k: args.head_dim,
+                    window: params.attention_window,
+                })?;
+        }
         self.causal_attention_tc
             .base
             .attention_softmax_forward_f16_kernel(
@@ -54,17 +72,33 @@ impl AttentionModule {
                 args.log_sum_exp,
                 params,
             )?;
-        args.tc_module
-            .batched_matmul_half_rhs_lower_a(F16TcMatmulHalfRhsArgs {
-                stream: args.stream,
-                a: &*probs_half,
-                rhs: &*scratch.chunk_states,
-                out: &mut *scratch.compact_out,
-                batch_count: batch_head,
-                m: args.seq_len,
-                n: args.head_dim,
-                k: args.seq_len,
-            })?;
+        if params.attention_window == args.seq_len {
+            args.tc_module
+                .batched_matmul_half_rhs_lower_a(F16TcMatmulHalfRhsArgs {
+                    stream: args.stream,
+                    a: &*probs_half,
+                    rhs: &*scratch.chunk_states,
+                    out: &mut *scratch.compact_out,
+                    batch_count: batch_head,
+                    m: args.seq_len,
+                    n: args.head_dim,
+                    k: args.seq_len,
+                })?;
+        } else {
+            args.tc_module.batched_matmul_half_rhs_windowed_lower_a(
+                F16TcMatmulHalfRhsWindowArgs {
+                    stream: args.stream,
+                    a: &*probs_half,
+                    rhs: &*scratch.chunk_states,
+                    out: &mut *scratch.compact_out,
+                    batch_count: batch_head,
+                    m: args.seq_len,
+                    n: args.head_dim,
+                    k: args.seq_len,
+                    window: params.attention_window,
+                },
+            )?;
+        }
         let config = linear_config(
             batch_head * args.seq_len * args.head_dim,
             TC_FORWARD_THREADS_PER_BLOCK,

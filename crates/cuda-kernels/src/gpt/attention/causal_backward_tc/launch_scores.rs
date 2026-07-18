@@ -51,5 +51,6 @@ pub(super) fn run_ds_scores(
         ctx.seq_len,
         ctx.seq_len,
         ctx.head_dim,
+        ctx.attention_window,
     )
 }

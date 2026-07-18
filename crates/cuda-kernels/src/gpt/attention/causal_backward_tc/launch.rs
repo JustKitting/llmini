@@ -51,6 +51,7 @@ impl AttentionModule {
             batch_head,
             seq_len,
             head_dim,
+            attention_window: params.attention_window,
         };
         let mut scratch = scratch;
         let linear = |n| linear_config(n, TC_BACKWARD_THREADS_PER_BLOCK);

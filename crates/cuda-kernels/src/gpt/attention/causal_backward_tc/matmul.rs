@@ -3,7 +3,8 @@
 use cuda_core::{CudaStream, DeviceBuffer, DriverError};
 
 use crate::f16_tc_matmul::{
-    F16TcMatmulHalfArgs, F16TcMatmulHalfDsArgs, F16TcMatmulHalfRhsArgs, F16TcMatmulModule,
+    F16TcMatmulHalfArgs, F16TcMatmulHalfDsArgs, F16TcMatmulHalfDsWindowArgs,
+    F16TcMatmulHalfRhsArgs, F16TcMatmulHalfRhsWindowArgs, F16TcMatmulModule,
 };
 
 pub(super) struct AttentionTcMatmulContext<'a> {
@@ -12,6 +13,7 @@ pub(super) struct AttentionTcMatmulContext<'a> {
     pub batch_head: u32,
     pub seq_len: u32,
     pub head_dim: u32,
+    pub attention_window: u32,
 }
 
 pub(super) fn run_tc_matmul(
@@ -50,19 +52,36 @@ pub(super) fn run_tc_matmul_lower_ds(
     m: u32,
     n: u32,
     k: u32,
+    attention_window: u32,
 ) -> Result<(), DriverError> {
-    tc_module.batched_matmul_half_input_lower_ds(F16TcMatmulHalfDsArgs {
-        stream,
-        a,
-        b_t,
-        probs,
-        softmax_d,
-        out,
-        batch_count,
-        m,
-        n,
-        k,
-    })
+    if attention_window == m {
+        tc_module.batched_matmul_half_input_lower_ds(F16TcMatmulHalfDsArgs {
+            stream,
+            a,
+            b_t,
+            probs,
+            softmax_d,
+            out,
+            batch_count,
+            m,
+            n,
+            k,
+        })
+    } else {
+        tc_module.batched_matmul_half_input_windowed_lower_ds(F16TcMatmulHalfDsWindowArgs {
+            stream,
+            a,
+            b_t,
+            probs,
+            softmax_d,
+            out,
+            batch_count,
+            m,
+            n,
+            k,
+            window: attention_window,
+        })
+    }
 }
 
 pub(super) fn run_tc_matmul_rhs(
@@ -75,17 +94,32 @@ pub(super) fn run_tc_matmul_rhs(
     m: u32,
     n: u32,
     k: u32,
+    attention_window: u32,
 ) -> Result<(), DriverError> {
-    tc_module.batched_matmul_half_rhs_lower_a(F16TcMatmulHalfRhsArgs {
-        stream,
-        a,
-        rhs,
-        out,
-        batch_count,
-        m,
-        n,
-        k,
-    })
+    if attention_window == k {
+        tc_module.batched_matmul_half_rhs_lower_a(F16TcMatmulHalfRhsArgs {
+            stream,
+            a,
+            rhs,
+            out,
+            batch_count,
+            m,
+            n,
+            k,
+        })
+    } else {
+        tc_module.batched_matmul_half_rhs_windowed_lower_a(F16TcMatmulHalfRhsWindowArgs {
+            stream,
+            a,
+            rhs,
+            out,
+            batch_count,
+            m,
+            n,
+            k,
+            window: attention_window,
+        })
+    }
 }
 
 pub(super) fn run_tc_matmul_a_transposed_rhs(
@@ -98,15 +132,32 @@ pub(super) fn run_tc_matmul_a_transposed_rhs(
     m: u32,
     n: u32,
     k: u32,
+    attention_window: u32,
 ) -> Result<(), DriverError> {
-    tc_module.batched_matmul_half_a_transposed_rhs_lower_a(F16TcMatmulHalfRhsArgs {
-        stream,
-        a,
-        rhs,
-        out,
-        batch_count,
-        m,
-        n,
-        k,
-    })
+    if attention_window == k {
+        tc_module.batched_matmul_half_a_transposed_rhs_lower_a(F16TcMatmulHalfRhsArgs {
+            stream,
+            a,
+            rhs,
+            out,
+            batch_count,
+            m,
+            n,
+            k,
+        })
+    } else {
+        tc_module.batched_matmul_half_a_transposed_rhs_windowed_lower_a(
+            F16TcMatmulHalfRhsWindowArgs {
+                stream,
+                a,
+                rhs,
+                out,
+                batch_count,
+                m,
+                n,
+                k,
+                window: attention_window,
+            },
+        )
+    }
 }

@@ -4,7 +4,7 @@ use cuda_core::{CudaModule, DriverError, LaunchConfig};
 
 use super::args::{
     F16ConvertArgs, F16TcMatmulArgs, F16TcMatmulHalfArgs, F16TcMatmulHalfDsArgs,
-    F16TcMatmulHalfRhsArgs,
+    F16TcMatmulHalfDsWindowArgs, F16TcMatmulHalfRhsArgs, F16TcMatmulHalfRhsWindowArgs,
 };
 use super::cta_tile::{CTA_M, CTA_N, CTA_THREADS, CTA_WIDE_THREADS, CtaMatmulDims};
 use super::kernels;
@@ -128,6 +128,34 @@ impl F16TcMatmulModule {
         )
     }
 
+    pub fn batched_matmul_half_input_windowed_lower_ds(
+        &self,
+        args: F16TcMatmulHalfDsWindowArgs<'_, '_>,
+    ) -> Result<(), DriverError> {
+        assert_eq!(args.m, args.n);
+        assert_window(args.window, args.m);
+        assert!(args.a.len() >= elements(args.batch_count, args.m, args.k));
+        assert!(args.b_t.len() >= elements(args.batch_count, args.n, args.k));
+        assert!(args.probs.len() >= elements(args.batch_count, args.m, args.n));
+        assert!(args.softmax_d.len() >= elements(args.batch_count, args.m, 1));
+        assert!(args.out.len() >= elements(args.batch_count, args.m, args.n));
+
+        self.module.f16_cta_tc_matmul_windowed_lower_ds_kernel(
+            args.stream,
+            cta_config(args.m, args.n, args.batch_count),
+            args.a,
+            args.b_t,
+            args.probs,
+            args.softmax_d,
+            args.out,
+            args.batch_count,
+            args.m,
+            args.n,
+            args.k,
+            args.window,
+        )
+    }
+
     pub fn batched_matmul_half_rhs_lower_a(
         &self,
         args: F16TcMatmulHalfRhsArgs<'_, '_>,
@@ -170,6 +198,54 @@ impl F16TcMatmulModule {
                 args.k,
             )
     }
+
+    pub fn batched_matmul_half_rhs_windowed_lower_a(
+        &self,
+        args: F16TcMatmulHalfRhsWindowArgs<'_, '_>,
+    ) -> Result<(), DriverError> {
+        assert_eq!(args.m, args.k);
+        assert_window(args.window, args.k);
+        assert!(args.a.len() >= elements(args.batch_count, args.m, args.k));
+        assert!(args.rhs.len() >= elements(args.batch_count, args.k, args.n));
+        assert!(args.out.len() >= elements(args.batch_count, args.m, args.n));
+        self.module
+            .f16_cta_tc_matmul_half_rhs_windowed_lower_a_kernel(
+                args.stream,
+                cta_config(args.m, args.n, args.batch_count),
+                args.a,
+                args.rhs,
+                args.out,
+                args.batch_count,
+                args.m,
+                args.n,
+                args.k,
+                args.window,
+            )
+    }
+
+    pub fn batched_matmul_half_a_transposed_rhs_windowed_lower_a(
+        &self,
+        args: F16TcMatmulHalfRhsWindowArgs<'_, '_>,
+    ) -> Result<(), DriverError> {
+        assert_eq!(args.m, args.k);
+        assert_window(args.window, args.k);
+        assert!(args.a.len() >= elements(args.batch_count, args.k, args.m));
+        assert!(args.rhs.len() >= elements(args.batch_count, args.k, args.n));
+        assert!(args.out.len() >= elements(args.batch_count, args.m, args.n));
+        self.module
+            .f16_cta_tc_matmul_half_a_transposed_rhs_windowed_lower_a_kernel(
+                args.stream,
+                cta_config(args.m, args.n, args.batch_count),
+                args.a,
+                args.rhs,
+                args.out,
+                args.batch_count,
+                args.m,
+                args.n,
+                args.k,
+                args.window,
+            )
+    }
 }
 
 pub(super) fn cta_config(m: u32, n: u32, batch_count: u32) -> LaunchConfig {
@@ -188,4 +264,9 @@ pub(super) fn cta_narrow_config(m: u32, n: u32, batch_count: u32) -> LaunchConfi
 
 pub(super) fn elements(batch_count: u32, rows: u32, cols: u32) -> usize {
     batch_count as usize * rows as usize * cols as usize
+}
+
+pub(super) fn assert_window(window: u32, seq_len: u32) {
+    assert!(window > 0 && window <= seq_len);
+    assert!(window.is_multiple_of(CTA_M));
 }

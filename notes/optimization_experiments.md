@@ -49,6 +49,65 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-17
 commit: passing source candidate; committed after the required gate
+experiment: Native windowed tensor-core products around full-attention softmax.
+status: accepted_450s; active_baseline
+rationale:
+  Complete the backward-aware layout selected by the preceding semantic gate.
+  Exact zero support is only useful computationally if the adjacent matrix
+  products avoid unsupported tiles and reduction ranges. The active
+  1024-token window has enough whole-step ceiling to clear the 0.5% project
+  floor, unlike the rejected native MLP 4:8 route.
+implementation:
+  Add window-specialized SM120 f16 tensor-core launchers for all six matrix
+  products around the four full-attention nonlinearities. Forward QK and
+  backward dS CTAs return before MMA when their 64x64 score tile is wholly
+  outside the window. Forward P*V and backward dS*K begin their K loop at the
+  first potentially supported key. Backward dS.T*Q and P.T*dO stop after the
+  last potentially supported query. The first and last reduction tiles apply
+  exact elementwise causal-window masks, so the native layout implements the
+  same probabilities and gradients as the committed dense semantic screen.
+  Full-sequence attention retains the existing dense launchers, and KDA is
+  unchanged.
+correctness:
+  cargo fmt --all --check, cargo check --workspace, test-target compilation,
+  and git diff --check: pass.
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+  Rebuilt-PTX GPU tests:
+    windowed_attention_tiles_match_materialized_reference: pass.
+    materialized_tc_backward_matches_reference: pass.
+  The first test compares the skipped score CTAs and both window-bounded
+  reduction orientations against materialized host references at S256/W128.
+bringup:
+  target/runs/20260717_235218Z_fineweb_30s
+  completed_steps=97, train_elapsed_s=30.323,
+  val_loss=6.128153.
+  This was launch and numerical-health evidence only.
+gate:
+  target/runs/20260717_235300Z_fineweb_450s
+  completed_steps=1400, train_elapsed_s=450.020,
+  val_loss=4.827326774597168.
+  The run retained the fixed 1B/B4/S2048 FineWeb/Llama-2 configuration and
+  TRAIN_LOG_INTERVAL=50. All 28 high-fidelity samples had finite=1 and
+  nonzero=1. Every non-finite, loss-spike, gradient-spike, and update-skip
+  counter remained zero. Gradient norm ended at 1.419452190.
+measured_effect:
+  Against the committed windowed semantic baseline at 4.842982769012451 /
+  1363 steps / 330.223037ms per step, validation loss improved by
+  0.015655994 (-0.323272%). Candidate step time was 321.442857ms, a saving of
+  8.780180ms (-2.658864%), and the fixed-time gate completed 37 more steps.
+  Relative to the earlier detached-KDA full-attention baseline, the combined
+  window semantics plus native layout save 11.916402ms/step (-3.574643%) and
+  improve validation loss by 0.022664547 (-0.467311%).
+decision:
+  Accept and promote. notes/sweep_baseline.env now points at the native
+  windowed run. Future attention-layout candidates compare against this exact
+  W1024 native baseline; the model still has all 16 layers, all four
+  full-attention sections, all twelve KDA sections, and all trainable paths.
+```
+
+```text
+date: 2026-07-17
+commit: passing source candidate; committed after the required gate
 experiment: Backward-aware block-regular support in the four full-attention layers.
 status: accepted_450s; active_baseline
 sources:

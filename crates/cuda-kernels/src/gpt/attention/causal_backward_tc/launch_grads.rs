@@ -18,6 +18,7 @@ pub(super) fn run_grad_matmuls(
         ctx.seq_len,
         ctx.head_dim,
         ctx.seq_len,
+        ctx.attention_window,
     )?;
     run_tc_matmul_a_transposed_rhs(
         ctx.stream,
@@ -29,6 +30,7 @@ pub(super) fn run_grad_matmuls(
         ctx.seq_len,
         ctx.head_dim,
         ctx.seq_len,
+        ctx.attention_window,
     )?;
     let probs_half = forward_probs_f16.unwrap_or(&*scratch.p_half);
     run_tc_matmul_a_transposed_rhs(
@@ -41,5 +43,6 @@ pub(super) fn run_grad_matmuls(
         ctx.seq_len,
         ctx.head_dim,
         ctx.seq_len,
+        ctx.attention_window,
     )
 }
