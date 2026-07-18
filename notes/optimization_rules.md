@@ -118,6 +118,14 @@ invalid to lower the endpoint by making part of the model task-gradient-dead:
   quantization, initialization, and algorithmic changes, but the resulting
   model must retain approximately 1B effective trainable parameters and all
   declared active sections must receive a real training signal.
+- A paper-defined normalization architecture may replace the existing
+  LayerNorm family. This is an allowed model change, not an invalid branch
+  bypass, provided the replacement's normalization, interpolation, and scale
+  parameters are genuinely active and trainable. Such a candidate must still
+  preserve every attention/KDA, MLP, value-residual, and NextLat computation,
+  all 16 layers, width 2048, 32 heads, the intact task, and approximately 1B
+  effective trainable parameters. Dead retained LayerNorm allocations do not
+  count toward that parameter total.
 - The matched gate uses the same FineWeb source, Llama-2 tokenizer, validation
   stream, context, and sampling convention. Do not simplify the corpus,
   alphabet, vocabulary, or validation problem to lower raw cross-entropy.
