@@ -49,6 +49,74 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-18
 commit: rejected uncommitted source candidate; code reverted and baseline rebuilt
+experiment: Shared-dense plus top-2 hardware-routed MLP.
+status: rejected_450s
+sources:
+  https://arxiv.org/abs/2506.12119
+  https://arxiv.org/abs/2106.04426
+rationale:
+  Follow up the rejected top-1/no-shared-expert tile router with the two
+  architecture choices supported by the equal-resource MoE paper: one dense
+  prefix layer plus shared experts, and top-K greater than one. The purpose was
+  still backward-aware layout: preserve a common dense nonlinear subspace while
+  skipping whole private-expert MMA/TMA tiles in all six MLP matrix products.
+  The paper uses learned token routing; this candidate's fixed balanced
+  position-block route was a hardware-oriented local approximation and is not
+  attributed to the paper.
+implementation:
+  Kept the original 8192 MLP neurons and all parameter buffers. Block 0
+  remained dense. Blocks 1-15 used 4096 always-active shared neurons plus four
+  contiguous 1024-neuron private experts. Each 128-token tile selected two
+  adjacent private experts using `(token_tile + block_index) mod 4`, for 6144
+  active neurons per token. Every route occurred 16 times per 8192-token step,
+  and each private expert trained on half the token tiles. Forward up and down,
+  both dX products, and both dW products skipped the identical inactive
+  private regions; shared dW reduced over every token tile while private dW
+  reduced only over selecting routes. Routed down projections used a
+  sqrt(8192/6144) initialization correction. All 16 attention/KDA/MLP blocks,
+  every original MLP parameter, and NextLat remained trainable and active.
+  Static MLP-GEMM FLOPs fell by 23.4375% across the full model.
+correctness:
+  cargo fmt --all, TMPDIR=/dev/shm/rust-kernels-tmp cargo check --workspace,
+  and focused test-target compilation: pass.
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+  Rebuilt-PTX GPU references checked shared output, both selected private
+  regions, inactive zero tiles, fused ReLU2 backward/amax, selected-K forward
+  and dX, dense shared dW, and route-filtered private dW in both transpose
+  orientations: 2 passed.
+health:
+  target/runs/20260718_022252Z_fineweb_30s
+  completed_steps=98, train_elapsed_s=30.130,
+  val_loss=6.123447418212891.
+  Gradient norm ended at 1.996773. Finite/nonzero remained one and every
+  non-finite, loss-spike, gradient-spike, and update-skip counter remained zero.
+  This passed the health-only screen.
+gate:
+  target/runs/20260718_022340Z_fineweb_450s
+  completed_steps=1424, train_elapsed_s=450.153,
+  val_loss=4.845718860626221.
+  Gradient norm ended at 1.613569. Every high-fidelity sample was finite and
+  nonzero, and every skip/failure counter remained zero.
+measured_effect:
+  Against the accepted native-window baseline at 1400 steps / 450.020s /
+  4.827326774597168, the shared/top-2 layout completed 24 more steps
+  (+1.714286%) but regressed held-out loss by 0.018392086 (+0.380999%). Mean
+  step time improved from 321.442857ms to 316.118680ms, saving 5.324177ms
+  (-1.656337%). Shared capacity recovered about half of the top-1 candidate's
+  0.792146% loss deficit, but the fixed-time endpoint still lost.
+decision:
+  Reject the candidate and commit no routed-MLP source. Together, the two
+  sustained gates show that fixed position-block conditional width is a real
+  backward-compute saving but not a validation-loss win in this short,
+  undertrained regime. Do not retry another fixed block-width ratio as a
+  quality candidate; a future MoE attempt needs a genuine content-dependent
+  router and its own quality rationale. Candidate source was fully reverted,
+  and the exact accepted sm_120a PTX/release baseline was rebuilt.
+```
+
+```text
+date: 2026-07-18
+commit: rejected uncommitted source candidate; code reverted and baseline rebuilt
 experiment: Hardware-aligned deterministic two-expert MLP routing.
 status: rejected_450s
 sources:
