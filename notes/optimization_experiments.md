@@ -49,6 +49,91 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-18
 commit: rejected source reverted; note only
+experiment: RowNormM direction for the tied token-embedding/LM-head matrix.
+status: rejected_450s
+sources:
+  https://arxiv.org/abs/2605.18106
+  https://github.com/timlautk/equivariant_optimizers
+  https://raw.githubusercontent.com/timlautk/equivariant_optimizers/main/optim/rownorm.py
+rationale:
+  Test the recent symmetry-compatible optimizer result on this model's largest
+  Adam-updated matrix. The paper's Gemma 3 1B-style experiment reports lower
+  validation loss when separate vocabulary-indexed embedding and LM-head
+  matrices use RowNormM instead of AdamW. RowNormM is also materially cheaper
+  than the paper's hybrid spectral alternative and needs only one momentum
+  buffer.
+adaptation:
+  This repo ties its [32000,2048] input embedding and LM head, whereas the
+  paper's Gemma experiment explicitly sets tie_word_embeddings=false. Apply
+  one non-centered RowNormM direction to the complete tied gradient, which
+  contains both output-head and two input-lookup contributions. Do not apply
+  the paper's untied-head shared-row centering because that quotient symmetry
+  does not hold for the same matrix when it is used as an input embedding.
+  This is a tied-weight adaptation, not an exact reproduction.
+implementation:
+  Reuse the existing full first-moment allocation for
+    m=0.95*m+0.05*(grad*global_clip_scale).
+  Launch one 256-thread CUDA block per vocabulary row, reduce the exact
+  2048-element FP32 momentum norm in shared memory, and update each row with
+    u=m/(||m||_2+1e-8).
+  Preserve the accepted AMUSE z/x recurrence and global gradient clipping.
+  Use the paper's 0.0025 active learning rate, already equal to this baseline's
+  post-warmup Adam rate, and zero weight decay as in the official embedding
+  and head configuration. Leave the allocated Adam second moment untouched so
+  the model/state layout and memory footprint remain unchanged.
+model_integrity:
+  FineWeb/Llama-2, B4/S2048, 8192 tokens/step, d2048, 32 heads, all 16 blocks,
+  all twelve KDA paths, all four full-attention paths, every MLP, NextLat,
+  parameter tensor, gradient family, and optimizer state allocation remain
+  active. Only the tied vocabulary matrix's optimizer direction changes.
+correctness:
+  cargo fmt --all, TMPDIR=$PWD/target/tmp cargo check --workspace, and
+  git diff --check: pass.
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass; both PTX and
+  the release host binary were rebuilt from candidate source.
+  A rebuilt-PTX release GPU test at the production 2048-column row width
+  matches a CPU reference for clipped-gradient EMA, row normalization, weight
+  decay plumbing, z update, and schedule-free x averaging: pass.
+health:
+  target/runs/20260718_082238Z_fineweb_30s
+  completed_steps=100, train_elapsed_s=30.218,
+  val_loss=6.679199.
+  Both high-fidelity samples were finite and nonzero. Gradient norm moved from
+  3.733595 to 1.666639, and every non-finite, loss-spike, gradient-spike, and
+  update-skip counter remained zero. The worse short loss was not used for
+  acceptance or rejection.
+gate:
+  target/runs/20260718_082356Z_fineweb_450s
+  completed_steps=1452, train_elapsed_s=450.001,
+  val_loss=4.756527.
+  All 30 high-fidelity samples were finite and nonzero. Gradient norm stayed
+  in [1.219682,3.733595] and ended at 2.316150. Every non-finite, loss-spike,
+  gradient-spike, and update-skip counter remained zero.
+measured_effect:
+  Against the active Adam baseline at 1451 steps / 450.193s /
+  4.7384748458862305, RowNormM completes one additional step. Mean wall time
+  moves from 310.263956 to 309.918044ms/step, a statistically negligible
+  0.345912ms (-0.111490%) change. Held-out loss worsens by 0.018052154
+  (+0.380970%).
+decision:
+  Reject and fully revert the tied RowNormM source. The implementation is
+  stable and essentially throughput-neutral, but it does not lower the
+  mandatory held-out endpoint. Do not repeat this exact beta=0.95,
+  lr=0.0025, non-centered tied adaptation unchanged. Any later reconsideration
+  must supply a distinct tied embedding/head geometry or a justified
+  hyperparameter hypothesis rather than treating the paper's untied result as
+  directly transferable.
+revert:
+  Restore the accepted AdamW token-embedding path, rerun cargo fmt --all,
+  TMPDIR=$PWD/target/tmp cargo check --workspace, git diff --check, and
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+  The rebuilt accepted binary launch diagnostic at
+  target/runs/20260718_083318Z_fineweb_2s completes seven finite steps.
+```
+
+```text
+date: 2026-07-18
+commit: rejected source reverted; note only
 experiment: AngularMuown row geometry combined with the accepted NorMuon conditioner.
 status: rejected_450s
 sources:
