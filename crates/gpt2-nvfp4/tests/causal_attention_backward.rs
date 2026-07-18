@@ -30,6 +30,7 @@ fn causal_attention_backward_wrapper_matches_direct_kernel() -> Result<(), Box<d
     let log_sum_exp = DeviceBuffer::from_host(&stream, &attention_log_sum_exp_values())?;
     let dummy = DeviceBuffer::<f32>::zeroed(&stream, 1)?;
     let dummy_u16 = DeviceBuffer::<u16>::zeroed(&stream, 1)?;
+    let dummy_u64 = DeviceBuffer::<u64>::zeroed(&stream, 1)?;
     let dummy_bytes = DeviceBuffer::<u8>::zeroed(&stream, 1)?;
     let dummy_scales = DeviceBuffer::<u8>::zeroed(&stream, 1)?;
     let dummy_global_scales = DeviceBuffer::<f32>::zeroed(&stream, 1)?;
@@ -42,6 +43,7 @@ fn causal_attention_backward_wrapper_matches_direct_kernel() -> Result<(), Box<d
         attention_out: &attention_out,
         attention_log_sum_exp: &log_sum_exp,
         mlp_up: &dummy_u16,
+        mlp_route_masks: &dummy_u64,
     });
     let mut wrapper_d_qkv = DeviceBuffer::<f32>::zeroed(&stream, QkvActivation::LEN)?;
     let mut direct_d_qkv = DeviceBuffer::<f32>::zeroed(&stream, QkvActivation::LEN)?;

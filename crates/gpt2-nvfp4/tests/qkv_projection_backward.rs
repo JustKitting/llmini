@@ -34,6 +34,7 @@ fn qkv_projection_backward_runs_linear_ms_eden_path() -> TestResult {
     let d_qkv = DeviceBuffer::from_host(&stream, &data::d_qkv_values())?;
     let dummy_f32 = DeviceBuffer::<f32>::zeroed(&stream, 1)?;
     let dummy_u16 = DeviceBuffer::<u16>::zeroed(&stream, 1)?;
+    let dummy_u64 = DeviceBuffer::<u64>::zeroed(&stream, 1)?;
 
     let saved = saved_block(SavedBlockParts {
         rowwise: Nvfp4RowwiseDeviceTensor::new(
@@ -48,6 +49,7 @@ fn qkv_projection_backward_runs_linear_ms_eden_path() -> TestResult {
         attention_out: &dummy_u16,
         attention_log_sum_exp: &dummy_f32,
         mlp_up: &dummy_u16,
+        mlp_route_masks: &dummy_u64,
     });
     let qkv_weight = upload_nvfp4_bytes::<QkvWeightShape>(&stream, data::qkv_weight_bytes())?;
     let qkv_bias = upload_zero_nvfp4::<QkvVectorShape>(&stream)?;

@@ -11,7 +11,7 @@ use crate::backward::{
     qkv_projection_backward,
 };
 use crate::types::BlockBackwardGrads;
-use crate::{AttentionDims, GPT2_N_LAYER};
+use crate::{AttentionDims, GPT2_N_LAYER, uses_value_residual};
 
 pub fn attention_side_backward(
     args: BlockAttentionBackwardArgs<'_, '_, '_>,
@@ -58,7 +58,7 @@ pub fn attention_side_backward(
         scratch: scratch.c_proj,
         seeds: seeds.c_proj,
     })?;
-    causal_attention_backward(AttentionCoreBackwardArgs {
+    let d_qkv_amax_chunks = causal_attention_backward(AttentionCoreBackwardArgs {
         block_index,
         use_full_attention,
         reuse_forward_probs,
@@ -72,7 +72,8 @@ pub fn attention_side_backward(
         scratch: scratch.core,
     })?;
     let dims = AttentionDims::new(use_full_attention);
-    if block_index == GPT2_N_LAYER - 1 {
+    let routes_value_residual = uses_value_residual(block_index);
+    if routes_value_residual && block_index == GPT2_N_LAYER - 1 {
         modules
             .attention
             .initialize_value_residual_grad(InitializeValueResidualGradArgs {
@@ -94,7 +95,7 @@ pub fn attention_side_backward(
                 embedding_dim: dims.embedding_dim,
                 qkv_dim: dims.qkv_dim,
             })?;
-    } else {
+    } else if routes_value_residual {
         modules
             .attention
             .accumulate_value_residual_grad(AccumulateValueResidualGradArgs {
@@ -116,9 +117,13 @@ pub fn attention_side_backward(
         d_ln_1_normalized: &mut *d_hidden,
         d_attn_qkv_weight,
         d_attn_qkv_bias,
-        // Value-residual routing changes the V section after the attention
-        // core computes its amax. Recompute from the transformed gradient.
-        precomputed_d_qkv_amax_chunks: None,
+        // Only a routed value residual changes dQKV after the attention core.
+        // Unrouted blocks can reuse the exact amax that core already produced.
+        precomputed_d_qkv_amax_chunks: if block_index == 0 || routes_value_residual {
+            None
+        } else {
+            d_qkv_amax_chunks
+        },
         scratch: scratch.qkv,
         seeds: seeds.qkv,
     })?;

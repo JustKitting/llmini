@@ -14,6 +14,8 @@ pub const GPT2_MLP_ROUTE_ACTIVE_FEATURE_TILES: usize = 3 * GPT2_MLP_ROUTE_FEATUR
 pub const GPT2_MLP_ROUTE_SCORES: usize = GPT2_MLP_ROUTE_TOKEN_TILES * GPT2_MLP_ROUTE_FEATURE_TILES;
 pub const GPT2_MLP_ROUTE_MASKS: usize = GPT2_MLP_ROUTE_TOKEN_TILES + GPT2_MLP_ROUTE_FEATURE_TILES;
 pub const GPT2_MLP_DENSE_PREFIX_LAYERS: usize = 1;
+pub const GPT2_VALUE_RESIDUAL_LAYERS: usize = 3 * GPT2_N_LAYER / 8;
+pub const GPT2_VALUE_RESIDUAL_START_LAYER: usize = GPT2_N_LAYER - GPT2_VALUE_RESIDUAL_LAYERS;
 pub const GPT2_FULL_ATTENTION_QKV: usize = 3 * GPT2_N_EMBD;
 pub const GPT2_KDA_ACTIVE_QKV: usize = 4 * GPT2_N_EMBD + GPT2_N_HEAD;
 pub const GPT2_QKV: usize = align_kda_qkv(GPT2_KDA_ACTIVE_QKV);
@@ -43,6 +45,8 @@ const _: () = {
     assert!(GPT2_MLP_ROUTE_TOKEN_TILES == 64);
     assert!(GPT2_MLP_ROUTE_ACTIVE_FEATURE_TILES == 48);
     assert!(GPT2_MLP_ROUTE_SCORES == 4096);
+    assert!(GPT2_VALUE_RESIDUAL_LAYERS > 0);
+    assert!(GPT2_VALUE_RESIDUAL_START_LAYER > 0);
 };
 
 const fn align_up(value: usize, alignment: usize) -> usize {
@@ -59,6 +63,10 @@ pub const fn uses_full_attention(block_index: usize) -> bool {
 
 pub const fn uses_block_topk_mlp(block_index: usize) -> bool {
     block_index >= GPT2_MLP_DENSE_PREFIX_LAYERS
+}
+
+pub const fn uses_value_residual(block_index: usize) -> bool {
+    block_index >= GPT2_VALUE_RESIDUAL_START_LAYER
 }
 
 pub fn layer_norm_scale(block_index: usize) -> f32 {
@@ -119,12 +127,25 @@ impl Gpt2Config {
 
 #[cfg(test)]
 mod tests {
-    use super::layer_norm_scale;
+    use super::{
+        GPT2_VALUE_RESIDUAL_LAYERS, GPT2_VALUE_RESIDUAL_START_LAYER, layer_norm_scale,
+        uses_value_residual,
+    };
 
     #[test]
     fn layer_norm_scale_uses_one_indexed_inverse_square_root() {
         assert_eq!(layer_norm_scale(0), 1.0);
         assert_eq!(layer_norm_scale(3), 0.5);
         assert_eq!(layer_norm_scale(15), 0.25);
+    }
+
+    #[test]
+    fn sparse_value_residual_uses_the_final_three_eighths() {
+        assert_eq!(GPT2_VALUE_RESIDUAL_LAYERS, 6);
+        assert_eq!(GPT2_VALUE_RESIDUAL_START_LAYER, 10);
+        assert!(!uses_value_residual(0));
+        assert!(!uses_value_residual(9));
+        assert!(uses_value_residual(10));
+        assert!(uses_value_residual(15));
     }
 }

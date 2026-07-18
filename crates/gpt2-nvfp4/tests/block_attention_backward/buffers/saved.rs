@@ -1,5 +1,7 @@
 use cuda_core::{CudaStream, DeviceBuffer, DriverError};
-use gpt2_nvfp4::{BlockForwardSaved, GPT2_TOKEN_ROWS, HiddenState, QkvActivation};
+use gpt2_nvfp4::{
+    BlockForwardSaved, GPT2_MLP_ROUTE_MASKS, GPT2_TOKEN_ROWS, HiddenState, QkvActivation,
+};
 use rust_kernels_cuda::nvfp4::Nvfp4RowwiseDeviceTensor;
 
 use crate::common::nvfp4::{E2M1_MIN_PAIR, E4M3_ONE, filled_u8};
@@ -15,6 +17,7 @@ pub struct SavedBuffers {
     log_sum_exp: DeviceBuffer<f32>,
     mean: DeviceBuffer<f32>,
     inv_std: DeviceBuffer<f32>,
+    mlp_route_masks: DeviceBuffer<u64>,
 }
 
 impl SavedBuffers {
@@ -28,6 +31,7 @@ impl SavedBuffers {
             log_sum_exp: DeviceBuffer::from_host(stream, &attention_log_sum_exp_values())?,
             mean: DeviceBuffer::zeroed(stream, GPT2_TOKEN_ROWS)?,
             inv_std: DeviceBuffer::from_host(stream, &row_ones())?,
+            mlp_route_masks: DeviceBuffer::zeroed(stream, GPT2_MLP_ROUTE_MASKS)?,
         })
     }
 
@@ -46,6 +50,7 @@ impl SavedBuffers {
             attention_out: &self.hidden_f16,
             attention_log_sum_exp: &self.log_sum_exp,
             mlp_up: &self.hidden_f16,
+            mlp_route_masks: &self.mlp_route_masks,
         })
     }
 }

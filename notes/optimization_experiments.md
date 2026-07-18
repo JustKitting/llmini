@@ -49,6 +49,97 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-18
 commit: passing source candidate; committed after the required gate
+experiment: Later-only Sparse-ResFormer value routing.
+status: accepted_450s; active_baseline
+sources:
+  https://arxiv.org/abs/2410.17897
+  https://github.com/Zcchill/Value-Residual-Learning
+  https://medium.com/@larry36d/partial-model-freezing-and-optimizing-for-the-backwards-pass-df5b0713f219
+rationale:
+  Apply the backward-layout principle at block scale: preserve the useful
+  nonlinear attention shortcut only where evidence says it helps, rather than
+  paying its forward mix, backward gradient route, and invalidated-gradient
+  amax cost in every later block. The Value Residual Learning paper reports
+  2.712 validation loss for all-layer Identity-ResFormer and 2.702 when the
+  same un-rescaled 50/50 value residual is confined to layers 6-8 of its
+  8-layer model. Its learned 8- and 24-layer variants also place more
+  first-layer value weight in later layers.
+  The accepted all-layer profile
+  target/nsys/20260718_block_topk_warp_masks_candidate.nsys-rep measured
+  55.487464ms of forward value mixing and 76.085867ms of backward
+  value-gradient accumulation over 32 training steps plus evaluation. Routing
+  only the final three eighths had a direct whole-step ceiling above 0.5% and
+  a source-backed chance to improve convergence.
+implementation:
+  Scale the paper's final-three-of-eight sparse layout proportionally to this
+  fixed 16-layer model: block 0 still captures V1, blocks 10-15 use exactly
+    V'_n = 0.5 * V1 + 0.5 * Vn,
+  and blocks 1-9 use their own Vn unchanged. Reverse mode initializes and
+  accumulates the V1 gradient only across blocks 10-15, then adds the complete
+  shortcut gradient at block 0. Since blocks 1-9 no longer alter dQKV after
+  the attention core, their QKV projection backward reuses that core's exact
+  precomputed gradient amax instead of rescanning dQKV.
+  Every QKV projection, attention core, MLP, parameter tensor, optimizer
+  update, and all 16 blocks remain active and trainable. The d2048/32-head
+  geometry, B4/S2048, FineWeb data, Llama-2 tokenizer, NextLat objective, and
+  8192 tokens per step are unchanged. Run metadata now records the value
+  residual layer count and start layer explicitly.
+correctness:
+  cargo fmt --all, TMPDIR=$PWD/target/tmp cargo check --workspace,
+  cargo test -p gpt2-nvfp4 --lib, and git diff --check: pass.
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+  The rebuilt-PTX CUDA value-residual reference passes exact capture, 50/50
+  mixing, reverse initialization/accumulation, and final first-layer gradient
+  addition. The stale shared integration fixture was repaired with the
+  already-required block-Top-K mask pointer; the full block-attention backward
+  chain now passes at block 10 and verifies a nonzero routed V1 gradient.
+  cargo test --workspace --no-run still fails in the pre-existing stale
+  l2_attention, l3_mlp, and forward integration initializers, which omit TMA
+  fields or reference the removed mlp_pre_activation scratch field. None of
+  those fixtures or APIs is touched by the runtime candidate.
+health:
+  target/runs/20260718_035927Z_fineweb_30s
+  completed_steps=99, train_elapsed_s=30.266,
+  val_loss=6.113737106323242.
+  Both high-fidelity samples were finite and nonzero. Gradient norm moved from
+  3.731032 to 1.873868, and every non-finite, loss-spike, gradient-spike, and
+  update-skip counter remained zero. This was health evidence only.
+gate:
+  target/runs/20260718_040030Z_fineweb_450s
+  completed_steps=1432, train_elapsed_s=450.168,
+  val_loss=4.763230323791504.
+  All 29 high-fidelity samples were finite and nonzero. Every skip/failure
+  counter remained zero. Gradient norm ranged from 0.936678 to 3.731032 and
+  ended at 1.540392.
+profile:
+  target/nsys/20260718_sparse_resformer_late_candidate.nsys-rep
+  Against the matched 32-step all-layer trace:
+    mix_value_residual_kernel: 495 -> 198 calls,
+      55.487464 -> 22.226911ms.
+    accumulate_value_residual_grad_kernel: 448 -> 160 calls,
+      76.085867 -> 26.807369ms.
+    tensor_chunk_amax_f32_kernel: 811 -> 523 calls,
+      80.879793 -> 38.910680ms.
+  These directly affected families save 124.508164ms over 32 steps, or
+  3.890880ms/step. Initialize/finish routing remains exactly once per step.
+measured_effect:
+  Against the active all-layer baseline at 1415 steps / 450.101s /
+  4.754519462585449, the candidate completes 17 more steps (+1.201413%).
+  Mean step time improves from 318.092580ms to 314.363128ms, saving
+  3.729451ms (-1.172442%). Held-out loss moves by +0.008710861
+  (+0.183212%), within the explicit roughly 1% tolerance for a demonstrated
+  speed win.
+decision:
+  Accept, promote, and commit under the standing speed/loss rule. This is a
+  measured backward-compute win with intact model capacity, while the small
+  single-seed held-out regression is below the allowed noise tolerance. Record
+  it honestly as a speed acceptance rather than evidence that this local
+  450-second seed reproduced the paper's loss improvement.
+```
+
+```text
+date: 2026-07-18
+commit: passing source candidate; committed after the required gate
 experiment: Warp-parallel exact ranking for the block-Top-K dual-mask layout.
 status: accepted_450s; active_baseline
 rationale:

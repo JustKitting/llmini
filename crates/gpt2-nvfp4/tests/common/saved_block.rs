@@ -15,6 +15,7 @@ pub struct SavedBlockParts<'a> {
     pub attention_out: &'a DeviceBuffer<u16>,
     pub attention_log_sum_exp: &'a DeviceBuffer<f32>,
     pub mlp_up: &'a DeviceBuffer<u16>,
+    pub mlp_route_masks: &'a DeviceBuffer<u64>,
 }
 
 pub fn saved_block(parts: SavedBlockParts<'_>) -> BlockForwardSaved<'_> {
@@ -43,5 +44,6 @@ pub fn saved_block(parts: SavedBlockParts<'_>) -> BlockForwardSaved<'_> {
         mlp_up_input_nvfp4: parts.rowwise,
         mlp_up: parts.mlp_up,
         mlp_down_input_nvfp4: parts.rowwise,
+        mlp_route_masks: parts.mlp_route_masks,
     }
 }

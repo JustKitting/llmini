@@ -89,7 +89,7 @@ pub(super) fn forward<'a, 'scratch>(
                 embedding_dim: dims.embedding_dim,
                 qkv_dim: dims.qkv_dim,
             })?;
-    } else {
+    } else if crate::uses_value_residual(args.block_index) {
         args.module.mix_value_residual(MixValueResidualArgs {
             stream: hidden.stream,
             qkv: args.qkv,

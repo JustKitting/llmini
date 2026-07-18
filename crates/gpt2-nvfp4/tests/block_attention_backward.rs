@@ -1,7 +1,8 @@
 use cuda_core::DeviceBuffer;
 use gpt2_nvfp4::{
     AttentionBackwardModules, BlockAttentionBackwardArgs, BlockAttentionBackwardModules,
-    BlockAttentionBackwardSeeds, GPT2_TOKEN_ROWS, Gpt2Rng, HiddenState, attention_side_backward,
+    BlockAttentionBackwardSeeds, GPT2_TOKEN_ROWS, GPT2_VALUE_RESIDUAL_START_LAYER, Gpt2Rng,
+    HiddenState, attention_side_backward,
 };
 use rust_kernels_cuda::attention::AttentionModule;
 use rust_kernels_cuda::f16_tc_matmul::F16TcMatmulModule;
@@ -38,7 +39,7 @@ fn block_attention_side_backward_runs_full_chain() -> TestResult {
     let (d_residual_after_attention, d_residual_in, d_hidden, d_qkv, backward_grads) =
         grads.block();
     attention_side_backward(BlockAttentionBackwardArgs {
-        block_index: 0,
+        block_index: GPT2_VALUE_RESIDUAL_START_LAYER,
         use_full_attention: false,
         reuse_forward_probs: false,
         stream: &stream,
@@ -72,6 +73,7 @@ fn block_attention_side_backward_runs_full_chain() -> TestResult {
     assert_nonzero_finite(&grads.d_residual_in.to_host_vec(&stream)?);
     assert_nonzero_finite(&grads.d_hidden.to_host_vec(&stream)?);
     assert_nonzero_finite(&grads.d_qkv.to_host_vec(&stream)?);
+    assert_nonzero_finite(&d_value_residual.to_host_vec(&stream)?);
     assert_nonzero_finite(&grads.d_attn_qkv_weight.to_host_vec(&stream)?);
     assert_nonzero_finite(&grads.d_attn_c_proj_weight.to_host_vec(&stream)?);
     Ok(())
