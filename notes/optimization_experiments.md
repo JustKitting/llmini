@@ -53,6 +53,78 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 
 ```text
 date: 2026-07-18
+commit: rejected working-copy experiment; source fully reverted
+experiment: SATFormer selective per-token and per-head access to first-layer values.
+status: rejected_matched_step_screen
+sources:
+  https://arxiv.org/abs/2605.03953
+  https://github.com/SkyeGunasekaran/SATFormer
+rationale:
+  SATFormer replaces ResFormer's static first-layer value reuse with a ReLU
+  gate computed from the current normalized hidden state for every token and
+  attention head. The paper reports lower validation loss than ResFormer at
+  all four evaluated scales from 130M through 1.3B. Test that direct successor
+  to the accepted value-residual path without removing any local model branch.
+implementation:
+  Blocks 1-15 computed the paper's equations
+    alpha_t,h = ReLU(x_t W_alpha[:,h])
+    V'_t,h = V_t,h + alpha_t,h * V_1,t,h.
+  The 32 gate logits occupied otherwise inactive rows of each existing QKV
+  projection, so the current normalized QKV input produced W_alpha without a
+  separate GEMM. Full-attention projections activated 32 rows after V; KDA
+  projections used 32 existing aligned-tail rows after beta. Forward saved
+  the gate logits in the per-block FP16 QKV tape. Reverse mode retained the
+  local dV, accumulated alpha*dV into dV1, reduced dot(dV,V1) through the
+  ReLU derivative into each gate row, and allowed the ordinary QKV backward to
+  produce W_alpha and normalized-input gradients. Gate-bias gradients were
+  cleared to preserve the paper's bias-free projection. All 16 layers,
+  d2048 width, 32 heads, four full-attention and twelve KDA blocks, MLPs,
+  value residuals, NextLat, B4/S2048, 8192 tokens per step, FineWeb, Llama-2
+  tokenization, QK normalization, and the accepted optimizer remained active.
+correctness:
+  cargo fmt --all -- --check, cargo check --workspace, and git diff --check:
+  pass.
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+  The focused selective-value GPU reference passed exact per-token/per-head
+  ReLU forward mixing, positive and inactive gate gradients, dV1 routing,
+  accumulation across layers, FP16 tape use, and zero gate-bias gradients.
+  The full block-attention backward GPU test passed and directly verified
+  nonzero gate-row weight gradients plus zero gate-row bias gradients.
+  One-step diagnostic target/runs/20260718_174638Z_fineweb_900s used the
+  required B4/S2048/L16/d2048/h32 model and reported finite/nonzero updates,
+  grad_norm=3.6517744, every skip counter zero, and 8192 tokens. It was
+  launch evidence only.
+health_screen:
+  target/runs/20260718_174808Z_fineweb_30s completed 83 steps in 30.408s
+  with held-out val_loss=6.16823148727417. Both high-fidelity samples were
+  finite/nonzero, all skip counters were zero, and step-50 training loss was
+  6.6064129 versus 6.5967746 for the accepted 30-second control. That single
+  0.146% regression was too small to establish direction, so the candidate
+  proceeded only to the smallest resolving fixed-step diagnostic.
+matched_200_step_diagnostic:
+  Candidate target/runs/20260718_174906Z_fineweb_120s completed exactly
+  200 steps in 73.616s with held-out val_loss=5.637529373168945.
+  Accepted QKNorm control target/runs/20260718_171025Z_fineweb_120s completed
+  exactly 200 steps in 61.924s with val_loss=5.618974208831787.
+  At identical optimizer steps, candidate versus control training loss was:
+    step 50:  6.6204133 versus 6.6100225, 0.157197% worse.
+    step 100: 6.4691434 versus 6.4579020, 0.174073% worse.
+    step 150: 5.8118706 versus 5.8298936, 0.309148% better.
+    step 199: 6.5021510 versus 6.4855175, 0.256472% worse.
+  Matched held-out loss regressed 0.330223%. Every sample remained
+  finite/nonzero, all skip counters stayed zero, and B4/S2048/8192 tokens per
+  step remained intact. Runtime was 18.881209% slower, but speed did not
+  determine the structural decision.
+decision:
+  Reject without profiling, implementation optimization, or a 450-second
+  gate. One isolated better sample at step 150 does not outweigh regressions
+  at steps 50, 100, 199, and the matched held-out endpoint, so this candidate
+  did not show the credible loss-per-step improvement required to earn an
+  optimization pass. Fully restore and rebuild the accepted QKNorm baseline.
+```
+
+```text
+date: 2026-07-18
 commit: accepted local jj commit after matched-step screen, implementation
   optimization, correctness audit, and 450-second gate
 experiment: Query-Key Normalization in the four full-attention blocks.
