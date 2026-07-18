@@ -54,6 +54,89 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-18
 commit: rejected source reverted; note only
+experiment: Per-layer trainable xIELU in the intact two-projection MLP.
+status: rejected_matched_step_screen; no_profile; no_450s
+sources:
+  https://arxiv.org/abs/2411.13010
+  https://github.com/Anonymous5823/xielu
+rationale:
+  xIELU reports lower language-model loss than matched-parameter ReLU-squared
+  and SwiGLU baselines by replacing the activation inside a standard
+  two-projection MLP. Test the complete trainable activation rather than its
+  known-worse fixed-parameter ablation. The released results also show an
+  initially worse curve before the method improves, so a noisy 30-second
+  sample must be resolved by the smallest matched-step extension.
+implementation:
+  Replaced ReLU-squared with the released xIELU formula in all 16 MLPs while
+  retaining the existing up/down widths and projections. Each layer received
+  independent raw alpha_p and alpha_n scalars initialized to
+  softplus^-1(0.8)=0.20338233 and
+  softplus^-1(0.8-0.5)=-1.0502256. Forward used beta=0.5 and eps=-1e-6.
+  Backward matched the released CUDA implementation, including its smooth
+  straight-through derivative at the tiny clamp, and reduced gradients for
+  both raw parameters. The parameters participated in AdamW, global clipping,
+  schedule-free train/evaluation materialization, diagnostics, and
+  checkpoint save/load.
+  Forward xIELU was fused into the TMA up-projection epilogue. The deliberately
+  simple first backward implementation ran the ordinary down-projection
+  gradient followed by a separate xIELU derivative/parameter-reduction/amax
+  kernel; this separation would have been the first optimization target if the
+  candidate had produced a matched-step quality win.
+model_integrity:
+  FineWeb/Llama-2, B4/S2048/L16/d2048/h32, all four full-attention and twelve
+  KDA blocks, value residuals, NextLat, LayerNorm, block Top-K, both MLP
+  projections, and every existing loss target remained active and trainable.
+  Only the MLP nonlinearity and its two paper-defined scalars changed.
+correctness:
+  cargo fmt --all: pass.
+  cargo check --workspace --lib --bins: pass.
+  cargo check -p rust-kernels-cuda --tests: pass.
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+  Rebuilt-PTX tests
+    tma_xielu_compact_matches_released_forward_formula
+    xielu_backward_matches_released_formula_and_reduces_parameter_grads
+  passed, covering positive/negative/zero branches, saved-FP16 input
+  gradients, both raw-parameter gradients, and output amax.
+  The first launch diagnostic exposed that schedule-free NVFP4 tensors require
+  16-value storage; no screen used that failed run. The corrected representation
+  stored one logical scalar in lane zero of a 16-value block, kept padding
+  lanes zero, rebuilt, passed both tests again, and completed the one-step
+  diagnostic target/runs/20260718_230948Z_fineweb_900s with finite/nonzero
+  updates and no skip flags. That one-step run is diagnostic only.
+health_screen:
+  target/runs/20260718_231009Z_fineweb_30s completed 91 steps in 30.346s with
+  held-out val_loss=6.0489464. Every sampled Finite and Nonzero metric was one;
+  Update_skipped, Skip_grad_norm_spike, Skip_loss_spike, and Skip_non_finite
+  were zero. At the common step 50, candidate training loss 6.5797210 was
+  0.731939% worse than active 30-second control
+  target/runs/20260718_200249Z_fineweb_30s at 6.5319114. Because that small
+  deficit was comparable to existing run variation and xIELU is documented to
+  start behind, it received an exact-200 discriminator rather than a profile
+  or 450-second gate.
+matched_step_discriminator:
+  target/runs/20260718_231212Z_fineweb_120s completed exactly 200 steps in
+  66.931s with held-out val_loss=5.6739397. Exact current control
+  target/runs/20260718_194550Z_fineweb_120s completed 200 steps in 65.968s
+  with held-out val_loss=5.5910559. Candidate versus control loss was:
+    step 50:  6.5721140 versus 6.5534897, +0.284189% worse.
+    step 100: 6.5408006 versus 6.4395809, +1.571836% worse.
+    step 150: 5.8725367 versus 5.8112059, +1.055388% worse.
+    step 199: 6.5178137 versus 6.4616308, +0.869484% worse.
+    held-out: 5.6739397 versus 5.5910559, +1.482436% worse.
+  All five high-fidelity samples were finite/nonzero and every skip counter
+  was zero. The first implementation was 1.459% slower per step, but neither
+  that speed nor the unequal-step 30-second endpoint was used for rejection.
+decision:
+  Reject without profiling, implementation optimization, or a 450-second run.
+  The exact-200 curve is worse at every common optimizer step and its matched
+  held-out loss is 1.48% worse, so xIELU never supplies the loss-per-step
+  improvement required to earn an optimization pass. Restore and rebuild the
+  accepted ReLU-squared source; retain only this rejection record.
+```
+
+```text
+date: 2026-07-18
+commit: rejected source reverted; note only
 experiment: Independent Q/K/V polar geometry for fused full-attention weights.
 status: rejected_matched_step_screen; no_profile; no_450s
 source:
