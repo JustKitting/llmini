@@ -28293,3 +28293,75 @@ decision:
   reverted. This result only rejects this branch-based helper implementation,
   not future dedicated f16 attention kernels with cleaner launch contracts.
 ```
+
+```text
+date: 2026-07-18
+commit: rejected source reverted; note only
+experiment: Exact-normalized residual core adapted from nGPT.
+status: rejected_unoptimized_450s_algorithmic_signal
+sources:
+  https://arxiv.org/abs/2410.01131
+  https://github.com/NVIDIA/ngpt
+  https://github.com/anonymous452026/ngpt-nvfp4
+rationale:
+  Characterize the central nGPT normalized-hidden-state and learned residual
+  interpolation rule before paying the implementation cost of the complete
+  method. Replace transformer pre-norms and final norm with full-width L2
+  normalization, normalize the embedding output, and use learned per-channel
+  spherical interpolation after both attention and MLP.
+implementation:
+  Added exact full-width L2 normalization and backward, exact learned
+  per-channel SLERP forward/backward, and a separate alpha-gradient reduction.
+  Stored FP16 residual and branch tapes and initialized the learned residual
+  coefficients with the nGPT alpha parameterization. All 16 layers, d2048
+  width, 32 heads, attention/KDA, value-residual, NextLat, and MLP paths
+  remained active and trainable.
+scope_limit:
+  This deliberately characterized only the normalized-residual core. It did
+  not yet implement nGPT's learned q/k scale, MLP pre-activation scale, vocab
+  logit scale, or post-update matrix normalization. It retained the existing
+  ReLU-squared MLP. Therefore this result rejects this partial core, not full
+  nGPT, anGPT, or a paper-faithful SwiGLU layout.
+correctness:
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+  TMPDIR=$PWD/target/tmp CUDA_DEVICE_INDEX=0 cargo test
+    -p rust-kernels-cuda --release --test normalized -- --ignored --nocapture:
+    pass.
+  The one-step launch diagnostic at
+    target/runs/20260718_113343Z_fineweb_900s
+  used the required B4/S2048/L16/d2048/h32 model, produced finite nonzero
+  updates, and reported val_loss=10.3506069. It is diagnostic only.
+health_gate:
+  target/runs/20260718_113408Z_fineweb_30s completed 95 steps in 30.378s with
+  val_loss=7.680417537689209. Every sampled Finite and Nonzero metric is one;
+  Update_skipped, Skip_grad_norm_spike, Skip_loss_spike, and
+  Skip_non_finite are zero. This is health evidence only.
+unoptimized_characterization:
+  target/runs/20260718_113650Z_fineweb_450s completed 1368 steps in 450.144s
+  with val_loss=5.94443941116333.
+  The accepted control target/runs/20260718_044657Z_fineweb_450s completed
+  1451 steps in 450.193s with val_loss=4.7384748458862305.
+measured_effect:
+  Candidate held-out loss is 25.450471% worse and it completes 83 fewer steps
+  (-5.720193%). Mean step time regresses from 310.263956ms to 329.052632ms
+  (+6.055707%), reducing throughput from 26403.325 to 24895.713 tokens/s.
+  Matched sampled training loss is already decisively worse:
+    step 50:   8.2627106 versus 6.62368, +24.745%
+    step 700:  6.23036 versus 5.13265, +21.387%
+    step 1000: 5.88634 versus 4.79704, +22.708%
+    step 1350: 5.9201994 versus 4.88338, +21.232%.
+  The backward enqueue median moves from 120.622ms to 132.935ms and the
+  loss-host-wait median from 111.463ms to 118.814ms. The candidate's explicit
+  FP16 branch tapes add approximately 1GiB; midpoint process memory was
+  42612MiB. The run remained numerically stable: 28 sampled updates were
+  finite/nonzero, all skip metrics were zero, and sampled grad norm ranged
+  from 0.0380473 to 2.4103987.
+decision:
+  Reject without an optimization pass. The 21-25% matched-step loss deficit is
+  an algorithmic failure of this partial formulation, not an overhead problem
+  that kernel fusion can recover. Per the structural-method rule, spending an
+  additional optimized 450-second gate cannot make this candidate credible.
+  Restore its source and rebuild the accepted baseline. A future normalization
+  experiment must implement the complete chosen method, including its
+  paper-defined MLP activation/layout and scaling rules, before evaluation.
+```
