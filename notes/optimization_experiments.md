@@ -48,6 +48,66 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 
 ```text
 date: 2026-07-18
+commit: rejected uncommitted source candidate; code reverted and baseline rebuilt
+experiment: Learned cubic PolyReLU in the existing two-projection MLP.
+status: rejected_450s
+sources:
+  https://arxiv.org/abs/2411.03884
+  https://github.com/BryceZhuo/PolyCom
+rationale:
+  Test the backward-aware nonlinear-layout principle without adding a third
+  projection or removing any model path. PolyReLU places learned nonlinear
+  expressivity after the existing MLP up projection, so the forward and
+  backward graphs retain the same two dominant MLP matrix products. The tested
+  function was the official order-three form
+  c3*ReLU(x)^3+c2*ReLU(x)^2+c1*ReLU(x)+b with per-layer trainable scalar
+  coefficients initialized to 1/3, 1/3, 1/3, and 0.
+implementation:
+  Fused PolyReLU into the existing NVFP4 TMA up-projection epilogue while
+  retaining the compact f16 preactivation tape. Fused the exact input
+  derivative into the down-projection dinput epilogue. Each warp wrote four
+  coefficient-gradient partials beside the existing output-amax scratch, and
+  one small reduction kernel produced the per-layer gradients without a full
+  activation-memory pass or contended global atomics. The four active
+  coefficients used a padded 16-f32 state, schedule-free Adam, global
+  norm/non-finite checks, training/evaluation materialization, and checkpoint
+  save/load support. All 16 MLPs, attention sections, KDA sections, and NextLat
+  remained active.
+correctness:
+  cargo fmt --all and cargo check --workspace: pass.
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+  A rebuilt-PTX GPU test compared the fused forward values, f16-tape input
+  derivatives, and all four reduced coefficient gradients against CPU
+  references: pass.
+  The existing fused ReLU2 forward and backward tests also passed.
+health:
+  target/runs/20260718_011802Z_fineweb_30s
+  completed_steps=96, train_elapsed_s=30.176, val_loss=6.141465.
+  Gradient norm was 3.832614 -> 2.230190. Finite/nonzero remained one and every
+  non-finite, loss-spike, gradient-spike, and update-skip counter remained zero.
+  This passed the health-only screen.
+gate:
+  target/runs/20260718_011855Z_fineweb_450s
+  completed_steps=1394, train_elapsed_s=450.239,
+  val_loss=4.847846508026123.
+  Gradient norm ended at 1.478592. All 28 high-fidelity samples were finite and
+  nonzero, and every skip/failure counter remained zero.
+measured_effect:
+  Against the accepted native-window baseline at 1400 steps / 450.020s /
+  4.827326774597168, PolyReLU completed six fewer steps and regressed held-out
+  loss by 0.020519733 (+0.425074%). Mean step time moved from 321.442857ms to
+  322.983501ms, a 1.540644ms (+0.479290%) regression. The candidate was stable,
+  but neither quality nor fixed-time exposure improved.
+decision:
+  Reject the candidate and commit no PolyReLU source. This result rejects the
+  official order-three initialization and optimizer wiring in the active
+  ReLU2/NVFP4 stack; it is not evidence against every learned activation.
+  Candidate source was fully reverted, and the exact sm_120a PTX/release
+  baseline was rebuilt successfully.
+```
+
+```text
+date: 2026-07-18
 commit: rejected uncommitted source candidates; code reverted and baseline rebuilt
 experiment: Reconfigure nonlinear block boundaries for cheaper backward graphs.
 status: rejected_stability_gate
