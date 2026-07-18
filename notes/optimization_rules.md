@@ -18,10 +18,11 @@ working structural candidate for 450 seconds:
   screening evidence to stop the candidate before expensive profiling or a
   450-second run.
 - Merely being a structural or architecture candidate never triggers a
-  450-second run. A meaningful loss improvement at identical optimizer steps,
-  such as candidate step 30 against control step 30 or candidate step 50
-  against control step 50, is the prerequisite for due-diligence profiling and
-  implementation optimization.
+  450-second run. A credible loss improvement at identical optimizer steps,
+  such as candidate step 30 against control step 30 and candidate step 50
+  against control step 50, is the sole condition for beginning due-diligence
+  profiling and implementation optimization. The candidate does not need to
+  win a 450-second held-out run before that work begins.
 - A schedule parameter that is mathematically dormant for the entire
   30-second window must instead use a matched fixed-step diagnostic after the
   parameter activates. For the current 83-step warmup, use 200 completed
@@ -49,10 +50,12 @@ the final performance of the method:
   identical optimizer steps (for example, candidate step 50 against control
   step 50).
 - A structural candidate earns profiling and implementation optimization when
-  it shows a real matched-step loss improvement. If different throughput or
-  logging cadence makes the 30-second samples insufficient, run the smallest
-  matched fixed-step diagnostic needed to resolve the comparison; do not jump
-  directly to 450 seconds.
+  it shows a real matched-step loss improvement. This matched-step improvement
+  is the only admission criterion for the optimization pass; the first
+  implementation may be slower and may have a worse fixed-time endpoint. If
+  different throughput or logging cadence makes the 30-second samples
+  insufficient, run the smallest matched fixed-step diagnostic needed to
+  resolve the comparison; do not jump directly to 450 seconds.
 - When matched-step quality improves, identify whether any measured slowdown is
   inherent to the method or caused by recoverable implementation overhead such
   as extra launches, materialized intermediates, redundant quantization,
