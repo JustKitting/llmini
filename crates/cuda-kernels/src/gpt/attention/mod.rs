@@ -10,6 +10,8 @@ use std::sync::Arc;
 
 use cuda_core::{CudaModule, DriverError};
 
+pub(crate) const QK_NORM_EPS: f32 = 1.0e-12;
+
 pub use causal::{CausalAttentionArgs, CausalAttentionParams};
 pub use causal_backward_tc::{CausalAttentionBackwardTcArgs, CausalAttentionBackwardTcScratch};
 pub use causal_tc::{CausalAttentionTcArgs, CausalAttentionTcScratch};

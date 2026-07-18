@@ -1,5 +1,5 @@
 use cuda_core::{CudaStream, DeviceBuffer, DriverError};
-use gpt2_nvfp4::{BlockBackwardGrads, GPT2_MLP, GPT2_N_EMBD, GPT2_QKV};
+use gpt2_nvfp4::{BlockBackwardGrads, GPT2_MLP, GPT2_N_EMBD, GPT2_QK_SCALE_STORAGE, GPT2_QKV};
 
 use super::LayerNormGradBuffers;
 use crate::training::device_buffer::zero;
@@ -9,6 +9,7 @@ pub struct BlockGradBuffers {
     pub(in crate::training) ln_2: LayerNormGradBuffers,
     pub(in crate::training) d_attn_qkv_weight: DeviceBuffer<f32>,
     pub(in crate::training) d_attn_qkv_bias: DeviceBuffer<f32>,
+    pub(in crate::training) d_attn_qk_scale: DeviceBuffer<f32>,
     pub(in crate::training) d_attn_c_proj_weight: DeviceBuffer<f32>,
     pub(in crate::training) d_attn_c_proj_bias: DeviceBuffer<f32>,
     pub(in crate::training) d_mlp_c_fc_weight: DeviceBuffer<f32>,
@@ -24,6 +25,7 @@ impl BlockGradBuffers {
             ln_2: LayerNormGradBuffers::new(stream)?,
             d_attn_qkv_weight: zero(stream, GPT2_N_EMBD * GPT2_QKV)?,
             d_attn_qkv_bias: zero(stream, GPT2_QKV)?,
+            d_attn_qk_scale: zero(stream, GPT2_QK_SCALE_STORAGE)?,
             d_attn_c_proj_weight: zero(stream, GPT2_N_EMBD * GPT2_N_EMBD)?,
             d_attn_c_proj_bias: zero(stream, GPT2_N_EMBD)?,
             d_mlp_c_fc_weight: zero(stream, GPT2_N_EMBD * GPT2_MLP)?,
@@ -39,6 +41,7 @@ impl BlockGradBuffers {
             ln_2: self.ln_2.grads(),
             d_attn_qkv_weight: &mut self.d_attn_qkv_weight,
             d_attn_qkv_bias: &mut self.d_attn_qkv_bias,
+            d_attn_qk_scale: &mut self.d_attn_qk_scale,
             d_attn_c_proj_weight: &mut self.d_attn_c_proj_weight,
             d_attn_c_proj_bias: &mut self.d_attn_c_proj_bias,
             d_mlp_c_fc_weight: &mut self.d_mlp_c_fc_weight,

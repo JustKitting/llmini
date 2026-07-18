@@ -6,11 +6,12 @@ use gpt2_nvfp4::{
 
 use crate::AppResult;
 
-use super::{UploadedLayerNorm, UploadedLinear};
+use super::{UploadedLayerNorm, UploadedLinear, UploadedNvfp4, tensor::upload_nvfp4};
 
 pub struct UploadedBlock {
     pub ln_1: UploadedLayerNorm,
     pub attn_qkv: UploadedLinear,
+    pub attn_qk_scale: UploadedNvfp4,
     pub attn_c_proj: UploadedLinear,
     pub ln_2: UploadedLayerNorm,
     pub mlp_up: UploadedLinear,
@@ -22,6 +23,7 @@ impl UploadedBlock {
         Ok(Self {
             ln_1: UploadedLayerNorm::from_layer_norm(stream, &block.ln_1)?,
             attn_qkv: UploadedLinear::from_linear(stream, &block.attn.c_attn)?,
+            attn_qk_scale: upload_nvfp4(stream, &block.attn.qk_scale)?,
             attn_c_proj: UploadedLinear::from_linear(stream, &block.attn.c_proj)?,
             ln_2: UploadedLayerNorm::from_layer_norm(stream, &block.ln_2)?,
             mlp_up: UploadedLinear::from_linear(stream, &block.mlp.c_fc)?,
@@ -34,6 +36,7 @@ impl UploadedBlock {
             qkv_weight: self.attn_qkv.weight.mma(),
             qkv_weight_device: self.attn_qkv.weight.device(),
             qkv_bias: self.attn_qkv.bias.device(),
+            qk_scale: self.attn_qk_scale.device(),
             c_proj_weight: self.attn_c_proj.weight.mma(),
             c_proj_weight_device: self.attn_c_proj.weight.device(),
             c_proj_bias: self.attn_c_proj.bias.device(),

@@ -35,14 +35,15 @@ pub(super) fn update_blocks(args: BlockUpdateArgs<'_>) -> Result<(), DriverError
         args.grad_scale,
     );
     let blocks_ms = timed_ms(|| {
-        for ((block, grad), state) in args
+        for (block_index, ((block, grad), state)) in args
             .uploaded
             .blocks
             .iter_mut()
             .zip(args.grads.blocks.iter())
             .zip(args.state.blocks.iter_mut())
+            .enumerate()
         {
-            update_block(&mut adam, block, grad, state, args.trace)?;
+            update_block(&mut adam, block_index, block, grad, state, args.trace)?;
         }
         Ok(())
     })?;
@@ -52,6 +53,7 @@ pub(super) fn update_blocks(args: BlockUpdateArgs<'_>) -> Result<(), DriverError
 
 pub(super) fn update_block(
     adam: &mut AdamUpdate<'_, '_>,
+    block_index: usize,
     block: &mut UploadedBlock,
     grad: &BlockGradBuffers,
     state: &mut BlockState,
@@ -63,6 +65,13 @@ pub(super) fn update_block(
         &grad.d_attn_qkv_bias,
         &mut state.attn_qkv.bias,
     )?;
+    if gpt2_nvfp4::uses_full_attention(block_index) {
+        trace.adam_ms += adam.update_timed(
+            &mut block.attn_qk_scale,
+            &grad.d_attn_qk_scale,
+            &mut state.attn_qk_scale,
+        )?;
+    }
     trace.adam_ms += adam.update_timed(
         &mut block.attn_c_proj.bias,
         &grad.d_attn_c_proj_bias,

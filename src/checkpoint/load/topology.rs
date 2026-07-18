@@ -30,6 +30,11 @@ fn load_blocks(
         blocks.push(UploadedBlock {
             ln_1: load_pair(stream, tensors, &format!("blocks.{index}.ln_1"))?,
             attn_qkv: load_pair(stream, tensors, &format!("blocks.{index}.attn_qkv"))?,
+            attn_qk_scale: take_uploaded(
+                stream,
+                tensors,
+                &format!("blocks.{index}.attn_qk_scale"),
+            )?,
             attn_c_proj: load_pair(stream, tensors, &format!("blocks.{index}.attn_c_proj"))?,
             ln_2: load_pair(stream, tensors, &format!("blocks.{index}.ln_2"))?,
             mlp_up: load_pair(stream, tensors, &format!("blocks.{index}.mlp_up"))?,

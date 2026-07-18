@@ -31,11 +31,13 @@ impl AttentionModule {
             kda_w: _,
             kda_aqk: _,
             d_out,
+            qk_scale,
             log_sum_exp,
             softmax_d,
             qk_norm_max,
             d_qkv,
             d_qkv_chunk_amax,
+            d_qk_scale,
             scratch,
             row_count: _,
             seq_len,
@@ -76,6 +78,9 @@ impl AttentionModule {
                 linear(batch_head * seq_len * head_dim),
                 qkv,
                 d_out,
+                qk_scale.bytes,
+                qk_scale.scales,
+                qk_scale.global_scale,
                 scratch.q,
                 scratch.k,
                 scratch.v,
@@ -181,16 +186,50 @@ impl AttentionModule {
         );
         let chunk_count = 3 * params.row_count;
         assert!(d_qkv_chunk_amax.len() >= chunk_count as usize);
-        kernels.scatter_dqkv_amax_kernel(
-            stream,
-            grid_x_config(chunk_count, TC_BACKWARD_THREADS_PER_BLOCK),
-            scratch.d_q,
-            scratch.d_k,
-            scratch.d_v,
-            d_qkv,
-            d_qkv_chunk_amax,
-            params,
-        )?;
+        if head_dim == 64 {
+            kernels.scatter_qknorm_dqkv_amax_kernel(
+                stream,
+                grid_x_config(chunk_count, TC_BACKWARD_THREADS_PER_BLOCK),
+                qkv,
+                &*scratch.q_f32,
+                &*scratch.k_f32,
+                scratch.d_q,
+                scratch.d_k,
+                scratch.d_v,
+                qk_scale.bytes,
+                qk_scale.scales,
+                qk_scale.global_scale,
+                d_qkv,
+                &mut *scratch.g_f32,
+                d_qkv_chunk_amax,
+                params,
+            )?;
+            kernels.reduce_qk_scale_grad_kernel(
+                stream,
+                grid_x_config(1, TC_BACKWARD_THREADS_PER_BLOCK),
+                &*scratch.g_f32,
+                d_qk_scale,
+                params.row_count,
+            )?;
+        } else {
+            kernels.scatter_dqkv_amax_kernel(
+                stream,
+                grid_x_config(chunk_count, TC_BACKWARD_THREADS_PER_BLOCK),
+                scratch.d_q,
+                scratch.d_k,
+                scratch.d_v,
+                d_qkv,
+                d_qkv_chunk_amax,
+                params,
+            )?;
+            kernels.reduce_qk_scale_grad_kernel(
+                stream,
+                grid_x_config(1, TC_BACKWARD_THREADS_PER_BLOCK),
+                &*scratch.g_f32,
+                d_qk_scale,
+                0,
+            )?;
+        }
         Ok(chunk_count)
     }
 }

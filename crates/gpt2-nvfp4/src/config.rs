@@ -17,6 +17,7 @@ pub const GPT2_MLP_DENSE_PREFIX_LAYERS: usize = 1;
 pub const GPT2_VALUE_RESIDUAL_LAYERS: usize = 3 * GPT2_N_LAYER / 8;
 pub const GPT2_VALUE_RESIDUAL_START_LAYER: usize = GPT2_N_LAYER - GPT2_VALUE_RESIDUAL_LAYERS;
 pub const GPT2_FULL_ATTENTION_QKV: usize = 3 * GPT2_N_EMBD;
+pub const GPT2_QK_SCALE_STORAGE: usize = 16;
 pub const GPT2_ATTENTION_BACKWARD_TILE_BUDGET: f32 = 12.0;
 pub const GPT2_KDA_ACTIVE_QKV: usize = 4 * GPT2_N_EMBD + GPT2_N_HEAD;
 pub const GPT2_QKV: usize = align_kda_qkv(GPT2_KDA_ACTIVE_QKV);
@@ -74,6 +75,11 @@ pub fn layer_norm_scale(block_index: usize) -> f32 {
     1.0 / ((block_index + 1) as f32).sqrt()
 }
 
+pub fn qk_norm_initial_scale() -> f32 {
+    let visible_tokens = GPT2_FULL_ATTENTION_WINDOW as f32;
+    (visible_tokens * visible_tokens - visible_tokens).log2()
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Gpt2Config;
 
@@ -129,8 +135,8 @@ impl Gpt2Config {
 #[cfg(test)]
 mod tests {
     use super::{
-        GPT2_VALUE_RESIDUAL_LAYERS, GPT2_VALUE_RESIDUAL_START_LAYER, layer_norm_scale,
-        uses_value_residual,
+        GPT2_FULL_ATTENTION_WINDOW, GPT2_VALUE_RESIDUAL_LAYERS, GPT2_VALUE_RESIDUAL_START_LAYER,
+        layer_norm_scale, qk_norm_initial_scale, uses_value_residual,
     };
 
     #[test]
@@ -148,5 +154,11 @@ mod tests {
         assert!(!uses_value_residual(9));
         assert!(uses_value_residual(10));
         assert!(uses_value_residual(15));
+    }
+
+    #[test]
+    fn qk_norm_scale_uses_the_visible_attention_length() {
+        let length = GPT2_FULL_ATTENTION_WINDOW as f32;
+        assert_eq!(qk_norm_initial_scale(), (length * length - length).log2());
     }
 }

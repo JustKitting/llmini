@@ -48,7 +48,13 @@ fn write_block(
         ("mlp_up", &block.mlp_up),
         ("mlp_down", &block.mlp_down),
     ];
-    write_pairs(writer, stream, &prefix, pairs)
+    write_pairs(writer, stream, &prefix, pairs)?;
+    tensor::write(
+        writer,
+        stream,
+        &format!("{prefix}.attn_qk_scale"),
+        &block.attn_qk_scale,
+    )
 }
 
 fn write_uploaded_pair(

@@ -1,10 +1,10 @@
 use cuda_device::{DisjointSlice, SharedArray, thread};
 
-use crate::attention::CausalAttentionParams;
 use crate::attention::layout::{compact_linear_parts, hidden_index, qkv_value, row_index};
+use crate::attention::{CausalAttentionParams, QK_NORM_EPS};
 use crate::f16_tc_matmul::convert::{cvt_f32_f16, cvt_rn_f16_f32};
-use crate::float_ptx::sqrt_f32;
-use crate::kda_common::KDA_DENOM_EPS;
+use crate::float_ptx::{max_f32, sqrt_f32};
+use crate::nvfp4::nvfp4_value;
 use crate::warp_reduce::warp_sum_f32;
 
 pub(super) const TC_BACKWARD_THREADS_PER_BLOCK: u32 = 256;
@@ -61,6 +61,9 @@ pub(super) fn gather_body(
 pub(super) fn gather_norms_body(
     qkv: &[u16],
     d_out_src: &[f32],
+    qk_scale_bytes: &[u8],
+    qk_scale_scales: &[u8],
+    qk_scale_global_scale: &[f32],
     mut q: DisjointSlice<u16>,
     mut k: DisjointSlice<u16>,
     mut v: DisjointSlice<u16>,
@@ -76,6 +79,10 @@ pub(super) fn gather_norms_body(
     let total = params.batch_size * params.head_count * params.seq_len * params.head_dim;
     let mut q_sumsq = 0.0;
     let mut k_sumsq = 0.0;
+    let mut q_value = 0;
+    let mut k_value = 0;
+    let mut v_value = 0;
+    let mut d_out_value = 0;
     let mut norm_index = 0;
     let mut valid_row = false;
     if index < total {
@@ -84,34 +91,22 @@ pub(super) fn gather_norms_body(
         valid_row = row < params.row_count;
         norm_index = head * params.row_count + row;
         if valid_row {
-            let q_value = qkv_value(qkv, batch, token, head, dim, 0, &params);
-            let k_value = qkv_value(qkv, batch, token, head, dim, params.embedding_dim, &params);
-            unsafe {
-                *q.get_unchecked_mut(index as usize) = q_value;
-                *k.get_unchecked_mut(index as usize) = k_value;
-                *v.get_unchecked_mut(index as usize) = qkv_value(
-                    qkv,
-                    batch,
-                    token,
-                    head,
-                    dim,
-                    params.embedding_dim * 2,
-                    &params,
-                );
-                *d_out.get_unchecked_mut(index as usize) =
-                    cvt_rn_f16_f32(d_out_src[hidden_index(batch, token, head, dim, &params)]);
-            }
+            q_value = qkv_value(qkv, batch, token, head, dim, 0, &params);
+            k_value = qkv_value(qkv, batch, token, head, dim, params.embedding_dim, &params);
+            v_value = qkv_value(
+                qkv,
+                batch,
+                token,
+                head,
+                dim,
+                params.embedding_dim * 2,
+                &params,
+            );
+            d_out_value = cvt_rn_f16_f32(d_out_src[hidden_index(batch, token, head, dim, &params)]);
             let q_f32 = cvt_f32_f16(q_value);
             let k_f32 = cvt_f32_f16(k_value);
             q_sumsq = q_f32 * q_f32;
             k_sumsq = k_f32 * k_f32;
-        } else {
-            unsafe {
-                *q.get_unchecked_mut(index as usize) = 0;
-                *k.get_unchecked_mut(index as usize) = 0;
-                *v.get_unchecked_mut(index as usize) = 0;
-                *d_out.get_unchecked_mut(index as usize) = 0;
-            }
         }
     }
 
@@ -125,12 +120,38 @@ pub(super) fn gather_norms_body(
     }
     thread::sync_threads();
 
-    if tid.is_multiple_of(64) && valid_row {
-        let q_sum = q_warp_sums[warp as usize] + q_warp_sums[warp as usize + 1];
-        let k_sum = k_warp_sums[warp as usize] + k_warp_sums[warp as usize + 1];
+    if index < total {
+        let first_warp = (tid / params.head_dim) * (params.head_dim / 32);
+        let q_norm = max_f32(
+            sqrt_f32(q_warp_sums[first_warp as usize] + q_warp_sums[first_warp as usize + 1]),
+            QK_NORM_EPS,
+        );
+        let k_norm = max_f32(
+            sqrt_f32(k_warp_sums[first_warp as usize] + k_warp_sums[first_warp as usize + 1]),
+            QK_NORM_EPS,
+        );
+        let learned_scale =
+            nvfp4_value(qk_scale_bytes, qk_scale_scales, qk_scale_global_scale[0], 0);
+        let q_scale = learned_scale / params.scale;
         unsafe {
-            *q_norms.get_unchecked_mut(norm_index as usize) = sqrt_f32(q_sum + KDA_DENOM_EPS);
-            *k_norms.get_unchecked_mut(norm_index as usize) = sqrt_f32(k_sum + KDA_DENOM_EPS);
+            *q.get_unchecked_mut(index as usize) = if valid_row {
+                cvt_rn_f16_f32(cvt_f32_f16(q_value) * (q_scale / q_norm))
+            } else {
+                0
+            };
+            *k.get_unchecked_mut(index as usize) = if valid_row {
+                cvt_rn_f16_f32(cvt_f32_f16(k_value) / k_norm)
+            } else {
+                0
+            };
+            *v.get_unchecked_mut(index as usize) = if valid_row { v_value } else { 0 };
+            *d_out.get_unchecked_mut(index as usize) = if valid_row { d_out_value } else { 0 };
+        }
+        if tid.is_multiple_of(params.head_dim) && valid_row {
+            unsafe {
+                *q_norms.get_unchecked_mut(norm_index as usize) = q_norm;
+                *k_norms.get_unchecked_mut(norm_index as usize) = k_norm;
+            }
         }
     }
 }

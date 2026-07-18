@@ -2,7 +2,7 @@ use cuda_device::{DisjointSlice, SharedArray, cuda_module, kernel, thread};
 
 use super::super::gather::{gather_body, gather_norms_body};
 use super::super::probs::{ds_from_probs_f16_body, prob_ds_body, prob_ds_f16_body};
-use super::super::scatter::{scatter_amax_body, scatter_body};
+use super::super::scatter::{scatter_amax_body, scatter_body, scatter_qknorm_amax_body};
 use super::super::softmax_d::softmax_d_f16_body;
 use super::super::sparse_probs::sparsify_attention_probs_f16_body;
 use crate::attention::CausalAttentionParams;
@@ -41,6 +41,9 @@ pub(super) mod module {
     pub fn gather_qkv_dout_norms_kernel(
         qkv: &[u16],
         d_out_src: &[f32],
+        qk_scale_bytes: &[u8],
+        qk_scale_scales: &[u8],
+        qk_scale_global_scale: &[f32],
         q: DisjointSlice<u16>,
         k: DisjointSlice<u16>,
         v: DisjointSlice<u16>,
@@ -54,6 +57,9 @@ pub(super) mod module {
         gather_norms_body(
             qkv,
             d_out_src,
+            qk_scale_bytes,
+            qk_scale_scales,
+            qk_scale_global_scale,
             q,
             k,
             v,
@@ -148,6 +154,80 @@ pub(super) mod module {
             lane,
             warp_in_block
         );
+    }
+
+    #[kernel]
+    pub fn scatter_qknorm_dqkv_amax_kernel(
+        qkv: &[u16],
+        q_norms: &[f32],
+        k_norms: &[f32],
+        d_q: &[f32],
+        d_k: &[f32],
+        d_v: &[f32],
+        qk_scale_bytes: &[u8],
+        qk_scale_scales: &[u8],
+        qk_scale_global_scale: &[f32],
+        d_qkv: DisjointSlice<f32>,
+        qk_scale_rows: DisjointSlice<f32>,
+        mut d_qkv_chunk_amax: DisjointSlice<f32>,
+        params: CausalAttentionParams,
+    ) {
+        static mut QK_DOT_WARP_SUMS: SharedArray<f32, 8> = SharedArray::UNINIT;
+        static mut SCALE_GRAD_WARP_SUMS: SharedArray<f32, 8> = SharedArray::UNINIT;
+        static mut SCATTER_AMAX: SharedArray<f32, 8> = SharedArray::UNINIT;
+
+        let local_amax = scatter_qknorm_amax_body(
+            qkv,
+            q_norms,
+            k_norms,
+            d_q,
+            d_k,
+            d_v,
+            qk_scale_bytes,
+            qk_scale_scales,
+            qk_scale_global_scale,
+            d_qkv,
+            qk_scale_rows,
+            params,
+            unsafe { &mut QK_DOT_WARP_SUMS },
+            unsafe { &mut SCALE_GRAD_WARP_SUMS },
+        );
+        let (_, lane, warp_in_block) = thread_lane_warp();
+        block_max_store_f32!(
+            SCATTER_AMAX,
+            d_qkv_chunk_amax[thread::blockIdx_x()],
+            local_amax,
+            lane,
+            warp_in_block
+        );
+    }
+
+    #[kernel]
+    pub fn reduce_qk_scale_grad_kernel(
+        qk_scale_rows: &[f32],
+        mut d_qk_scale: DisjointSlice<f32>,
+        row_count: u32,
+    ) {
+        static mut WARP_SUMS: SharedArray<f32, 8> = SharedArray::UNINIT;
+        let tid = thread::threadIdx_x();
+        let (_, lane, warp_in_block) = thread_lane_warp();
+        let mut row = tid;
+        let mut local = 0.0;
+        while row < row_count {
+            local += qk_scale_rows[row as usize];
+            row += thread::blockDim_x();
+        }
+        let total = crate::block_reduce::block_sum_shared_f32(
+            unsafe { &mut WARP_SUMS },
+            local,
+            lane,
+            warp_in_block,
+        );
+        if tid < d_qk_scale.len() as u32 {
+            unsafe {
+                *d_qk_scale.get_unchecked_mut(tid as usize) = if tid == 0 { total } else { 0.0 };
+            }
+        }
     }
 }
 

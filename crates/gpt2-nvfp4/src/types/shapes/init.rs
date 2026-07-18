@@ -28,6 +28,15 @@ pub(crate) trait Nvfp4ShapeInit: Nvfp4Shape + Sized {
         fill_neutral_scales(scales.as_mut());
         Nvfp4Tensor::new(bytes, scales, 1.0)
     }
+
+    fn scalar_tensor(value: f32) -> Nvfp4Tensor<Self> {
+        assert!(value.is_finite());
+        let mut bytes = Self::zero_bytes();
+        let mut scales = Self::zero_scales();
+        bytes.as_mut()[0] = pack_e2m1_pair(E2M1_ONE, E2M1_ZERO);
+        fill_neutral_scales(scales.as_mut());
+        Nvfp4Tensor::new(bytes, scales, value)
+    }
 }
 
 impl<S: Nvfp4Shape> Nvfp4ShapeInit for S {}

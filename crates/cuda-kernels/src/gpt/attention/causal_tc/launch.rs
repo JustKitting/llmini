@@ -19,20 +19,38 @@ impl AttentionModule {
         let scratch = args.scratch;
         let probs_half = args.forward_probs_f16.unwrap_or(scratch.probs_half);
 
-        self.causal_attention_tc
-            .base
-            .gather_qk_v_f16_forward_kernel(
-                args.stream,
-                linear_config(
-                    batch_head * args.seq_len * args.head_dim,
-                    TC_FORWARD_THREADS_PER_BLOCK,
-                ),
-                args.qkv,
-                &mut *scratch.q,
-                &mut *scratch.k,
-                &mut *scratch.chunk_states,
-                params,
-            )?;
+        let gather_config = linear_config(
+            batch_head * args.seq_len * args.head_dim,
+            TC_FORWARD_THREADS_PER_BLOCK,
+        );
+        if args.head_dim == 64 {
+            self.causal_attention_tc
+                .base
+                .gather_qknorm_v_f16_forward_kernel(
+                    args.stream,
+                    gather_config,
+                    args.qkv,
+                    args.qk_scale.bytes,
+                    args.qk_scale.scales,
+                    args.qk_scale.global_scale,
+                    &mut *scratch.q,
+                    &mut *scratch.k,
+                    &mut *scratch.chunk_states,
+                    params,
+                )?;
+        } else {
+            self.causal_attention_tc
+                .base
+                .gather_qk_v_f16_forward_kernel(
+                    args.stream,
+                    gather_config,
+                    args.qkv,
+                    &mut *scratch.q,
+                    &mut *scratch.k,
+                    &mut *scratch.chunk_states,
+                    params,
+                )?;
+        }
         if params.attention_window == args.seq_len {
             args.tc_module
                 .batched_matmul_f32_input_lower(F16TcMatmulF32Args {

@@ -2,6 +2,7 @@ use cuda_core::{CudaStream, DeviceBuffer};
 
 use crate::attention::CausalAttentionParams;
 use crate::f16_tc_matmul::F16TcMatmulModule;
+use crate::nvfp4::Nvfp4DeviceTensor;
 
 pub struct CausalAttentionBackwardTcScratch<'a> {
     pub q_f32: &'a mut DeviceBuffer<f32>,
@@ -40,11 +41,13 @@ pub struct CausalAttentionBackwardTcArgs<'a, 'scratch, 'out> {
     pub kda_w: Option<&'a DeviceBuffer<f32>>,
     pub kda_aqk: Option<&'a DeviceBuffer<f32>>,
     pub d_out: &'a DeviceBuffer<f32>,
+    pub qk_scale: Nvfp4DeviceTensor<'a>,
     pub log_sum_exp: &'a DeviceBuffer<f32>,
     pub softmax_d: &'scratch mut DeviceBuffer<f32>,
     pub qk_norm_max: &'scratch mut DeviceBuffer<f32>,
     pub d_qkv: &'out mut DeviceBuffer<f32>,
     pub d_qkv_chunk_amax: &'out mut DeviceBuffer<f32>,
+    pub d_qk_scale: &'out mut DeviceBuffer<f32>,
     pub scratch: CausalAttentionBackwardTcScratch<'scratch>,
     pub row_count: u32,
     pub seq_len: u32,

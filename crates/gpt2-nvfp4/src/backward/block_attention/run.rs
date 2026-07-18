@@ -40,6 +40,7 @@ pub fn attention_side_backward(
         ln_1: mut ln_1_grads,
         d_attn_qkv_weight,
         d_attn_qkv_bias,
+        d_attn_qk_scale,
         d_attn_c_proj_weight,
         d_attn_c_proj_bias,
         ..
@@ -67,8 +68,10 @@ pub fn attention_side_backward(
         tc_module: modules.f16_tc,
         saved,
         d_attention_out: &*d_hidden,
+        qk_scale: projections.qk_scale,
         d_qkv,
         d_qkv_chunk_amax: &mut *scratch.qkv.linear.e_h.chunk_amax,
+        d_qk_scale: d_attn_qk_scale,
         scratch: scratch.core,
         backward_mask_seed: seeds.qkv.attention_mask_seed(),
     })?;

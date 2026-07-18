@@ -67,6 +67,14 @@ fn collect_block_updates(
         &state.ln_1,
     )?;
     collect_linear!("attn_qkv", attn_qkv, d_attn_qkv_weight, d_attn_qkv_bias);
+    if gpt2_nvfp4::uses_full_attention(index) {
+        collector.push_adam(
+            &format!("block{index}.attn_qk_scale"),
+            &block.attn_qk_scale,
+            &grad.d_attn_qk_scale,
+            &state.attn_qk_scale,
+        )?;
+    }
     collect_linear!(
         "attn_c_proj",
         attn_c_proj,

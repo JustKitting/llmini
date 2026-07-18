@@ -2,6 +2,7 @@ use cuda_core::{CudaStream, DeviceBuffer};
 
 use crate::attention::CausalAttentionParams;
 use crate::f16_tc_matmul::F16TcMatmulModule;
+use crate::nvfp4::Nvfp4DeviceTensor;
 
 pub struct CausalAttentionTcScratch<'a> {
     pub q: &'a mut DeviceBuffer<f32>,
@@ -18,6 +19,7 @@ pub struct CausalAttentionTcArgs<'a, 'scratch, 'out> {
     pub stream: &'a CudaStream,
     pub tc_module: &'a F16TcMatmulModule,
     pub qkv: &'a DeviceBuffer<f32>,
+    pub qk_scale: Nvfp4DeviceTensor<'a>,
     pub out: &'out mut DeviceBuffer<f32>,
     pub qkv_f16: Option<&'out mut DeviceBuffer<u16>>,
     pub attention_out_f16: Option<&'out mut DeviceBuffer<u16>>,

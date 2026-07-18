@@ -1,6 +1,7 @@
 use cuda_core::{CudaStream, DeviceBuffer};
 use rust_kernels_cuda::attention::AttentionModule;
 use rust_kernels_cuda::f16_tc_matmul::F16TcMatmulModule;
+use rust_kernels_cuda::nvfp4::Nvfp4DeviceTensor;
 
 use super::{
     AttentionBackwardModules, AttentionBackwardSeeds, AttentionCProjScratch, AttentionCoreScratch,
@@ -31,8 +32,10 @@ pub struct AttentionCoreBackwardArgs<'a, 'scratch, 'out> {
     pub tc_module: &'a F16TcMatmulModule,
     pub saved: BlockForwardSaved<'a>,
     pub d_attention_out: &'a DeviceBuffer<f32>,
+    pub qk_scale: Nvfp4DeviceTensor<'a>,
     pub d_qkv: &'out mut DeviceBuffer<f32>,
     pub d_qkv_chunk_amax: &'out mut DeviceBuffer<f32>,
+    pub d_qk_scale: &'out mut DeviceBuffer<f32>,
     pub scratch: AttentionCoreScratch<'scratch>,
     pub backward_mask_seed: u32,
 }

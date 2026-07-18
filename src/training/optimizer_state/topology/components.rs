@@ -7,6 +7,7 @@ use crate::upload::{UploadedBlock, UploadedLayerNorm, UploadedLinear, UploadedNe
 pub(in crate::training) struct BlockState {
     pub(in crate::training) ln_1: LayerNormState,
     pub(in crate::training) attn_qkv: LinearState,
+    pub(in crate::training) attn_qk_scale: AdamState,
     pub(in crate::training) attn_c_proj: LinearState,
     pub(in crate::training) ln_2: LayerNormState,
     pub(in crate::training) mlp_up: LinearState,
@@ -18,6 +19,7 @@ impl BlockState {
         Ok(Self {
             ln_1: LayerNormState::new(init, &block.ln_1)?,
             attn_qkv: LinearState::new(init, &block.attn_qkv, GPT2_QKV)?,
+            attn_qk_scale: AdamState::new(init, &block.attn_qk_scale)?,
             attn_c_proj: LinearState::new(init, &block.attn_c_proj, GPT2_N_EMBD)?,
             ln_2: LayerNormState::new(init, &block.ln_2)?,
             mlp_up: LinearState::new(init, &block.mlp_up, GPT2_MLP)?,

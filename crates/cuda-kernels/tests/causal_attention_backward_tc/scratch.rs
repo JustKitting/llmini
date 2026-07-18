@@ -1,5 +1,5 @@
 use cuda_core::{CudaStream, DeviceBuffer, DriverError};
-use rust_kernels_cuda::attention::CausalAttentionBackwardTcScratch;
+use rust_kernels_cuda::attention::{CausalAttentionBackwardTcScratch, CausalAttentionTcScratch};
 
 use super::shape::{HEAD_DIM, HEADS, TOKEN_COUNT};
 
@@ -26,6 +26,52 @@ pub struct TcScratchBuffers {
     kda_d_v: DeviceBuffer<f32>,
     kda_d_g: DeviceBuffer<f32>,
     kda_d_beta: DeviceBuffer<f32>,
+}
+
+pub struct TcForwardScratchBuffers {
+    q: DeviceBuffer<f32>,
+    k: DeviceBuffer<f32>,
+    v: DeviceBuffer<f32>,
+    scores: DeviceBuffer<f32>,
+    probs: DeviceBuffer<f32>,
+    probs_half: DeviceBuffer<u16>,
+    compact_out: DeviceBuffer<f32>,
+    chunk_states: DeviceBuffer<u16>,
+}
+
+impl TcForwardScratchBuffers {
+    pub fn new(
+        stream: &CudaStream,
+        head_count: usize,
+        token_count: usize,
+        head_dim: usize,
+    ) -> Result<Self, DriverError> {
+        let compact = head_count * token_count * head_dim;
+        let square = head_count * token_count * token_count;
+        Ok(Self {
+            q: DeviceBuffer::zeroed(stream, compact)?,
+            k: DeviceBuffer::zeroed(stream, compact)?,
+            v: DeviceBuffer::zeroed(stream, compact)?,
+            scores: DeviceBuffer::zeroed(stream, square)?,
+            probs: DeviceBuffer::zeroed(stream, square)?,
+            probs_half: DeviceBuffer::zeroed(stream, square)?,
+            compact_out: DeviceBuffer::zeroed(stream, compact)?,
+            chunk_states: DeviceBuffer::zeroed(stream, compact)?,
+        })
+    }
+
+    pub fn args(&mut self) -> CausalAttentionTcScratch<'_> {
+        CausalAttentionTcScratch {
+            q: &mut self.q,
+            k: &mut self.k,
+            v: &mut self.v,
+            scores: &mut self.scores,
+            probs: &mut self.probs,
+            probs_half: &mut self.probs_half,
+            compact_out: &mut self.compact_out,
+            chunk_states: &mut self.chunk_states,
+        }
+    }
 }
 
 impl TcScratchBuffers {

@@ -105,7 +105,7 @@ GPT2_N_EMBD=2048
 GPT2_N_HEAD=32
 ```
 
-This has 964376960 effective parameters and 984571904 allocated parameter
+This has 964376964 effective parameters and 984572160 allocated parameter
 slots. Kernel, runtime, optimizer, dataset, and tokenizer experiments must not
 reduce the model below 16 layers, width 2048, or 32 heads. A smaller model may
 be used only for an explicitly labelled diagnostic; its timing or loss can
@@ -172,8 +172,8 @@ minimum_step_saving = (TRAIN_ELAPSED_S / COMPLETED_STEPS) * 0.005
 ```
 
 For the current matched 450-second baseline,
-`450.219 / 1432 = 0.314398743` seconds per step, so a candidate batch must
-credibly be able to save at least `1.571994 ms/step`
+`450.139 / 1441 = 0.312379598` seconds per step, so a candidate batch must
+credibly be able to save at least `1.561898 ms/step`
 before a rebuild, GPU test, or training screen. Multiply a per-launch saving by
 the launch count per step and compare that aggregate saving with the threshold.
 
@@ -224,10 +224,11 @@ without depth-scaled residual initialization, detached KDA chunk-state
 backward, later-only value-residual routing, and probability-mass sampled
 64x64 full-attention backward, with token embedding and every LayerNorm path
 restored to the complete d2048/d4096 width and the post-repair Muon matrix-LR
-scale retuned to `5.0`, is the current matched 450-second control: 1432 steps
-in 450.219 seconds with held-out loss 4.669820. Do not compare future
-450-second candidates with the invalid 768-column lineage or historical
-900-second endpoints.
+scale retuned to `5.0`, plus per-head Q/K normalization and one learned
+logit-scale scalar in each of the four full-attention blocks, is the current
+matched 450-second control: 1441 steps in 450.139 seconds with held-out loss
+4.611550. Do not compare future 450-second candidates with the invalid
+768-column lineage or historical 900-second endpoints.
 
 ## Sweep Rule
 

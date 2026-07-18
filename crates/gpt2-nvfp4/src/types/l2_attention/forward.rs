@@ -144,6 +144,7 @@ pub(super) fn forward<'a, 'scratch>(
         stream: hidden.stream,
         tc_module: args.tc_module,
         qkv: &*args.qkv,
+        qk_scale: args.projections.qk_scale,
         out: &mut *hidden.normalized,
         qkv_f16,
         attention_out_f16,

@@ -30,8 +30,19 @@ pub(in crate::training) fn materialize_training_weights(
         reuse_muon_amax,
     )?;
 
-    for (block, state) in uploaded.blocks.iter_mut().zip(state.blocks.iter()) {
-        materialize_block(&mut materializer, block, state, reuse_muon_amax)?;
+    for (block_index, (block, state)) in uploaded
+        .blocks
+        .iter_mut()
+        .zip(state.blocks.iter())
+        .enumerate()
+    {
+        materialize_block(
+            &mut materializer,
+            block_index,
+            block,
+            state,
+            reuse_muon_amax,
+        )?;
     }
 
     Ok(())
@@ -59,8 +70,13 @@ pub(in crate::training) fn materialize_evaluation_weights(
         &state.next_latent,
     )?;
 
-    for (block, state) in uploaded.blocks.iter_mut().zip(state.blocks.iter()) {
-        materialize_evaluation_block(&mut materializer, block, state)?;
+    for (block_index, (block, state)) in uploaded
+        .blocks
+        .iter_mut()
+        .zip(state.blocks.iter())
+        .enumerate()
+    {
+        materialize_evaluation_block(&mut materializer, block_index, block, state)?;
     }
 
     Ok(())
@@ -95,6 +111,7 @@ fn materialize_next_latent(
 
 fn materialize_block(
     materializer: &mut Materializer<'_>,
+    block_index: usize,
     block: &mut crate::upload::UploadedBlock,
     state: &BlockState,
     reuse_muon_amax: bool,
@@ -106,6 +123,9 @@ fn materialize_block(
         &state.attn_qkv,
         reuse_muon_amax,
     )?;
+    if gpt2_nvfp4::uses_full_attention(block_index) {
+        materializer.adam(&mut block.attn_qk_scale, &state.attn_qk_scale)?;
+    }
     materialize_linear(
         materializer,
         &mut block.attn_c_proj,
@@ -171,11 +191,15 @@ fn materialize_evaluation_next_latent(
 
 fn materialize_evaluation_block(
     materializer: &mut Materializer<'_>,
+    block_index: usize,
     block: &mut crate::upload::UploadedBlock,
     state: &BlockState,
 ) -> Result<(), DriverError> {
     materialize_evaluation_layer_norm(materializer, &mut block.ln_1, &state.ln_1)?;
     materialize_evaluation_linear(materializer, &mut block.attn_qkv, &state.attn_qkv)?;
+    if gpt2_nvfp4::uses_full_attention(block_index) {
+        materializer.master(&mut block.attn_qk_scale, &state.attn_qk_scale.x_master)?;
+    }
     materialize_evaluation_linear(materializer, &mut block.attn_c_proj, &state.attn_c_proj)?;
     materialize_evaluation_layer_norm(materializer, &mut block.ln_2, &state.ln_2)?;
     materialize_evaluation_linear(materializer, &mut block.mlp_up, &state.mlp_up)?;

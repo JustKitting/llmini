@@ -35,8 +35,8 @@ pub(crate) use shapes::Nvfp4ShapeInit;
 pub use shapes::{
     HiddenVectorShape, LayerNormTensor, MlpDownLinear, MlpDownWeightShape, MlpUpLinear,
     MlpUpWeightShape, MlpVectorShape, NextLatHiddenShape, NextLatInputShape, NextLatOutWeightShape,
-    NextLatProjectionWeightShape, NextLatTransitionWeightShape, QkvLinear, QkvVectorShape,
-    QkvWeightShape, ResidualLinear, ResidualWeightShape, TokenEmbedding, TokenEmbeddingShape,
-    nvfp4_bytes, nvfp4_scales,
+    NextLatProjectionWeightShape, NextLatTransitionWeightShape, QkScaleShape, QkScaleTensor,
+    QkvLinear, QkvVectorShape, QkvWeightShape, ResidualLinear, ResidualWeightShape, TokenEmbedding,
+    TokenEmbeddingShape, nvfp4_bytes, nvfp4_scales,
 };
 pub use tape::{BlockForwardTape, Gpt2ForwardTape, LayerNormTape, RowwiseNvfp4Tape};

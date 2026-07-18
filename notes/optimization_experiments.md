@@ -53,6 +53,108 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 
 ```text
 date: 2026-07-18
+commit: accepted local jj commit after matched-step screen, implementation
+  optimization, correctness audit, and 450-second gate
+experiment: Query-Key Normalization in the four full-attention blocks.
+status: accepted_450s
+sources:
+  https://aclanthology.org/2020.findings-emnlp.379/
+  https://github.com/CyndxAI/QKNorm
+  https://arxiv.org/html/2505.22014v2
+rationale:
+  QKNorm replaces the fixed 1/sqrt(d_head) logit scale with per-head L2
+  normalization of Q and K plus a learned scalar initialized to
+  log2(L^2-L). The active full-attention window is L=1024, so the source
+  initialization is g=19.9986. The four full-attention blocks previously had
+  no Q/K normalization. The twelve KDA blocks already have their own nonlinear
+  Q/K normalization and were deliberately left unchanged.
+implementation:
+  Fused per-token, per-head Q/K normalization into the existing full-attention
+  gather. Q is multiplied by g/base_scale and K is unit-normalized, so the
+  existing softmax base scale produces exactly g*cos(Q,K). Backward applies
+  the exact L2-normalization Jacobian before inverse RoPE and reduces
+  sum(dQ*Q_normalized) into the learned scalar gradient.
+  Each block owns a 16-slot NVFP4 scalar tensor for Adam-compatible storage;
+  only slot zero is active and only the four full-attention blocks update,
+  clip, diagnose, or schedule-free-materialize it. Checkpoint save/load and
+  optimizer state include the tensor. Profiling the first implementation
+  exposed redundant scalar optimizer/materialization work in all 16 blocks;
+  the twelve inactive paths were removed.
+  A final kernel audit found shared head-dot reductions being reused without a
+  block barrier and a partial-block barrier in the small-shape path. The first
+  attempted promotion run was interrupted and excluded. The accepted kernel
+  uses all-thread column tiling, including partial final tiles, with an
+  explicit barrier before shared storage is reused.
+model_integrity:
+  B4/S2048/L16/d2048/h32, every full-attention/KDA block, every ReLU-squared
+  MLP, value residual, NextLat, LayerNorm, dataset, tokenizer, objective, and
+  optimizer remain active. Four functional scalars raise effective parameters
+  from 964376960 to 964376964; padded allocation rises by 256 slots to
+  984572160. No model branch was removed, frozen, bypassed, or loss-scaled.
+correctness:
+  cargo fmt --all: pass.
+  cargo check --workspace: pass.
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+  CUDA_DEVICE_INDEX=0 cargo test -p rust-kernels-cuda --release
+    --test causal_attention_backward_tc
+    qknorm_backward_matches_scale_finite_difference
+    -- --ignored --nocapture:
+    pass. The test uses five 64-wide heads (320 columns), exercising shared
+    reduction reuse and a partial final tile. It checks the learned-scale
+    gradient against a forward finite difference, requires every padded scalar
+    gradient to be exactly zero, and verifies each Q/K normalization VJP is
+    tangent per token and head.
+  CUDA_DEVICE_INDEX=0 cargo test -p rust-kernels-cuda --release
+    --test causal_attention_backward_tc
+    materialized_tc_backward_matches_reference
+    -- --ignored --nocapture:
+    pass for the unchanged legacy small-head path.
+health_screen:
+  target/runs/20260718_170945Z_fineweb_30s completed 98 steps in 30.115s
+  with held-out val_loss=6.045731067657471. Finite and Nonzero remained one
+  and every skip counter remained zero. Step-50 training loss was 6.5967746
+  versus 6.5835276 in the accepted health control, so the short screen was
+  treated only as health/inconclusive matched-step evidence.
+matched_200_step_diagnostic:
+  Candidate target/runs/20260718_171025Z_fineweb_120s completed exactly
+  200 steps in 61.924s with val_loss=5.618974208831787.
+  Control target/runs/20260718_154636Z_fineweb_120s completed exactly
+  200 steps in 63.161s with val_loss=5.645723819732666.
+  Held-out loss improves 0.473803%. The same-seed training curve initially
+  trails at step 50, then improves monotonically relative to control:
+    step 50:  6.6100225 versus 6.5804596, 0.449254% worse.
+    step 100: 6.4579020 versus 6.4756804, 0.274541% better.
+    step 150: 5.8298936 versus 5.8598456, 0.511141% better.
+    step 199: 6.4855175 versus 6.5264139, 0.626629% better.
+  This repeated the earlier prototype's matched-step direction after the
+  optimization and synchronization correction, and therefore earned the
+  sustained promotion gate.
+promotion_gate:
+  Candidate target/runs/20260718_171144Z_fineweb_450s completed 1441 steps
+  in 450.139s with held-out val_loss=4.6115498542785645.
+  Control target/runs/20260718_154755Z_fineweb_450s completed 1432 steps
+  in 450.219s with held-out val_loss=4.6698198318481445.
+  Held-out loss improves 1.247799%. Completed steps improve by nine
+  (+0.628492%), while mean step time falls from 314.398743ms to 312.379598ms
+  (-0.642224%), so the quality result carries no throughput debt.
+matched_step_curve:
+  The candidate is worse at steps 50 and 100, then lower at all 26 common
+  samples from step 150 through step 1400. Its mean relative advantage over
+  those 26 samples is 0.755836%, ranging from 0.060337% to 1.405431%.
+stability:
+  All 29 high-fidelity samples have Finite=1 and Nonzero=1.
+  Update_skipped, Skip_non_finite, Skip_loss_spike, and
+  Skip_grad_norm_spike are zero throughout. Sampled grad_norm remains finite
+  from 0.7776146 to 3.5491393.
+decision:
+  Keep QK normalization and promote the 450-second run in
+  notes/sweep_baseline.env. Future research candidates first compare loss at
+  identical optimizer steps against this intact QKNorm model; only optimized
+  matched-step survivors receive a 450-second promotion gate.
+```
+
+```text
+date: 2026-07-18
 commit: rejected before commit
 experiment: Elementwise sigmoid gate after SDPA and before the output projection.
 status: rejected_matched_step
