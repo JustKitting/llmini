@@ -121,6 +121,7 @@ impl LmHeadModule {
                 args.vocab_size,
                 args.input.global_scales,
                 args.weight.global_scale,
+                None,
             )
     }
 }

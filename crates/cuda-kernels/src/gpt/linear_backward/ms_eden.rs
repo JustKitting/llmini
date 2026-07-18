@@ -8,7 +8,7 @@ use crate::launch::grid_x_config;
 use self::quantize::QuantizeContext;
 use super::{
     LINEAR_BIAS_THREADS_PER_BLOCK, LinearBackwardDeviceScaleArgs, LinearBackwardModule,
-    LinearBackwardMsEdenArgs, bias,
+    LinearBackwardMsEdenArgs, LinearBackwardRoute, bias,
 };
 
 impl LinearBackwardModule {
@@ -16,7 +16,16 @@ impl LinearBackwardModule {
         &self,
         args: LinearBackwardMsEdenArgs<'_, '_, '_>,
     ) -> Result<(), DriverError> {
-        self.backward_ms_eden_impl(args, None).map(|_| ())
+        self.backward_ms_eden_impl(args, None, None).map(|_| ())
+    }
+
+    pub fn backward_ms_eden_routed(
+        &self,
+        args: LinearBackwardMsEdenArgs<'_, '_, '_>,
+        route: LinearBackwardRoute<'_>,
+    ) -> Result<(), DriverError> {
+        self.backward_ms_eden_impl(args, None, Some(route))
+            .map(|_| ())
     }
 
     pub fn backward_ms_eden_relu2_backward_f16(
@@ -25,7 +34,18 @@ impl LinearBackwardModule {
         pre_activation: &DeviceBuffer<u16>,
         output_chunk_amax: &mut DeviceBuffer<f32>,
     ) -> Result<u32, DriverError> {
-        self.backward_ms_eden_impl(args, Some((pre_activation, output_chunk_amax)))?
+        self.backward_ms_eden_impl(args, Some((pre_activation, output_chunk_amax)), None)?
+            .ok_or(DriverError(cudaError_enum_CUDA_ERROR_INVALID_VALUE))
+    }
+
+    pub fn backward_ms_eden_relu2_backward_f16_routed(
+        &self,
+        args: LinearBackwardMsEdenArgs<'_, '_, '_>,
+        pre_activation: &DeviceBuffer<u16>,
+        output_chunk_amax: &mut DeviceBuffer<f32>,
+        route: LinearBackwardRoute<'_>,
+    ) -> Result<u32, DriverError> {
+        self.backward_ms_eden_impl(args, Some((pre_activation, output_chunk_amax)), Some(route))?
             .ok_or(DriverError(cudaError_enum_CUDA_ERROR_INVALID_VALUE))
     }
 
@@ -33,6 +53,7 @@ impl LinearBackwardModule {
         &self,
         mut args: LinearBackwardMsEdenArgs<'_, '_, '_>,
         relu2_backward_f16: Option<(&DeviceBuffer<u16>, &mut DeviceBuffer<f32>)>,
+        route: Option<LinearBackwardRoute<'_>>,
     ) -> Result<Option<u32>, DriverError> {
         let quantize = QuantizeContext::for_args(&args);
         let mut scratch = args.scratch;
@@ -72,17 +93,32 @@ impl LinearBackwardModule {
             input_dim: args.input_dim,
             output_dim: args.output_dim,
         };
-        if let Some((pre_activation, output_chunk_amax)) = relu2_backward_f16 {
-            self.backward_device_scale_tma_relu2_backward_f16(
-                device_args,
-                scratch.tma,
-                pre_activation,
-                output_chunk_amax,
-            )
-            .map(Some)
-        } else {
-            self.backward_device_scale_tma(device_args, scratch.tma)?;
-            Ok(None)
+        match (relu2_backward_f16, route) {
+            (Some((pre_activation, output_chunk_amax)), Some(route)) => self
+                .backward_device_scale_tma_relu2_backward_f16_routed(
+                    device_args,
+                    scratch.tma,
+                    pre_activation,
+                    output_chunk_amax,
+                    route,
+                )
+                .map(Some),
+            (Some((pre_activation, output_chunk_amax)), None) => self
+                .backward_device_scale_tma_relu2_backward_f16(
+                    device_args,
+                    scratch.tma,
+                    pre_activation,
+                    output_chunk_amax,
+                )
+                .map(Some),
+            (None, Some(route)) => {
+                self.backward_device_scale_tma_routed(device_args, scratch.tma, route)?;
+                Ok(None)
+            }
+            (None, None) => {
+                self.backward_device_scale_tma(device_args, scratch.tma)?;
+                Ok(None)
+            }
         }
     }
 }

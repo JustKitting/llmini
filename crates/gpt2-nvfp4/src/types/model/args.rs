@@ -44,6 +44,8 @@ pub struct Gpt2ForwardArgs<'a> {
     pub attention_value_residual: &'a mut DeviceBuffer<f32>,
     pub attention_log_sum_exp: &'a mut DeviceBuffer<f32>,
     pub mlp_activation: &'a mut DeviceBuffer<f32>,
+    pub mlp_route_scores: &'a mut DeviceBuffer<f32>,
+    pub mlp_route_masks: &'a mut DeviceBuffer<u64>,
     pub logits: &'a mut DeviceBuffer<f32>,
     pub tape: Option<Gpt2ForwardTape<'a>>,
 }

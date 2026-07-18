@@ -30,6 +30,7 @@ impl<'a> BlockForwardTape<'a> {
             mlp_up_input_nvfp4: self.mlp_up_input_nvfp4.saved(),
             mlp_up: &*self.mlp_up,
             mlp_down_input_nvfp4: self.mlp_down_input_nvfp4.saved(),
+            mlp_route_masks: &*self.mlp_route_masks,
         }
     }
 
@@ -50,6 +51,7 @@ impl<'a> BlockForwardTape<'a> {
             mlp_up_input_nvfp4: self.mlp_up_input_nvfp4.reborrow(),
             mlp_up: &mut *self.mlp_up,
             mlp_down_input_nvfp4: self.mlp_down_input_nvfp4.reborrow(),
+            mlp_route_masks: &mut *self.mlp_route_masks,
         }
     }
 
@@ -72,6 +74,7 @@ impl<'a> BlockForwardTape<'a> {
             up_input_nvfp4: self.mlp_up_input_nvfp4.reborrow(),
             pre_activation_f16: &mut *self.mlp_up,
             down_input_nvfp4: self.mlp_down_input_nvfp4.reborrow(),
+            route_masks: &mut *self.mlp_route_masks,
         }
     }
 

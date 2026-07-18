@@ -9,7 +9,10 @@ use crate::mma::{
 use crate::nvfp4_tc_matmul::nvfp4_tc_matmul_padded_k;
 use crate::nvfp4_tma_matmul::kernels::{TILE_K, TILE_M, TILE_N};
 
-use super::{LinearBackwardDeviceScaleArgs, LinearBackwardModule, LinearBackwardTmaScratch};
+use super::{
+    LinearBackwardDeviceScaleArgs, LinearBackwardModule, LinearBackwardRoute,
+    LinearBackwardTmaScratch,
+};
 
 macro_rules! device_scale_projection {
     ($this:expr, $args:ident, $input:ident, $weight:ident, $out:ident, rows: $rows:expr, k: $k:expr) => {
@@ -40,7 +43,17 @@ impl LinearBackwardModule {
         args: LinearBackwardDeviceScaleArgs<'_, '_>,
         tma: LinearBackwardTmaScratch<'_>,
     ) -> Result<(), DriverError> {
-        self.backward_device_scale_tma_impl(args, tma, None)
+        self.backward_device_scale_tma_impl(args, tma, None, None)
+            .map(|_| ())
+    }
+
+    pub(crate) fn backward_device_scale_tma_routed(
+        &self,
+        args: LinearBackwardDeviceScaleArgs<'_, '_>,
+        tma: LinearBackwardTmaScratch<'_>,
+        route: LinearBackwardRoute<'_>,
+    ) -> Result<(), DriverError> {
+        self.backward_device_scale_tma_impl(args, tma, None, Some(route))
             .map(|_| ())
     }
 
@@ -51,8 +64,30 @@ impl LinearBackwardModule {
         pre_activation: &DeviceBuffer<u16>,
         output_chunk_amax: &mut DeviceBuffer<f32>,
     ) -> Result<u32, DriverError> {
-        self.backward_device_scale_tma_impl(args, tma, Some((pre_activation, output_chunk_amax)))?
-            .ok_or(DriverError(cudaError_enum_CUDA_ERROR_INVALID_VALUE))
+        self.backward_device_scale_tma_impl(
+            args,
+            tma,
+            Some((pre_activation, output_chunk_amax)),
+            None,
+        )?
+        .ok_or(DriverError(cudaError_enum_CUDA_ERROR_INVALID_VALUE))
+    }
+
+    pub(crate) fn backward_device_scale_tma_relu2_backward_f16_routed(
+        &self,
+        args: LinearBackwardDeviceScaleArgs<'_, '_>,
+        tma: LinearBackwardTmaScratch<'_>,
+        pre_activation: &DeviceBuffer<u16>,
+        output_chunk_amax: &mut DeviceBuffer<f32>,
+        route: LinearBackwardRoute<'_>,
+    ) -> Result<u32, DriverError> {
+        self.backward_device_scale_tma_impl(
+            args,
+            tma,
+            Some((pre_activation, output_chunk_amax)),
+            Some(route),
+        )?
+        .ok_or(DriverError(cudaError_enum_CUDA_ERROR_INVALID_VALUE))
     }
 
     fn backward_device_scale_tma_impl(
@@ -60,6 +95,7 @@ impl LinearBackwardModule {
         args: LinearBackwardDeviceScaleArgs<'_, '_>,
         tma: LinearBackwardTmaScratch<'_>,
         relu2_backward_f16: Option<(&DeviceBuffer<u16>, &mut DeviceBuffer<f32>)>,
+        route: Option<LinearBackwardRoute<'_>>,
     ) -> Result<Option<u32>, DriverError> {
         let dinput_k = nvfp4_tc_matmul_padded_k(args.output_dim);
         let dweight_k = nvfp4_tc_matmul_padded_k(args.token_count);
@@ -104,6 +140,7 @@ impl LinearBackwardModule {
                             args.input_dim,
                             args.e_h.global_scales,
                             args.weight_t_h.global_scale,
+                            route.map(LinearBackwardRoute::dinput),
                         )?,
                 )
             } else {
@@ -117,11 +154,12 @@ impl LinearBackwardModule {
                         args.input_dim,
                         args.e_h.global_scales,
                         args.weight_t_h.global_scale,
+                        route.map(LinearBackwardRoute::dinput),
                     )?;
                 None
             }
         } else {
-            if relu2_backward_f16.is_some() {
+            if relu2_backward_f16.is_some() || route.is_some() {
                 return Err(DriverError(cudaError_enum_CUDA_ERROR_INVALID_VALUE));
             }
             device_scale_projection!(self, args, e_h, weight_t_h, dinput, rows: args.token_count, k: dinput_k)?;
@@ -164,8 +202,12 @@ impl LinearBackwardModule {
                     args.input_dim,
                     args.e_t_h.global_scales,
                     args.input_t_h.global_scale,
+                    route.map(LinearBackwardRoute::dweight),
                 )?;
         } else {
+            if route.is_some() {
+                return Err(DriverError(cudaError_enum_CUDA_ERROR_INVALID_VALUE));
+            }
             device_scale_projection!(self, args, e_t_h, input_t_h, dweight, rows: args.output_dim, k: dweight_k)?;
         }
         Ok(dinput_chunk_count)

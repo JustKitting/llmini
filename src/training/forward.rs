@@ -53,6 +53,8 @@ impl Trainer {
             attention_value_residual: &mut buffers.value_residual,
             attention_log_sum_exp: &mut buffers.log_sum_exp,
             mlp_activation: &mut buffers.mlp_act,
+            mlp_route_scores: &mut buffers.mlp_route_scores,
+            mlp_route_masks: &mut buffers.mlp_route_masks,
             logits: &mut buffers.logits,
             tape: Some(buffers.tape.tape()),
         })?;

@@ -37,6 +37,8 @@ pub(super) fn forward<'a>(
         attention_value_residual,
         attention_log_sum_exp,
         mlp_activation,
+        mlp_route_scores,
+        mlp_route_masks,
         logits,
         mut tape,
     } = args;
@@ -73,6 +75,8 @@ pub(super) fn forward<'a>(
             value_residual: &mut *attention_value_residual,
             attention_log_sum_exp: &mut *attention_log_sum_exp,
             mlp_activation: &mut *mlp_activation,
+            mlp_route_scores: &mut *mlp_route_scores,
+            mlp_route_masks: &mut *mlp_route_masks,
             hidden,
             tape: tape.as_mut().map(|tape| tape.block(block_index)),
         })?;

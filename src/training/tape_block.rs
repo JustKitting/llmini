@@ -1,7 +1,8 @@
 use cuda_core::{CudaStream, DeviceBuffer, DriverError};
 use gpt2_nvfp4::{
-    AttentionLogSumExp, BlockForwardSaved, BlockForwardTape, GPT2_BATCH_SIZE, GPT2_N_HEAD,
-    GPT2_N_LAYER, GPT2_SEQ_LEN, HiddenState, MlpActivation, QkvActivation, uses_full_attention,
+    AttentionLogSumExp, BlockForwardSaved, BlockForwardTape, GPT2_BATCH_SIZE, GPT2_MLP_ROUTE_MASKS,
+    GPT2_N_HEAD, GPT2_N_LAYER, GPT2_SEQ_LEN, HiddenState, MlpActivation, QkvActivation,
+    uses_full_attention,
 };
 
 use super::device_buffer::zero;
@@ -23,6 +24,7 @@ pub struct BlockTapeBuffers {
     mlp_up_input: RowwiseTapeBuffers,
     mlp_up: DeviceBuffer<u16>,
     mlp_down_input: RowwiseTapeBuffers,
+    mlp_route_masks: DeviceBuffer<u64>,
 }
 
 impl BlockTapeBuffers {
@@ -67,6 +69,7 @@ impl BlockTapeBuffers {
             mlp_up_input: RowwiseTapeBuffers::gpt2_rows(stream, HiddenState::LEN)?,
             mlp_up: zero(stream, MlpActivation::LEN)?,
             mlp_down_input: RowwiseTapeBuffers::gpt2_rows(stream, MlpActivation::LEN)?,
+            mlp_route_masks: zero(stream, GPT2_MLP_ROUTE_MASKS)?,
         })
     }
 
@@ -87,6 +90,7 @@ impl BlockTapeBuffers {
             mlp_up_input_nvfp4: self.mlp_up_input.tape(),
             mlp_up: &mut self.mlp_up,
             mlp_down_input_nvfp4: self.mlp_down_input.tape(),
+            mlp_route_masks: &mut self.mlp_route_masks,
         }
     }
 
@@ -110,6 +114,7 @@ impl BlockTapeBuffers {
             mlp_up_input_nvfp4: self.mlp_up_input.saved(),
             mlp_up: &self.mlp_up,
             mlp_down_input_nvfp4: self.mlp_down_input.saved(),
+            mlp_route_masks: &self.mlp_route_masks,
         }
     }
 

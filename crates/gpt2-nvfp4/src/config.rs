@@ -7,6 +7,13 @@ pub const GPT2_CONTEXT_LEN: usize = GPT2_SEQ_LEN;
 pub const GPT2_LAYER_NORM_EPSILON: f32 = 1.0e-5;
 
 pub const GPT2_MLP: usize = 4 * GPT2_N_EMBD;
+pub const GPT2_MLP_ROUTE_TILE: usize = 128;
+pub const GPT2_MLP_ROUTE_FEATURE_TILES: usize = GPT2_MLP / GPT2_MLP_ROUTE_TILE;
+pub const GPT2_MLP_ROUTE_TOKEN_TILES: usize = GPT2_TOKEN_ROWS / GPT2_MLP_ROUTE_TILE;
+pub const GPT2_MLP_ROUTE_ACTIVE_FEATURE_TILES: usize = 3 * GPT2_MLP_ROUTE_FEATURE_TILES / 4;
+pub const GPT2_MLP_ROUTE_SCORES: usize = GPT2_MLP_ROUTE_TOKEN_TILES * GPT2_MLP_ROUTE_FEATURE_TILES;
+pub const GPT2_MLP_ROUTE_MASKS: usize = GPT2_MLP_ROUTE_TOKEN_TILES + GPT2_MLP_ROUTE_FEATURE_TILES;
+pub const GPT2_MLP_DENSE_PREFIX_LAYERS: usize = 1;
 pub const GPT2_FULL_ATTENTION_QKV: usize = 3 * GPT2_N_EMBD;
 pub const GPT2_KDA_ACTIVE_QKV: usize = 4 * GPT2_N_EMBD + GPT2_N_HEAD;
 pub const GPT2_QKV: usize = align_kda_qkv(GPT2_KDA_ACTIVE_QKV);
@@ -28,6 +35,16 @@ pub const NEXTLAT_HIDDEN_DIM: u32 = NEXTLAT_HIDDEN as u32;
 
 pub const KIMI_FULL_ATTENTION_PERIOD: usize = 4;
 
+const _: () = {
+    assert!(GPT2_MLP_ROUTE_TILE == 128);
+    assert!(GPT2_MLP.is_multiple_of(GPT2_MLP_ROUTE_TILE));
+    assert!(GPT2_TOKEN_ROWS.is_multiple_of(GPT2_MLP_ROUTE_TILE));
+    assert!(GPT2_MLP_ROUTE_FEATURE_TILES == 64);
+    assert!(GPT2_MLP_ROUTE_TOKEN_TILES == 64);
+    assert!(GPT2_MLP_ROUTE_ACTIVE_FEATURE_TILES == 48);
+    assert!(GPT2_MLP_ROUTE_SCORES == 4096);
+};
+
 const fn align_up(value: usize, alignment: usize) -> usize {
     value.div_ceil(alignment) * alignment
 }
@@ -38,6 +55,10 @@ const fn align_kda_qkv(value: usize) -> usize {
 
 pub const fn uses_full_attention(block_index: usize) -> bool {
     block_index % KIMI_FULL_ATTENTION_PERIOD == KIMI_FULL_ATTENTION_PERIOD - 1
+}
+
+pub const fn uses_block_topk_mlp(block_index: usize) -> bool {
+    block_index >= GPT2_MLP_DENSE_PREFIX_LAYERS
 }
 
 pub fn layer_norm_scale(block_index: usize) -> f32 {

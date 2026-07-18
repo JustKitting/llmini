@@ -35,6 +35,7 @@ pub struct BlockForwardSaved<'a> {
     pub mlp_up_input_nvfp4: Nvfp4RowwiseDeviceTensor<'a>,
     pub mlp_up: &'a DeviceBuffer<u16>,
     pub mlp_down_input_nvfp4: Nvfp4RowwiseDeviceTensor<'a>,
+    pub mlp_route_masks: &'a DeviceBuffer<u64>,
 }
 
 #[derive(Clone, Copy)]

@@ -2,7 +2,10 @@ use std::sync::Arc;
 
 use cuda_core::{CudaModule, DriverError};
 
-use super::args::{MlpDownResidualArgs, MlpUpRelu2Args, Relu2BackwardArgs, Relu2BackwardF16Args};
+use super::args::{
+    MlpBlockTopKRouteArgs, MlpDownResidualArgs, MlpUpRelu2Args, Relu2BackwardArgs,
+    Relu2BackwardF16Args,
+};
 use super::kernels;
 use crate::launch::{launch_config, linear_config};
 use crate::mma::{
@@ -85,6 +88,44 @@ impl MlpModule {
             args.len,
         )?;
         Ok(chunk_count)
+    }
+
+    pub fn block_topk_route(&self, args: MlpBlockTopKRouteArgs<'_, '_>) -> Result<(), DriverError> {
+        let token_tiles = args.token_count / kernels::BLOCK_TOPK_TILE;
+        let feature_tiles = args.feature_count / kernels::BLOCK_TOPK_TILE;
+        assert_eq!(token_tiles, kernels::BLOCK_TOPK_TOKEN_TILES);
+        assert_eq!(feature_tiles, kernels::BLOCK_TOPK_FEATURE_TILES);
+        assert!(
+            args.scores.len() >= (token_tiles * feature_tiles) as usize,
+            "block-Top-K score scratch is too small"
+        );
+        assert!(
+            args.masks.len() >= (token_tiles + feature_tiles) as usize,
+            "block-Top-K dual-layout mask buffer is too small"
+        );
+
+        self.module.mlp_block_topk_scores_nvfp4_kernel(
+            args.stream,
+            launch_config(
+                (feature_tiles, token_tiles, 1),
+                kernels::BLOCK_TOPK_SCORE_THREADS,
+            ),
+            args.activation.bytes,
+            args.activation.scales,
+            args.activation.global_scales,
+            args.scores,
+            args.token_count,
+            args.feature_count,
+        )?;
+        self.module.mlp_block_topk_masks_kernel(
+            args.stream,
+            launch_config((1, 1, 1), kernels::BLOCK_TOPK_MASK_THREADS),
+            &*args.scores,
+            args.masks,
+            token_tiles,
+            feature_tiles,
+            kernels::BLOCK_TOPK_ACTIVE_FEATURE_TILES,
+        )
     }
 }
 

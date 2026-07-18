@@ -1,7 +1,7 @@
 use cuda_core::{CudaStream, DeviceBuffer, DriverError};
 use gpt2_nvfp4::{
-    AttentionLogSumExp, GPT2_TOKEN_ROWS, HiddenState, Logits, MlpActivation, QkvActivation,
-    RowwiseNvfp4Buffers,
+    AttentionLogSumExp, GPT2_MLP_ROUTE_MASKS, GPT2_MLP_ROUTE_SCORES, GPT2_TOKEN_ROWS, HiddenState,
+    Logits, MlpActivation, QkvActivation, RowwiseNvfp4Buffers,
 };
 
 use super::device_buffer::zero;
@@ -26,6 +26,8 @@ pub struct TrainBuffers {
     pub inv_std: DeviceBuffer<f32>,
     pub hidden_nvfp4: RowwiseNvfp4Buffers,
     pub mlp_act: DeviceBuffer<f32>,
+    pub mlp_route_scores: DeviceBuffer<f32>,
+    pub mlp_route_masks: DeviceBuffer<u64>,
     pub mlp_activation_nvfp4: RowwiseNvfp4Buffers,
     pub qkv: DeviceBuffer<f32>,
     pub value_residual: DeviceBuffer<f32>,
@@ -71,6 +73,8 @@ impl TrainBuffers {
             inv_std: zero(stream, GPT2_TOKEN_ROWS)?,
             hidden_nvfp4: RowwiseNvfp4Buffers::gpt2_rows(stream, HiddenState::LEN)?,
             mlp_act: zero(stream, MlpActivation::LEN)?,
+            mlp_route_scores: zero(stream, GPT2_MLP_ROUTE_SCORES)?,
+            mlp_route_masks: zero(stream, GPT2_MLP_ROUTE_MASKS)?,
             mlp_activation_nvfp4: RowwiseNvfp4Buffers::gpt2_rows(stream, MlpActivation::LEN)?,
             qkv: zero(stream, QkvActivation::LEN)?,
             value_residual: zero(stream, HiddenState::LEN)?,

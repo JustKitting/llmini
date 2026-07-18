@@ -8,14 +8,14 @@ use rust_kernels_cuda::f32_matrix_ops::{
 };
 use rust_kernels_cuda::lm_head::{LmHeadArgs, LmHeadModule};
 use rust_kernels_cuda::mlp::{
-    MlpDownResidualArgs, MlpModule, MlpUpRelu2Args, Relu2BackwardF16Args,
+    MlpBlockTopKRouteArgs, MlpDownResidualArgs, MlpModule, MlpUpRelu2Args, Relu2BackwardF16Args,
     relu2_backward_amax_chunks,
 };
 use rust_kernels_cuda::mma::Nvfp4FourSixMmaWeightTensor;
 use rust_kernels_cuda::nvfp4::{Nvfp4DeviceTensor, Nvfp4RowwiseDeviceTensor};
 use rust_kernels_cuda::nvfp4_tma_matmul::{
     kernels::{tma_nvfp4_output_amax_chunks, tma_nvfp4_symmetric_output_amax_chunks},
-    launcher::Nvfp4GemmModule,
+    launcher::{Nvfp4GemmModule, Nvfp4GemmRoute},
     pad::{TmaMatrixPadModule, U4RowPadArgs},
     scale_layout::{
         pack_sm120_scale_plane_compact_padded, sm120_scale_packed_len, sm120_scale_padded_mn_extent,
@@ -26,12 +26,111 @@ use rust_kernels_cuda::nvfp4_tma_matmul::{
 
 mod common;
 
-use common::nvfp4::{one_scales, set_e2m1_one};
+use common::nvfp4::{one_pair_bytes, one_scales, set_e2m1_one};
 
 const ROWS: usize = 128;
 const K: usize = 128;
 const N: usize = 160;
 const TOLERANCE: f32 = 1.0e-5;
+
+#[ignore = "requires generated sm_120a PTX"]
+#[test]
+fn mlp_block_topk_route_selects_and_transposes_exact_tiles() -> Result<(), Box<dyn Error>> {
+    const TILE: usize = 128;
+    const TOKEN_TILES: usize = 64;
+    const FEATURE_TILES: usize = 64;
+    const ACTIVE_FEATURE_TILES: usize = 48;
+    const TOKENS: usize = TILE * TOKEN_TILES;
+    const FEATURES: usize = TILE * FEATURE_TILES;
+    const ELEMENTS: usize = TOKENS * FEATURES;
+
+    let (_, stream, ptx) = common::cuda_test_context()?;
+    let module = MlpModule::from_module(ptx)?;
+    let mut bytes = one_pair_bytes(ELEMENTS);
+    let zero_prefix_bytes = (FEATURE_TILES - ACTIVE_FEATURE_TILES) * TILE / 2;
+    for row in bytes.chunks_exact_mut(FEATURES / 2) {
+        row[..zero_prefix_bytes].fill(0);
+    }
+    let bytes = DeviceBuffer::from_host(&stream, &bytes)?;
+    let scales = DeviceBuffer::from_host(&stream, &one_scales(ELEMENTS))?;
+    let global_scales = DeviceBuffer::from_host(&stream, &vec![1.0_f32; TOKENS])?;
+    let mut scores = DeviceBuffer::<f32>::zeroed(&stream, TOKEN_TILES * FEATURE_TILES)?;
+    let mut masks = DeviceBuffer::<u64>::zeroed(&stream, TOKEN_TILES + FEATURE_TILES)?;
+
+    module.block_topk_route(MlpBlockTopKRouteArgs {
+        stream: &stream,
+        activation: Nvfp4RowwiseDeviceTensor::new(&bytes, &scales, &global_scales),
+        scores: &mut scores,
+        masks: &mut masks,
+        token_count: TOKENS as u32,
+        feature_count: FEATURES as u32,
+    })?;
+
+    let masks = masks.to_host_vec(&stream)?;
+    let expected_token_mask = u64::MAX << (FEATURE_TILES - ACTIVE_FEATURE_TILES);
+    assert!(
+        masks[..TOKEN_TILES]
+            .iter()
+            .all(|mask| *mask == expected_token_mask)
+    );
+    assert!(
+        masks[TOKEN_TILES..TOKEN_TILES + FEATURE_TILES - ACTIVE_FEATURE_TILES]
+            .iter()
+            .all(|mask| *mask == 0)
+    );
+    assert!(
+        masks[TOKEN_TILES + FEATURE_TILES - ACTIVE_FEATURE_TILES..]
+            .iter()
+            .all(|mask| *mask == u64::MAX)
+    );
+    Ok(())
+}
+
+#[ignore = "requires generated sm_120a PTX"]
+#[test]
+fn tma_feature_routes_use_transposed_popcount_and_zero_empty_tiles() -> Result<(), Box<dyn Error>> {
+    let masks = [0b01_u64, 0b01, 0b11, 0];
+
+    let feature_n = Fixture::new(128, 256, 256)?;
+    let masks_n = DeviceBuffer::from_host(&feature_n.stream, &masks)?;
+    let mut dense_n = DeviceBuffer::<f32>::zeroed(&feature_n.stream, 128 * 256)?;
+    let mut routed_n = DeviceBuffer::<f32>::zeroed(&feature_n.stream, 128 * 256)?;
+    feature_n.tma_rowwise_exact(&mut dense_n, None)?;
+    feature_n.tma_rowwise_exact(
+        &mut routed_n,
+        Some(Nvfp4GemmRoute::feature_n_token_k(&masks_n, 2, 2, 1)),
+    )?;
+    let dense_n = dense_n.to_host_vec(&feature_n.stream)?;
+    let routed_n = routed_n.to_host_vec(&feature_n.stream)?;
+    for row in 0..128 {
+        let base = row * 256;
+        common::assert_slice_close(
+            &routed_n[base..base + 128],
+            &dense_n[base..base + 128],
+            TOLERANCE,
+        );
+        assert!(
+            routed_n[base + 128..base + 256]
+                .iter()
+                .all(|value| *value == 0.0)
+        );
+    }
+
+    let feature_m = Fixture::new(256, 256, 128)?;
+    let masks_m = DeviceBuffer::from_host(&feature_m.stream, &masks)?;
+    let mut dense_m = DeviceBuffer::<f32>::zeroed(&feature_m.stream, 256 * 128)?;
+    let mut routed_m = DeviceBuffer::<f32>::zeroed(&feature_m.stream, 256 * 128)?;
+    feature_m.tma_rowwise_exact(&mut dense_m, None)?;
+    feature_m.tma_rowwise_exact(
+        &mut routed_m,
+        Some(Nvfp4GemmRoute::feature_m_token_k(&masks_m, 2, 2, 1)),
+    )?;
+    let dense_m = dense_m.to_host_vec(&feature_m.stream)?;
+    let routed_m = routed_m.to_host_vec(&feature_m.stream)?;
+    common::assert_slice_close(&routed_m[..128 * 128], &dense_m[..128 * 128], TOLERANCE);
+    assert!(routed_m[128 * 128..].iter().all(|value| *value == 0.0));
+    Ok(())
+}
 
 #[ignore = "requires generated sm_120a PTX"]
 #[test]
@@ -483,6 +582,60 @@ impl Fixture {
         Nvfp4RowwiseDeviceTensor::new(&self.input_bytes, &self.input_scales, &self.input_globals)
     }
 
+    fn tma_rowwise_exact(
+        &self,
+        out: &mut DeviceBuffer<f32>,
+        route: Option<Nvfp4GemmRoute<'_>>,
+    ) -> Result<(), Box<dyn Error>> {
+        let mut input_scale_packed = DeviceBuffer::zeroed(
+            &self.stream,
+            sm120_scale_packed_len(sm120_scale_padded_mn_extent(self.rows), self.k),
+        )?;
+        let mut weight_scale_packed = DeviceBuffer::zeroed(
+            &self.stream,
+            sm120_scale_packed_len(sm120_scale_padded_mn_extent(self.n), self.k),
+        )?;
+        let mut descriptors = TmaNvfp4DeviceScaleDescriptors::new(&self.stream)?;
+        self.scale_pack.pack(
+            &self.stream,
+            &self.input_scales,
+            &mut input_scale_packed,
+            self.rows as u32,
+            self.k as u32,
+        )?;
+        self.scale_pack.pack(
+            &self.stream,
+            &self.weight_scales,
+            &mut weight_scale_packed,
+            self.n as u32,
+            self.k as u32,
+        )?;
+        self.tma.prepare_tma_nvfp4_device_scales_into(
+            &self.stream,
+            &self.input_bytes,
+            &input_scale_packed,
+            &self.weight_bytes,
+            &weight_scale_packed,
+            self.rows as u32,
+            self.k as u32,
+            self.n as u32,
+            &mut descriptors,
+        )?;
+        self.tma
+            .gemm_tma_nvfp4_rowwise_a_scale_and_global_scale_buffer(
+                &self.stream,
+                &descriptors,
+                out,
+                self.rows as u32,
+                self.k as u32,
+                self.n as u32,
+                &self.input_globals,
+                &self.weight_global,
+                route,
+            )?;
+        Ok(())
+    }
+
     fn weight_mma(&self) -> Nvfp4FourSixMmaWeightTensor<'_> {
         Nvfp4FourSixMmaWeightTensor::new(
             &self.weight_bytes,
@@ -677,6 +830,7 @@ impl Fixture {
                 self.n as u32,
                 &self.input_globals,
                 &self.weight_global,
+                None,
             )?;
         Ok(self
             .tma
@@ -691,6 +845,7 @@ impl Fixture {
                 self.n as u32,
                 &self.input_globals,
                 &self.weight_global,
+                None,
             )?)
     }
 
@@ -1068,6 +1223,7 @@ impl Fixture {
             self.n as u32,
             &self.input_globals,
             &self.weight_global,
+            None,
         )?;
         Ok(())
     }

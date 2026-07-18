@@ -1,7 +1,7 @@
 use cuda_core::{CudaStream, DeviceBuffer, DriverError};
 use rust_kernels_cuda::linear_backward::{
     LinearBackwardInputTranspose, LinearBackwardModule, LinearBackwardMsEdenArgs,
-    LinearBackwardMsEdenScratch, LinearBackwardWeightTranspose,
+    LinearBackwardMsEdenScratch, LinearBackwardRoute, LinearBackwardWeightTranspose,
 };
 use rust_kernels_cuda::mma::Nvfp4FourSixMmaWeightTensor;
 use rust_kernels_cuda::nvfp4::{Nvfp4DeviceTensor, Nvfp4RowwiseDeviceTensor};
@@ -24,6 +24,7 @@ pub(super) struct LinearBackwardCall<'a, 'scratch, 'out> {
     pub sign_seed: u32,
     pub scale_seed: u32,
     pub precomputed_e_amax_chunks: Option<u32>,
+    pub route: Option<LinearBackwardRoute<'a>>,
 }
 
 pub(super) struct RowwiseLinearBackwardPass<'a, 'scratch, 'out> {
@@ -58,6 +59,26 @@ pub(super) fn run_rowwise_linear_backward(
     stream: &CudaStream,
     pass: RowwiseLinearBackwardPass<'_, '_, '_>,
 ) -> Result<(), DriverError> {
+    run_rowwise_linear_backward_with_route(module, quant, stream, pass, None)
+}
+
+pub(super) fn run_rowwise_linear_backward_routed(
+    module: &LinearBackwardModule,
+    quant: &Nvfp4QuantModule,
+    stream: &CudaStream,
+    pass: RowwiseLinearBackwardPass<'_, '_, '_>,
+    route: LinearBackwardRoute<'_>,
+) -> Result<(), DriverError> {
+    run_rowwise_linear_backward_with_route(module, quant, stream, pass, Some(route))
+}
+
+fn run_rowwise_linear_backward_with_route(
+    module: &LinearBackwardModule,
+    quant: &Nvfp4QuantModule,
+    stream: &CudaStream,
+    pass: RowwiseLinearBackwardPass<'_, '_, '_>,
+    route: Option<LinearBackwardRoute<'_>>,
+) -> Result<(), DriverError> {
     run_linear_backward(LinearBackwardCall {
         stream,
         module,
@@ -75,6 +96,7 @@ pub(super) fn run_rowwise_linear_backward(
         sign_seed: pass.sign_seed,
         scale_seed: pass.scale_seed,
         precomputed_e_amax_chunks: pass.precomputed_e_amax_chunks,
+        route,
     })
 }
 
@@ -85,6 +107,46 @@ pub(super) fn run_rowwise_linear_backward_relu2_backward_f16(
     pass: RowwiseLinearBackwardPass<'_, '_, '_>,
     pre_activation: &DeviceBuffer<u16>,
     output_chunk_amax: &mut DeviceBuffer<f32>,
+) -> Result<u32, DriverError> {
+    run_rowwise_linear_backward_relu2_backward_f16_with_route(
+        module,
+        quant,
+        stream,
+        pass,
+        pre_activation,
+        output_chunk_amax,
+        None,
+    )
+}
+
+pub(super) fn run_rowwise_linear_backward_relu2_backward_f16_routed(
+    module: &LinearBackwardModule,
+    quant: &Nvfp4QuantModule,
+    stream: &CudaStream,
+    pass: RowwiseLinearBackwardPass<'_, '_, '_>,
+    pre_activation: &DeviceBuffer<u16>,
+    output_chunk_amax: &mut DeviceBuffer<f32>,
+    route: LinearBackwardRoute<'_>,
+) -> Result<u32, DriverError> {
+    run_rowwise_linear_backward_relu2_backward_f16_with_route(
+        module,
+        quant,
+        stream,
+        pass,
+        pre_activation,
+        output_chunk_amax,
+        Some(route),
+    )
+}
+
+fn run_rowwise_linear_backward_relu2_backward_f16_with_route(
+    module: &LinearBackwardModule,
+    quant: &Nvfp4QuantModule,
+    stream: &CudaStream,
+    pass: RowwiseLinearBackwardPass<'_, '_, '_>,
+    pre_activation: &DeviceBuffer<u16>,
+    output_chunk_amax: &mut DeviceBuffer<f32>,
+    route: Option<LinearBackwardRoute<'_>>,
 ) -> Result<u32, DriverError> {
     let call = LinearBackwardCall {
         stream,
@@ -103,32 +165,9 @@ pub(super) fn run_rowwise_linear_backward_relu2_backward_f16(
         sign_seed: pass.sign_seed,
         scale_seed: pass.scale_seed,
         precomputed_e_amax_chunks: pass.precomputed_e_amax_chunks,
+        route,
     };
-    call.module.backward_ms_eden_relu2_backward_f16(
-        LinearBackwardMsEdenArgs {
-            stream: call.stream,
-            quant_module: call.quant,
-            e: call.e,
-            weight_t: call.weight_t,
-            input_t: call.input_t,
-            scratch: call.scratch,
-            dinput: call.dinput,
-            dweight: call.dweight,
-            dbias: call.dbias,
-            token_count: call.token_count,
-            input_dim: call.input_dim,
-            output_dim: call.output_dim,
-            sign_seed: call.sign_seed,
-            scale_seed: call.scale_seed,
-            precomputed_e_amax_chunks: call.precomputed_e_amax_chunks,
-        },
-        pre_activation,
-        output_chunk_amax,
-    )
-}
-
-pub(super) fn run_linear_backward(call: LinearBackwardCall<'_, '_, '_>) -> Result<(), DriverError> {
-    call.module.backward_ms_eden(LinearBackwardMsEdenArgs {
+    let args = LinearBackwardMsEdenArgs {
         stream: call.stream,
         quant_module: call.quant,
         e: call.e,
@@ -144,5 +183,41 @@ pub(super) fn run_linear_backward(call: LinearBackwardCall<'_, '_, '_>) -> Resul
         sign_seed: call.sign_seed,
         scale_seed: call.scale_seed,
         precomputed_e_amax_chunks: call.precomputed_e_amax_chunks,
-    })
+    };
+    if let Some(route) = call.route {
+        call.module.backward_ms_eden_relu2_backward_f16_routed(
+            args,
+            pre_activation,
+            output_chunk_amax,
+            route,
+        )
+    } else {
+        call.module
+            .backward_ms_eden_relu2_backward_f16(args, pre_activation, output_chunk_amax)
+    }
+}
+
+pub(super) fn run_linear_backward(call: LinearBackwardCall<'_, '_, '_>) -> Result<(), DriverError> {
+    let args = LinearBackwardMsEdenArgs {
+        stream: call.stream,
+        quant_module: call.quant,
+        e: call.e,
+        weight_t: call.weight_t,
+        input_t: call.input_t,
+        scratch: call.scratch,
+        dinput: call.dinput,
+        dweight: call.dweight,
+        dbias: call.dbias,
+        token_count: call.token_count,
+        input_dim: call.input_dim,
+        output_dim: call.output_dim,
+        sign_seed: call.sign_seed,
+        scale_seed: call.scale_seed,
+        precomputed_e_amax_chunks: call.precomputed_e_amax_chunks,
+    };
+    if let Some(route) = call.route {
+        call.module.backward_ms_eden_routed(args, route)
+    } else {
+        call.module.backward_ms_eden(args)
+    }
 }

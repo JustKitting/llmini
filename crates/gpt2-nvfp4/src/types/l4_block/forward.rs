@@ -16,6 +16,8 @@ impl Gpt2BlockWeights {
         let value_residual = args.value_residual;
         let attention_log_sum_exp = args.attention_log_sum_exp;
         let mlp_activation = args.mlp_activation;
+        let mlp_route_scores = args.mlp_route_scores;
+        let mlp_route_masks = args.mlp_route_masks;
         let mut hidden_nvfp4 = args.hidden_nvfp4;
         let tma_descriptors = args.tma_descriptors;
         let tma_input_scale_packed = args.tma_input_scale_packed;
@@ -77,6 +79,7 @@ impl Gpt2BlockWeights {
         let mlp_tape = tape.as_mut().map(|tape| tape.mlp_forward());
 
         let hidden = MlpWeights::forward(MlpForwardArgs {
+            block_index: args.block_index,
             module: args.mlp_module,
             tma_module: args.tma_module,
             tma_scale_pack: args.tma_scale_pack,
@@ -85,6 +88,8 @@ impl Gpt2BlockWeights {
                 input_nvfp4: hidden_nvfp4.reborrow(),
                 activation_nvfp4: args.mlp_activation_nvfp4,
                 activation: &mut *mlp_activation,
+                route_scores: &mut *mlp_route_scores,
+                route_masks: &mut *mlp_route_masks,
                 tma_descriptors: &mut *tma_descriptors,
                 tma_input_scale_packed: &mut *tma_input_scale_packed,
                 tma_wide_input_scale_packed: &mut *tma_wide_input_scale_packed,

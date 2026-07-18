@@ -24,6 +24,7 @@ pub struct BlockForwardTape<'a> {
     pub mlp_up_input_nvfp4: RowwiseNvfp4Tape<'a>,
     pub mlp_up: &'a mut DeviceBuffer<u16>,
     pub mlp_down_input_nvfp4: RowwiseNvfp4Tape<'a>,
+    pub mlp_route_masks: &'a mut DeviceBuffer<u64>,
 }
 
 pub struct LayerNormTape<'a> {

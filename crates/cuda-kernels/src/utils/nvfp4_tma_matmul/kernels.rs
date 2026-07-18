@@ -35,7 +35,18 @@ pub struct Nvfp4GemmParams {
     pub weight_global_scale: f32,
     pub a_global_scale: u64,
     pub b_global_scale: u64,
+    pub route_mode: u32,
+    pub route_token_tiles: u32,
+    pub route_feature_tiles: u32,
+    pub route_active_tiles: u32,
+    pub route_masks: u64,
 }
+
+pub const ROUTE_NONE: u32 = 0;
+pub const ROUTE_TOKEN_M_FEATURE_N: u32 = 1;
+pub const ROUTE_TOKEN_M_FEATURE_K: u32 = 2;
+pub const ROUTE_FEATURE_M_TOKEN_K: u32 = 3;
+pub const ROUTE_FEATURE_N_TOKEN_K: u32 = 4;
 
 const MMA_M: u32 = Sm120Nvfp4MmaAtom::M;
 const MMA_N: u32 = Sm120Nvfp4MmaAtom::N;
@@ -280,6 +291,79 @@ impl CtaTile {
     #[inline(always)]
     fn mma_col_offset(self, n_repeat: u32) -> u32 {
         mma_n_atom(self.n_layout, self.warp_n, n_repeat) * MMA_N
+    }
+}
+
+#[inline(always)]
+fn route_mask(params: Nvfp4GemmParams, index: u32) -> u64 {
+    unsafe { *((params.route_masks as *const u64).add(index as usize)) }
+}
+
+#[inline(always)]
+fn token_feature_mask(tile: CtaTile, params: Nvfp4GemmParams) -> u64 {
+    route_mask(params, tile.row_base / TILE_M)
+}
+
+#[inline(always)]
+fn feature_token_mask(feature_tile: u32, params: Nvfp4GemmParams) -> u64 {
+    route_mask(params, params.route_token_tiles + feature_tile)
+}
+
+#[inline(always)]
+fn select_set_bit(mut mask: u64, mut rank: u32) -> u32 {
+    while rank != 0 {
+        mask &= mask - 1;
+        rank -= 1;
+    }
+    mask.trailing_zeros()
+}
+
+#[inline(always)]
+fn routed_output_tile_active(tile: CtaTile, params: Nvfp4GemmParams) -> bool {
+    match params.route_mode {
+        ROUTE_TOKEN_M_FEATURE_N => {
+            let feature_tile = tile.col_base / TILE_N;
+            token_feature_mask(tile, params) & (1_u64 << feature_tile) != 0
+        }
+        ROUTE_FEATURE_M_TOKEN_K => feature_token_mask(tile.row_base / TILE_M, params) != 0,
+        ROUTE_FEATURE_N_TOKEN_K => feature_token_mask(tile.col_base / TILE_N, params) != 0,
+        _ => true,
+    }
+}
+
+#[inline(always)]
+fn routed_k_tile_count(tile: CtaTile, params: Nvfp4GemmParams) -> u32 {
+    match params.route_mode {
+        ROUTE_TOKEN_M_FEATURE_K => params.route_active_tiles,
+        ROUTE_FEATURE_M_TOKEN_K => feature_token_mask(tile.row_base / TILE_M, params).count_ones(),
+        ROUTE_FEATURE_N_TOKEN_K => feature_token_mask(tile.col_base / TILE_N, params).count_ones(),
+        _ => params.input_dim / TILE_K,
+    }
+}
+
+#[inline(always)]
+fn routed_k_base(logical_k_tile: u32, tile: CtaTile, params: Nvfp4GemmParams) -> u32 {
+    let mask = match params.route_mode {
+        ROUTE_TOKEN_M_FEATURE_K => token_feature_mask(tile, params),
+        ROUTE_FEATURE_M_TOKEN_K => feature_token_mask(tile.row_base / TILE_M, params),
+        ROUTE_FEATURE_N_TOKEN_K => feature_token_mask(tile.col_base / TILE_N, params),
+        _ => return logical_k_tile * TILE_K,
+    };
+    select_set_bit(mask, logical_k_tile) * TILE_K
+}
+
+#[inline(always)]
+fn zero_output_tile_f32(tile: CtaTile, params: Nvfp4GemmParams, out: &mut DisjointSlice<f32>) {
+    let thread_id = thread::threadIdx_x();
+    let thread_count = thread::blockDim_x();
+    let mut local = thread_id;
+    while local < TILE_M * TILE_N {
+        let row = tile.row_base + local / TILE_N;
+        let col = tile.col_base + local % TILE_N;
+        unsafe {
+            *out.get_unchecked_mut((row * params.output_dim + col) as usize) = 0.0;
+        }
+        local += thread_count;
     }
 }
 
@@ -2166,9 +2250,10 @@ macro_rules! run_tma_nvfp4_full_tile_shape_body {
         let empty_bars = $empty_bars;
 
         if thread::threadIdx_x() >= MMA_THREADS_PER_BLOCK {
-            let mut k_base = 0;
             let mut k_tile = 0;
-            while k_base < params.input_dim {
+            let k_tile_count = routed_k_tile_count(tile, params);
+            while k_tile < k_tile_count {
+                let k_base = routed_k_base(k_tile, tile, params);
                 let stage = pipeline_stage(k_tile);
                 let empty_phase = producer_empty_phase(k_tile);
                 let tma_bar = stage_barrier(tma_bars, stage);
@@ -2188,7 +2273,6 @@ macro_rules! run_tma_nvfp4_full_tile_shape_body {
                     stage_ptr(b_scales_base, stage, B_SCALES),
                     tma_bar,
                 );
-                k_base += TILE_K;
                 k_tile += 1;
             }
 
@@ -2245,9 +2329,9 @@ macro_rules! run_tma_nvfp4_full_tile_shape_body {
                 }};
             }
 
-            let mut k_base = 0;
             let mut k_tile = 0;
-            while k_base < params.input_dim {
+            let k_tile_count = routed_k_tile_count(tile, params);
+            while k_tile < k_tile_count {
                 let stage = pipeline_stage(k_tile);
                 let full_phase = pipeline_phase(k_tile);
                 let tma_bar = stage_barrier(tma_bars, stage);
@@ -2260,7 +2344,6 @@ macro_rules! run_tma_nvfp4_full_tile_shape_body {
                     stage_ptr(b_scales_base, stage, B_SCALES),
                     empty_bar
                 );
-                k_base += TILE_K;
                 k_tile += 1;
             }
 
@@ -2932,6 +3015,10 @@ pub mod module {
         static mut B_PACKS_SM: BPacksSmemStages = SharedArray::UNINIT;
 
         let tile = CtaTile::new(thread_id);
+        if !routed_output_tile_active(tile, params) {
+            zero_output_tile_f32(tile, params, &mut out);
+            return;
+        }
         let tma_bars = unsafe { (&mut *(&raw mut TMA_BARS)).as_mut_ptr() };
         let empty_bars = unsafe { (&mut *(&raw mut EMPTY_BARS)).as_mut_ptr() };
         let a_scales_base = unsafe { (&mut *(&raw mut A_SCALES_SM)).as_mut_ptr() };
@@ -3003,6 +3090,10 @@ pub mod module {
         static mut B_PACKS_SM: BPacksSmemStages = SharedArray::UNINIT;
 
         let tile = CtaTile::new(thread_id);
+        if !routed_output_tile_active(tile, params) {
+            zero_output_tile_f32(tile, params, &mut out);
+            return;
+        }
         let tma_bars = unsafe { (&mut *(&raw mut TMA_BARS)).as_mut_ptr() };
         let empty_bars = unsafe { (&mut *(&raw mut EMPTY_BARS)).as_mut_ptr() };
         let a_scales_base = unsafe { (&mut *(&raw mut A_SCALES_SM)).as_mut_ptr() };
@@ -3160,6 +3251,18 @@ pub mod module {
         static mut B_PACKS_SM: BPacksSmemStages = SharedArray::UNINIT;
 
         let tile = CtaTile::new(thread_id);
+        if !routed_output_tile_active(tile, params) {
+            zero_output_tile_f32(tile, params, &mut out);
+            if thread_id < WARPS_PER_BLOCK {
+                let cta =
+                    thread::blockIdx_y() * (params.output_dim / TILE_N) + thread::blockIdx_x();
+                let chunk = cta * WARPS_PER_BLOCK + thread_id;
+                unsafe {
+                    *output_chunk_amax.get_unchecked_mut(chunk as usize) = 0.0;
+                }
+            }
+            return;
+        }
         let tma_bars = unsafe { (&mut *(&raw mut TMA_BARS)).as_mut_ptr() };
         let empty_bars = unsafe { (&mut *(&raw mut EMPTY_BARS)).as_mut_ptr() };
         let a_scales_base = unsafe { (&mut *(&raw mut A_SCALES_SM)).as_mut_ptr() };

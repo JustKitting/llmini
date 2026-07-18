@@ -62,6 +62,7 @@ pub fn mlp_side_backward(args: BlockMlpBackwardArgs<'_, '_, '_>) -> Result<u32, 
         ..
     } = grads;
     mlp_backward(MlpBackwardArgs {
+        block_index,
         stream,
         modules: modules.mlp,
         saved,

@@ -41,6 +41,8 @@ pub struct BlockForwardArgs<'a, 'scratch> {
     pub value_residual: &'scratch mut DeviceBuffer<f32>,
     pub attention_log_sum_exp: &'scratch mut DeviceBuffer<f32>,
     pub mlp_activation: &'scratch mut DeviceBuffer<f32>,
+    pub mlp_route_scores: &'scratch mut DeviceBuffer<f32>,
+    pub mlp_route_masks: &'scratch mut DeviceBuffer<u64>,
     pub hidden: HiddenStateDevice<'a>,
     pub tape: Option<BlockForwardTape<'scratch>>,
 }

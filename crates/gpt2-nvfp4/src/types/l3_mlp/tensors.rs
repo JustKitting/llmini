@@ -35,6 +35,8 @@ pub struct MlpScratch<'scratch> {
     pub input_nvfp4: HiddenStateNvfp4<'scratch>,
     pub activation_nvfp4: MlpActivationNvfp4<'scratch>,
     pub activation: &'scratch mut DeviceBuffer<f32>,
+    pub route_scores: &'scratch mut DeviceBuffer<f32>,
+    pub route_masks: &'scratch mut DeviceBuffer<u64>,
     pub tma_descriptors: &'scratch mut TmaNvfp4DeviceScaleDescriptors,
     pub tma_input_scale_packed: &'scratch mut DeviceBuffer<u8>,
     pub tma_wide_input_scale_packed: &'scratch mut DeviceBuffer<u8>,
@@ -42,6 +44,7 @@ pub struct MlpScratch<'scratch> {
 }
 
 pub struct MlpForwardArgs<'a, 'scratch> {
+    pub block_index: usize,
     pub module: &'a MlpModule,
     pub tma_module: &'a Nvfp4GemmModule,
     pub tma_scale_pack: &'a Sm120ScalePackModule,

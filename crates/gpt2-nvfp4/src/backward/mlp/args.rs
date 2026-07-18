@@ -61,6 +61,7 @@ impl MlpBackwardSeeds {
 }
 
 pub struct MlpBackwardArgs<'a, 'scratch, 'out> {
+    pub block_index: usize,
     pub stream: &'a CudaStream,
     pub modules: MlpBackwardModules<'a>,
     pub saved: BlockForwardSaved<'a>,

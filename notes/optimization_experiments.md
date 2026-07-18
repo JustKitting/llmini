@@ -48,6 +48,87 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 
 ```text
 date: 2026-07-18
+commit: passing source candidate; committed after the required gate
+experiment: Content-derived block-Top-K ReLU2 layout for backward-efficient MLPs.
+status: accepted_450s; active_baseline
+sources:
+  https://medium.com/@larry36d/partial-model-freezing-and-optimizing-for-the-backwards-pass-df5b0713f219
+  https://arxiv.org/abs/2310.10837
+  https://arxiv.org/abs/2606.10722
+rationale:
+  Apply the article's general principle at the dominant nonlinear boundary:
+  express activation support in a hardware-visible layout once, then reuse it
+  to remove work from the more expensive backward pass. Unlike the two
+  rejected position-routed MLPs, use actual activation content to choose
+  support. The two-layer-FFN paper reports that moderate top-K activation
+  sparsity can match or improve parameter-matched language-model perplexity;
+  the later bank-wise predictor paper independently supports structured
+  activation sparsity, but this local candidate does not implement its learned
+  predictor or upcycling procedure.
+implementation:
+  Preserve the full 8192-neuron up projection and every original parameter.
+  Block 0 remains entirely dense. In blocks 1-15, compute the dense ReLU2
+  activation, quantize it to the existing rowwise NVFP4 representation, and
+  score every 128-token by 128-feature tile by its nonnegative activation mass.
+  Each 128-token tile retains its top 48 of 64 feature tiles (75% active
+  width). Store both 64 token-to-feature masks and their exact 64
+  feature-to-token transpose.
+  Reuse those masks in the down forward reduction, down dX output support,
+  down dW token reduction, up dX feature reduction, and up dW token reduction.
+  Token-oriented reductions have exactly 48 K tiles; feature-oriented dW
+  reductions use each transposed mask's actual popcount from zero through 64,
+  and empty output tiles are explicitly zeroed before entering the TMA
+  pipeline. Dense up-forward capacity is unchanged. Static FLOPs across the
+  six MLP GEMMs fall by 19.53125% over the full 16-layer model, while all
+  attention, KDA, MLP, NextLat, parameter tensors, and model dimensions remain
+  intact.
+correctness:
+  cargo fmt --all, TMPDIR=$PWD/target/tmp cargo check --workspace, and
+  git diff --check: pass.
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+  Rebuilt-PTX GPU tests: 2 passed. One checks exact top-48 selection plus the
+  dual mask transpose at the full 64-by-64 route geometry. The other compares
+  both feature-oriented TMA dW layouts against dense references with
+  transposed-mask popcounts of two and zero, including explicit empty-tile
+  output.
+  Review during the first attempted long gate found that the original dW
+  implementation incorrectly assumed every transposed feature mask also had
+  48 bits. That run was interrupted and discarded. The accepted build derives
+  the reduction count from each feature mask and is the source tested below.
+health:
+  target/runs/20260718_031019Z_fineweb_30s
+  completed_steps=96, train_elapsed_s=30.001,
+  val_loss=6.142887592315674.
+  Gradient norm ended at 1.851614. Finite/nonzero remained one and every
+  non-finite, loss-spike, gradient-spike, and update-skip counter remained zero.
+  This was launch and numerical-health evidence only.
+gate:
+  target/runs/20260718_031124Z_fineweb_450s
+  completed_steps=1408, train_elapsed_s=450.140,
+  val_loss=4.7617411613464355.
+  All 29 high-fidelity samples were finite and nonzero. Every non-finite,
+  loss-spike, gradient-spike, and update-skip counter remained zero. Gradient
+  norm ended at 1.588983059.
+measured_effect:
+  Against the accepted native-window baseline at 1400 steps / 450.020s /
+  4.827326774597168, content block-Top-K completed eight more steps
+  (+0.571429%) and lowered held-out loss by 0.065585613 (-1.358632%).
+  Mean step time improved from 321.442857ms to 319.701705ms, saving
+  1.741153ms (-0.541668%). The loss improvement is much larger than the
+  exposure increase, so this gate supports a convergence/regularization gain
+  from content-derived moderate sparsity rather than a throughput-only result.
+decision:
+  Accept and promote as the active baseline. The candidate clears both the
+  lower-loss objective and the project's 0.5% whole-step speed floor while
+  retaining the fixed 16-layer, d2048, 32-head, B4, S2048 model. A follow-up
+  may fuse the 128-by-128 route score into the dense up-projection ReLU2
+  epilogue, eliminating the standalone activation reread without changing the
+  backward-aware layout; that is a separate candidate and requires fresh
+  gates.
+```
+
+```text
+date: 2026-07-18
 commit: rejected uncommitted source candidate; code reverted and baseline rebuilt
 experiment: Shared-dense plus top-2 hardware-routed MLP.
 status: rejected_450s

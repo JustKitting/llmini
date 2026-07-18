@@ -222,6 +222,7 @@ pub(super) fn forward<'a, 'scratch>(
         dims.embedding_dim,
         input.global_scales,
         args.projections.c_proj_weight_device.global_scale,
+        None,
     )?;
 
     Ok(hidden)

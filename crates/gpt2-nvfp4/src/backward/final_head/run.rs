@@ -52,5 +52,6 @@ pub fn backward(args: FinalHeadBackwardArgs<'_, '_, '_>) -> Result<(), DriverErr
         sign_seed: seeds.sign,
         scale_seed: seeds.scale,
         precomputed_e_amax_chunks: Some(row_count),
+        route: None,
     })
 }

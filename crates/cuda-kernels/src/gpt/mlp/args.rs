@@ -42,3 +42,12 @@ pub struct Relu2BackwardF16Args<'a, 'out> {
     pub d_pre_activation_chunk_amax: &'out mut DeviceBuffer<f32>,
     pub len: u32,
 }
+
+pub struct MlpBlockTopKRouteArgs<'a, 'out> {
+    pub stream: &'a CudaStream,
+    pub activation: Nvfp4RowwiseDeviceTensor<'a>,
+    pub scores: &'out mut DeviceBuffer<f32>,
+    pub masks: &'out mut DeviceBuffer<u64>,
+    pub token_count: u32,
+    pub feature_count: u32,
+}

@@ -8,8 +8,10 @@ use cuda_device::TmaDescriptor;
 
 use super::cute::{KMajorU4, Sm120KMajorSwizzle, Sm120ScaleLayout};
 use super::kernels::{
-    Nvfp4GemmParams, TILE_K, TILE_M, TILE_N, TMA_NVFP4_THREADS_PER_BLOCK, module,
-    tma_nvfp4_output_amax_chunks, tma_nvfp4_symmetric_output_amax_chunks,
+    Nvfp4GemmParams, ROUTE_FEATURE_M_TOKEN_K, ROUTE_FEATURE_N_TOKEN_K, ROUTE_NONE,
+    ROUTE_TOKEN_M_FEATURE_K, ROUTE_TOKEN_M_FEATURE_N, TILE_K, TILE_M, TILE_N,
+    TMA_NVFP4_THREADS_PER_BLOCK, module, tma_nvfp4_output_amax_chunks,
+    tma_nvfp4_symmetric_output_amax_chunks,
 };
 use super::scale_layout::sm120_scale_tma_shape_padded;
 use super::tma::{
@@ -21,6 +23,158 @@ use crate::nvfp4::Nvfp4DeviceTensor;
 const PACKS_PER_ROW: u32 = TILE_K / 8;
 const ROW_SUMSQ_REDUCE_THREADS: u32 = 64;
 type Nvfp4TmaOperandLayout = KMajorU4<PACKS_PER_ROW, Sm120KMajorSwizzle<PACKS_PER_ROW>>;
+
+#[derive(Clone, Copy)]
+pub struct Nvfp4GemmRoute<'a> {
+    mode: u32,
+    masks: &'a DeviceBuffer<u64>,
+    token_tiles: u32,
+    feature_tiles: u32,
+    active_tiles: u32,
+}
+
+impl<'a> Nvfp4GemmRoute<'a> {
+    fn new(
+        mode: u32,
+        masks: &'a DeviceBuffer<u64>,
+        token_tiles: u32,
+        feature_tiles: u32,
+        active_tiles: u32,
+    ) -> Self {
+        Self {
+            mode,
+            masks,
+            token_tiles,
+            feature_tiles,
+            active_tiles,
+        }
+    }
+
+    pub fn token_m_feature_n(
+        masks: &'a DeviceBuffer<u64>,
+        token_tiles: u32,
+        feature_tiles: u32,
+        active_tiles: u32,
+    ) -> Self {
+        Self::new(
+            ROUTE_TOKEN_M_FEATURE_N,
+            masks,
+            token_tiles,
+            feature_tiles,
+            active_tiles,
+        )
+    }
+
+    pub fn token_m_feature_k(
+        masks: &'a DeviceBuffer<u64>,
+        token_tiles: u32,
+        feature_tiles: u32,
+        active_tiles: u32,
+    ) -> Self {
+        Self::new(
+            ROUTE_TOKEN_M_FEATURE_K,
+            masks,
+            token_tiles,
+            feature_tiles,
+            active_tiles,
+        )
+    }
+
+    pub fn feature_m_token_k(
+        masks: &'a DeviceBuffer<u64>,
+        token_tiles: u32,
+        feature_tiles: u32,
+        active_tiles: u32,
+    ) -> Self {
+        Self::new(
+            ROUTE_FEATURE_M_TOKEN_K,
+            masks,
+            token_tiles,
+            feature_tiles,
+            active_tiles,
+        )
+    }
+
+    pub fn feature_n_token_k(
+        masks: &'a DeviceBuffer<u64>,
+        token_tiles: u32,
+        feature_tiles: u32,
+        active_tiles: u32,
+    ) -> Self {
+        Self::new(
+            ROUTE_FEATURE_N_TOKEN_K,
+            masks,
+            token_tiles,
+            feature_tiles,
+            active_tiles,
+        )
+    }
+
+    fn is_valid_for(self, m: u32, k: u32, n: u32) -> bool {
+        if self.token_tiles == 0
+            || self.feature_tiles == 0
+            || self.token_tiles > u64::BITS
+            || self.feature_tiles > u64::BITS
+            || self.active_tiles == 0
+            || self.active_tiles > self.feature_tiles
+            || self.masks.len() < (self.token_tiles + self.feature_tiles) as usize
+        {
+            return false;
+        }
+
+        match self.mode {
+            ROUTE_TOKEN_M_FEATURE_N => {
+                m / TILE_M == self.token_tiles && n / TILE_N == self.feature_tiles
+            }
+            ROUTE_TOKEN_M_FEATURE_K => {
+                m / TILE_M == self.token_tiles && k / TILE_K == self.feature_tiles
+            }
+            ROUTE_FEATURE_M_TOKEN_K => {
+                m / TILE_M == self.feature_tiles && k / TILE_K == self.token_tiles
+            }
+            ROUTE_FEATURE_N_TOKEN_K => {
+                n / TILE_N == self.feature_tiles && k / TILE_K == self.token_tiles
+            }
+            _ => false,
+        }
+    }
+}
+
+fn gemm_params(
+    token_count: u32,
+    input_dim: u32,
+    output_dim: u32,
+    global_scale_mode: u32,
+    weight_global_scale: f32,
+    a_global_scale: u64,
+    b_global_scale: u64,
+    route: Option<Nvfp4GemmRoute<'_>>,
+) -> Nvfp4GemmParams {
+    let (route_mode, route_token_tiles, route_feature_tiles, route_active_tiles, route_masks) =
+        route.map_or((ROUTE_NONE, 0, 0, 0, 0), |route| {
+            (
+                route.mode,
+                route.token_tiles,
+                route.feature_tiles,
+                route.active_tiles,
+                route.masks.cu_deviceptr(),
+            )
+        });
+    Nvfp4GemmParams {
+        token_count,
+        input_dim,
+        output_dim,
+        global_scale_mode,
+        weight_global_scale,
+        a_global_scale,
+        b_global_scale,
+        route_mode,
+        route_token_tiles,
+        route_feature_tiles,
+        route_active_tiles,
+        route_masks,
+    }
+}
 
 pub struct Nvfp4GemmModule {
     module: module::LoadedModule,
@@ -170,15 +324,16 @@ impl Nvfp4GemmModule {
             return Err(DriverError(cudaError_enum_CUDA_ERROR_INVALID_VALUE));
         }
 
-        let params = Nvfp4GemmParams {
+        let params = gemm_params(
             token_count,
             input_dim,
             output_dim,
-            global_scale_mode: 1,
-            weight_global_scale: 1.0,
-            a_global_scale: a_global_scale.cu_deviceptr(),
-            b_global_scale: b_global_scale.cu_deviceptr(),
-        };
+            1,
+            1.0,
+            a_global_scale.cu_deviceptr(),
+            b_global_scale.cu_deviceptr(),
+            None,
+        );
 
         let config = LaunchConfig {
             grid_dim: (output_dim.div_ceil(TILE_N), token_count.div_ceil(TILE_M), 1),
@@ -225,15 +380,16 @@ impl Nvfp4GemmModule {
             return Err(DriverError(cudaError_enum_CUDA_ERROR_INVALID_VALUE));
         }
 
-        let params = Nvfp4GemmParams {
+        let params = gemm_params(
             token_count,
             input_dim,
             output_dim,
-            global_scale_mode: 1,
-            weight_global_scale: 1.0,
-            a_global_scale: a_global_scale.cu_deviceptr(),
-            b_global_scale: b_global_scale.cu_deviceptr(),
-        };
+            1,
+            1.0,
+            a_global_scale.cu_deviceptr(),
+            b_global_scale.cu_deviceptr(),
+            None,
+        );
 
         let config = LaunchConfig {
             grid_dim: (output_dim.div_ceil(TILE_N), token_count.div_ceil(TILE_M), 1),
@@ -271,6 +427,7 @@ impl Nvfp4GemmModule {
         output_dim: u32,
         a_global_scales: &DeviceBuffer<f32>,
         b_global_scale: &DeviceBuffer<f32>,
+        route: Option<Nvfp4GemmRoute<'_>>,
     ) -> Result<u32, DriverError> {
         let output_len = token_count as usize * output_dim as usize;
         let chunk_count = tma_nvfp4_output_amax_chunks(token_count, output_dim);
@@ -282,19 +439,21 @@ impl Nvfp4GemmModule {
             || pre_activation.len() < output_len
             || out.len() < output_len
             || output_chunk_amax.len() < chunk_count as usize
+            || route.is_some_and(|route| !route.is_valid_for(token_count, input_dim, output_dim))
         {
             return Err(DriverError(cudaError_enum_CUDA_ERROR_INVALID_VALUE));
         }
 
-        let params = Nvfp4GemmParams {
+        let params = gemm_params(
             token_count,
             input_dim,
             output_dim,
-            global_scale_mode: 2,
-            weight_global_scale: 1.0,
-            a_global_scale: a_global_scales.cu_deviceptr(),
-            b_global_scale: b_global_scale.cu_deviceptr(),
-        };
+            2,
+            1.0,
+            a_global_scales.cu_deviceptr(),
+            b_global_scale.cu_deviceptr(),
+            route,
+        );
         let config = LaunchConfig {
             grid_dim: (output_dim / TILE_N, token_count / TILE_M, 1),
             block_dim: (TMA_NVFP4_THREADS_PER_BLOCK, 1, 1),
@@ -341,15 +500,16 @@ impl Nvfp4GemmModule {
             return Err(DriverError(cudaError_enum_CUDA_ERROR_INVALID_VALUE));
         }
 
-        let params = Nvfp4GemmParams {
-            token_count: dim,
+        let params = gemm_params(
+            dim,
             input_dim,
-            output_dim: dim,
-            global_scale_mode: 1,
-            weight_global_scale: 1.0,
-            a_global_scale: a_global_scale.cu_deviceptr(),
-            b_global_scale: a_global_scale.cu_deviceptr(),
-        };
+            dim,
+            1,
+            1.0,
+            a_global_scale.cu_deviceptr(),
+            a_global_scale.cu_deviceptr(),
+            None,
+        );
         let tiles = dim / TILE_M;
         let triangular_tiles = tiles * (tiles + 1) / 2;
         let config = LaunchConfig {
@@ -410,15 +570,16 @@ impl Nvfp4GemmModule {
             return Err(DriverError(cudaError_enum_CUDA_ERROR_INVALID_VALUE));
         }
 
-        let params = Nvfp4GemmParams {
+        let params = gemm_params(
             token_count,
             input_dim,
             output_dim,
-            global_scale_mode: 1,
-            weight_global_scale: 1.0,
-            a_global_scale: a_global_scale.cu_deviceptr(),
-            b_global_scale: b_global_scale.cu_deviceptr(),
-        };
+            1,
+            1.0,
+            a_global_scale.cu_deviceptr(),
+            b_global_scale.cu_deviceptr(),
+            None,
+        );
         let config = LaunchConfig {
             grid_dim: (output_dim / TILE_N, token_count / TILE_M, 1),
             block_dim: (TMA_NVFP4_THREADS_PER_BLOCK, 1, 1),
@@ -486,15 +647,16 @@ impl Nvfp4GemmModule {
             return Err(DriverError(cudaError_enum_CUDA_ERROR_INVALID_VALUE));
         }
 
-        let params = Nvfp4GemmParams {
+        let params = gemm_params(
             token_count,
             input_dim,
             output_dim,
-            global_scale_mode: 1,
-            weight_global_scale: 1.0,
-            a_global_scale: a_global_scale.cu_deviceptr(),
-            b_global_scale: b_global_scale.cu_deviceptr(),
-        };
+            1,
+            1.0,
+            a_global_scale.cu_deviceptr(),
+            b_global_scale.cu_deviceptr(),
+            None,
+        );
         let config = LaunchConfig {
             grid_dim: (output_dim / TILE_N, token_count / TILE_M, 1),
             block_dim: (TMA_NVFP4_THREADS_PER_BLOCK, 1, 1),
@@ -545,25 +707,28 @@ impl Nvfp4GemmModule {
         output_dim: u32,
         a_global_scales: &DeviceBuffer<f32>,
         b_global_scale: &DeviceBuffer<f32>,
+        route: Option<Nvfp4GemmRoute<'_>>,
     ) -> Result<(), DriverError> {
         if token_count % TILE_M != 0
             || output_dim % TILE_N != 0
             || input_dim % Sm120ScaleLayout::K_ATOM != 0
             || input_dim % TILE_K != 0
             || input_dim == 0
+            || route.is_some_and(|route| !route.is_valid_for(token_count, input_dim, output_dim))
         {
             return Err(DriverError(cudaError_enum_CUDA_ERROR_INVALID_VALUE));
         }
 
-        let params = Nvfp4GemmParams {
+        let params = gemm_params(
             token_count,
             input_dim,
             output_dim,
-            global_scale_mode: 2,
-            weight_global_scale: 1.0,
-            a_global_scale: a_global_scales.cu_deviceptr(),
-            b_global_scale: b_global_scale.cu_deviceptr(),
-        };
+            2,
+            1.0,
+            a_global_scales.cu_deviceptr(),
+            b_global_scale.cu_deviceptr(),
+            route,
+        );
 
         let config = LaunchConfig {
             grid_dim: (output_dim.div_ceil(TILE_N), token_count.div_ceil(TILE_M), 1),
@@ -610,15 +775,16 @@ impl Nvfp4GemmModule {
             return Err(DriverError(cudaError_enum_CUDA_ERROR_INVALID_VALUE));
         }
 
-        let params = Nvfp4GemmParams {
+        let params = gemm_params(
             token_count,
             input_dim,
             output_dim,
-            global_scale_mode: 2,
-            weight_global_scale: 1.0,
-            a_global_scale: a_global_scales.cu_deviceptr(),
-            b_global_scale: b_global_scale.cu_deviceptr(),
-        };
+            2,
+            1.0,
+            a_global_scales.cu_deviceptr(),
+            b_global_scale.cu_deviceptr(),
+            None,
+        );
 
         let config = LaunchConfig {
             grid_dim: (
@@ -660,25 +826,28 @@ impl Nvfp4GemmModule {
         output_dim: u32,
         a_global_scales: &DeviceBuffer<f32>,
         b_global_scale: &DeviceBuffer<f32>,
+        route: Option<Nvfp4GemmRoute<'_>>,
     ) -> Result<(), DriverError> {
         if token_count % TILE_M != 0
             || output_dim % TILE_N != 0
             || input_dim % Sm120ScaleLayout::K_ATOM != 0
             || input_dim % TILE_K != 0
             || input_dim == 0
+            || route.is_some_and(|route| !route.is_valid_for(token_count, input_dim, output_dim))
         {
             return Err(DriverError(cudaError_enum_CUDA_ERROR_INVALID_VALUE));
         }
 
-        let params = Nvfp4GemmParams {
+        let params = gemm_params(
             token_count,
             input_dim,
             output_dim,
-            global_scale_mode: 2,
-            weight_global_scale: 1.0,
-            a_global_scale: a_global_scales.cu_deviceptr(),
-            b_global_scale: b_global_scale.cu_deviceptr(),
-        };
+            2,
+            1.0,
+            a_global_scales.cu_deviceptr(),
+            b_global_scale.cu_deviceptr(),
+            route,
+        );
 
         let config = LaunchConfig {
             grid_dim: (output_dim.div_ceil(TILE_N), token_count.div_ceil(TILE_M), 1),
@@ -731,15 +900,16 @@ impl Nvfp4GemmModule {
             return Err(DriverError(cudaError_enum_CUDA_ERROR_INVALID_VALUE));
         }
 
-        let params = Nvfp4GemmParams {
+        let params = gemm_params(
             token_count,
             input_dim,
             output_dim,
-            global_scale_mode: 2,
-            weight_global_scale: 1.0,
-            a_global_scale: a_global_scales.cu_deviceptr(),
-            b_global_scale: b_global_scale.cu_deviceptr(),
-        };
+            2,
+            1.0,
+            a_global_scales.cu_deviceptr(),
+            b_global_scale.cu_deviceptr(),
+            None,
+        );
 
         let config = LaunchConfig {
             grid_dim: (output_dim.div_ceil(TILE_N), token_count.div_ceil(TILE_M), 1),
@@ -797,15 +967,16 @@ impl Nvfp4GemmModule {
             return Err(DriverError(cudaError_enum_CUDA_ERROR_INVALID_VALUE));
         }
 
-        let params = Nvfp4GemmParams {
+        let params = gemm_params(
             token_count,
             input_dim,
             output_dim,
-            global_scale_mode: 2,
-            weight_global_scale: 1.0,
-            a_global_scale: a_global_scales.cu_deviceptr(),
-            b_global_scale: b_global_scale.cu_deviceptr(),
-        };
+            2,
+            1.0,
+            a_global_scales.cu_deviceptr(),
+            b_global_scale.cu_deviceptr(),
+            None,
+        );
         let config = LaunchConfig {
             grid_dim: (output_dim.div_ceil(TILE_N), token_count.div_ceil(TILE_M), 1),
             block_dim: (TMA_NVFP4_THREADS_PER_BLOCK, 1, 1),
@@ -857,15 +1028,16 @@ impl Nvfp4GemmModule {
             return Err(DriverError(cudaError_enum_CUDA_ERROR_INVALID_VALUE));
         }
 
-        let params = Nvfp4GemmParams {
+        let params = gemm_params(
             token_count,
             input_dim,
             output_dim,
-            global_scale_mode: 2,
-            weight_global_scale: 1.0,
-            a_global_scale: a_global_scales.cu_deviceptr(),
-            b_global_scale: b_global_scale.cu_deviceptr(),
-        };
+            2,
+            1.0,
+            a_global_scales.cu_deviceptr(),
+            b_global_scale.cu_deviceptr(),
+            None,
+        );
 
         let config = LaunchConfig {
             grid_dim: (

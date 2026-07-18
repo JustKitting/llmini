@@ -1,7 +1,7 @@
 use cuda_device::{DisjointSlice, SharedArray, cuda_module, kernel, thread};
 
 use crate::amax::max4_f32;
-use crate::block_reduce::block_max_store_f32;
+use crate::block_reduce::{block_max_store_f32, block_sum_shared_f32};
 use crate::f16_tc_matmul::convert::cvt_f32_f16;
 use crate::float_ptx::{abs_f32, max_f32};
 use crate::mma::{
@@ -9,10 +9,19 @@ use crate::mma::{
     nvfp4_projection_cta_kernel_body_at_aligned_row_pair, nvfp4_projection_cta_relu2_kernel_body,
     nvfp4_projection_cta_relu2_kernel_body_at_aligned_row_pair,
 };
+use crate::nvfp4::nvfp4_values2;
+use crate::warp_reduce::thread_lane_warp;
 
 pub(super) const RELU2_THREADS_PER_BLOCK: u32 = 256;
 pub(super) const RELU2_VALUES_PER_BLOCK: u32 = 8 * RELU2_THREADS_PER_BLOCK;
 const RELU2_WARPS_PER_BLOCK: usize = (RELU2_THREADS_PER_BLOCK / 32) as usize;
+pub(super) const BLOCK_TOPK_TILE: u32 = 128;
+pub(super) const BLOCK_TOPK_FEATURE_TILES: u32 = 64;
+pub(super) const BLOCK_TOPK_TOKEN_TILES: u32 = 64;
+pub(super) const BLOCK_TOPK_ACTIVE_FEATURE_TILES: u32 = 48;
+pub(super) const BLOCK_TOPK_SCORE_THREADS: u32 = 256;
+pub(super) const BLOCK_TOPK_MASK_THREADS: u32 = 64;
+const BLOCK_TOPK_SCORE_WARPS: usize = (BLOCK_TOPK_SCORE_THREADS / 32) as usize;
 
 #[expect(clippy::too_many_arguments, reason = "CUDA ABI uses explicit buffers")]
 #[cuda_module]
@@ -135,6 +144,111 @@ mod module {
             lane,
             warp_in_block
         );
+    }
+
+    #[kernel]
+    pub fn mlp_block_topk_scores_nvfp4_kernel(
+        activation_bytes: &[u8],
+        activation_scales: &[u8],
+        activation_global_scales: &[f32],
+        mut scores: DisjointSlice<f32>,
+        token_count: u32,
+        feature_count: u32,
+    ) {
+        static mut SUM: SharedArray<f32, BLOCK_TOPK_SCORE_WARPS> = SharedArray::UNINIT;
+
+        let token_tile = thread::blockIdx_y();
+        let feature_tile = thread::blockIdx_x();
+        if token_tile >= token_count / BLOCK_TOPK_TILE
+            || feature_tile >= feature_count / BLOCK_TOPK_TILE
+        {
+            return;
+        }
+
+        let (thread_id, lane, warp_in_block) = thread_lane_warp();
+        let mut pair = thread_id;
+        let pairs_per_tile = BLOCK_TOPK_TILE * BLOCK_TOPK_TILE / 2;
+        let mut local_sum = 0.0_f32;
+        while pair < pairs_per_tile {
+            let local = pair * 2;
+            let local_row = local / BLOCK_TOPK_TILE;
+            let local_col = local - local_row * BLOCK_TOPK_TILE;
+            let row = token_tile * BLOCK_TOPK_TILE + local_row;
+            let col = feature_tile * BLOCK_TOPK_TILE + local_col;
+            let index = (row * feature_count + col) as usize;
+            let (lo, hi) = nvfp4_values2(
+                activation_bytes,
+                activation_scales,
+                activation_global_scales[row as usize],
+                index,
+            );
+            local_sum += max_f32(lo, 0.0) + max_f32(hi, 0.0);
+            pair += BLOCK_TOPK_SCORE_THREADS;
+        }
+
+        let tile_sum = unsafe { block_sum_shared_f32(&mut SUM, local_sum, lane, warp_in_block) };
+        if thread_id == 0 {
+            let index = token_tile * BLOCK_TOPK_FEATURE_TILES + feature_tile;
+            unsafe {
+                *scores.get_unchecked_mut(index as usize) = tile_sum;
+            }
+        }
+    }
+
+    #[kernel]
+    pub fn mlp_block_topk_masks_kernel(
+        scores: &[f32],
+        mut masks: DisjointSlice<u64>,
+        token_tiles: u32,
+        feature_tiles: u32,
+        active_feature_tiles: u32,
+    ) {
+        static mut TOKEN_MASKS: SharedArray<u64, { BLOCK_TOPK_TOKEN_TILES as usize }> =
+            SharedArray::UNINIT;
+
+        let tile = thread::threadIdx_x();
+        if tile < token_tiles {
+            let score_base = tile * feature_tiles;
+            let mut mask = 0_u64;
+            let mut feature = 0_u32;
+            while feature < feature_tiles {
+                let score = scores[(score_base + feature) as usize];
+                let mut rank = 0_u32;
+                let mut other = 0_u32;
+                while other < feature_tiles {
+                    let other_score = scores[(score_base + other) as usize];
+                    if other_score > score || (other_score == score && other < feature) {
+                        rank += 1;
+                    }
+                    other += 1;
+                }
+                if rank < active_feature_tiles {
+                    mask |= 1_u64 << feature;
+                }
+                feature += 1;
+            }
+            unsafe {
+                TOKEN_MASKS[tile as usize] = mask;
+                *masks.get_unchecked_mut(tile as usize) = mask;
+            }
+        }
+
+        thread::sync_threads();
+
+        if tile < feature_tiles {
+            let mut feature_mask = 0_u64;
+            let mut token = 0_u32;
+            while token < token_tiles {
+                let token_mask = unsafe { TOKEN_MASKS[token as usize] };
+                if token_mask & (1_u64 << tile) != 0 {
+                    feature_mask |= 1_u64 << token;
+                }
+                token += 1;
+            }
+            unsafe {
+                *masks.get_unchecked_mut((token_tiles + tile) as usize) = feature_mask;
+            }
+        }
     }
 
     #[inline(always)]
