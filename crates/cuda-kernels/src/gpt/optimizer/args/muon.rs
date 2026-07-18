@@ -75,6 +75,12 @@ pub struct MuonTmaFinishArgs<'a> {
     pub apply_polar_sqrt_bound: u32,
 }
 
+pub struct MuonTmaHyperballFinishArgs<'a> {
+    pub finish: MuonTmaFinishArgs<'a>,
+    pub hyperball_chunks: &'a mut DeviceBuffer<f32>,
+    pub use_schedule_free: bool,
+}
+
 pub struct MuonTmaSignUpdateArgs<'a> {
     pub stream: &'a CudaStream,
     pub slots: &'a DeviceBuffer<MuonSlotDescriptor>,

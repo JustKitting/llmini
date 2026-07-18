@@ -11,12 +11,14 @@ use rust_kernels_cuda::nvfp4_tma_matmul::kernels::{TILE_K, TILE_M, TILE_N};
 use rust_kernels_cuda::nvfp4_tma_matmul::pad::F32CropArgs;
 use rust_kernels_cuda::nvfp4_tma_matmul::tma::TmaNvfp4DeviceScaleDescriptors;
 use rust_kernels_cuda::optimizer::{
-    MuonSlotDescriptor, MuonTmaFinishArgs, MuonTmaPrepareArgs, MuonTmaSignUpdateArgs,
-    muon_polar_coefficients,
+    MuonSlotDescriptor, MuonTmaFinishArgs, MuonTmaHyperballFinishArgs, MuonTmaPrepareArgs,
+    MuonTmaSignUpdateArgs, muon_polar_coefficients,
 };
 
 use super::{
-    MUON_WEIGHT_DECAY, MuonGroupTable, POLAR_ITERATIONS, SIGN_MUON_BETA, muon_learning_rate,
+    MUON_WEIGHT_DECAY, MuonGroupTable, POLAR_ITERATIONS, SIGN_MUON_BETA, hyperball_enabled,
+    hyperball_learning_rate, hyperball_momentum, hyperball_uses_polar,
+    hyperball_uses_schedule_free, muon_learning_rate, muon_sign_learning_rate,
     sign_muon_uses_polar,
 };
 use crate::training::env::{env_bool, env_usize};
@@ -38,9 +40,33 @@ pub(in crate::training) struct MuonTmaArgs<'a> {
 
 pub(in crate::training) fn apply_muon_tma(args: MuonTmaArgs<'_>) -> Result<(), DriverError> {
     let stream = args.runtime.stream.as_ref();
-    let learning_rate = muon_learning_rate(args.step);
+    let use_hyperball = hyperball_enabled();
+    let use_polar = if use_hyperball {
+        hyperball_uses_polar(args.step)
+    } else {
+        sign_muon_uses_polar(args.step)
+    };
+    let learning_rate = if use_hyperball {
+        if use_polar {
+            hyperball_learning_rate()
+        } else {
+            muon_sign_learning_rate(args.step)
+        }
+    } else {
+        muon_learning_rate(args.step)
+    };
+    let momentum = if use_hyperball {
+        hyperball_momentum()
+    } else {
+        SIGN_MUON_BETA
+    };
+    let use_schedule_free = !use_hyperball || hyperball_uses_schedule_free();
+    let average_coefficient = if use_schedule_free {
+        args.average_coefficient
+    } else {
+        1.0
+    };
     let schedule_beta = super::super::learning_rate::schedule_free_beta(args.step + 1);
-    let use_polar = sign_muon_uses_polar(args.step);
     let trace = TmaTraceConfig::from_env();
     for slot_index in 0..args.slot_count {
         let desc = args.table.host_slots[slot_index];
@@ -57,11 +83,11 @@ pub(in crate::training) fn apply_muon_tma(args: MuonTmaArgs<'_>) -> Result<(), D
                     qk_clip_factors: args.qk_clip_factors,
                     slot_index: slot_index as u32,
                     matrix_len: desc.rows * desc.cols,
-                    mu: SIGN_MUON_BETA,
+                    mu: momentum,
                     grad_scale: args.grad_scale,
                     learning_rate,
                     weight_decay: MUON_WEIGHT_DECAY,
-                    average_coefficient: args.average_coefficient,
+                    average_coefficient,
                     schedule_beta,
                 })?;
             continue;
@@ -79,9 +105,9 @@ pub(in crate::training) fn apply_muon_tma(args: MuonTmaArgs<'_>) -> Result<(), D
                     polar_x_chunk_amax: &mut args.scratch.tma.a.chunk_amax,
                     slot_index: slot_index as u32,
                     matrix_len: desc.rows * desc.cols,
-                    mu: SIGN_MUON_BETA,
+                    mu: momentum,
                     grad_scale: args.grad_scale,
-                    nesterov: 0,
+                    nesterov: use_hyperball as u32,
                 })?;
         args.runtime.quant.tensor_amax_from_chunks_f32(
             stream,
@@ -113,48 +139,43 @@ pub(in crate::training) fn apply_muon_tma(args: MuonTmaArgs<'_>) -> Result<(), D
             defer_bounds,
         )?;
 
-        if POLAR_ITERATIONS & 1 == 0 {
+        let polar_update = if POLAR_ITERATIONS & 1 == 0 {
+            &args.scratch.polar_x
+        } else {
+            &args.scratch.polar_next
+        };
+        let finish = MuonTmaFinishArgs {
+            stream,
+            slots: &args.table.slots,
+            polar_update,
+            polar_bound_amax: &args.scratch.tma.bound_amax,
+            polar_chunks: &mut args.scratch.polar_chunks,
+            normuon_factors: &mut args.scratch.normuon_factors,
+            normuon_chunks: &mut args.scratch.normuon_chunks,
+            qk_clip_factors: args.qk_clip_factors,
+            slot_index: slot_index as u32,
+            matrix_len: desc.rows * desc.cols,
+            polar_cols,
+            learning_rate,
+            weight_decay: MUON_WEIGHT_DECAY,
+            average_coefficient,
+            schedule_beta,
+            apply_polar_sqrt_bound: defer_bounds as u32,
+        };
+        if use_hyperball && use_polar {
             args.runtime
                 .optimizer
-                .muon_tma_finish_update_deferred_quantization(MuonTmaFinishArgs {
-                    stream,
-                    slots: &args.table.slots,
-                    polar_update: &args.scratch.polar_x,
-                    polar_bound_amax: &args.scratch.tma.bound_amax,
-                    polar_chunks: &mut args.scratch.polar_chunks,
-                    normuon_factors: &mut args.scratch.normuon_factors,
-                    normuon_chunks: &mut args.scratch.normuon_chunks,
-                    qk_clip_factors: args.qk_clip_factors,
-                    slot_index: slot_index as u32,
-                    matrix_len: desc.rows * desc.cols,
-                    polar_cols,
-                    learning_rate,
-                    weight_decay: MUON_WEIGHT_DECAY,
-                    average_coefficient: args.average_coefficient,
-                    schedule_beta,
-                    apply_polar_sqrt_bound: defer_bounds as u32,
-                })?;
+                .muon_tma_finish_hyperball_update_deferred_quantization(
+                    MuonTmaHyperballFinishArgs {
+                        finish,
+                        hyperball_chunks: &mut args.scratch.hyperball_chunks,
+                        use_schedule_free,
+                    },
+                )?;
         } else {
             args.runtime
                 .optimizer
-                .muon_tma_finish_update_deferred_quantization(MuonTmaFinishArgs {
-                    stream,
-                    slots: &args.table.slots,
-                    polar_update: &args.scratch.polar_next,
-                    polar_bound_amax: &args.scratch.tma.bound_amax,
-                    polar_chunks: &mut args.scratch.polar_chunks,
-                    normuon_factors: &mut args.scratch.normuon_factors,
-                    normuon_chunks: &mut args.scratch.normuon_chunks,
-                    qk_clip_factors: args.qk_clip_factors,
-                    slot_index: slot_index as u32,
-                    matrix_len: desc.rows * desc.cols,
-                    polar_cols,
-                    learning_rate,
-                    weight_decay: MUON_WEIGHT_DECAY,
-                    average_coefficient: args.average_coefficient,
-                    schedule_beta,
-                    apply_polar_sqrt_bound: defer_bounds as u32,
-                })?;
+                .muon_tma_finish_update_deferred_quantization(finish)?;
         }
     }
     Ok(())

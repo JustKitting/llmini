@@ -2,8 +2,8 @@ use std::error::Error;
 
 use cuda_core::DeviceBuffer;
 use rust_kernels_cuda::optimizer::{
-    MUON_COOPERATIVE_BLOCKS, MuonSlotDescriptor, MuonTmaFinishArgs, MuonTmaSignUpdateArgs,
-    OptimizerModule,
+    MUON_COOPERATIVE_BLOCKS, MuonSlotDescriptor, MuonTmaFinishArgs, MuonTmaHyperballFinishArgs,
+    MuonTmaSignUpdateArgs, OptimizerModule,
 };
 
 use crate::common;
@@ -293,6 +293,296 @@ pub fn run_normuon_variance_case() -> Result<(), Box<dyn Error>> {
     assert!(
         (transformed_sumsq - raw_sumsq).abs() <= raw_sumsq * 2.0e-5,
         "transformed_sumsq={transformed_sumsq} raw_sumsq={raw_sumsq}"
+    );
+    Ok(())
+}
+
+pub fn run_hyperball_update_case() -> Result<(), Box<dyn Error>> {
+    const LEARNING_RATE: f32 = 0.018;
+    const LR_MULTIPLIER: f32 = 0.75;
+    const AVERAGE_COEFFICIENT: f32 = 0.3;
+    const BETA2: f32 = 0.95;
+
+    let (_, stream, module) = common::cuda_test_module(OptimizerModule::from_module)?;
+    let update: Vec<_> = (0..LEN)
+        .map(|index| {
+            let row = index / COLS;
+            let col = index % COLS;
+            ((row * 13 + col * 7) % 41) as f32 / 37.0 - 0.5
+        })
+        .collect();
+    let old_second: Vec<_> = (0..ROWS).map(|row| 0.02 + row as f32 / 20_000.0).collect();
+    let z_values: Vec<_> = (0..LEN)
+        .map(|index| ((index * 29 % 211) as f32 - 105.0) / 173.0)
+        .collect();
+    let x_values: Vec<_> = (0..LEN)
+        .map(|index| ((index * 17 % 157) as f32 - 78.0) / 199.0)
+        .collect();
+
+    let mut factors = vec![0.0_f32; ROWS];
+    for row in 0..ROWS {
+        let sumsq = update[row * COLS..(row + 1) * COLS]
+            .iter()
+            .map(|value| value * value)
+            .sum::<f32>();
+        let next_second = BETA2 * old_second[row] + (1.0 - BETA2) * sumsq / COLS as f32;
+        factors[row] = next_second.max(1.0e-10).sqrt().recip();
+    }
+    let radius = z_values
+        .iter()
+        .map(|value| value * value)
+        .sum::<f32>()
+        .sqrt();
+    let update_norm = update
+        .iter()
+        .enumerate()
+        .map(|(index, value)| {
+            let transformed = value * factors[index / COLS];
+            transformed * transformed
+        })
+        .sum::<f32>()
+        .sqrt();
+    let step_scale = LEARNING_RATE * LR_MULTIPLIER * radius / update_norm;
+    let candidate: Vec<_> = z_values
+        .iter()
+        .zip(update.iter())
+        .enumerate()
+        .map(|(index, (&z, &direction))| z - step_scale * direction * factors[index / COLS])
+        .collect();
+    let candidate_norm = candidate
+        .iter()
+        .map(|value| value * value)
+        .sum::<f32>()
+        .sqrt();
+    let projection = radius / candidate_norm;
+    let expected_z: Vec<_> = candidate.iter().map(|value| value * projection).collect();
+    let expected_x: Vec<_> = x_values
+        .iter()
+        .zip(expected_z.iter())
+        .map(|(&x, &z)| x + AVERAGE_COEFFICIENT * (z - x))
+        .collect();
+    let expected_schedule_amax = expected_z
+        .iter()
+        .zip(expected_x.iter())
+        .map(|(&z, &x)| (z + SCHEDULE_BETA * (x - z)).abs())
+        .fold(0.0_f32, f32::max);
+
+    let grad = DeviceBuffer::<f32>::zeroed(&stream, LEN)?;
+    let momentum = DeviceBuffer::<f32>::zeroed(&stream, LEN)?;
+    let second_momentum = DeviceBuffer::from_host(&stream, &old_second)?;
+    let z_master = DeviceBuffer::from_host(&stream, &z_values)?;
+    let x_master = DeviceBuffer::from_host(&stream, &x_values)?;
+    let schedule_amax = DeviceBuffer::<f32>::zeroed(&stream, 1)?;
+    let bytes = DeviceBuffer::<u8>::zeroed(&stream, LEN / 2)?;
+    let scales = DeviceBuffer::<u8>::zeroed(&stream, LEN / 16)?;
+    let global_scale = DeviceBuffer::<f32>::zeroed(&stream, 1)?;
+    let descriptor = MuonSlotDescriptor {
+        grad: grad.cu_deviceptr(),
+        momentum: momentum.cu_deviceptr(),
+        second_momentum: second_momentum.cu_deviceptr(),
+        z_master: z_master.cu_deviceptr(),
+        x_master: x_master.cu_deviceptr(),
+        schedule_amax: schedule_amax.cu_deviceptr(),
+        bytes: bytes.cu_deviceptr(),
+        scales: scales.cu_deviceptr(),
+        global_scale: global_scale.cu_deviceptr(),
+        rows: ROWS as u32,
+        cols: COLS as u32,
+        learning_rate_multiplier: LR_MULTIPLIER,
+        qk_clip_factor_offset: u32::MAX,
+        qk_clip_head_dim: 0,
+    };
+    let slots = DeviceBuffer::from_host(&stream, &[descriptor])?;
+    let polar_update = DeviceBuffer::from_host(&stream, &update)?;
+    let polar_bound_amax = DeviceBuffer::<f32>::zeroed(&stream, 1)?;
+    let mut polar_chunks = DeviceBuffer::<f32>::zeroed(&stream, 2 * MUON_COOPERATIVE_BLOCKS)?;
+    let mut normuon_factors = DeviceBuffer::<f32>::zeroed(&stream, COLS)?;
+    let mut normuon_chunks = DeviceBuffer::<f32>::zeroed(&stream, 2 * COLS)?;
+    let mut hyperball_chunks = DeviceBuffer::<f32>::zeroed(&stream, 2 * COLS)?;
+    let qk_clip_factors = DeviceBuffer::from_host(&stream, &[1.0_f32])?;
+
+    module.muon_tma_finish_hyperball_update_deferred_quantization(MuonTmaHyperballFinishArgs {
+        finish: MuonTmaFinishArgs {
+            stream: &stream,
+            slots: &slots,
+            polar_update: &polar_update,
+            polar_bound_amax: &polar_bound_amax,
+            polar_chunks: &mut polar_chunks,
+            normuon_factors: &mut normuon_factors,
+            normuon_chunks: &mut normuon_chunks,
+            qk_clip_factors: &qk_clip_factors,
+            slot_index: 0,
+            matrix_len: LEN as u32,
+            polar_cols: COLS as u32,
+            learning_rate: LEARNING_RATE,
+            weight_decay: 0.0,
+            average_coefficient: AVERAGE_COEFFICIENT,
+            schedule_beta: SCHEDULE_BETA,
+            apply_polar_sqrt_bound: 0,
+        },
+        hyperball_chunks: &mut hyperball_chunks,
+        use_schedule_free: true,
+    })?;
+
+    let actual_z = z_master.to_host_vec(&stream)?;
+    let actual_x = x_master.to_host_vec(&stream)?;
+    common::assert_slice_close(&actual_z, &expected_z, 3.0e-5);
+    common::assert_slice_close(&actual_x, &expected_x, 3.0e-5);
+    let actual_radius = actual_z
+        .iter()
+        .map(|value| value * value)
+        .sum::<f32>()
+        .sqrt();
+    assert!(
+        (actual_radius - radius).abs() <= radius * 3.0e-5,
+        "actual_radius={actual_radius} radius={radius}"
+    );
+    assert!((normuon_chunks.to_host_vec(&stream)?[1] - update_norm).abs() <= update_norm * 3.0e-5);
+    assert!((schedule_amax.to_host_vec(&stream)?[0] - expected_schedule_amax).abs() <= 3.0e-5);
+    assert!(bytes.to_host_vec(&stream)?.iter().all(|&value| value == 0));
+    assert!(scales.to_host_vec(&stream)?.iter().all(|&value| value == 0));
+    Ok(())
+}
+
+pub fn run_hyperball_rectangular_update_case() -> Result<(), Box<dyn Error>> {
+    let (_, stream, module) = common::cuda_test_module(OptimizerModule::from_module)?;
+    run_hyperball_shape(&stream, &module, 32, 64)?;
+    run_hyperball_shape(&stream, &module, 64, 32)
+}
+
+fn run_hyperball_shape(
+    stream: &cuda_core::CudaStream,
+    module: &OptimizerModule,
+    rows: usize,
+    cols: usize,
+) -> Result<(), Box<dyn Error>> {
+    const LEARNING_RATE: f32 = 0.018;
+    const LR_MULTIPLIER: f32 = 0.625;
+    const BETA2: f32 = 0.95;
+
+    let len = rows * cols;
+    let polar_rows = rows.min(cols);
+    let polar_cols = rows.max(cols);
+    let update: Vec<_> = (0..len)
+        .map(|index| ((index * 23 % 101) as f32 - 50.0) / 71.0)
+        .collect();
+    let old_second: Vec<_> = (0..polar_cols)
+        .map(|neuron| 0.015 + neuron as f32 / 30_000.0)
+        .collect();
+    let z_values: Vec<_> = (0..len)
+        .map(|index| ((index * 31 % 193) as f32 - 96.0) / 151.0)
+        .collect();
+
+    let factors: Vec<_> = (0..polar_cols)
+        .map(|neuron| {
+            let sumsq = (0..polar_rows)
+                .map(|row| update[row * polar_cols + neuron].powi(2))
+                .sum::<f32>();
+            let next = BETA2 * old_second[neuron] + (1.0 - BETA2) * sumsq / polar_rows as f32;
+            next.max(1.0e-10).sqrt().recip()
+        })
+        .collect();
+    let direction: Vec<_> = (0..len)
+        .map(|index| {
+            let row = index / cols;
+            let col = index % cols;
+            let update_index = if rows > cols { col * rows + row } else { index };
+            let neuron = if rows >= cols { row } else { col };
+            update[update_index] * factors[neuron]
+        })
+        .collect();
+    let radius = z_values
+        .iter()
+        .map(|value| value * value)
+        .sum::<f32>()
+        .sqrt();
+    let update_norm = direction
+        .iter()
+        .map(|value| value * value)
+        .sum::<f32>()
+        .sqrt();
+    let step_scale = LEARNING_RATE * LR_MULTIPLIER * radius / update_norm;
+    let candidate: Vec<_> = z_values
+        .iter()
+        .zip(direction.iter())
+        .map(|(&z, &u)| z - step_scale * u)
+        .collect();
+    let candidate_norm = candidate
+        .iter()
+        .map(|value| value * value)
+        .sum::<f32>()
+        .sqrt();
+    let projection = radius / candidate_norm;
+    let expected_z: Vec<_> = candidate.iter().map(|value| value * projection).collect();
+
+    let grad = DeviceBuffer::<f32>::zeroed(stream, len)?;
+    let momentum = DeviceBuffer::<f32>::zeroed(stream, len)?;
+    let second_momentum = DeviceBuffer::from_host(stream, &old_second)?;
+    let z_master = DeviceBuffer::from_host(stream, &z_values)?;
+    let x_master = DeviceBuffer::<f32>::zeroed(stream, len)?;
+    let schedule_amax = DeviceBuffer::<f32>::zeroed(stream, 1)?;
+    let bytes = DeviceBuffer::<u8>::zeroed(stream, len / 2)?;
+    let scales = DeviceBuffer::<u8>::zeroed(stream, len / 16)?;
+    let global_scale = DeviceBuffer::<f32>::zeroed(stream, 1)?;
+    let descriptor = MuonSlotDescriptor {
+        grad: grad.cu_deviceptr(),
+        momentum: momentum.cu_deviceptr(),
+        second_momentum: second_momentum.cu_deviceptr(),
+        z_master: z_master.cu_deviceptr(),
+        x_master: x_master.cu_deviceptr(),
+        schedule_amax: schedule_amax.cu_deviceptr(),
+        bytes: bytes.cu_deviceptr(),
+        scales: scales.cu_deviceptr(),
+        global_scale: global_scale.cu_deviceptr(),
+        rows: rows as u32,
+        cols: cols as u32,
+        learning_rate_multiplier: LR_MULTIPLIER,
+        qk_clip_factor_offset: u32::MAX,
+        qk_clip_head_dim: 0,
+    };
+    let slots = DeviceBuffer::from_host(stream, &[descriptor])?;
+    let polar_update = DeviceBuffer::from_host(stream, &update)?;
+    let polar_bound_amax = DeviceBuffer::<f32>::zeroed(stream, 1)?;
+    let mut polar_chunks = DeviceBuffer::<f32>::zeroed(stream, 2 * MUON_COOPERATIVE_BLOCKS)?;
+    let mut normuon_factors = DeviceBuffer::<f32>::zeroed(stream, polar_cols)?;
+    let mut normuon_chunks = DeviceBuffer::<f32>::zeroed(stream, 2 * polar_cols)?;
+    let mut hyperball_chunks = DeviceBuffer::<f32>::zeroed(stream, 2 * polar_cols)?;
+    let qk_clip_factors = DeviceBuffer::from_host(stream, &[1.0_f32])?;
+
+    module.muon_tma_finish_hyperball_update_deferred_quantization(MuonTmaHyperballFinishArgs {
+        finish: MuonTmaFinishArgs {
+            stream,
+            slots: &slots,
+            polar_update: &polar_update,
+            polar_bound_amax: &polar_bound_amax,
+            polar_chunks: &mut polar_chunks,
+            normuon_factors: &mut normuon_factors,
+            normuon_chunks: &mut normuon_chunks,
+            qk_clip_factors: &qk_clip_factors,
+            slot_index: 0,
+            matrix_len: len as u32,
+            polar_cols: polar_cols as u32,
+            learning_rate: LEARNING_RATE,
+            weight_decay: 0.0,
+            average_coefficient: 1.0,
+            schedule_beta: SCHEDULE_BETA,
+            apply_polar_sqrt_bound: 0,
+        },
+        hyperball_chunks: &mut hyperball_chunks,
+        use_schedule_free: false,
+    })?;
+
+    let actual_z = z_master.to_host_vec(stream)?;
+    common::assert_slice_close(&actual_z, &expected_z, 4.0e-5);
+    common::assert_slice_close(&x_master.to_host_vec(stream)?, &expected_z, 4.0e-5);
+    let actual_radius = actual_z
+        .iter()
+        .map(|value| value * value)
+        .sum::<f32>()
+        .sqrt();
+    assert!(
+        (actual_radius - radius).abs() <= radius * 4.0e-5,
+        "shape={rows}x{cols} actual_radius={actual_radius} radius={radius}"
     );
     Ok(())
 }

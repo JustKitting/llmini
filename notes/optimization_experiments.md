@@ -53,6 +53,152 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 
 ```text
 date: 2026-07-18
+commit: accepted local JJ commit after matched-step screening, implementation
+  optimization, optimizer-state/LR bracketing, and the 450-second gate
+experiment: Hyperball-constrained NorMuon with AMUSE and a two-of-three polar
+  schedule.
+status: accepted_450s; active_baseline
+sources:
+  https://arxiv.org/html/2606.16899v1
+  https://github.com/KellerJordan/modded-nanogpt/tree/master/records/track_3_optimization
+rationale:
+  Hyperball optimization replaces hidden-matrix weight decay with a
+  scale-invariant step
+    W' = R * normalize_F(W - eta * R * normalize_F(U)),
+  where R is the current invariant Frobenius radius and U is the preconditioned
+  matrix update. The paper and the official Modded-NanoGPT optimizer records
+  report improved token-equivalent loss for MuonH and NorMuonH. Test that
+  constraint on the intact approximately-1B model without deleting, freezing,
+  bypassing, or loss-scaling any model branch. Retain AMUSE as a separately
+  accepted averaged state unless a matched-step bracket shows that exact
+  x=z Hyperball is better.
+implementation:
+  On Hyperball steps, all existing Muon-managed hidden 2D matrices use the
+  accepted Polar Express plus NorMuon direction. The fast z state takes a
+  relative eta step normalized by the direction Frobenius norm, then projects
+  analytically back to its pre-step z radius. The AMUSE x state averages the
+  projected z state and remains the held-out evaluation state. Transformer
+  QKV, attention output, both MLP matrices, and all three NextLat matrices
+  remain active and receive updates.
+  To retain enough fixed-time throughput, the accepted schedule performs this
+  projected NorMuon update on two consecutive steps out of every three. The
+  third step uses the existing cheap SignMuon update with beta=0.95 and the
+  explicit low sign-step LR ratio. Hyperball LR is 0.022. A bug found during
+  the schedule bracket was fixed by making the SignMuon LR independent of
+  odd/even global-step parity; the invalid pre-fix two-of-three run is not
+  evidence for the method.
+  The initial implementation used a cooperative three-pass projection. The
+  optimized implementation derives the candidate norm from
+    ||z - s*u||^2 = ||z||^2 - 2*s*dot(z,u) + s^2*||u||^2,
+  accumulates ||z||^2 and dot(z,u) inside the existing NorMuon variance pass,
+  reduces those statistics once, and performs projected z update, AMUSE
+  averaging, and both amax reductions in the ordinary split geometry.
+model_integrity:
+  FineWeb/Llama-2, B4/S2048/L16/d2048/h32, four full-attention and twelve KDA
+  blocks, ReLU-squared MLPs, value residuals, NextLat, LayerNorm, QK
+  normalization, block Top-K, and every existing loss target remain active.
+  Effective and allocated parameter counts remain 964376964 and 984572160.
+correctness:
+  cargo fmt --all: pass.
+  cargo check --workspace: pass.
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+  muon_tma_hyperball_preserves_fast_weight_radius: pass on GPU0 against the
+  direct CPU formula.
+  muon_tma_hyperball_matches_rectangular_orientations: pass on GPU0 for both
+  32x64 and 64x32 matrices.
+  Existing NorMuon variance, Q/K clip, and schedule-amax finish tests: pass.
+  The final no-override default-path health run
+    target/runs/20260718_200249Z_fineweb_30s
+  completed 92 steps in 30.170s with held-out loss 6.020638 and step-50
+  training loss 6.531911. Its run_info.txt records Hyperball enabled,
+  LR=0.022, AMUSE enabled, polar period=3, polar numerator=2, and the exact
+  B4/S2048/L16/d2048/h32 model. Finite=1, Nonzero=1, and all skip counters
+  remained zero.
+initial_matched_step_screen:
+  The unoptimized AMUSE-composed run
+    target/runs/20260718_190512Z_fineweb_30s
+  completed 80 steps in 30.230s. Its step-50 loss was 6.5149298 versus
+  6.5967746 for control target/runs/20260718_170945Z_fineweb_30s, a
+  1.240731% matched-step improvement. Finite=1, Nonzero=1, and all skip
+  counters were zero. This clear same-step win triggered profiling and
+  optimization rather than an immediate 450-second run.
+optimization_due_diligence:
+  Initial 20-step profile:
+    target/nsys/20260718_hyperball_unoptimized.nsys-rep
+    target/nsys/20260718_hyperball_unoptimized_cuda_gpu_kern_sum.csv
+  The cooperative Hyperball kernel cost 610.656907ms total, or
+  30.532845ms/step. Analytic projection removed the materialized candidate
+  pass:
+    target/nsys/20260718_hyperball_analytic_projection.nsys-rep
+    target/nsys/20260718_hyperball_analytic_projection_cuda_gpu_kern_sum.csv
+  and reduced that cost to 518.981093ms total, or 25.949055ms/step.
+  Fusing parameter statistics into NorMuon and using the split projection:
+    target/nsys/20260718_hyperball_fused_stats_split_projection.nsys-rep
+    target/nsys/20260718_hyperball_fused_stats_split_projection_cuda_gpu_kern_sum.csv
+  cost 259.023249ms for fused NorMuon stats plus 148.910189ms for projection,
+  or 20.396672ms/step together. This saved 10.136173ms/step versus the first
+  working implementation while preserving the tested formula.
+optimized_matched_step_and_state_brackets:
+  Optimized every-step Hyperball
+    target/runs/20260718_191909Z_fineweb_30s
+  repeated the win with step-50 loss 6.5097904, 1.318606% better than
+  control. At exactly 200 steps with LR=0.018 and AMUSE,
+    target/runs/20260718_192553Z_fineweb_120s
+  reached held-out loss 5.5855589 versus 5.6189742 for control
+    target/runs/20260718_171025Z_fineweb_120s,
+  a 0.594687% improvement.
+  Exact x=z Hyperball initially looked better at step 50 but regressed to
+  held-out 5.7803097 at 200 steps in
+    target/runs/20260718_192718Z_fineweb_120s.
+  Retain AMUSE.
+  LR=0.022 improved the every-step 200-step held-out result to 5.5800848 in
+    target/runs/20260718_193209Z_fineweb_120s.
+  LR=0.014 was worse in the 101-step bracket; LR=0.026 crossed the useful
+  range and was worse by the later matched samples.
+first_promotion_gate_and_schedule_bracket:
+  Every-step Hyperball
+    target/runs/20260718_193356Z_fineweb_450s
+  completed 1214 steps in 450.134s with held-out loss 4.6617780. Against the
+  accepted control at 1441 steps / 450.139s / 4.6115499, it was 1.089181%
+  worse with 15.752950% fewer steps and therefore failed promotion.
+  A one-of-two polar hybrid recovered control throughput but failed the
+  exact-200-step diagnostic at held-out 5.6253934, 0.114241% worse than
+  control. It received no 450-second run.
+  The first two-of-three screen was invalid because an odd global sign step
+  incorrectly received the full-polar LR. After separating sign LR from
+  global parity, the corrected screen
+    target/runs/20260718_194438Z_fineweb_30s
+  completed 92 steps in 30.326s with step-50 loss 6.5353823, 0.930648%
+  better than control. Its exact-200-step result
+    target/runs/20260718_194550Z_fineweb_120s
+  completed in 65.968s with held-out loss 5.5910559, 0.496858% better than
+  control and 10.939504% faster per step than every-step Hyperball.
+  A hybrid LR=0.026 confirmation reached 5.6026759 and was rejected in favor
+  of 0.022.
+promotion_gate:
+  Candidate target/runs/20260718_195107Z_fineweb_450s completed 1355 steps
+  in 450.246s with held-out val_loss=4.5752878.
+  Control target/runs/20260718_171144Z_fineweb_450s completed 1441 steps
+  in 450.139s with held-out val_loss=4.6115499.
+  Validation loss improved by 0.0362620, or 0.786331%, despite 5.968078%
+  fewer completed steps. Mean step time was 0.332284871s versus
+  0.312379598s, a 6.372143% slowdown that the quality gain overcame.
+stability:
+  All 28 high-fidelity samples have Finite=1 and Nonzero=1. Update_skipped,
+  Skip_non_finite, Skip_loss_spike, and Skip_grad_norm_spike are zero
+  throughout. Sampled grad_norm remains finite from 0.7846991 to 3.5491393.
+decision:
+  Promote the two-of-three Hyperball/NorMuon plus AMUSE configuration.
+  Defaults and notes/sweep_baseline.env now select TRAIN_HYPERBALL=1,
+  TRAIN_HYPERBALL_LR=0.022, TRAIN_HYPERBALL_AMUSE=1,
+  TRAIN_HYPERBALL_POLAR_PERIOD=3, and
+  TRAIN_HYPERBALL_POLAR_NUMERATOR=2. Future candidates compare against
+  target/runs/20260718_195107Z_fineweb_450s, not the superseded QKNorm-only
+  control.
+```
+
+```text
+date: 2026-07-18
 commit: rejected working-copy experiment; source fully reverted
 experiment: Delta Attention Residuals / Delta Block depth routing.
 status: rejected_after_optimization_due_diligence

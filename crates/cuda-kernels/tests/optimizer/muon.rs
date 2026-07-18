@@ -55,6 +55,18 @@ fn muon_tma_finish_applies_normuon_variance_reduction() -> Result<(), Box<dyn Er
 
 #[ignore = "requires generated sm_120a PTX"]
 #[test]
+fn muon_tma_hyperball_preserves_fast_weight_radius() -> Result<(), Box<dyn Error>> {
+    tma_finish::run_hyperball_update_case()
+}
+
+#[ignore = "requires generated sm_120a PTX"]
+#[test]
+fn muon_tma_hyperball_matches_rectangular_orientations() -> Result<(), Box<dyn Error>> {
+    tma_finish::run_hyperball_rectangular_update_case()
+}
+
+#[ignore = "requires generated sm_120a PTX"]
+#[test]
 fn muon_tma_sign_update_matches_single_ema_reference() -> Result<(), Box<dyn Error>> {
     tma_finish::run_sign_update_case()
 }

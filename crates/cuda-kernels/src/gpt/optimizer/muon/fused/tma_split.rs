@@ -17,6 +17,7 @@ use super::super::super::work_grid::WorkGrid;
 use super::super::polar::fused::{
     normalize_source_to_x, reduce_source_sumsq_chunks_to_inv_norm, source_sumsq_chunks,
 };
+use super::hyperball::{project_update_and_average_chunks, reduce_parameter_stats};
 use super::momentum::momentum_orient;
 use super::quant::{encode_four_six, quantize_updated_master};
 use super::types::{MuonMatrixShape, MuonUpdateScalars};
@@ -193,13 +194,18 @@ pub(crate) mod module {
         polar_update: &[f32],
         mut normuon_factors: DisjointSlice<f32>,
         mut normuon_chunks: DisjointSlice<f32>,
+        mut hyperball_chunks: DisjointSlice<f32>,
         slot_index: u32,
         matrix_len: u32,
         polar_cols: u32,
+        collect_hyperball_stats: u32,
     ) {
         static mut RAW_SUMS: SharedArray<f32, { WARPS_PER_BLOCK as usize }> = SharedArray::UNINIT;
         static mut SCALED_SUMS: SharedArray<f32, { WARPS_PER_BLOCK as usize }> =
             SharedArray::UNINIT;
+        static mut PARAMETER_SUMS: SharedArray<f32, { WARPS_PER_BLOCK as usize }> =
+            SharedArray::UNINIT;
+        static mut DOT_SUMS: SharedArray<f32, { WARPS_PER_BLOCK as usize }> = SharedArray::UNINIT;
 
         let block = thread::blockIdx_x();
         let tid = thread::threadIdx_x();
@@ -210,16 +216,26 @@ pub(crate) mod module {
 
         if desc.rows == desc.cols {
             let mut raw_sumsq = 0.0;
+            let mut parameter_sumsq = 0.0;
+            let mut parameter_update_dot = 0.0;
             let mut inner_col = tid;
             while inner_col < polar_cols {
-                let value = load_f32_global_read_only(
-                    polar_update.as_ptr(),
-                    (block * polar_cols + inner_col) as usize,
-                );
+                let index = block * polar_cols + inner_col;
+                let value = load_f32_global_read_only(polar_update.as_ptr(), index as usize);
                 raw_sumsq = fma_f32(value, value, raw_sumsq);
+                if collect_hyperball_stats != 0 {
+                    let parameter =
+                        load_f32_global_read_only(ptr_const(desc.z_master), index as usize);
+                    parameter_sumsq = fma_f32(parameter, parameter, parameter_sumsq);
+                    parameter_update_dot = fma_f32(parameter, value, parameter_update_dot);
+                }
                 inner_col += thread::blockDim_x();
             }
             let raw_total = unsafe { block_sum_shared_f32(&mut RAW_SUMS, raw_sumsq, lane, warp) };
+            let parameter_total =
+                unsafe { block_sum_shared_f32(&mut PARAMETER_SUMS, parameter_sumsq, lane, warp) };
+            let dot_total =
+                unsafe { block_sum_shared_f32(&mut DOT_SUMS, parameter_update_dot, lane, warp) };
             if tid == 0 {
                 let state = ptr_mut::<f32>(desc.second_momentum);
                 let old = unsafe { *state.add(block as usize) };
@@ -234,20 +250,40 @@ pub(crate) mod module {
                     *normuon_chunks
                         .as_mut_ptr()
                         .add((block_count + block) as usize) = raw_total * factor * factor;
+                    if collect_hyperball_stats != 0 {
+                        *hyperball_chunks.as_mut_ptr().add(block as usize) = parameter_total;
+                        *hyperball_chunks
+                            .as_mut_ptr()
+                            .add((block_count + block) as usize) = dot_total * factor;
+                    }
                 }
             }
         } else {
             let col = block * thread::blockDim_x() + tid;
             let mut raw_sumsq = 0.0;
             let mut scaled_sumsq = 0.0;
+            let mut parameter_sumsq = 0.0;
+            let mut parameter_update_dot = 0.0;
             if col < polar_cols {
                 let mut row = 0;
                 while row < polar_rows {
-                    let value = load_f32_global_read_only(
-                        polar_update.as_ptr(),
-                        (row * polar_cols + col) as usize,
-                    );
+                    let update_index = row * polar_cols + col;
+                    let value =
+                        load_f32_global_read_only(polar_update.as_ptr(), update_index as usize);
                     raw_sumsq = fma_f32(value, value, raw_sumsq);
+                    if collect_hyperball_stats != 0 {
+                        let parameter_index = if desc.rows > desc.cols {
+                            col * polar_rows + row
+                        } else {
+                            update_index
+                        };
+                        let parameter = load_f32_global_read_only(
+                            ptr_const(desc.z_master),
+                            parameter_index as usize,
+                        );
+                        parameter_sumsq = fma_f32(parameter, parameter, parameter_sumsq);
+                        parameter_update_dot = fma_f32(parameter, value, parameter_update_dot);
+                    }
                     row += 1;
                 }
                 let state = ptr_mut::<f32>(desc.second_momentum);
@@ -260,11 +296,16 @@ pub(crate) mod module {
                     *normuon_factors.as_mut_ptr().add(col as usize) = factor;
                 }
                 scaled_sumsq = raw_sumsq * factor * factor;
+                parameter_update_dot *= factor;
             }
 
             let raw_total = unsafe { block_sum_shared_f32(&mut RAW_SUMS, raw_sumsq, lane, warp) };
             let scaled_total =
                 unsafe { block_sum_shared_f32(&mut SCALED_SUMS, scaled_sumsq, lane, warp) };
+            let parameter_total =
+                unsafe { block_sum_shared_f32(&mut PARAMETER_SUMS, parameter_sumsq, lane, warp) };
+            let dot_total =
+                unsafe { block_sum_shared_f32(&mut DOT_SUMS, parameter_update_dot, lane, warp) };
             if tid == 0 {
                 let block_count = thread::gridDim_x();
                 unsafe {
@@ -272,6 +313,12 @@ pub(crate) mod module {
                     *normuon_chunks
                         .as_mut_ptr()
                         .add((block_count + block) as usize) = scaled_total;
+                    if collect_hyperball_stats != 0 {
+                        *hyperball_chunks.as_mut_ptr().add(block as usize) = parameter_total;
+                        *hyperball_chunks
+                            .as_mut_ptr()
+                            .add((block_count + block) as usize) = dot_total;
+                    }
                 }
             }
         }
@@ -305,7 +352,79 @@ pub(crate) mod module {
             unsafe {
                 *normuon_chunks.as_mut_ptr() =
                     sqrt_f32(raw_total / max_f32(scaled_total, NORMUON_EPSILON));
+                *normuon_chunks.as_mut_ptr().add(1) =
+                    sqrt_f32(max_f32(scaled_total, NORMUON_EPSILON));
             }
+        }
+    }
+
+    #[kernel]
+    pub fn muon_tma_hyperball_reduce_parameter_stats_kernel(
+        mut hyperball_chunks: DisjointSlice<f32>,
+        chunk_count: u32,
+    ) {
+        static mut PARAMETER_SUMS: SharedArray<f32, { WARPS_PER_BLOCK as usize }> =
+            SharedArray::UNINIT;
+        static mut DOT_SUMS: SharedArray<f32, { WARPS_PER_BLOCK as usize }> = SharedArray::UNINIT;
+        unsafe {
+            reduce_parameter_stats(
+                hyperball_chunks.as_mut_ptr(),
+                &mut PARAMETER_SUMS,
+                &mut DOT_SUMS,
+                chunk_count,
+            );
+        }
+    }
+
+    #[kernel]
+    pub fn muon_tma_hyperball_project_chunks_kernel(
+        slots: &[MuonSlotDescriptor],
+        polar_update: &[f32],
+        mut polar_chunks: DisjointSlice<f32>,
+        normuon_factors: &[f32],
+        normuon_chunks: &[f32],
+        hyperball_chunks: &[f32],
+        slot_index: u32,
+        learning_rate: f32,
+        average_coefficient: f32,
+        schedule_beta: f32,
+        use_schedule_free: u32,
+    ) {
+        static mut WARP_SUMS: SharedArray<f32, { WARPS_PER_BLOCK as usize }> = SharedArray::UNINIT;
+        static mut WARP_MAX_PAIRS: SharedArray<f32, { WARPS_PER_BLOCK as usize }> =
+            SharedArray::UNINIT;
+
+        let desc = slots[slot_index as usize];
+        let work = WorkGrid::x_axis();
+        let radius = hyperball_chunks[0];
+        let parameter_update_dot = hyperball_chunks[1];
+        let update_norm = max_f32(normuon_chunks[1], NORMUON_EPSILON);
+        let step_scale = learning_rate * desc.learning_rate_multiplier * radius / update_norm;
+        let candidate_sumsq = max_f32(
+            radius * radius - 2.0 * step_scale * parameter_update_dot
+                + step_scale * step_scale * update_norm * update_norm,
+            NORMUON_EPSILON,
+        );
+        let projection_scale = radius / sqrt_f32(candidate_sumsq);
+
+        unsafe {
+            project_update_and_average_chunks(
+                polar_update.as_ptr(),
+                ptr_mut(desc.z_master),
+                ptr_mut(desc.x_master),
+                normuon_factors.as_ptr(),
+                polar_chunks.as_mut_ptr(),
+                desc.rows,
+                desc.cols,
+                step_scale,
+                projection_scale,
+                average_coefficient,
+                schedule_beta,
+                use_schedule_free != 0,
+                &mut WARP_SUMS,
+                &mut WARP_MAX_PAIRS,
+                work,
+            );
         }
     }
 

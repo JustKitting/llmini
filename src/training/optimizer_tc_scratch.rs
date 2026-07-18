@@ -18,6 +18,7 @@ pub struct MuonScratchBuffers {
     pub(super) polar_chunks: DeviceBuffer<f32>,
     pub(super) normuon_factors: DeviceBuffer<f32>,
     pub(super) normuon_chunks: DeviceBuffer<f32>,
+    pub(super) hyperball_chunks: DeviceBuffer<f32>,
     pub(super) tma: MuonTmaScratch,
 }
 
@@ -55,6 +56,7 @@ impl MuonScratchBuffers {
             )?,
             normuon_factors: DeviceBuffer::zeroed(stream, max_polar_cols())?,
             normuon_chunks: DeviceBuffer::zeroed(stream, 2 * max_polar_cols())?,
+            hyperball_chunks: DeviceBuffer::zeroed(stream, 2 * max_polar_cols())?,
             tma: MuonTmaScratch::new(stream)?,
         })
     }

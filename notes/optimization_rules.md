@@ -172,8 +172,8 @@ minimum_step_saving = (TRAIN_ELAPSED_S / COMPLETED_STEPS) * 0.005
 ```
 
 For the current matched 450-second baseline,
-`450.139 / 1441 = 0.312379598` seconds per step, so a candidate batch must
-credibly be able to save at least `1.561898 ms/step`
+`450.246 / 1355 = 0.332284871` seconds per step, so a candidate batch must
+credibly be able to save at least `1.661424 ms/step`
 before a rebuild, GPU test, or training screen. Multiply a per-launch saving by
 the launch count per step and compare that aggregate saving with the threshold.
 
@@ -219,16 +219,16 @@ architecture.
 The restored pre-regression FP16 staging path plus the later accepted kernel
 and memory wins, positive `0.5` NextLat auxiliary coefficient, retuned AMUSE
 initial interpolation and Adam learning rate, NorMuon variance reduction,
-period-2 SignMuon, fixed 50/50 ResFormer value residuals, LayerNorm Scaling
-without depth-scaled residual initialization, detached KDA chunk-state
-backward, later-only value-residual routing, and probability-mass sampled
-64x64 full-attention backward, with token embedding and every LayerNorm path
-restored to the complete d2048/d4096 width and the post-repair Muon matrix-LR
-scale retuned to `5.0`, plus per-head Q/K normalization and one learned
-logit-scale scalar in each of the four full-attention blocks, is the current
-matched 450-second control: 1441 steps in 450.139 seconds with held-out loss
-4.611550. Do not compare future 450-second candidates with the invalid
-768-column lineage or historical 900-second endpoints.
+fixed 50/50 ResFormer value residuals, LayerNorm Scaling without depth-scaled
+residual initialization, detached KDA chunk-state backward, later-only
+value-residual routing, probability-mass sampled 64x64 full-attention
+backward, full-width token embedding and LayerNorm paths, matrix-LR scale
+`5.0`, per-head Q/K normalization, and the accepted two-of-three
+Hyperball-constrained NorMuon/SignMuon schedule with AMUSE is the current
+matched 450-second baseline: 1355 steps in 450.246 seconds with held-out loss
+4.575288. Do not compare future 450-second candidates with the superseded
+QKNorm-only control, invalid 768-column lineage, or historical 900-second
+endpoints.
 
 ## Sweep Rule
 

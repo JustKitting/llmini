@@ -10,7 +10,7 @@ pub use embedding::EmbeddingLookupGradArgs;
 pub use grad_clip::GradientClipArgs;
 pub use kda_clip::{KdaMuonClipArgs, KdaMuonClipFactorArgs};
 pub use muon::{
-    MuonMegaUpdateArgs, MuonSlotDescriptor, MuonTmaFinishArgs, MuonTmaPrepareArgs,
-    MuonTmaSignUpdateArgs,
+    MuonMegaUpdateArgs, MuonSlotDescriptor, MuonTmaFinishArgs, MuonTmaHyperballFinishArgs,
+    MuonTmaPrepareArgs, MuonTmaSignUpdateArgs,
 };
 pub use schedule_free::{ScheduleFreeMaterializeArgs, ScheduleFreeMaterializePrecomputedArgs};

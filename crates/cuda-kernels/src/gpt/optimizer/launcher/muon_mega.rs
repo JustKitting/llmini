@@ -5,7 +5,8 @@ use crate::launch::{grid_x_config, launch_config};
 use crate::nvfp4_quant::NVFP4_TENSOR_AMAX_VALUES_PER_BLOCK;
 
 use super::super::args::{
-    MuonMegaUpdateArgs, MuonTmaFinishArgs, MuonTmaPrepareArgs, MuonTmaSignUpdateArgs,
+    MuonMegaUpdateArgs, MuonTmaFinishArgs, MuonTmaHyperballFinishArgs, MuonTmaPrepareArgs,
+    MuonTmaSignUpdateArgs,
 };
 use super::super::{MUON_COOPERATIVE_BLOCKS, MUON_MATRIX_PHASES};
 use super::OptimizerModule;
@@ -147,6 +148,48 @@ impl OptimizerModule {
         self.muon_tma_update_master_and_amax(&mut args)
     }
 
+    pub fn muon_tma_finish_hyperball_update_deferred_quantization(
+        &self,
+        mut args: MuonTmaHyperballFinishArgs<'_>,
+    ) -> Result<(), DriverError> {
+        self.muon_tma_hyperball_normuon(&mut args)?;
+        let chunk_count = args
+            .finish
+            .matrix_len
+            .div_ceil(NVFP4_TENSOR_AMAX_VALUES_PER_BLOCK as u32);
+        assert!(args.finish.polar_chunks.len() >= 2 * chunk_count as usize);
+
+        self.apply
+            .muon
+            .tma_split
+            .muon_tma_hyperball_project_chunks_kernel(
+                args.finish.stream,
+                grid_x_config(chunk_count, CTA_THREADS),
+                args.finish.slots,
+                args.finish.polar_update,
+                &mut *args.finish.polar_chunks,
+                &*args.finish.normuon_factors,
+                &*args.finish.normuon_chunks,
+                &*args.hyperball_chunks,
+                args.finish.slot_index,
+                args.finish.learning_rate,
+                args.finish.average_coefficient,
+                args.finish.schedule_beta,
+                args.use_schedule_free as u32,
+            )?;
+        self.apply
+            .muon
+            .tma_split
+            .muon_tma_reduce_update_amax_kernel(
+                args.finish.stream,
+                grid_x_config(1, CTA_THREADS),
+                args.finish.slots,
+                &*args.finish.polar_chunks,
+                args.finish.slot_index,
+                chunk_count,
+            )
+    }
+
     pub fn muon_tma_sign_update_deferred_quantization(
         &self,
         args: MuonTmaSignUpdateArgs<'_>,
@@ -211,9 +254,11 @@ impl OptimizerModule {
             args.polar_update,
             &mut *args.normuon_factors,
             &mut *args.normuon_chunks,
+            &mut *args.polar_chunks,
             args.slot_index,
             args.matrix_len,
             args.polar_cols,
+            0,
         )?;
         self.apply
             .muon
@@ -222,6 +267,58 @@ impl OptimizerModule {
                 args.stream,
                 grid_x_config(1, CTA_THREADS),
                 &mut *args.normuon_chunks,
+                chunk_count,
+            )
+    }
+
+    fn muon_tma_hyperball_normuon(
+        &self,
+        args: &mut MuonTmaHyperballFinishArgs<'_>,
+    ) -> Result<(), DriverError> {
+        let finish = &mut args.finish;
+        assert!(finish.slot_index < finish.slots.len() as u32);
+        assert!(finish.matrix_len > 0);
+        assert!(finish.polar_cols > 0);
+        assert_eq!(finish.matrix_len % finish.polar_cols, 0);
+        let polar_rows = finish.matrix_len / finish.polar_cols;
+        let chunk_count = if polar_rows == finish.polar_cols {
+            finish.polar_cols
+        } else {
+            finish.polar_cols.div_ceil(CTA_THREADS)
+        };
+        assert!(finish.normuon_factors.len() >= finish.polar_cols as usize);
+        assert!(finish.normuon_chunks.len() >= 2 * chunk_count as usize);
+        assert!(args.hyperball_chunks.len() >= 2 * chunk_count as usize);
+
+        self.apply.muon.tma_split.muon_tma_normuon_stats_kernel(
+            finish.stream,
+            grid_x_config(chunk_count, CTA_THREADS),
+            finish.slots,
+            finish.polar_update,
+            &mut *finish.normuon_factors,
+            &mut *finish.normuon_chunks,
+            &mut *args.hyperball_chunks,
+            finish.slot_index,
+            finish.matrix_len,
+            finish.polar_cols,
+            1,
+        )?;
+        self.apply
+            .muon
+            .tma_split
+            .muon_tma_normuon_reduce_scale_kernel(
+                finish.stream,
+                grid_x_config(1, CTA_THREADS),
+                &mut *finish.normuon_chunks,
+                chunk_count,
+            )?;
+        self.apply
+            .muon
+            .tma_split
+            .muon_tma_hyperball_reduce_parameter_stats_kernel(
+                finish.stream,
+                grid_x_config(1, CTA_THREADS),
+                &mut *args.hyperball_chunks,
                 chunk_count,
             )
     }

@@ -1,6 +1,6 @@
 use super::super::OptimizerTrace;
 use super::super::diagnostics::PendingTrainingDiagnostics;
-use super::super::optimizer_muon::muon_learning_rate;
+use super::super::optimizer_muon::matrix_learning_rate;
 use super::adam::adam_learning_rate;
 use super::base::{BaseAdamUpdateArgs, update_base_adam};
 use super::block::{BlockUpdateArgs, update_blocks};
@@ -33,7 +33,7 @@ pub fn apply_weight_updates(args: WeightUpdateArgs<'_>) -> AppResult<WeightUpdat
     let mut trace = OptimizerTrace::default();
     let candidate_step = state.next_step();
     trace.adam_lr = adam_learning_rate(candidate_step);
-    trace.muon_lr = muon_learning_rate(candidate_step);
+    trace.muon_lr = matrix_learning_rate(candidate_step);
     trace.embedding_lookup_ms =
         timed_ms(|| add_embedding_lookup_grad(stream, optimizer, batch, grads, next_latent_grads))?;
 
