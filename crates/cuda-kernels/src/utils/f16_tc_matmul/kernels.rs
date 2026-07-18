@@ -20,10 +20,16 @@ use super::cta_f32_half_rhs::{cta_matmul_f32_half_rhs_body, cta_matmul_f32_half_
 use super::cta_f32_rhs::cta_matmul_f32_rhs_body;
 use super::cta_half_rhs::{
     cta_matmul_half_a_transposed_rhs_lower_a_body,
-    cta_matmul_half_a_transposed_rhs_windowed_lower_a_body, cta_matmul_half_rhs_lower_a_body,
-    cta_matmul_half_rhs_windowed_lower_a_body,
+    cta_matmul_half_a_transposed_rhs_windowed_lower_a_body,
+    cta_matmul_half_a_transposed_rhs_windowed_lower_a_sparse_body,
+    cta_matmul_half_a_transposed_rhs_windowed_lower_a_sparse_scaled_body,
+    cta_matmul_half_rhs_lower_a_body, cta_matmul_half_rhs_windowed_lower_a_body,
+    cta_matmul_half_rhs_windowed_lower_a_sparse_body,
 };
-use super::cta_lower_ds::{cta_matmul_lower_ds_body, cta_matmul_windowed_lower_ds_body};
+use super::cta_lower_ds::{
+    cta_matmul_lower_ds_body, cta_matmul_windowed_lower_ds_body,
+    cta_matmul_windowed_lower_ds_sparse_body,
+};
 use super::pad::pad_rows_body;
 
 pub const F16_THREADS_PER_BLOCK: u32 = 256;
@@ -122,6 +128,27 @@ pub(super) mod module {
     }
 
     #[kernel]
+    pub fn f16_cta_tc_matmul_windowed_lower_ds_sparse_kernel(
+        a: &[u16],
+        b_t: &[u16],
+        probs: &[u16],
+        softmax_d: &[f32],
+        tile_scales: &[f32],
+        out: DisjointSlice<u16>,
+        batch_count: u32,
+        m: u32,
+        n: u32,
+        k: u32,
+        window: u32,
+    ) {
+        call_with_tiles!(
+            cta_matmul_windowed_lower_ds_sparse_body;
+            a, b_t, probs, softmax_d, tile_scales, out;
+            batch_count, m, n, k, window
+        );
+    }
+
+    #[kernel]
     pub fn f16_cta_tc_matmul_half_rhs_lower_a_kernel(
         a: &[u16],
         rhs: &[u16],
@@ -180,6 +207,63 @@ pub(super) mod module {
     ) {
         call_with_tiles!(
             cta_matmul_half_a_transposed_rhs_windowed_lower_a_body; a, rhs, out;
+            batch_count, m, n, k, window
+        );
+    }
+
+    #[kernel]
+    pub fn f16_cta_tc_matmul_half_rhs_windowed_lower_a_sparse_kernel(
+        a: &[u16],
+        rhs: &[u16],
+        tile_scales: &[f32],
+        out: DisjointSlice<f32>,
+        batch_count: u32,
+        m: u32,
+        n: u32,
+        k: u32,
+        window: u32,
+    ) {
+        call_with_tiles!(
+            cta_matmul_half_rhs_windowed_lower_a_sparse_body;
+            a, rhs, tile_scales, out;
+            batch_count, m, n, k, window
+        );
+    }
+
+    #[kernel]
+    pub fn f16_cta_tc_matmul_half_a_transposed_rhs_windowed_lower_a_sparse_kernel(
+        a: &[u16],
+        rhs: &[u16],
+        tile_scales: &[f32],
+        out: DisjointSlice<f32>,
+        batch_count: u32,
+        m: u32,
+        n: u32,
+        k: u32,
+        window: u32,
+    ) {
+        call_with_tiles!(
+            cta_matmul_half_a_transposed_rhs_windowed_lower_a_sparse_body;
+            a, rhs, tile_scales, out;
+            batch_count, m, n, k, window
+        );
+    }
+
+    #[kernel]
+    pub fn f16_cta_tc_matmul_half_a_transposed_rhs_windowed_lower_a_sparse_scaled_kernel(
+        a: &[u16],
+        rhs: &[u16],
+        tile_scales: &[f32],
+        out: DisjointSlice<f32>,
+        batch_count: u32,
+        m: u32,
+        n: u32,
+        k: u32,
+        window: u32,
+    ) {
+        call_with_tiles!(
+            cta_matmul_half_a_transposed_rhs_windowed_lower_a_sparse_scaled_body;
+            a, rhs, tile_scales, out;
             batch_count, m, n, k, window
         );
     }

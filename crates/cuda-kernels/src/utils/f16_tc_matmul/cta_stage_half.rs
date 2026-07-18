@@ -60,6 +60,25 @@ pub(super) fn stage_tiles_half_a_transposed_rhs_windowed_lower_a(
     stage_rhs(rhs, b_tile, tile, dims, k_base);
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "CUDA tile coordinates are explicit"
+)]
+pub(super) fn stage_tiles_half_a_transposed_rhs_windowed_lower_a_scaled(
+    a: &[u16],
+    rhs: &[u16],
+    a_tile: &mut super::CtaATile,
+    b_tile: &mut super::CtaBTile,
+    tile: CtaTile,
+    dims: CtaMatmulDims,
+    k_base: u32,
+    window: u32,
+    a_scale: f32,
+) {
+    stage_a_transposed_windowed_lower_scaled(a, a_tile, tile, dims, k_base, window, a_scale);
+    stage_rhs(rhs, b_tile, tile, dims, k_base);
+}
+
 fn stage_a_lower(
     src: &[u16],
     dst: &mut super::CtaATile,
@@ -199,6 +218,53 @@ fn stage_a_transposed_windowed_lower(
             load_f16_global_bits_read_only(
                 src.as_ptr(),
                 ((tile.batch * dims.k + hi_col) * dims.m + global_row) as usize,
+            )
+        } else {
+            0
+        };
+        let packed = lo as u32 | ((hi as u32) << 16);
+        store_f16x2_shared(dst.as_mut_ptr(), pair as usize, packed);
+        pair += thread::blockDim_x() * 2;
+    }
+}
+
+fn stage_a_transposed_windowed_lower_scaled(
+    src: &[u16],
+    dst: &mut super::CtaATile,
+    tile: CtaTile,
+    dims: CtaMatmulDims,
+    k_base: u32,
+    window: u32,
+    a_scale: f32,
+) {
+    let mut pair = thread::threadIdx_x() * 2;
+    while pair < CTA_A_ELEMS as u32 {
+        let (global_row, global_col) = stage_coords(pair, tile.row_base, k_base);
+        let lo = if global_row < dims.m
+            && global_col < dims.k
+            && in_transposed_causal_window(global_row, global_col, window)
+        {
+            super::convert::cvt_rn_f16_f32(
+                a_scale
+                    * super::convert::cvt_f32_f16(load_f16_global_bits_read_only(
+                        src.as_ptr(),
+                        ((tile.batch * dims.k + global_col) * dims.m + global_row) as usize,
+                    )),
+            )
+        } else {
+            0
+        };
+        let hi_col = global_col + 1;
+        let hi = if global_row < dims.m
+            && hi_col < dims.k
+            && in_transposed_causal_window(global_row, hi_col, window)
+        {
+            super::convert::cvt_rn_f16_f32(
+                a_scale
+                    * super::convert::cvt_f32_f16(load_f16_global_bits_read_only(
+                        src.as_ptr(),
+                        ((tile.batch * dims.k + hi_col) * dims.m + global_row) as usize,
+                    )),
             )
         } else {
             0

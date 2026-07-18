@@ -3,11 +3,14 @@ use cuda_core::DriverError;
 use super::gather::TC_BACKWARD_THREADS_PER_BLOCK;
 use super::kernels::KDA_NORM_REDUCE_THREADS_PER_BLOCK;
 use super::launch_config::attention_config;
-use super::launch_grads::run_grad_matmuls;
-use super::launch_scores::{run_ds_scores, run_pair_scores};
+use super::launch_grads::{run_grad_matmuls, run_grad_matmuls_sparse};
+use super::launch_scores::{run_ds_scores, run_ds_scores_sparse, run_pair_scores};
 use super::matmul::AttentionTcMatmulContext;
+use super::sparse_probs::SPARSE_PROB_THREADS_PER_BLOCK;
 use super::types::CausalAttentionBackwardTcArgs;
 use crate::attention::AttentionModule;
+use crate::f16_tc_matmul::cta_tile::CTA_M;
+use crate::launch::launch_config;
 use crate::launch::{grid_x_config, linear_config};
 
 impl AttentionModule {
@@ -43,6 +46,8 @@ impl AttentionModule {
             head_dim,
             attention_window: _,
             qk_norm_offset,
+            backward_mask_seed,
+            backward_tile_budget,
         } = args;
         let batch_head = batch_size * head_count;
         let tc_ctx = AttentionTcMatmulContext {
@@ -105,29 +110,49 @@ impl AttentionModule {
             )?;
         }
         if reuse_forward_probs {
-            match forward_probs_f16 {
-                Some(probs_half) => {
-                    run_ds_scores(
-                        &tc_ctx,
-                        &*scratch.d_out,
-                        &*scratch.v,
-                        probs_half,
-                        softmax_d,
-                        &mut *scratch.ds_half,
-                    )?;
-                    run_grad_matmuls(&tc_ctx, &mut scratch, Some(probs_half))?;
-                }
-                None => {
-                    run_ds_scores(
-                        &tc_ctx,
-                        &*scratch.d_out,
-                        &*scratch.v,
-                        &*scratch.p_half,
-                        softmax_d,
-                        &mut *scratch.ds_half,
-                    )?;
-                    run_grad_matmuls(&tc_ctx, &mut scratch, None)?;
-                }
+            let probs_half = forward_probs_f16.unwrap_or(&*scratch.p_half);
+            if backward_tile_budget > 0.0 {
+                let tiles = seq_len.div_ceil(CTA_M);
+                kernels.sparsify_attention_probs_f16_kernel(
+                    stream,
+                    launch_config((tiles, tiles, batch_head), SPARSE_PROB_THREADS_PER_BLOCK),
+                    probs_half,
+                    &mut *scratch.p,
+                    backward_mask_seed,
+                    backward_tile_budget,
+                    params,
+                )?;
+                run_ds_scores_sparse(
+                    &tc_ctx,
+                    &*scratch.d_out,
+                    &*scratch.v,
+                    probs_half,
+                    softmax_d,
+                    &*scratch.p,
+                    &mut *scratch.ds_half,
+                )?;
+                run_grad_matmuls_sparse(
+                    &tc_ctx,
+                    &*scratch.ds_half,
+                    &*scratch.q,
+                    &*scratch.k,
+                    &*scratch.d_out,
+                    probs_half,
+                    &*scratch.p,
+                    &mut *scratch.d_q,
+                    &mut *scratch.d_k,
+                    &mut *scratch.d_v,
+                )?;
+            } else {
+                run_ds_scores(
+                    &tc_ctx,
+                    &*scratch.d_out,
+                    &*scratch.v,
+                    probs_half,
+                    softmax_d,
+                    &mut *scratch.ds_half,
+                )?;
+                run_grad_matmuls(&tc_ctx, &mut scratch, forward_probs_f16)?;
             }
         } else {
             run_pair_scores(&tc_ctx, &mut scratch)?;

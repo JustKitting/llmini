@@ -109,8 +109,8 @@ minimum_step_saving = (TRAIN_ELAPSED_S / COMPLETED_STEPS) * 0.005
 ```
 
 For the current matched 450-second baseline,
-`450.035 / 1350 = 0.333359259` seconds per step, so a candidate batch must
-credibly be able to save at least `1.666796 ms/step`
+`450.193 / 1451 = 0.310263956` seconds per step, so a candidate batch must
+credibly be able to save at least `1.551320 ms/step`
 before a rebuild, GPU test, or training screen. Multiply a per-launch saving by
 the launch count per step and compare that aggregate saving with the threshold.
 
@@ -157,9 +157,10 @@ The restored pre-regression FP16 staging path plus the later accepted kernel
 and memory wins, positive `0.5` NextLat auxiliary coefficient, retuned AMUSE
 initial interpolation and Adam learning rate, NorMuon variance reduction,
 period-2 SignMuon, fixed 50/50 ResFormer value residuals, LayerNorm Scaling
-without depth-scaled residual initialization, and detached KDA chunk-state
-backward is the current matched 450-second control: 1350 steps in 450.035
-seconds with held-out loss 4.849991. Do not compare future 450-second
+without depth-scaled residual initialization, detached KDA chunk-state
+backward, later-only value-residual routing, and probability-mass sampled
+64x64 full-attention backward is the current matched 450-second control:
+1451 steps in 450.193 seconds with held-out loss 4.738475. Do not compare future 450-second
 candidates with historical 900-second endpoints.
 
 ## Sweep Rule

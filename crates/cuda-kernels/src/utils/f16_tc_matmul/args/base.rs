@@ -66,6 +66,21 @@ pub struct F16TcMatmulHalfDsWindowArgs<'a, 'out> {
     pub window: u32,
 }
 
+pub struct F16TcMatmulHalfDsSparseWindowArgs<'a, 'out> {
+    pub stream: &'a CudaStream,
+    pub a: &'a DeviceBuffer<u16>,
+    pub b_t: &'a DeviceBuffer<u16>,
+    pub probs: &'a DeviceBuffer<u16>,
+    pub softmax_d: &'a DeviceBuffer<f32>,
+    pub tile_scales: &'a DeviceBuffer<f32>,
+    pub out: &'out mut DeviceBuffer<u16>,
+    pub batch_count: u32,
+    pub m: u32,
+    pub n: u32,
+    pub k: u32,
+    pub window: u32,
+}
+
 pub struct F16TcMatmulHalfRhsArgs<'a, 'out> {
     pub stream: &'a CudaStream,
     pub a: &'a DeviceBuffer<u16>,
@@ -81,6 +96,19 @@ pub struct F16TcMatmulHalfRhsWindowArgs<'a, 'out> {
     pub stream: &'a CudaStream,
     pub a: &'a DeviceBuffer<u16>,
     pub rhs: &'a DeviceBuffer<u16>,
+    pub out: &'out mut DeviceBuffer<f32>,
+    pub batch_count: u32,
+    pub m: u32,
+    pub n: u32,
+    pub k: u32,
+    pub window: u32,
+}
+
+pub struct F16TcMatmulHalfRhsSparseWindowArgs<'a, 'out> {
+    pub stream: &'a CudaStream,
+    pub a: &'a DeviceBuffer<u16>,
+    pub rhs: &'a DeviceBuffer<u16>,
+    pub tile_scales: &'a DeviceBuffer<f32>,
     pub out: &'out mut DeviceBuffer<f32>,
     pub batch_count: u32,
     pub m: u32,

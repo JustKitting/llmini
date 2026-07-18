@@ -13,4 +13,8 @@ impl AttentionBackwardSeeds {
             scale: rng.next_u32(),
         }
     }
+
+    pub(crate) fn attention_mask_seed(self) -> u32 {
+        self.sign ^ self.scale.rotate_left(13) ^ 0xa511_e9b3
+    }
 }

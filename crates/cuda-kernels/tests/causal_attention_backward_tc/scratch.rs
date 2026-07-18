@@ -30,8 +30,17 @@ pub struct TcScratchBuffers {
 
 impl TcScratchBuffers {
     pub fn new(stream: &CudaStream) -> Result<Self, DriverError> {
-        let compact = HEADS * TOKEN_COUNT * HEAD_DIM;
-        let square = HEADS * TOKEN_COUNT * TOKEN_COUNT;
+        Self::new_for_shape(stream, HEADS, TOKEN_COUNT, HEAD_DIM)
+    }
+
+    pub fn new_for_shape(
+        stream: &CudaStream,
+        head_count: usize,
+        token_count: usize,
+        head_dim: usize,
+    ) -> Result<Self, DriverError> {
+        let compact = head_count * token_count * head_dim;
+        let square = head_count * token_count * token_count;
         Ok(Self {
             q_f32: DeviceBuffer::zeroed(stream, compact)?,
             k_f32: DeviceBuffer::zeroed(stream, compact)?,
@@ -54,8 +63,12 @@ impl TcScratchBuffers {
             kda_d_k: DeviceBuffer::zeroed(stream, compact)?,
             kda_d_v: DeviceBuffer::zeroed(stream, compact)?,
             kda_d_g: DeviceBuffer::zeroed(stream, compact)?,
-            kda_d_beta: DeviceBuffer::zeroed(stream, TOKEN_COUNT * HEADS)?,
+            kda_d_beta: DeviceBuffer::zeroed(stream, token_count * head_count)?,
         })
+    }
+
+    pub fn p(&self) -> &DeviceBuffer<f32> {
+        &self.p
     }
 
     pub fn args(&mut self) -> CausalAttentionBackwardTcScratch<'_> {

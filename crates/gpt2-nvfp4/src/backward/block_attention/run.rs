@@ -70,6 +70,7 @@ pub fn attention_side_backward(
         d_qkv,
         d_qkv_chunk_amax: &mut *scratch.qkv.linear.e_h.chunk_amax,
         scratch: scratch.core,
+        backward_mask_seed: seeds.qkv.attention_mask_seed(),
     })?;
     let dims = AttentionDims::new(use_full_attention);
     let routes_value_residual = uses_value_residual(block_index);

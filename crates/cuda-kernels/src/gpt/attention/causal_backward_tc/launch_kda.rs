@@ -68,6 +68,8 @@ impl AttentionModule {
             head_dim,
             attention_window: _,
             qk_norm_offset,
+            backward_mask_seed: _,
+            backward_tile_budget: _,
         } = args;
         let dims = kda_launch::LaunchDims::new(
             batch_size,

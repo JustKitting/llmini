@@ -32,6 +32,7 @@ mod launcher_add;
 mod launcher_f32;
 mod pad;
 mod prepare;
+pub(crate) mod sparse_tile;
 
 type CtaATile = cuda_device::SharedArray<u16, { cta_tile::CTA_A_ELEMS }>;
 type CtaBTile = cuda_device::SharedArray<u16, { cta_tile::CTA_B_ELEMS }>;
@@ -40,8 +41,9 @@ pub use args::{
     F16ConvertArgs, F16TcMatmulAddArgs, F16TcMatmulAddRhsTransposeBaseArgs, F16TcMatmulArgs,
     F16TcMatmulF32ATransposedHalfRhsArgs, F16TcMatmulF32ATransposedRhsArgs, F16TcMatmulF32Args,
     F16TcMatmulF32HalfRhsArgs, F16TcMatmulF32RhsArgs, F16TcMatmulF32WindowArgs,
-    F16TcMatmulHalfArgs, F16TcMatmulHalfDsArgs, F16TcMatmulHalfDsWindowArgs,
-    F16TcMatmulHalfRhsArgs, F16TcMatmulHalfRhsWindowArgs, F16TcMatmulScratch,
-    f16_tc_matmul_elements, f16_tc_matmul_padded_k,
+    F16TcMatmulHalfArgs, F16TcMatmulHalfDsArgs, F16TcMatmulHalfDsSparseWindowArgs,
+    F16TcMatmulHalfDsWindowArgs, F16TcMatmulHalfRhsArgs, F16TcMatmulHalfRhsSparseWindowArgs,
+    F16TcMatmulHalfRhsWindowArgs, F16TcMatmulScratch, f16_tc_matmul_elements,
+    f16_tc_matmul_padded_k,
 };
 pub use launcher::F16TcMatmulModule;

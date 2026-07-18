@@ -55,6 +55,8 @@ pub struct CausalAttentionBackwardTcArgs<'a, 'scratch, 'out> {
     pub head_dim: u32,
     pub attention_window: u32,
     pub qk_norm_offset: u32,
+    pub backward_mask_seed: u32,
+    pub backward_tile_budget: f32,
 }
 
 impl CausalAttentionBackwardTcArgs<'_, '_, '_> {

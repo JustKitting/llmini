@@ -49,8 +49,109 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-18
 commit: passing source candidate; committed after the required gate
-experiment: Later-only Sparse-ResFormer value routing.
+experiment: Probability-mass sampled 64x64 full-attention backward.
 status: accepted_450s; active_baseline
+sources:
+  https://medium.com/@larry36d/partial-model-freezing-and-optimizing-for-the-backwards-pass-df5b0713f219
+  https://arxiv.org/abs/2505.15080
+rationale:
+  Apply the backward-first layout principle directly at the full-attention
+  softmax boundary. Forward attention and its exact saved probabilities remain
+  unchanged. The expensive reverse graph forms dS, dQ, dK, and dV over the
+  same local causal support. SUS Backprop samples individual softmax
+  interactions with
+    q_ij = min(c * W_ij, 1)
+  and rescales retained interactions by 1/q_ij, making their contribution
+  unbiased before finite-precision rounding. An elementwise implementation
+  would not let the existing tensor-core CTAs skip work, so it has no credible
+  whole-step speed path in this codebase.
+implementation:
+  This is a hardware-aligned block adaptation, not a claim to reproduce the
+  paper's elementwise algorithm. Each saved-probability 64x64 tile gets one
+  shared Bernoulli decision with
+    q_tile = min(12 * sum(tile probabilities) / 64, 1).
+  A retained tile is multiplied by 1/q_tile; a dropped tile contributes zero.
+  Since E[mask/q_tile] = 1, every probability contribution remains unbiased
+  before the existing FP16 staging roundoff. One independent seed is derived
+  from the already-generated QKV backward seeds for every layer and optimizer
+  step, without advancing or changing the training RNG stream.
+  A 256-thread reduction builds the tiny FP32 tile-scale map in the beginning
+  of the existing full-attention scratch.p buffer. Dedicated sparse tensor-core
+  paths then skip dropped tiles while computing softmax dS, dQ, dK, and dV.
+  The dS path applies the scale to p*(dP-D); dQ and dK consume that scaled dS;
+  dV stages scale*p before its MMA. The same tile decision is shared across
+  these coupled derivatives.
+model_integrity:
+  Forward math, saved probabilities, every parameter, all 16 blocks, all four
+  full-attention blocks, all twelve KDA blocks, every MLP, NextLat, optimizer
+  update, FineWeb/Llama-2 task, d2048/32-head shape, B4/S2048 geometry, and
+  8192 tokens per step remain active and unchanged. KDA backward retains its
+  dense implementation. No persistent allocation was added; the scale map
+  reuses existing scratch capacity, so no memory-capacity win is claimed.
+correctness:
+  cargo fmt --all, TMPDIR=$PWD/target/tmp cargo check --workspace, and
+  git diff --check: pass.
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass; both the PTX
+  and release host binary were rebuilt from the candidate source.
+  The rebuilt-PTX sparse tensor-core test compares materialized dense
+  references for dS, dQ, dK, and dV, including zero and non-unit tile scales:
+  pass. The production-path test uses S1024 causal FP16 probabilities,
+  reproduces every GPU q_tile/hash/scale result on the host, observes both
+  retained and dropped stochastic tiles, executes the entire sparse backward,
+  and verifies zero gradients remain zero: pass. The existing dense
+  materialized attention reference and gpt2-nvfp4 wrapper reference also pass.
+profile:
+  Baseline:
+    target/nsys/20260718_sparse_resformer_late_candidate.nsys-rep
+  Candidate:
+    target/nsys/20260718_attention_backward_block_sus_candidate.nsys-rep
+  Both traces cover 32 training steps plus endpoint evaluation. On a
+  per-training-step-equivalent basis, the four full-attention blocks move from:
+    dense dS=185.776783ms,
+    dense dQ=132.868147ms (128 calls at the matched dense-kernel mean), and
+    dense dK+dV=255.744727ms,
+  to:
+    sparse dS=139.747831ms,
+    sparse dQ=101.311720ms,
+    sparse dK=99.439344ms,
+    sparse dV=103.763860ms, and
+    tile-map construction=36.916972ms.
+  The conservative focused total falls from 574.389657 to 481.179727ms,
+  saving 93.209930ms over 32 steps, or 2.912810ms/step. This clears the prior
+  approximately 1.57ms/step 0.5% floor before fixed-wall testing. Total GPU
+  kernel time moved from 10056.338026 to 9843.846253ms in the same traces, but
+  the focused family is the less clock-sensitive attribution.
+health:
+  target/runs/20260718_044552Z_fineweb_30s
+  completed_steps=100, train_elapsed_s=30.245,
+  val_loss=6.106685638427734.
+  Both high-fidelity samples were finite and nonzero. Gradient norm moved from
+  3.733595 to 2.031267, and every non-finite, loss-spike, gradient-spike, and
+  update-skip counter remained zero. This was health evidence only.
+gate:
+  target/runs/20260718_044657Z_fineweb_450s
+  completed_steps=1451, train_elapsed_s=450.193,
+  val_loss=4.7384748458862305.
+  All 30 high-fidelity samples were finite and nonzero. Gradient norm stayed
+  in [0.958889, 3.733595] and ended at 2.319536. Every non-finite,
+  loss-spike, gradient-spike, and update-skip counter remained zero.
+measured_effect:
+  Against the active 1432-step / 450.168s / 4.763230323791504 baseline, the
+  candidate completes 19 more steps (+1.326816%). Mean step time improves from
+  314.363128 to 310.263956ms, saving 4.099173ms (-1.303961%). Held-out loss
+  improves by 0.024755478 (-0.519720%).
+decision:
+  Accept, promote, and commit. This is a backward-only compute-layout change
+  with an intact model and exact forward pass. It clears the focused speed
+  floor, reproduces the speed gain in sustained wall-clock throughput, lowers
+  the required 450-second held-out loss, and remains numerically stable.
+```
+
+```text
+date: 2026-07-18
+commit: passing source candidate; committed after the required gate
+experiment: Later-only Sparse-ResFormer value routing.
+status: accepted_450s; superseded_baseline
 sources:
   https://arxiv.org/abs/2410.17897
   https://github.com/Zcchill/Value-Residual-Learning

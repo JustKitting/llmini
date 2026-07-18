@@ -10,6 +10,7 @@ mod matmul;
 mod probs;
 mod scatter;
 mod softmax_d;
+mod sparse_probs;
 mod types;
 
 pub use types::{CausalAttentionBackwardTcArgs, CausalAttentionBackwardTcScratch};

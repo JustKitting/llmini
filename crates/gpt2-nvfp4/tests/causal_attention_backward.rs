@@ -66,6 +66,7 @@ fn causal_attention_backward_wrapper_matches_direct_kernel() -> Result<(), Box<d
         d_qkv: &mut wrapper_d_qkv,
         d_qkv_chunk_amax: &mut wrapper_d_qkv_chunk_amax,
         scratch: wrapper_scratch.args(),
+        backward_mask_seed: 0,
     })?
     .expect("KDA backward must return producer amax chunks");
 
@@ -98,6 +99,8 @@ fn causal_attention_backward_wrapper_matches_direct_kernel() -> Result<(), Box<d
             head_dim: (GPT2_N_EMBD / GPT2_N_HEAD) as u32,
             attention_window: GPT2_SEQ_LEN as u32,
             qk_norm_offset: 0,
+            backward_mask_seed: 0,
+            backward_tile_budget: 0.0,
         })?;
 
     let wrapper = wrapper_d_qkv.to_host_vec(&stream)?;

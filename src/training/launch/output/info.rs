@@ -1,6 +1,7 @@
 use gpt2_nvfp4::{
-    GPT2_BATCH_SIZE, GPT2_FULL_ATTENTION_WINDOW, GPT2_N_EMBD, GPT2_N_HEAD, GPT2_N_LAYER,
-    GPT2_SEQ_LEN, GPT2_TOKEN_ROWS, GPT2_VALUE_RESIDUAL_LAYERS, GPT2_VALUE_RESIDUAL_START_LAYER,
+    GPT2_ATTENTION_BACKWARD_TILE_BUDGET, GPT2_BATCH_SIZE, GPT2_FULL_ATTENTION_WINDOW, GPT2_N_EMBD,
+    GPT2_N_HEAD, GPT2_N_LAYER, GPT2_SEQ_LEN, GPT2_TOKEN_ROWS, GPT2_VALUE_RESIDUAL_LAYERS,
+    GPT2_VALUE_RESIDUAL_START_LAYER,
 };
 use rust_kernels_cuda::optimizer::{MUON_COOPERATIVE_BLOCKS, MUON_MATRIX_PHASES};
 
@@ -33,6 +34,11 @@ pub(in crate::training::launch) fn build_run_info(dataset: &str, config: &TrainC
         &mut info,
         "gpt2_full_attention_window",
         GPT2_FULL_ATTENTION_WINDOW,
+    );
+    push_info(
+        &mut info,
+        "gpt2_attention_backward_tile_budget",
+        GPT2_ATTENTION_BACKWARD_TILE_BUDGET,
     );
     push_info(
         &mut info,
