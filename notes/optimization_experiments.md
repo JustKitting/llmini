@@ -54,6 +54,65 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-18
 commit: rejected working-copy experiment; source fully reverted
+experiment: parameter-class Adam second-moment horizons for auxiliary tensors
+status: rejected_matched_step; no_profile; no_450s
+source:
+  https://github.com/KellerJordan/modded-nanogpt/pull/321
+  https://github.com/KellerJordan/modded-nanogpt/tree/master/records/track_3_optimization
+rationale:
+  The official Modded-NanoGPT optimization record separates Adam beta2 by
+  parameter role: gain-like tensors retain the base horizon, general
+  auxiliary tensors use a longer horizon, and attention-output projection
+  biases use a separately tuned horizon. Test whether the same role split
+  improves the accepted local Adam-managed tensors without altering any model
+  branch, matrix optimizer, schedule, or approximately-1B shape.
+implementation:
+  Kept token embeddings, normalization weights, and learned Q/K scales at the
+  local base beta2=0.95. Classified normalization and linear biases as
+  non-gain auxiliary tensors and attention-output projection biases
+  separately. The first bracket preserved the record's relative second-moment
+  time-constant increase with beta2=0.985 and 0.9825. A final literal-source
+  bracket used beta2=0.997 and 0.9965. The update diagnostics used the exact
+  same parameter classes and bias corrections as training.
+correctness:
+  cargo fmt --all -- --check: pass.
+  cargo check --workspace: pass.
+  cargo test -p rust-kernels aux_beta2_split -- --nocapture: 2 passed.
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+  CUDA_DEVICE_INDEX=0 cargo test -p rust-kernels-cuda --test optimizer
+    adam:: -- --ignored --nocapture: 2 passed.
+  All candidate screens remained finite and nonzero with zero skipped updates.
+matched_step_screen:
+  Relative-horizon health run
+  target/runs/20260718_203403Z_fineweb_30s completed the same 92 steps as
+  control target/runs/20260718_200249Z_fineweb_30s. Its held-out loss was
+  6.0067568 versus 6.0206380, 0.230560% better, while step-50 training loss
+  was 6.5432472 versus 6.5319114, 0.173546% worse. Because those matched-step
+  signals disagreed, it earned the smallest fixed-step discriminator rather
+  than profiling or a 450-second run.
+  Relative-horizon target/runs/20260718_203506Z_fineweb_120s completed exactly
+  200 steps in 65.763s with held-out loss 5.6073213. Exact-200 control
+  target/runs/20260718_194550Z_fineweb_120s completed in 65.968s with held-out
+  loss 5.5910559, making the candidate 0.290918% worse. At matched training
+  samples 50, 100, 150, and 199, the candidate was respectively 0.197749%
+  worse, 0.365989% better, 0.057980% worse, and 0.245672% better: an
+  alternating curve rather than a sustained improvement.
+  Literal-source target/runs/20260718_203658Z_fineweb_30s completed 91 steps.
+  Its matched step-50 loss was 6.5774364, 0.696964% worse than the 6.5319114
+  control. Its held-out loss of 6.0164843 used one fewer step than control and
+  therefore was not treated as matched-step promotion evidence.
+decision:
+  Reject both bounded brackets without profiling, implementation optimization,
+  or a 450-second gate. The initially promising equal-92-step held-out result
+  did not repeat at exact 200 steps, the matched training samples never showed
+  a sustained improvement, and the literal source values made the common
+  step-50 loss materially worse. Restore and rebuild the accepted uniform
+  beta2=0.95 Adam path.
+```
+
+```text
+date: 2026-07-18
+commit: rejected working-copy experiment; source fully reverted
 experiment: scale-invariant per-output-row update flooring inside Hyperball
 status: rejected_matched_step; no_profile; no_450s
 source:
