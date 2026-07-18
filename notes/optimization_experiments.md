@@ -29698,3 +29698,65 @@ decision:
   fails the sole prerequisite for optimizing a structural candidate. Restore
   the source and rebuild the accepted baseline; retain only this result.
 ```
+
+```text
+date: 2026-07-18
+commit: rejected source reverted; note only
+experiment: Faithful AdaMuon signed-polar elementwise second moment.
+status: rejected_matched_step_screen
+sources:
+  https://arxiv.org/html/2507.11005
+  https://github.com/Chongjie-Si/AdaMuon/blob/main/adamuon.py
+rationale:
+  AdaMuon reports better validation-loss token efficiency than Muon by
+  applying sign stabilization before the polar map, then an elementwise
+  second-moment transform and global RMS rescaling. Test the complete coupled
+  direction rather than an isolated post-polar whitening term.
+implementation:
+  Kept the intact B4/S2048/L16/d2048/h32 approximately 1B model, all
+  attention/KDA layers, ReLU-squared MLPs, value residuals, NextLat,
+  Hyperball/AMUSE outer update, dataset, tokenizer, and schedule. On every
+  polar step, the exact existing Nesterov momentum recurrence was signed
+  before the five Newton-Schulz iterations. The resulting polar direction
+  updated a full elementwise FP32 variance EMA with beta2=0.95 and epsilon
+  1e-8, divided by its square root, and received the paper's global
+  0.2*sqrt(matrix_elements) RMS graft through the existing Muon scale path.
+  AdaMuon replaced NorMuon on those steps rather than stacking two adaptive
+  transforms. Tall-matrix variance state remained in master orientation.
+  The released implementation's default Nesterov path was checked directly:
+  its lookahead is algebraically the same recurrence used here.
+correctness:
+  cargo fmt --all: pass.
+  cargo check --workspace --lib --bins: pass.
+  cargo check -p rust-kernels-cuda --test optimizer: pass.
+  cargo check --workspace --all-targets remains blocked by unrelated
+  pre-existing stale GPT attention/MLP test initializers; the errors occur
+  before this optimizer candidate is exercised.
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+  CUDA_DEVICE_INDEX=0 cargo test -p rust-kernels-cuda --test optimizer
+    adamuon -- --ignored --nocapture --test-threads=1:
+    2 passed, covering exact signed Nesterov input in both matrix
+    orientations, elementwise variance indexing, deferred polar bounds,
+    NorMuon bypass, and final RMS norm.
+  CUDA_DEVICE_INDEX=0 cargo test -p rust-kernels-cuda --test optimizer
+    muon_tma -- --ignored --nocapture --test-threads=1:
+    11 passed, including all existing split TMA optimizer regression tests.
+  target/runs/20260718_224136Z_fineweb_900s was a one-step allocation and
+  launch diagnostic only. It completed with finite loss and reported
+  47,275,245,568 used device bytes after allocating the full variance state.
+health_and_matched_step_screen:
+  target/runs/20260718_224156Z_fineweb_30s used every-step polar updates,
+  completed 80 steps in 30.275s, and produced held-out val_loss=6.495773.
+  Both high-fidelity samples were finite/nonzero and all skip metrics were
+  zero.
+  Against the exact same-seed every-step-polar control
+  target/runs/20260718_193209Z_fineweb_120s at the identical optimizer step:
+    step 50: 6.9271822 versus 6.4791679, 6.914688% worse.
+  The unequal-step held-out endpoint and first implementation's throughput
+  were not used as the quality decision.
+decision:
+  Reject without profiling, implementation optimization, a fixed-step
+  extension, or a 450-second gate. The clear 6.91% matched-step regression
+  fails the sole prerequisite for optimizing a structural candidate. Restore
+  the source and rebuild the accepted baseline; retain only this result.
+```
