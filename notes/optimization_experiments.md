@@ -54,6 +54,61 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-18
 commit: rejected source reverted; note only
+experiment: Zeta coordinate-whitened matrix direction inside Hyperball/NorMuon.
+status: rejected_matched_step_screen; no_profile; no_450s
+sources:
+  https://arxiv.org/abs/2606.14187
+  https://github.com/AIGCode/Linear-Zero
+rationale:
+  Zeta applies an Adam-style coordinate second moment to matrix momentum before
+  its polar map and reports faster convergence on 0.6B-8B Qwen3 models. Test
+  that substantive direction change against the accepted optimizer without
+  changing the model, data, tokenizer, context, batch, or active objectives.
+implementation:
+  Added one full FP32 variance state for every Muon-managed matrix and fused
+    m_t = 0.95*m_(t-1) + 0.05*g_t
+    v_t = 0.99*v_(t-1) + 0.01*g_t^2
+    d_t = m_t / (sqrt(v_t) + 1e-8)
+  into the existing momentum/orientation pass before five polar iterations.
+  This copied the released Zeta matrix recurrence and defaults while retaining
+  the local Hyperball projection, NorMuon post-polar map, and AMUSE averaged
+  state. The candidate used every-step polar updates and Hyperball LR=0.022 so
+  its loss-to-step effect could be isolated against the existing exact-200
+  every-step Hyperball control. The extra state was allocated only when
+  TRAIN_ZETA=1 and covered 923271168 FP32 elements, 3.439453 GiB.
+model_integrity:
+  FineWeb/Llama-2, B4/S2048/L16/d2048/h32, all four full-attention and twelve
+  KDA blocks, ReLU-squared MLPs, value residuals, NextLat, LayerNorm, block
+  Top-K, and every existing loss target remained active.
+correctness:
+  cargo fmt --all -- --check: pass.
+  cargo check --workspace --lib --bins: pass.
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+  The rebuilt-PTX
+    muon_tma_zeta_prepare_matches_adam_whitening_reference
+  GPU test passed for both 64x128 and 128x64 matrices. It checked the exact
+  momentum, variance, coordinate-whitened direction, and transpose orientation
+  against a direct CPU reference.
+matched_step_screen:
+  target/runs/20260718_220223Z_fineweb_30s completed 82 steps in 30.162s with
+  held-out val_loss=6.077516. Both high-fidelity samples had Finite=1 and
+  Nonzero=1; every update/skip counter was zero.
+  At identical optimizer step 50 its training loss was 6.5358982 versus
+  6.4791679 for the exact every-step Hyperball LR=0.022 control
+  target/runs/20260718_193209Z_fineweb_120s, 0.875572% worse.
+  It was also 0.061038% worse than the active two-of-three control's 6.5319114,
+  so no loss-per-step benefit was hidden by the candidate's lower throughput.
+decision:
+  Reject without profiling, an implementation-optimization pass, a fixed-step
+  extension, or a 450-second gate. The tested coordinate whitening is already
+  worse than the matched every-step outer optimizer at step 50 and supplies no
+  algorithmic signal that runtime work could preserve. Restore the source,
+  rebuild the accepted baseline, and retain only this rejection record.
+```
+
+```text
+date: 2026-07-18
+commit: rejected source reverted; note only
 experiment: Exact Newton-Muon activation right-preconditioner.
 status: rejected_matched_step_screen
 sources:
