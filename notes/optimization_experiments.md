@@ -49,6 +49,104 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-18
 commit: rejected source reverted; note only
+experiment: SpanNorm inter-block residual topology with FP16-safe static loss scaling.
+status: rejected_450s
+sources:
+  https://arxiv.org/abs/2601.22580
+  https://medium.com/@larry36d/partial-model-freezing-and-optimizing-for-the-backwards-pass-df5b0713f219
+rationale:
+  Test a recent 740M/1.3B/5B language-model result that moves each transformer's
+  long residual span outside the block:
+    Y_l = LN(MHA(X'_l) + X'_l)
+    X'_{l+1} = LN(FFN(Y_l) + X'_l).
+  This is also a faithful test of a backward-first layout principle from the
+  linked implementation article: placement is valuable when it changes which
+  expensive Jacobian-vector products must be evaluated, not merely when it
+  makes the forward expression look cheaper.
+implementation:
+  Implement the paper's first-block and subsequent-block topology, including
+  the fixed identity-affine input normalization needed by its first block.
+  Preserve ordinary 0.02 residual-projection initialization after the paper's
+  1/sqrt(L)-scaled initialization caused this FP16/NVFP4 gradient path to
+  underflow.
+  Add static 32x loss scaling to cross entropy and NextLat, scale the clipping
+  threshold in the same domain, and report/unscale the gradient norm and
+  optimizer update. This preserves the mathematical update while keeping small
+  KDA QKV gradients representable in the existing FP16 VJP path.
+model_integrity:
+  FineWeb/Llama-2, B4/S2048, 8192 tokens/step, d2048, 32 heads, all 16 blocks,
+  all twelve KDA paths, all four full-attention paths, every MLP, NextLat,
+  parameter tensor, gradient family, and optimizer state remain active and
+  trainable. No block, token region, nonlinear path, or backward edge is frozen
+  or removed.
+gradient_diagnostics:
+  target/runs/20260718_085435Z_fineweb_2s used the paper-scaled output
+  initialization and showed widespread later-layer QKV gradient underflow.
+  target/runs/20260718_085859Z_fineweb_2s restored ordinary 0.02 initialization
+  but still lost the KDA gate and beta rows in the FP16 VJP.
+  A diagnostic 32x upstream seed at
+  target/runs/20260718_090155Z_fineweb_2s restored those rows, identifying
+  representational underflow rather than a disconnected graph.
+  The mathematically compensated static-loss-scale build at
+  target/runs/20260718_090526Z_fineweb_2s reports an unscaled gradient norm of
+  3.060963, populates essentially every KDA QKV weight gradient and all 8320
+  KDA QKV bias gradients, and retains the expected 6144 active full-attention
+  rows.
+correctness:
+  cargo fmt --all, TMPDIR=$PWD/target/tmp cargo check --workspace, and git
+  diff --check: pass.
+  All 54 unit tests pass.
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass; both PTX and
+  the release host binary were rebuilt from candidate source.
+health:
+  target/runs/20260718_090559Z_fineweb_30s
+  completed_steps=97, val_loss=6.088782.
+  Every sampled metric is finite and nonzero, gradient norm moves from 3.060963
+  to 1.992, and no skip or numerical-stability counter fires. This screen was
+  used only to establish health.
+gate:
+  target/runs/20260718_090700Z_fineweb_450s
+  completed_steps=1420, train_elapsed_s=450.329,
+  val_loss=4.810840.
+  All 29 high-fidelity samples are finite and nonzero. Gradient norm stays in
+  [1.04408,3.06096] and ends at 1.6864; no non-finite, overflow, or update-skip
+  event appears. Mid-run device memory is 41652MiB.
+measured_effect:
+  Against the active accepted baseline at 1451 steps / 450.193s /
+  4.7384748458862305, SpanNorm completes 31 fewer steps (-2.136458%).
+  Mean wall time moves from 310.263956 to 317.133099ms/step, a
+  6.869143ms (+2.213967%) regression. Held-out loss worsens by
+  0.072365154 (+1.527182%).
+decision:
+  Reject and fully revert. The topology is numerically stable after correcting
+  loss-scale underflow, but it is both slower and worse at the mandatory
+  fixed-time held-out endpoint. Do not retry this exact SpanNorm topology,
+  ordinary 0.02 initialization, and 32x compensated loss scale unchanged.
+backward_layout_audit:
+  The article's saving occurs when a wide linear is the first parameterized
+  operation after a true non-gradient input: it is then last in reverse order,
+  so its data gradient is unnecessary. An internal transformer block has no
+  equivalent boundary because its input gradient feeds earlier trainable
+  blocks. Reordering an internal linear and nonlinearity therefore cannot
+  delete that data-gradient GEMM by itself.
+  The applicable internal analogue is structured, content-derived nonlinear
+  routing whose forward mask lets backward skip complete expensive tiles.
+  This model already exploits that principle in its block TopK ReLU2 MLP and
+  probability-mass sampled attention paths. Further work should seek a new
+  structured Jacobian or optimizer/convergence improvement, not pretend that a
+  cosmetic operation reorder creates the article's boundary.
+revert:
+  Restore the accepted block topology and original unscaled loss/backward path.
+  cargo fmt --all, TMPDIR=$PWD/target/tmp cargo check --workspace, git
+  diff --check, and
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+  The rebuilt accepted binary launch diagnostic at
+  target/runs/20260718_092028Z_fineweb_2s completes seven finite steps.
+```
+
+```text
+date: 2026-07-18
+commit: rejected source reverted; note only
 experiment: RowNormM direction for the tied token-embedding/LM-head matrix.
 status: rejected_450s
 sources:
