@@ -126,6 +126,11 @@ invalid to lower the endpoint by making part of the model task-gradient-dead:
   all 16 layers, width 2048, 32 heads, the intact task, and approximately 1B
   effective trainable parameters. Dead retained LayerNorm allocations do not
   count toward that parameter total.
+- A paper-defined MLP activation and projection layout may replace ReLU-squared
+  when the MLP remains an active, trainable nonlinear branch in every layer.
+  Match the approximately 1B parameter budget by adjusting the intermediate
+  width rather than deleting the branch or silently inflating the model enough
+  to make the comparison a model-size experiment.
 - The matched gate uses the same FineWeb source, Llama-2 tokenizer, validation
   stream, context, and sampling convention. Do not simplify the corpus,
   alphabet, vocabulary, or validation problem to lower raw cross-entropy.
