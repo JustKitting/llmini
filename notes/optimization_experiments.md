@@ -28479,3 +28479,70 @@ decision:
   source, rebuild the accepted baseline artifact, and retain only this result
   and the corrected structural-screening rule.
 ```
+
+```text
+date: 2026-07-18
+commit: rejected source reverted; note only
+experiment: BF16 sensitive products in full-attention forward and backward.
+status: rejected_matched_step_screen
+source:
+  https://arxiv.org/html/2607.04422
+rationale:
+  Full-Stack FP4 identifies P*V, P^T*dO, and dO*V^T as the attention products
+  that must remain BF16 while Q*K^T and the dS-to-Q/K products use lower
+  precision. The active local implementation executes all three sensitive
+  products with FP16 tensor cores and saves P in FP16. Test whether BF16's
+  wider exponent range preserves enough of the softmax tail to improve
+  loss-per-step on the intact local model.
+implementation:
+  Added native sm_120a BF16 tensor-core MMA and conversion support and routed
+  only the four full-attention layers' P*V, P^T*dO, and dO*V^T products
+  through it. Saved probabilities and gathered dO operands used BF16; V was
+  rounded through the existing saved-FP16 tape and then converted to BF16 so
+  forward and backward used the same value. Q/K and dS remained FP16, and all
+  16 layers, KDA layers, MLPs, value residuals, NextLat, optimizer, schedule,
+  B4/S2048/d2048/h32 shape, and backward block sampling remained unchanged.
+scope_limit:
+  This adapts the paper's fully specified sensitive-product precision policy;
+  it is not a reproduction of the complete Q-Attn operator because the local
+  Q/K/V and dS path is FP16 rather than the paper's scaled NVFP4 format.
+correctness:
+  cargo check --workspace: pass.
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+  TMPDIR=$PWD/target/tmp CUDA_DEVICE_INDEX=0 cargo test
+    -p rust-kernels-cuda --release --test causal_attention_backward_tc
+    -- --ignored --nocapture --test-threads=1:
+    2 passed, covering analytical dense backward and sparse probability-tile
+    behavior under the mixed Q/K-FP16 and P/V/dO-BF16 contract.
+  TMPDIR=$PWD/target/tmp CUDA_DEVICE_INDEX=0 cargo test
+    -p gpt2-nvfp4 --release --test block_attention_backward
+    -- --ignored --nocapture --test-threads=1:
+    1 passed.
+  The l2_attention and forward test targets remain stale against unrelated
+  pre-existing TMA host-API changes and fail to compile before reaching this
+  candidate; they are not claimed as passing evidence.
+health_screen:
+  target/runs/20260718_134245Z_fineweb_30s completed 99 steps in 30.016s with
+  held-out val_loss=6.123934. Every sampled update was finite/nonzero and all
+  skip metrics were zero. At step 50 its loss was 6.6245909 versus 6.6291599
+  for target/runs/20260718_044552Z_fineweb_30s, only 0.068924% lower and not a
+  credible structural-quality signal. The screen was health and matched-step
+  evidence only; its fixed-time endpoint was not used for promotion.
+matched_step_diagnostic:
+  target/runs/20260718_134352Z_fineweb_120s completed the fixed 200-step
+  diagnostic in 61.185s with held-out val_loss=5.722460.
+  Against target/runs/20260718_044657Z_fineweb_450s at identical logged steps:
+    step 50:  6.6252537 versus 6.6236825, 0.023721% worse.
+    step 100: 6.5805922 versus 6.5710568, 0.145111% worse.
+    step 150: 5.9127483 versus 5.9148984, 0.036350% better.
+    step 200: 6.5217590 versus 5.9054227, 10.436786% worse.
+  The decision does not depend on the isolated step-200 bump: steps 50-150
+  are tied within 0.15% and show no significant or sustained loss-per-step
+  improvement.
+decision:
+  Reject without profiling, implementation optimization, or a 450-second
+  gate. This candidate never crosses the prerequisite of a real matched-step
+  loss improvement, so its unoptimized speed is immaterial under the
+  structural-screening rule. Restore the source and rebuild the accepted
+  FP16-attention baseline artifact.
+```
