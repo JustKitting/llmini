@@ -53,6 +53,110 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 
 ```text
 date: 2026-07-19
+commit: note-only rejection; all MONA-Lite source, optimizer-state,
+  environment, logging, and focused-test hooks removed before the clean
+  rebuild
+experiment: MONA-Lite gradient-difference acceleration composed before the
+  accepted Hyperball/Muon-VS matrix optimizer.
+status: rejected_after_matched_step_and_paper_beta_due_diligence; no_profile;
+  no_450s
+sources:
+  https://arxiv.org/abs/2605.26842
+rationale:
+  MONA forms a smoothed gradient difference before ordinary Muon momentum:
+    D_k = G_k - G_{k-1}
+    A_k = beta_a*A_{k-1} + (1-beta_a)*D_k
+    G_tilde_k = G_k + alpha*A_k
+    M_k = mu*M_{k-1} + G_tilde_k
+    O_k = NewtonSchulz(M_k).
+  The paper reports direct improvements over Muon at billion-parameter scale
+  and defines alpha=-1/(2*(1-beta_a)). Its 1B active-parameter experiment
+  uses beta_a=0.99; larger reported models use 0.98 and 0.975. MONA-Lite
+  stores G_{k-1} and A_k in BF16 and is reported to closely track the
+  full-precision form.
+scope:
+  The complete FineWeb/Llama-2 B4/S2048/L16/d2048/h32 model remained active:
+  all four full-attention and twelve KDA blocks, all 16 block-Top-K MLPs,
+  value residuals, NextLat, tokenizer, objective, Selective Attention,
+  Ember, and Hyperball/Muon-VS. MONA transformed all 67 Muon matrix
+  gradients, including every block and NextLat projection. The tied token
+  table remained on its accepted Ember optimizer, matching Muon's vector
+  parameter convention. No model section or objective term changed.
+implementation_and_correctness:
+  TRAIN_MONA defaulted on and provided a same-binary disabled control.
+  Previous scaled gradient and acceleration were packed as two BF16 values
+  in one u32 per matrix element. The paper recurrence ran before existing
+  momentum on both PolarExpress and sign-interleave steps; the downstream
+  Hyperball, Muon-VS, PolarExpress, NorMuon, and schedule-free paths were
+  unchanged. Q/K clipping consistently rescaled both MONA state components.
+  cargo fmt --all --check, cargo check --workspace --lib --bins, and
+    cargo check -p rust-kernels-cuda --test optimizer_mona: pass.
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+  CUDA_DEVICE_INDEX=0 cargo test -p rust-kernels-cuda
+    --test optimizer_mona --release
+    mona_lite_matches_paper_recurrence_across_polar_and_sign_steps
+    -- --ignored --nocapture --test-threads=1: 1 passed.
+  The GPU reference covered a continuous two-polar/one-sign cadence and
+  compared transformed gradients plus packed persistent state with the CPU
+  paper recurrence. One-step runs
+  target/runs/20260719_232826Z_fineweb_900s and
+  target/runs/20260719_232834Z_fineweb_900s were allocation and launch
+  diagnostics only and were not used for selection.
+health_screen:
+  Candidate target/runs/20260719_232843Z_fineweb_30s and same-binary
+  disabled control target/runs/20260719_232923Z_fineweb_30s each completed
+  84 updates:
+    elapsed: 30.234s versus 30.025s.
+    step 0:  10.750515938 versus 10.750515938, identical.
+    step 50: 6.415803432 versus 6.431792736, 0.2486% lower.
+    held-out: 5.976897 versus 5.970847, 0.1013% higher.
+  Both samples in both runs were finite/nonzero, their initial losses were
+  identical, and every update-skip counter was zero. The early common-step
+  edge justified resolving the curve at a fixed update count.
+fixed_201_step_resolution:
+  Default beta_a=0.99 candidate
+  target/runs/20260719_233015Z_fineweb_180s and disabled control
+  target/runs/20260719_233134Z_fineweb_180s each completed exactly 201
+  optimizer updates:
+    step 50:  6.407554150 versus 6.420580864, 0.202890% lower.
+    step 100: 6.328940868 versus 6.316967964, 0.189536% higher.
+    step 150: 5.614460468 versus 5.610341549, 0.073417% higher.
+    step 200: 5.636409283 versus 5.627588272, 0.156746% higher.
+    held-out: 5.483080 versus 5.472561, 0.192213% higher.
+    elapsed: 73.521s versus 73.176s, 0.471466% slower.
+  Every sample in both runs was finite/nonzero and every non-finite,
+  loss-spike, grad-norm-spike, aggregate, and update-skip counter was zero.
+paper_beta_due_diligence:
+  The remaining beta_a values explicitly used in the paper were tested for
+  the same 201 updates with alpha derived from its formula:
+    beta_a=0.98, alpha=-25:
+      target/runs/20260719_233334Z_fineweb_180s
+      step 50/100/150/200 were respectively 0.126581%, 0.554846%,
+      0.345495%, and 0.448131% higher than the fixed control; held-out
+      val_loss=5.501755 was 0.533461% higher.
+    beta_a=0.975, alpha=-20:
+      target/runs/20260719_233335Z_fineweb_180s
+      step 50 was 0.148140% lower, but steps 100/150/200 were respectively
+      0.232706%, 0.128772%, and 0.074098% higher; held-out
+      val_loss=5.483593 was 0.201588% higher.
+  Both runs stayed finite/nonzero with every update-skip counter zero.
+decision:
+  Reject MONA-Lite in the current short-budget optimizer composition. The
+  early step-50 improvement repeated, but crossed by step 100 for every
+  paper-used beta that showed any early edge; all three configurations ended
+  worse at step 200 and on held-out validation. This is a loss-per-update
+  rejection, not a speed rejection, so profiling could not rescue the
+  admission result and no 450-second promotion gate was run. It does not
+  dispute MONA's much longer-token plain-Muon results; it rejects composing
+  MONA-Lite with the accepted short-run Hyperball/Muon-VS stack.
+  All implementation was removed and the accepted parent passed the exact
+  sm_120a rebuild. Post-restore diagnostic
+  target/runs/20260719_233901Z_fineweb_180s completed one finite update with
+  val_loss=9.595780. That run is launch evidence only.
+```
+
+```text
+date: 2026-07-19
 commit: note-only rejection; all ROOT-SoftThresh source, scratch, environment,
   and focused-test hooks removed before the clean rebuild
 experiment: ROOT q90 outlier suppression on the accepted Muon-VS pre-polar
