@@ -29982,3 +29982,71 @@ decision:
   and exactly rebuild the accepted uniform-width baseline; retain only this
   result.
 ```
+
+```text
+date: 2026-07-19
+commit: rejected source reverted; note only
+experiment: nGPT / nGPT-NVFP4 hyperspherical architecture with dense-paper SwiGLU geometry.
+status: rejected_matched_step_screen; no_profile; no_450s
+sources:
+  https://arxiv.org/abs/2410.01131
+  https://arxiv.org/abs/2605.06067
+  https://github.com/NVIDIA/ngpt
+rationale:
+  Test whether the normalized Transformer geometry improves loss per optimizer
+  step in this end-to-end NVFP4 trainer. The 2026 paper specifically reports a
+  dense 1.2B NVFP4 model and makes the method unusually relevant to the local
+  1B-class Blackwell training target.
+implementation:
+  Kept all sixteen d2048 blocks, four full-attention and twelve KDA blocks,
+  value residuals, block Top-K, NextLat, FineWeb/Llama-2 data path, and every
+  optimizer update. Replaced model LayerNorms with unit L2 normalization,
+  normalized hidden residual updates with per-feature nonnegative 0.05-initial
+  interpolation rates, normalized projection and embedding vectors in both
+  schedule-free FP32 masters and materialized weights, and retained exact
+  gradients through every normalization and residual interpolation.
+  Added normalized Q/K geometry and the nGPT attention scaling, plus a learned
+  scalar logit temperature using the paper-supported scalar ablation. The
+  completed MLP used the dense paper's d2048/FFN6144 SwiGLU shape: one
+  d-to-12288 gate/up projection, fixed paper-ablation scales u=1 and
+  v=sqrt(d), and a 6144-to-d down projection. This keeps all sixteen layers and
+  moves the model slightly above rather than below the 1B class. Signed
+  SwiGLU activations used absolute-mass block routing with 36 of 48 feature
+  tiles. Forward saved both scaled halves in FP16; backward computed both
+  exact gate derivatives before the full gate/up gradient GEMM.
+  The first implementation deliberately materialized the gate/up FP32 output
+  and used a separate SwiGLU kernel. Under the structural-candidate rule that
+  overhead would have received a profiling and fusion pass only after a
+  matched-step loss improvement.
+correctness:
+  cargo check: pass.
+  cargo check --tests: pass for the active workspace targets.
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+  target/runs/20260719_010619Z_fineweb_900s was a one-step launch diagnostic
+  only. It completed forward, backward, optimizer update, and held-out
+  validation with finite val_loss=10.344098 and no runtime failure.
+characterization:
+  An earlier ReLU-squared bring-up without learned logit temperature reached
+  train loss 9.162618 at step 50. Adding the paper-required learned
+  temperature improved that to 7.843504, confirming that the temperature was
+  material rather than optional in this short regime. Paper-style half
+  learning rates with no warmup were worse at 8.413868. Established full
+  rates with no warmup reached 7.773240, still far behind control. These were
+  fixed-step formulation probes, not promotion results.
+matched_step_screen:
+  target/runs/20260719_010639Z_fineweb_30s completed 70 steps in 30.287s and
+  produced held-out val_loss=7.719145. Both logged samples were finite/nonzero,
+  grad norms were finite, and all update-skip metrics were zero.
+  Against active control target/runs/20260718_200249Z_fineweb_30s at the
+  identical optimizer steps:
+    step 0:  10.3733072 versus 10.7418480, 3.430888% better.
+    step 50:  7.8203630 versus  6.5319114, 19.725492% worse.
+  The unequal-step held-out endpoint and unoptimized runtime were not used as
+  the quality decision.
+decision:
+  Reject without profiling, implementation optimization, a fixed-step
+  extension, or a 450-second gate. The completed paper-shaped candidate is
+  healthy but fails the sole admission criterion by a decisive 19.73% at the
+  same optimizer step. Restore and exactly rebuild the accepted normalized-
+  layer/ReLU-squared baseline; retain only this result.
+```
