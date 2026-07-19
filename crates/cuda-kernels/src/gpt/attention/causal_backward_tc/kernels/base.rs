@@ -3,6 +3,11 @@ use cuda_device::{DisjointSlice, SharedArray, cuda_module, kernel, thread};
 use super::super::gather::{gather_body, gather_norms_body};
 use super::super::probs::{ds_from_probs_f16_body, prob_ds_body, prob_ds_f16_body};
 use super::super::scatter::{scatter_amax_body, scatter_body, scatter_qknorm_amax_body};
+use super::super::selective::{
+    activate_selective_head_tiles_body, selective_attention_backward_dense_body,
+    selective_attention_backward_sparse_body, selective_attention_row_sums_dense_body,
+    selective_attention_row_sums_sparse_body,
+};
 use super::super::softmax_d::softmax_d_f16_body;
 use super::super::sparse_probs::sparsify_attention_probs_f16_body;
 use crate::attention::CausalAttentionParams;
@@ -109,6 +114,60 @@ pub(super) mod module {
         params: CausalAttentionParams,
     ) {
         ds_from_probs_f16_body(p, dot, softmax_d, ds, params);
+    }
+
+    #[kernel]
+    pub fn selective_attention_backward_dense_kernel(
+        selection_mask_tape: &[u16],
+        row_sums: &[f32],
+        ds: DisjointSlice<u16>,
+        params: CausalAttentionParams,
+    ) {
+        selective_attention_backward_dense_body(selection_mask_tape, row_sums, ds, params);
+    }
+
+    #[kernel]
+    pub fn selective_attention_backward_sparse_kernel(
+        selection_mask_tape: &[u16],
+        tile_scales: &[f32],
+        row_sums: &[f32],
+        ds: DisjointSlice<u16>,
+        params: CausalAttentionParams,
+    ) {
+        selective_attention_backward_sparse_body(
+            selection_mask_tape,
+            tile_scales,
+            row_sums,
+            ds,
+            params,
+        );
+    }
+
+    #[kernel]
+    pub fn selective_attention_row_sums_dense_kernel(
+        ds: &[u16],
+        row_sums: DisjointSlice<f32>,
+        params: CausalAttentionParams,
+    ) {
+        selective_attention_row_sums_dense_body(ds, row_sums, params);
+    }
+
+    #[kernel]
+    pub fn selective_attention_row_sums_sparse_kernel(
+        ds: &[u16],
+        tile_scales: &[f32],
+        row_sums: DisjointSlice<f32>,
+        params: CausalAttentionParams,
+    ) {
+        selective_attention_row_sums_sparse_body(ds, tile_scales, row_sums, params);
+    }
+
+    #[kernel]
+    pub fn activate_selective_head_tiles_kernel(
+        tile_scales: DisjointSlice<f32>,
+        params: CausalAttentionParams,
+    ) {
+        activate_selective_head_tiles_body(tile_scales, params);
     }
 
     #[kernel]

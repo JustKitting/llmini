@@ -9,6 +9,7 @@ mod launch_scores;
 mod matmul;
 mod probs;
 mod scatter;
+mod selective;
 mod softmax_d;
 mod sparse_probs;
 mod types;

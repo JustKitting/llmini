@@ -67,6 +67,23 @@ pub(super) fn run_grad_matmuls_sparse(
     d_k: &mut DeviceBuffer<f32>,
     d_v: &mut DeviceBuffer<f32>,
 ) -> Result<(), DriverError> {
+    run_qk_grad_matmuls_sparse(ctx, ds, q, k, tile_scales, d_q, d_k)?;
+    run_v_grad_matmul_sparse(ctx, probs, d_out, tile_scales, d_v)
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "attention gradient buffers are explicit"
+)]
+pub(super) fn run_qk_grad_matmuls_sparse(
+    ctx: &AttentionTcMatmulContext<'_>,
+    ds: &DeviceBuffer<u16>,
+    q: &DeviceBuffer<u16>,
+    k: &DeviceBuffer<u16>,
+    tile_scales: &DeviceBuffer<f32>,
+    d_q: &mut DeviceBuffer<f32>,
+    d_k: &mut DeviceBuffer<f32>,
+) -> Result<(), DriverError> {
     run_tc_matmul_rhs_sparse(
         ctx.stream,
         ctx.tc_module,
@@ -92,7 +109,16 @@ pub(super) fn run_grad_matmuls_sparse(
         ctx.head_dim,
         ctx.seq_len,
         ctx.attention_window,
-    )?;
+    )
+}
+
+pub(super) fn run_v_grad_matmul_sparse(
+    ctx: &AttentionTcMatmulContext<'_>,
+    probs: &DeviceBuffer<u16>,
+    d_out: &DeviceBuffer<u16>,
+    tile_scales: &DeviceBuffer<f32>,
+    d_v: &mut DeviceBuffer<f32>,
+) -> Result<(), DriverError> {
     run_tc_matmul_a_transposed_rhs_sparse_scaled(
         ctx.stream,
         ctx.tc_module,

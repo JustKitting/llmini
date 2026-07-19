@@ -39,6 +39,7 @@ pub struct CausalAttentionTcArgs<'a, 'scratch, 'out> {
     pub head_dim: u32,
     pub attention_window: u32,
     pub partial_key_offset: bool,
+    pub selective_attention: bool,
 }
 
 impl CausalAttentionTcArgs<'_, '_, '_> {

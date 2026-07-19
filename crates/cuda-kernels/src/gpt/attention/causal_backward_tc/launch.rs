@@ -3,9 +3,12 @@ use cuda_core::DriverError;
 use super::gather::TC_BACKWARD_THREADS_PER_BLOCK;
 use super::kernels::KDA_NORM_REDUCE_THREADS_PER_BLOCK;
 use super::launch_config::attention_config;
-use super::launch_grads::{run_grad_matmuls, run_grad_matmuls_sparse};
+use super::launch_grads::{
+    run_grad_matmuls, run_grad_matmuls_sparse, run_qk_grad_matmuls_sparse, run_v_grad_matmul_sparse,
+};
 use super::launch_scores::{run_ds_scores, run_ds_scores_sparse, run_pair_scores};
 use super::matmul::AttentionTcMatmulContext;
+use super::selective::{SELECTIVE_BACKWARD_THREADS_PER_BLOCK, SELECTIVE_ROW_SUM_THREADS_PER_BLOCK};
 use super::sparse_probs::SPARSE_PROB_THREADS_PER_BLOCK;
 use super::types::CausalAttentionBackwardTcArgs;
 use crate::attention::AttentionModule;
@@ -49,11 +52,25 @@ impl AttentionModule {
             head_dim,
             attention_window: _,
             partial_key_offset: _,
+            selective_attention,
             qk_norm_offset,
             backward_mask_seed,
             backward_tile_budget,
         } = args;
+        if selective_attention {
+            assert!(
+                reuse_forward_probs,
+                "selective attention backward requires saved forward probabilities"
+            );
+            let required_tape_elements = params.row_count as usize * params.qkv_dim as usize
+                + (params.batch_size * params.seq_len * params.attention_window) as usize;
+            assert!(
+                qkv.len() >= required_tape_elements,
+                "selective attention requires QKV tape tail with the forward ReLU mask"
+            );
+        }
         let batch_head = batch_size * head_count;
+        let packed_selective_scores = batch_size * seq_len * params.attention_window;
         let tc_ctx = AttentionTcMatmulContext {
             stream,
             tc_module,
@@ -138,18 +155,71 @@ impl AttentionModule {
                     &*scratch.p,
                     &mut *scratch.ds_half,
                 )?;
-                run_grad_matmuls_sparse(
-                    &tc_ctx,
-                    &*scratch.ds_half,
-                    &*scratch.q,
-                    &*scratch.k,
-                    &*scratch.d_out,
-                    probs_half,
-                    &*scratch.p,
-                    &mut *scratch.d_q,
-                    &mut *scratch.d_k,
-                    &mut *scratch.d_v,
-                )?;
+                if selective_attention {
+                    assert!(
+                        scratch.ds.len() >= packed_selective_scores as usize,
+                        "selective attention requires one packed f32 row sum per visible score"
+                    );
+                    run_v_grad_matmul_sparse(
+                        &tc_ctx,
+                        probs_half,
+                        &*scratch.d_out,
+                        &*scratch.p,
+                        &mut *scratch.d_v,
+                    )?;
+                    kernels.selective_attention_row_sums_sparse_kernel(
+                        stream,
+                        linear_config(packed_selective_scores, SELECTIVE_ROW_SUM_THREADS_PER_BLOCK),
+                        &*scratch.ds_half,
+                        &*scratch.p,
+                        &mut *scratch.ds,
+                        params,
+                    )?;
+                    kernels.selective_attention_backward_sparse_kernel(
+                        stream,
+                        grid_x_config(
+                            batch_size * seq_len.div_ceil(SELECTIVE_BACKWARD_THREADS_PER_BLOCK),
+                            SELECTIVE_BACKWARD_THREADS_PER_BLOCK,
+                        ),
+                        qkv,
+                        &*scratch.p,
+                        &*scratch.ds,
+                        &mut *scratch.ds_half,
+                        params,
+                    )?;
+                    let tiles = seq_len.div_ceil(CTA_M);
+                    kernels.activate_selective_head_tiles_kernel(
+                        stream,
+                        linear_config(
+                            batch_size * tiles * tiles,
+                            SELECTIVE_BACKWARD_THREADS_PER_BLOCK,
+                        ),
+                        &mut *scratch.p,
+                        params,
+                    )?;
+                    run_qk_grad_matmuls_sparse(
+                        &tc_ctx,
+                        &*scratch.ds_half,
+                        &*scratch.q,
+                        &*scratch.k,
+                        &*scratch.p,
+                        &mut *scratch.d_q,
+                        &mut *scratch.d_k,
+                    )?;
+                } else {
+                    run_grad_matmuls_sparse(
+                        &tc_ctx,
+                        &*scratch.ds_half,
+                        &*scratch.q,
+                        &*scratch.k,
+                        &*scratch.d_out,
+                        probs_half,
+                        &*scratch.p,
+                        &mut *scratch.d_q,
+                        &mut *scratch.d_k,
+                        &mut *scratch.d_v,
+                    )?;
+                }
             } else {
                 run_ds_scores(
                     &tc_ctx,
@@ -159,6 +229,30 @@ impl AttentionModule {
                     softmax_d,
                     &mut *scratch.ds_half,
                 )?;
+                if selective_attention {
+                    assert!(
+                        scratch.ds.len() >= packed_selective_scores as usize,
+                        "selective attention requires one packed f32 row sum per visible score"
+                    );
+                    kernels.selective_attention_row_sums_dense_kernel(
+                        stream,
+                        linear_config(packed_selective_scores, SELECTIVE_ROW_SUM_THREADS_PER_BLOCK),
+                        &*scratch.ds_half,
+                        &mut *scratch.ds,
+                        params,
+                    )?;
+                    kernels.selective_attention_backward_dense_kernel(
+                        stream,
+                        grid_x_config(
+                            batch_size * seq_len.div_ceil(SELECTIVE_BACKWARD_THREADS_PER_BLOCK),
+                            SELECTIVE_BACKWARD_THREADS_PER_BLOCK,
+                        ),
+                        qkv,
+                        &*scratch.ds,
+                        &mut *scratch.ds_half,
+                        params,
+                    )?;
+                }
                 run_grad_matmuls(&tc_ctx, &mut scratch, forward_probs_f16)?;
             }
         } else {

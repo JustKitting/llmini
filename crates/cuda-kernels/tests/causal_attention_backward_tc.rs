@@ -23,6 +23,172 @@ use scratch::{TcForwardScratchBuffers, TcScratchBuffers};
 
 #[ignore = "requires generated sm_120a PTX"]
 #[test]
+fn selective_attention_backward_matches_finite_difference_and_dense_sparse_paths()
+-> Result<(), Box<dyn Error>> {
+    const SEQ: usize = 64;
+    const HEADS: usize = 2;
+    const HEAD_DIM: usize = 8;
+    const EMBEDDING: usize = HEADS * HEAD_DIM;
+    const QKV_DIM: usize = 3 * EMBEDDING;
+    const EPS: f32 = 0.0625;
+
+    let (_, stream, ptx) = common::cuda_test_context()?;
+    let attention = AttentionModule::from_module(ptx.clone())?;
+    let tc = F16TcMatmulModule::from_module(ptx)?;
+    let qkv_values = selective_qkv(SEQ, HEADS, HEAD_DIM);
+    let d_out_values = selective_d_out(SEQ, HEADS, HEAD_DIM);
+    let qkv = DeviceBuffer::from_host(&stream, &qkv_values)?;
+    let (active_qkv_f16, _) = f16::saved_f16(&stream, &tc, &qkv_values)?;
+    let mut qkv_tape_values = active_qkv_f16.to_host_vec(&stream)?;
+    qkv_tape_values.resize(SEQ * QKV_DIM + SEQ * SEQ, 0);
+    let mut qkv_tape = DeviceBuffer::from_host(&stream, &qkv_tape_values)?;
+    let d_out = DeviceBuffer::from_host(&stream, &d_out_values)?;
+
+    let qk_scale_bytes = DeviceBuffer::from_host(&stream, &[0_u8; 8])?;
+    let qk_scale_scales = DeviceBuffer::from_host(&stream, &[0x38_u8])?;
+    let qk_scale_global_scale = DeviceBuffer::from_host(&stream, &[1.0_f32])?;
+    let qk_scale =
+        Nvfp4DeviceTensor::new(&qk_scale_bytes, &qk_scale_scales, &qk_scale_global_scale);
+    let mut out = DeviceBuffer::<f32>::zeroed(&stream, SEQ * EMBEDDING)?;
+    let mut attention_out_f16 = DeviceBuffer::<u16>::zeroed(&stream, SEQ * EMBEDDING)?;
+    let mut probabilities_f16 = DeviceBuffer::<u16>::zeroed(&stream, HEADS * SEQ * SEQ)?;
+    let mut log_sum_exp = DeviceBuffer::<f32>::zeroed(&stream, HEADS * SEQ)?;
+    let mut forward_scratch = TcForwardScratchBuffers::new(&stream, HEADS, SEQ, HEAD_DIM)?;
+    attention.causal_attention_tc(CausalAttentionTcArgs {
+        stream: &stream,
+        tc_module: &tc,
+        qkv: &qkv,
+        qk_scale,
+        out: &mut out,
+        qkv_f16: Some(&mut qkv_tape),
+        attention_out_f16: Some(&mut attention_out_f16),
+        forward_probs_f16: Some(&mut probabilities_f16),
+        kda_v_new: None,
+        kda_akk_inv: None,
+        kda_w: None,
+        kda_aqk: None,
+        log_sum_exp: &mut log_sum_exp,
+        scratch: forward_scratch.args(),
+        row_count: SEQ as u32,
+        seq_len: SEQ as u32,
+        batch_size: 1,
+        embedding_dim: EMBEDDING as u32,
+        qkv_dim: QKV_DIM as u32,
+        head_count: HEADS as u32,
+        head_dim: HEAD_DIM as u32,
+        attention_window: SEQ as u32,
+        partial_key_offset: false,
+        selective_attention: true,
+    })?;
+
+    let run_backward = |tile_budget: f32| -> Result<Vec<f32>, Box<dyn Error>> {
+        let mut softmax_d = DeviceBuffer::<f32>::zeroed(&stream, HEADS * SEQ)?;
+        let mut qk_norm_max = DeviceBuffer::<f32>::zeroed(&stream, 2 * HEADS)?;
+        let mut d_qkv = DeviceBuffer::<f32>::zeroed(&stream, SEQ * QKV_DIM)?;
+        let mut d_qkv_chunk_amax = DeviceBuffer::<f32>::zeroed(&stream, 3 * SEQ)?;
+        let mut d_qk_scale = DeviceBuffer::<f32>::zeroed(&stream, 16)?;
+        let mut backward_scratch = TcScratchBuffers::new_for_shape(&stream, HEADS, SEQ, HEAD_DIM)?;
+        attention.causal_attention_backward_tc(CausalAttentionBackwardTcArgs {
+            reuse_forward_probs: true,
+            forward_probs_f16: Some(&probabilities_f16),
+            stream: &stream,
+            tc_module: &tc,
+            qkv: &qkv_tape,
+            attention_out: &attention_out_f16,
+            kda_v_new: None,
+            kda_akk_inv: None,
+            kda_w: None,
+            kda_aqk: None,
+            d_out: &d_out,
+            qk_scale,
+            log_sum_exp: &log_sum_exp,
+            softmax_d: &mut softmax_d,
+            qk_norm_max: &mut qk_norm_max,
+            d_qkv: &mut d_qkv,
+            d_qkv_chunk_amax: &mut d_qkv_chunk_amax,
+            d_qk_scale: &mut d_qk_scale,
+            accumulate_value_grad: false,
+            scratch: backward_scratch.args(),
+            row_count: SEQ as u32,
+            seq_len: SEQ as u32,
+            batch_size: 1,
+            embedding_dim: EMBEDDING as u32,
+            qkv_dim: QKV_DIM as u32,
+            head_count: HEADS as u32,
+            head_dim: HEAD_DIM as u32,
+            attention_window: SEQ as u32,
+            partial_key_offset: false,
+            selective_attention: true,
+            qk_norm_offset: 0,
+            backward_mask_seed: 0x1234_5678,
+            backward_tile_budget: tile_budget,
+        })?;
+        Ok(d_qkv.to_host_vec(&stream)?)
+    };
+
+    let dense_gradients = run_backward(0.0)?;
+    let all_tiles_sparse_gradients = run_backward(100.0)?;
+    common::assert_slice_close(&all_tiles_sparse_gradients, &dense_gradients, 2.0e-5);
+
+    for (token, head, dim, section) in [
+        (4_usize, 0_usize, 1_usize, 0_usize),
+        (1, 0, 0, 1),
+        (7, 1, 2, 0),
+        (5, 1, 3, 1),
+    ] {
+        let index = token * QKV_DIM + section * EMBEDDING + head * HEAD_DIM + dim;
+        let mut plus_values = qkv_values.clone();
+        plus_values[index] += EPS;
+        let plus_qkv = DeviceBuffer::from_host(&stream, &plus_values)?;
+        let plus = selective_forward_loss(
+            &stream,
+            &attention,
+            &tc,
+            &plus_qkv,
+            &d_out_values,
+            SEQ,
+            HEADS,
+            HEAD_DIM,
+        )?;
+
+        let mut minus_values = qkv_values.clone();
+        minus_values[index] -= EPS;
+        let minus_qkv = DeviceBuffer::from_host(&stream, &minus_values)?;
+        let minus = selective_forward_loss(
+            &stream,
+            &attention,
+            &tc,
+            &minus_qkv,
+            &d_out_values,
+            SEQ,
+            HEADS,
+            HEAD_DIM,
+        )?;
+
+        let expected = (plus - minus) / (2.0 * EPS);
+        let actual = rotated_qk_gradient(
+            &dense_gradients,
+            token,
+            head,
+            dim,
+            section,
+            EMBEDDING,
+            QKV_DIM,
+            HEAD_DIM,
+        );
+        let tolerance = expected.abs().max(actual.abs()) * 0.15 + 3.0e-3;
+        assert!(
+            (actual - expected).abs() <= tolerance,
+            "selective attention gradient mismatch at token={token} head={head} dim={dim} \
+             section={section}: actual={actual:.8e} finite_difference={expected:.8e} \
+             tolerance={tolerance:.8e}"
+        );
+    }
+    Ok(())
+}
+
+#[ignore = "requires generated sm_120a PTX"]
+#[test]
 fn qknorm_backward_matches_scale_finite_difference() -> Result<(), Box<dyn Error>> {
     const SEQ: usize = 16;
     const HEADS: usize = 5;
@@ -75,6 +241,7 @@ fn qknorm_backward_matches_scale_finite_difference() -> Result<(), Box<dyn Error
         head_dim: HEAD_DIM as u32,
         attention_window: SEQ as u32,
         partial_key_offset: false,
+        selective_attention: false,
     })?;
 
     let mut softmax_d = DeviceBuffer::<f32>::zeroed(&stream, HEADS * SEQ)?;
@@ -113,6 +280,7 @@ fn qknorm_backward_matches_scale_finite_difference() -> Result<(), Box<dyn Error
         head_dim: HEAD_DIM as u32,
         attention_window: SEQ as u32,
         partial_key_offset: false,
+        selective_attention: false,
         qk_norm_offset: 0,
         backward_mask_seed: 0,
         backward_tile_budget: 0.0,
@@ -199,6 +367,7 @@ fn qknorm_backward_matches_scale_finite_difference() -> Result<(), Box<dyn Error
         head_dim: HEAD_DIM as u32,
         attention_window: SEQ as u32,
         partial_key_offset: false,
+        selective_attention: false,
         qk_norm_offset: 0,
         backward_mask_seed: 0,
         backward_tile_budget: 0.0,
@@ -274,6 +443,7 @@ fn partial_key_offset_backward_matches_key_finite_differences() -> Result<(), Bo
         head_dim: HEAD_DIM as u32,
         attention_window: SEQ as u32,
         partial_key_offset: true,
+        selective_attention: false,
     })?;
 
     let mut softmax_d = DeviceBuffer::<f32>::zeroed(&stream, HEADS * SEQ)?;
@@ -312,6 +482,7 @@ fn partial_key_offset_backward_matches_key_finite_differences() -> Result<(), Bo
         head_dim: HEAD_DIM as u32,
         attention_window: SEQ as u32,
         partial_key_offset: true,
+        selective_attention: false,
         qk_norm_offset: 0,
         backward_mask_seed: 0,
         backward_tile_budget: 0.0,
@@ -443,6 +614,7 @@ fn materialized_tc_backward_matches_reference() -> Result<(), Box<dyn Error>> {
         head_dim: shape::HEAD_DIM as u32,
         attention_window: shape::TOKEN_COUNT as u32,
         partial_key_offset: false,
+        selective_attention: false,
         qk_norm_offset: 0,
         backward_mask_seed: 0,
         backward_tile_budget: 0.0,
@@ -502,6 +674,7 @@ fn materialized_tc_backward_matches_reference() -> Result<(), Box<dyn Error>> {
             head_dim: shape::HEAD_DIM as u32,
             attention_window: shape::TOKEN_COUNT as u32,
             partial_key_offset: false,
+            selective_attention: false,
             qk_norm_offset: 0,
             backward_mask_seed: 0,
             backward_tile_budget: 0.0,
@@ -567,6 +740,7 @@ fn materialized_tc_backward_matches_reference() -> Result<(), Box<dyn Error>> {
         head_dim: shape::HEAD_DIM as u32,
         attention_window: shape::TOKEN_COUNT as u32,
         partial_key_offset: false,
+        selective_attention: false,
         qk_norm_offset: 0,
         backward_mask_seed: 0,
         backward_tile_budget: 0.0,
@@ -647,6 +821,7 @@ fn sparse_tile_map_matches_probability_mass_and_seed() -> Result<(), Box<dyn Err
         head_dim: HEAD_DIM as u32,
         attention_window: SEQ as u32,
         partial_key_offset: false,
+        selective_attention: false,
         qk_norm_offset: 0,
         backward_mask_seed: SEED,
         backward_tile_budget: TILE_BUDGET,
@@ -739,6 +914,104 @@ fn qknorm_d_out(seq_len: usize, head_count: usize, head_dim: usize) -> Vec<f32> 
     values
 }
 
+fn selective_qkv(seq_len: usize, head_count: usize, head_dim: usize) -> Vec<f32> {
+    let embedding = head_count * head_dim;
+    let qkv_dim = 3 * embedding;
+    let mut values = vec![0.0_f32; seq_len * qkv_dim];
+    for token in 0..seq_len {
+        for head in 0..head_count {
+            for dim in 0..head_dim {
+                let row = token * qkv_dim;
+                let col = head * head_dim + dim;
+                let q = if head == 0 {
+                    ((token * 3 + dim * 2) % 7 + 2) as f32 * 0.0625
+                } else {
+                    (((token * 5 + dim * 3) % 11) as i32 - 5) as f32 * 0.0625
+                };
+                let k = if head == 0 {
+                    ((token * 2 + dim * 3) % 5 + 2) as f32 * 0.0625
+                } else {
+                    (((token * 7 + dim * 2 + 1) % 13) as i32 - 6) as f32 * 0.0625
+                };
+                let v = (((token * 11 + head * 5 + dim * 7) % 17) as i32 - 8) as f32 * 0.03125;
+                values[row + col] = q;
+                values[row + embedding + col] = k;
+                values[row + 2 * embedding + col] = v;
+            }
+        }
+    }
+    values
+}
+
+fn selective_d_out(seq_len: usize, head_count: usize, head_dim: usize) -> Vec<f32> {
+    let embedding = head_count * head_dim;
+    let mut values = vec![0.0_f32; seq_len * embedding];
+    for token in 0..seq_len {
+        for col in 0..embedding {
+            values[token * embedding + col] =
+                (((token * 7 + col * 3 + 2) % 19) as i32 - 9) as f32 * 0.5;
+        }
+    }
+    values
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the finite-difference helper mirrors the CUDA call"
+)]
+fn selective_forward_loss(
+    stream: &cuda_core::CudaStream,
+    attention: &AttentionModule,
+    tc: &F16TcMatmulModule,
+    qkv: &DeviceBuffer<f32>,
+    d_out: &[f32],
+    seq_len: usize,
+    head_count: usize,
+    head_dim: usize,
+) -> Result<f32, Box<dyn Error>> {
+    let embedding = head_count * head_dim;
+    let qk_scale_bytes = DeviceBuffer::from_host(stream, &[0_u8; 8])?;
+    let qk_scale_scales = DeviceBuffer::from_host(stream, &[0x38_u8])?;
+    let qk_scale_global_scale = DeviceBuffer::from_host(stream, &[1.0_f32])?;
+    let qk_scale =
+        Nvfp4DeviceTensor::new(&qk_scale_bytes, &qk_scale_scales, &qk_scale_global_scale);
+    let mut out = DeviceBuffer::<f32>::zeroed(stream, seq_len * embedding)?;
+    let mut log_sum_exp = DeviceBuffer::<f32>::zeroed(stream, head_count * seq_len)?;
+    let mut scratch = TcForwardScratchBuffers::new(stream, head_count, seq_len, head_dim)?;
+    attention.causal_attention_tc(CausalAttentionTcArgs {
+        stream,
+        tc_module: tc,
+        qkv,
+        qk_scale,
+        out: &mut out,
+        qkv_f16: None,
+        attention_out_f16: None,
+        forward_probs_f16: None,
+        kda_v_new: None,
+        kda_akk_inv: None,
+        kda_w: None,
+        kda_aqk: None,
+        log_sum_exp: &mut log_sum_exp,
+        scratch: scratch.args(),
+        row_count: seq_len as u32,
+        seq_len: seq_len as u32,
+        batch_size: 1,
+        embedding_dim: embedding as u32,
+        qkv_dim: (3 * embedding) as u32,
+        head_count: head_count as u32,
+        head_dim: head_dim as u32,
+        attention_window: seq_len as u32,
+        partial_key_offset: false,
+        selective_attention: true,
+    })?;
+    Ok(out
+        .to_host_vec(stream)?
+        .iter()
+        .zip(d_out)
+        .map(|(out, grad)| out * grad)
+        .sum())
+}
+
 #[expect(
     clippy::too_many_arguments,
     reason = "the finite-difference helper mirrors the CUDA call"
@@ -788,6 +1061,7 @@ fn qknorm_forward_loss(
         head_dim: head_dim as u32,
         attention_window: seq_len as u32,
         partial_key_offset,
+        selective_attention: false,
     })?;
     Ok(out
         .to_host_vec(stream)?
@@ -807,6 +1081,33 @@ fn rotated_key_gradient(
 ) -> f32 {
     let pair_start = dim & !1;
     let base = token * qkv_dim + embedding + pair_start;
+    let raw_even = gradients_raw[base];
+    let raw_odd = gradients_raw[base + 1];
+    let angle = token as f32 * (-9.210_340_5 * pair_start as f32 / head_dim as f32).exp();
+    let (sin, cos) = angle.sin_cos();
+    if dim.is_multiple_of(2) {
+        raw_even * cos - raw_odd * sin
+    } else {
+        raw_odd * cos + raw_even * sin
+    }
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the test needs explicit Q/K coordinates"
+)]
+fn rotated_qk_gradient(
+    gradients_raw: &[f32],
+    token: usize,
+    head: usize,
+    dim: usize,
+    section: usize,
+    embedding: usize,
+    qkv_dim: usize,
+    head_dim: usize,
+) -> f32 {
+    let pair_start = dim & !1;
+    let base = token * qkv_dim + section * embedding + head * head_dim + pair_start;
     let raw_even = gradients_raw[base];
     let raw_odd = gradients_raw[base + 1];
     let angle = token as f32 * (-9.210_340_5 * pair_start as f32 / head_dim as f32).exp();

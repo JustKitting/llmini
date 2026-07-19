@@ -127,6 +127,10 @@ pub fn partial_key_offset_enabled() -> bool {
     env_bool("TRAIN_PARTIAL_KEY_OFFSET", true)
 }
 
+pub fn selective_attention_enabled() -> bool {
+    env_bool("TRAIN_SELECTIVE_ATTENTION", true)
+}
+
 pub fn uses_exclusive_self_attention(use_full_attention: bool) -> bool {
     exclusive_self_attention_enabled()
         && (use_full_attention || exclusive_self_attention_kda_enabled())

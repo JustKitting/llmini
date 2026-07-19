@@ -116,6 +116,11 @@ pub(in crate::training::launch) fn build_run_info(dataset: &str, config: &TrainC
         "partial_key_offset_enabled",
         gpt2_nvfp4::partial_key_offset_enabled(),
     );
+    push_info(
+        &mut info,
+        "selective_attention_enabled",
+        gpt2_nvfp4::selective_attention_enabled(),
+    );
     push_info(&mut info, "step_cap", config.step_cap);
     push_info(&mut info, "log_interval", config.log_interval);
     push_info(&mut info, "max_seconds", config.max_seconds);
@@ -162,6 +167,7 @@ fn push_run_env(info: &mut String) {
         "TRAIN_XSA",
         "TRAIN_XSA_KDA",
         "TRAIN_PARTIAL_KEY_OFFSET",
+        "TRAIN_SELECTIVE_ATTENTION",
         "TRAIN_NEXTLAT_LOSS_WEIGHT",
         "TRAIN_SKIP_UNSTABLE_UPDATES",
         "TRAIN_SKIP_ROLLING_INTERVAL",

@@ -11,7 +11,8 @@ use super::tensors::AttentionForwardArgs;
 use crate::types::HiddenStateDevice;
 use crate::{
     AttentionDims, GPT2_FULL_ATTENTION_WINDOW, attention_headwise_gate_enabled,
-    attention_headwise_gate_offset, partial_key_offset_enabled, uses_exclusive_self_attention,
+    attention_headwise_gate_offset, partial_key_offset_enabled, selective_attention_enabled,
+    uses_exclusive_self_attention,
 };
 
 pub(super) fn forward<'a, 'scratch>(
@@ -122,7 +123,7 @@ pub(super) fn forward<'a, 'scratch>(
     let (qkv_f16, attention_out_f16, attention_probs_f16, kda_v_new, kda_akk_inv, kda_w, kda_aqk) =
         match tape.as_mut() {
             Some(tape) if args.use_full_attention => (
-                None,
+                Some(&mut *tape.qkv_f16),
                 Some(&mut *tape.attention_out_f16),
                 tape.attention_probs_f16
                     .as_mut()
@@ -172,6 +173,7 @@ pub(super) fn forward<'a, 'scratch>(
             hidden.seq_len
         },
         partial_key_offset: args.use_full_attention && partial_key_offset_enabled(),
+        selective_attention: args.use_full_attention && selective_attention_enabled(),
     };
     if args.use_full_attention {
         args.module.causal_attention_tc(attention_args)?;

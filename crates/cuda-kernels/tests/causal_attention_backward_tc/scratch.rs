@@ -99,7 +99,7 @@ impl TcScratchBuffers {
             scores: DeviceBuffer::zeroed(stream, square)?,
             dot: DeviceBuffer::zeroed(stream, square)?,
             p: DeviceBuffer::zeroed(stream, compact)?,
-            ds: DeviceBuffer::zeroed(stream, compact)?,
+            ds: DeviceBuffer::zeroed(stream, compact.max(token_count * token_count))?,
             p_half: DeviceBuffer::zeroed(stream, square)?,
             ds_half: DeviceBuffer::zeroed(stream, square)?,
             d_q: DeviceBuffer::zeroed(stream, compact)?,

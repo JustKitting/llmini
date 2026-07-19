@@ -2,6 +2,10 @@ use cuda_device::{DisjointSlice, SharedArray, cuda_module, kernel};
 
 use super::super::gather::{gather_qk_v_f16_body, gather_qknorm_v_f16_body, gather_qkv_body};
 use super::super::scatter::{scatter_output_body, scatter_output_save_f16_body};
+use super::super::selective::{
+    apply_selective_attention_mask_body, selective_attention_mask_body,
+    selective_attention_mask_save_tape_body,
+};
 use super::super::softmax::{softmax_body, softmax_f16_body};
 use crate::attention::CausalAttentionParams;
 
@@ -80,6 +84,34 @@ pub(super) mod module {
     ) {
         static mut REDUCE: SharedArray<f32, 8> = SharedArray::UNINIT;
         softmax_f16_body(scores, probs, log_sum_exp, params, unsafe { &mut REDUCE });
+    }
+
+    #[kernel]
+    pub fn selective_attention_mask_kernel(
+        scores: &[f32],
+        mask_values: DisjointSlice<f32>,
+        params: CausalAttentionParams,
+    ) {
+        selective_attention_mask_body(scores, mask_values, params);
+    }
+
+    #[kernel]
+    pub fn selective_attention_mask_save_tape_kernel(
+        scores: &[f32],
+        mask_values: DisjointSlice<f32>,
+        selection_mask_tape: DisjointSlice<u16>,
+        params: CausalAttentionParams,
+    ) {
+        selective_attention_mask_save_tape_body(scores, mask_values, selection_mask_tape, params);
+    }
+
+    #[kernel]
+    pub fn apply_selective_attention_mask_kernel(
+        scores: DisjointSlice<f32>,
+        mask_values: &[f32],
+        params: CausalAttentionParams,
+    ) {
+        apply_selective_attention_mask_body(scores, mask_values, params);
     }
 
     #[kernel]

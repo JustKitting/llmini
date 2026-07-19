@@ -1,13 +1,14 @@
 use cuda_core::DriverError;
 
 use super::gather::TC_FORWARD_THREADS_PER_BLOCK;
+use super::selective::{SELECTIVE_APPLY_THREADS_PER_BLOCK, SELECTIVE_ATTENTION_THREADS_PER_BLOCK};
 use super::types::CausalAttentionTcArgs;
 use crate::attention::AttentionModule;
 use crate::f16_tc_matmul::{
     F16TcMatmulF32Args, F16TcMatmulF32WindowArgs, F16TcMatmulHalfRhsArgs,
     F16TcMatmulHalfRhsWindowArgs,
 };
-use crate::launch::{launch_config, linear_config};
+use crate::launch::{grid_x_config, launch_config, linear_config};
 
 impl AttentionModule {
     pub fn causal_attention_tc(
@@ -18,6 +19,7 @@ impl AttentionModule {
         let batch_head = args.batch_size * args.head_count;
         let scratch = args.scratch;
         let probs_half = args.forward_probs_f16.unwrap_or(scratch.probs_half);
+        let selection_mask_tape = args.qkv_f16;
 
         let gather_config = linear_config(
             batch_head * args.seq_len * args.head_dim,
@@ -76,6 +78,54 @@ impl AttentionModule {
                     k: args.head_dim,
                     window: params.attention_window,
                 })?;
+        }
+        if args.selective_attention {
+            let packed_mask_elements = args.batch_size * args.seq_len * args.attention_window;
+            assert!(
+                scratch.probs.len() >= packed_mask_elements as usize,
+                "selective attention requires one packed f32 mask per visible score"
+            );
+            let config = grid_x_config(
+                args.batch_size * args.seq_len.div_ceil(SELECTIVE_ATTENTION_THREADS_PER_BLOCK),
+                SELECTIVE_ATTENTION_THREADS_PER_BLOCK,
+            );
+            if let Some(selection_mask_tape) = selection_mask_tape {
+                let required_tape_elements = args.row_count as usize * args.qkv_dim as usize
+                    + (args.batch_size * args.seq_len * args.attention_window) as usize;
+                assert!(
+                    selection_mask_tape.len() >= required_tape_elements,
+                    "selective attention requires QKV tape tail for the ReLU mask"
+                );
+                self.causal_attention_tc
+                    .base
+                    .selective_attention_mask_save_tape_kernel(
+                        args.stream,
+                        config,
+                        &*scratch.scores,
+                        &mut *scratch.probs,
+                        selection_mask_tape,
+                        params,
+                    )?;
+            } else {
+                self.causal_attention_tc
+                    .base
+                    .selective_attention_mask_kernel(
+                        args.stream,
+                        config,
+                        &*scratch.scores,
+                        &mut *scratch.probs,
+                        params,
+                    )?;
+            }
+            self.causal_attention_tc
+                .base
+                .apply_selective_attention_mask_kernel(
+                    args.stream,
+                    linear_config(packed_mask_elements, SELECTIVE_APPLY_THREADS_PER_BLOCK),
+                    &mut *scratch.scores,
+                    &*scratch.probs,
+                    params,
+                )?;
         }
         self.causal_attention_tc
             .base

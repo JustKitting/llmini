@@ -53,6 +53,117 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 
 ```text
 date: 2026-07-19
+commit: accepted local JJ commit after repeated matched-step admission,
+  implementation optimization, focused gradient validation, and paired
+  450-second promotion gate
+experiment: Original parameter-free Selective Attention on the four complete
+  softmax full-attention layers.
+status: accepted; new FineWeb baseline
+sources:
+  https://arxiv.org/abs/2410.02703
+  https://arxiv.org/abs/2605.20798
+rationale:
+  Selective Attention uses the first attention head's positive pre-softmax
+  logits as a causal, parameter-free mask over later queries. The original
+  paper reports improved language-model performance by suppressing attention
+  to tokens that earlier tokens have selected for removal. The later
+  controlled transfer study reports that the mechanism can improve
+  perplexity outside the original architecture. This is a direct algorithmic
+  loss candidate, not a model deletion or a fixed-time shortcut.
+scope:
+  The complete FineWeb/Llama-2 B4/S2048/L16/d2048/h32 model remained active:
+  all four full-attention and twelve KDA blocks, all 16 MLPs, value residuals,
+  block Top-K, NextLat, tokenizer, objective, and accepted optimizer schedule.
+  Selective Attention applies only to the four actual softmax-attention
+  layers; the twelve KDA layers are unchanged because they do not form
+  softmax logits. TRAIN_SELECTIVE_ATTENTION defaults to 1 and provides a
+  same-binary disabled control.
+implementation:
+  For each full-attention layer, head-zero scores are reused before softmax.
+  Positive scores form a per-key causal prefix mask that is subtracted from
+  every head's future logits. BOS and diagonal/self entries cannot select,
+  and the current row is masked only by earlier rows. A packed u16 ReLU
+  indicator is saved in the unused tail of the existing QKV tape, so the
+  candidate adds no parameters or persistent allocation.
+  Backward includes the complete cross-head/cross-time selection derivative.
+  With stochastic sparse attention backward, dV retains the original sampled
+  tiles, row-logit gradients exclude unsampled tiles, and head-zero Q/K tiles
+  are activated after the selection derivative is materialized.
+correctness:
+  cargo check --workspace --lib --bins: pass.
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+  Focused ignored CUDA test
+    selective_attention_backward_matches_finite_difference_and_dense_sparse_paths
+  passed after the exact rebuild. It checks selected Q/K coordinates against
+  finite differences and checks dense backward against an all-retained sparse
+  path. One-step and trace runs were diagnostics only and were not used for
+  keep/reject selection.
+initial_admission:
+  Correctness-first candidate versus same-binary disabled control at exactly
+  151 optimizer updates:
+    default seed:
+      target/runs/20260719_205721Z_fineweb_900s versus
+      target/runs/20260719_205828Z_fineweb_900s
+      step 50 0.931666% lower, step 100 0.939978% lower, step 150
+      1.009581% lower, held-out 0.965301% lower.
+    seed 0x9e3779b9:
+      target/runs/20260719_205959Z_fineweb_900s versus
+      target/runs/20260719_210109Z_fineweb_900s
+      step 50 0.776278% lower, step 100 1.123029% lower, step 150
+      0.942588% lower, held-out 0.779926% lower.
+  Both seeds were finite with no skipped updates. Runtime was initially about
+  16% slower, which admitted the structural method for optimization rather
+  than rejecting it.
+profiling_and_optimization:
+  Initial profile target/selective_candidate_profile.nsys-rep measured the
+  serialized forward selector at 14.346ms average and backward selector at
+  6.234ms average. A first warp-per-key-tile pass reduced those to 11.457ms
+  and 4.906ms in target/selective_candidate_profile2.nsys-rep but remained
+  too slow.
+  The retained implementation splits each direction into a serial prefix or
+  suffix over keys and a high-parallelism packed-score pass. Forward writes
+  packed cumulative masks into existing f32 probability scratch and applies
+  them in a separate 256-thread kernel. Backward first reduces all heads into
+  existing f32 dS scratch, then performs only the reverse key recurrence.
+  Profile target/selective_candidate_profile3.nsys-rep measured:
+    forward prefix 0.404ms plus apply 1.246ms average;
+    backward row sums 0.128ms plus suffix 0.720ms average.
+  The optimized one-step diagnostic trained in 0.384s, indistinguishable from
+  the earlier 0.388s disabled profile.
+optimized_health_and_matched_step:
+  Candidate target/runs/20260719_211417Z_fineweb_30s and disabled control
+  target/runs/20260719_211457Z_fineweb_30s each completed 85 steps:
+    step 50: 6.458655357 versus 6.533878326, 1.151276% lower.
+    held-out: 5.975245 versus 6.026204, 0.845624% lower.
+    elapsed: 30.165s versus 30.119s, 0.152728% higher.
+  Fresh fixed-151 candidate target/runs/20260719_211550Z_fineweb_900s and
+  control target/runs/20260719_211649Z_fineweb_900s:
+    step 50:  6.477557659 versus 6.540888309, 0.968238% lower.
+    step 100: 6.310173988 versus 6.346322060, 0.569597% lower.
+    step 150: 5.675405025 versus 5.719176769, 0.765356% lower.
+    held-out: 5.699841 versus 5.745841, 0.800579% lower.
+    elapsed: 54.304s versus 54.172s, 0.243668% higher.
+  Every logged sample was finite and no update was skipped.
+paired_450_second_gate:
+  Candidate target/runs/20260719_211803Z_fineweb_450s:
+    completed_steps=1235, train_elapsed_s=450.397, val_loss=4.273637.
+  Same-binary disabled control target/runs/20260719_212542Z_fineweb_450s:
+    completed_steps=1250, train_elapsed_s=450.055, val_loss=4.332679.
+  The candidate processed 1.200000% fewer updates but reached 1.362713% lower
+  held-out loss. It was lower at 23 of 25 common logged checkpoints, including
+  0.5914% lower at step 1200. Both runs had 25/25 finite samples, zero skipped
+  updates, and finite grad-norm ranges (candidate 0.866647-3.449348; control
+  0.896994-3.500250).
+decision:
+  Accept and make Selective Attention the active FineWeb baseline. The
+  optimized implementation repeatedly improves loss at identical update
+  counts and improves the actual 450-second held-out endpoint despite a
+  1.2% completed-step cost. Preserve the complete 1B model and use this exact
+  enabled baseline for subsequent research candidates.
+```
+
+```text
+date: 2026-07-19
 commit: note-only rejection; Muon Split implementation removed after screen
 experiment: GLM-5-style independent per-head Muon polar maps for the fused
   Q/K/V projection weights.
