@@ -30799,3 +30799,122 @@ decision:
   optimization. Remove the candidate, exactly rebuild the accepted source,
   and retain only this experiment record.
 ```
+
+```text
+date: 2026-07-19
+commit: note-only rejection; Static Hyper-Connections implementation removed
+  after the optimized matched-step result failed to reproduce the admission
+  signal
+experiment: Paper-faithful Static Hyper-Connections with four residual
+  streams (SHC x4) around every attention and MLP branch.
+status: rejected_after_due_diligence; no_450s
+source:
+  https://arxiv.org/abs/2409.19606
+rationale:
+  Hyper-Connections generalize a scalar residual stream into n parallel
+  streams and learn the branch-input mixing, residual-stream mapping, and
+  branch-output distribution. The paper's direct approximately 1B ablation
+  reports lower validation loss for static HC x4 than its baseline in both
+  compared configurations (2.791 versus 2.811 and 2.528 versus 2.544).
+  This exact static form was genuinely untested in the local experiment
+  ledger and was selected before considering the more complex dynamic form.
+admission_rule:
+  Architecture status was irrelevant. The sole admission condition for
+  profiling and implementation optimization was a credible loss improvement
+  at the same optimizer step. First-pass fixed-time throughput and unequal-step
+  held-out loss could not reject the method. A 450-second gate was reserved
+  for an optimized candidate that repeatedly preserved the same-step loss
+  improvement.
+implementation:
+  Preserved the complete FineWeb/Llama-2 B4/S2048/L16/d2048/h32 model, all
+  four full-attention and twelve KDA blocks, all value-residual paths, all 16
+  block-Top-K MLPs, NextLat, data, tokenizer, objective, and accepted
+  Hyperball/Muon-VS optimizer. The embedding output was replicated into four
+  FP32 residual streams. Each of the 32 attention/MLP branches implemented
+  the paper equations
+    branch_input = alpha_m^T H
+    H_next = alpha_r^T H + beta^T branch_output.
+  Static initialization used beta=ones, alpha_r=I, and alpha_m selecting
+  branch_index mod 4. The four beta and twenty alpha values per branch were
+  trainable FP32 Adam parameters with zero weight decay, schedule-free
+  materialization, global gradient clipping, checkpoint support, and
+  diagnostics. Four-stream inputs and branch outputs were saved in FP16 for
+  the analytical backward. Final streams were row-summed before the existing
+  final norm and unembedding. This added 768 active scalar parameters while
+  leaving the full approximately 1B topology intact.
+correctness:
+  cargo fmt --all: pass.
+  cargo check --workspace --lib --bins: pass.
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass after every
+    CUDA implementation pass.
+  cargo test -p rust-kernels-cuda --test hyper_connection --release
+    -- --ignored --nocapture: 1 passed against the FP32 forward/backward
+    reference, including stream expansion/reduction, branch mixing, input
+    gradients, and all 24 active parameter gradients.
+  Bring-up target/runs/20260719_052554Z_fineweb_900s was a one-step launch
+    diagnostic only. It preserved the intact model, produced finite loss
+    10.750584602 and grad_norm 3.371840, skipped no update, and evaluated at
+    val_loss=10.183457. It was not acceptance evidence.
+initial_matched_step_screen:
+  Correctness-first candidate target/runs/20260719_052628Z_fineweb_30s
+  completed 76 steps; disabled same-binary control
+  target/runs/20260719_052715Z_fineweb_30s completed 89. At the common
+  step-50 sample:
+    candidate: 6.508883476
+    control:   6.535477638
+    delta:     0.406920% lower
+  Step zero was only 0.000949% worse. Both samples were finite/nonzero and
+  every skip counter was zero. This same-step result admitted SHC for
+  profiling and optimization despite its substantially slower first-pass
+  cadence. Neither unequal-step held-out endpoint was used for admission.
+due_diligence_optimization:
+  Initial Nsight profile
+  target/nsys/shc_x4_initial_b4s2048_5_20260719T0530Z.nsys-rep attributed
+  329.352484ms to HC routing kernels across five training steps plus
+  evaluation. The optimized profile
+  target/nsys/shc_x4_opt3_b4s2048_5_20260719T0547Z.nsys-rep reduced that to
+  220.724002ms. The implementation:
+    - made attention c_proj and MLP down projections emit pure branch outputs,
+      eliminating a redundant full-width branch-input copy/subtraction;
+    - fused backward input and 24-parameter-gradient computation;
+    - fused every adjacent forward post/pre pair within and across blocks,
+      leaving only the first pre and final post standalone;
+    - fused each reverse finish with the previous branch's prepare, leaving
+      only the initial backward prepare standalone;
+    - removed the now-dead full hidden-state scratch allocation, recovering
+      approximately 64 MiB VRAM.
+  All optimization passes retained exactly the same one-step train loss
+  10.750584602 and grad_norm 3.371840. Sampled backward enqueue fell from
+  167.575ms in the correctness-first implementation to 150.667ms after the
+  final fusion. The optimized 30-second run completed 80 steps rather than
+  76, while the disabled control completed 89.
+repeated_matched_step_screen:
+  Optimized candidate target/runs/20260719_054811Z_fineweb_30s and disabled
+  same-binary control target/runs/20260719_054852Z_fineweb_30s used the same
+  seed, model, data, tokenizer, objective, optimizer, and
+  TRAIN_LOG_INTERVAL=50:
+    step 0:  10.750584602 versus 10.750482559, 0.000949% worse.
+    step 50:  6.564370155 versus  6.529563427, 0.533064% worse.
+  Both samples were finite/nonzero and every skip counter was zero. Because
+  this contradicted the initial 0.406920% win, a fixed 101-step matched
+  exposure pair was used to resolve the signal without invoking a long
+  fixed-time endpoint.
+fixed_step_resolution:
+  Candidate target/runs/20260719_055032Z_fineweb_120s and disabled control
+  target/runs/20260719_055116Z_fineweb_120s each completed exactly 101
+  optimizer steps:
+    step 50:  6.561960220 versus 6.534336567, 0.422746% worse.
+    step 100: 6.411403656 versus 6.393805981, 0.275230% worse.
+  Candidate and control train elapsed times were 38.062s and 34.436s.
+  All three logged samples in both runs were finite/nonzero, all skip counters
+  were zero, and grad norms remained finite. The unequal held-out values
+  5.969373 and 5.959255 were not used to make the rejection.
+decision:
+  Reject SHC x4 after performing the optimization due diligence required by
+  its initial admission. The optimized implementation failed to repeat the
+  same-step improvement in two subsequent comparisons and was worse at both
+  step 50 and step 100 in the decisive fixed-step pair. Treat the original
+  0.406920% apparent win as an unreproduced noisy sample. Do not run a
+  450-second gate. Remove the implementation, exactly rebuild the accepted
+  source, retain only this record, and continue loss-method research.
+```
