@@ -53,6 +53,85 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 
 ```text
 date: 2026-07-19
+commit: note-only rejection; factorized source removed
+experiment: SymExpLin row-by-column multiplicative controls for every hidden
+  matrix, replacing the accepted learned-global e, l, and m controls.
+status: rejected_no_persistent_matched_step_heldout_gain; no_profile; no_450s
+source:
+  https://arxiv.org/abs/2607.09967
+rationale:
+  The accepted SymExpLin probe uses one learned e, l, and m value per matrix.
+  The paper's default parameterization instead factorizes each control over
+  matrix rows and columns:
+    e_ij = e_row_i * e_col_j
+    l_ij = l_row_i * l_col_j
+    m_ij = m_row_i * m_col_j.
+  This adds directional control over the local exponential-linear geometry
+  without changing model width, depth, objective, or token exposure. Each
+  factor was initialized to one, matching the paper's square-root
+  initialization for a unit starting control. The accepted beta=12.5 and the
+  paper-default e/l/m learning-rate and weight-decay schedules were retained.
+scope:
+  The complete FineWeb/Llama-2 B4/S2048/L16/d2048/h32 model remained active:
+  all four full-attention and twelve KDA blocks, value residuals, all sixteen
+  block-Top-K ReLU-squared MLPs, query-dependent headwise attention gating,
+  NextLat, tokenizer, objective, and every backward path were unchanged.
+implementation_and_correctness:
+  TRAIN_SYMEXP_LIN_FACTORIZED_SCALES selected six FP32 vector Adam states per
+  matrix: row and column factors for e, l, and m. Materialization and the fused
+  Muon schedule-amax path used the factor products. Two rebuilt CUDA kernels
+  computed exact row and column control gradients without atomics, then
+  applied the raw-weight chain rule. Inactive padded QKV capacity retained unit
+  controls rather than receiving invented logical factors.
+  cargo fmt --all, cargo check --workspace, the four existing host SymExpLin
+  tests, and git diff --check passed. A new focused ignored GPU test checked
+  the raw-weight derivative plus every row and column e/l/m gradient against
+  an independent FP32 reference. It passed after the exact required rebuild:
+    TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a
+bringup_and_health:
+  One-update factorized diagnostic
+  target/runs/20260719_123558Z_fineweb_900s reached finite held-out
+  val_loss=9.672442. Same-binary learned-global control
+  target/runs/20260719_123701Z_fineweb_900s reproduced val_loss=9.784029.
+  This 1.140502% diagnostic edge was not treated as promotion evidence.
+  The 30-second factorized health run
+  target/runs/20260719_123711Z_fineweb_30s completed 82 finite updates in
+  30.334s with val_loss=6.056448. Same-binary global control
+  target/runs/20260719_123747Z_fineweb_30s completed 86 updates in 30.132s
+  with val_loss=6.035664. Their unequal-step endpoints were not compared.
+  At common step 50, factorized training loss was 6.504277 versus 6.544934,
+  0.621% lower. The correctness-first implementation cost 5.581% per step;
+  this slowdown did not reject the structural candidate.
+matched_step_resolution:
+  The smallest fixed 151-step pair was initially tied:
+    factorized target/runs/20260719_123843Z_fineweb_900s:
+      val_loss=5.756978 in 56.505s.
+    global target/runs/20260719_123946Z_fineweb_900s:
+      val_loss=5.759621 in 53.398s.
+  The factorized held-out edge was only 0.045888%; its training-loss lead at
+  steps 50 and 100 had reversed by step 150. A 301-step matched pair therefore
+  resolved the ambiguous early signal:
+    factorized target/runs/20260719_124114Z_fineweb_900s:
+      val_loss=5.356595 in 113.278s.
+    global target/runs/20260719_124313Z_fineweb_900s:
+      val_loss=5.327388 in 106.920s.
+  Factorization was 0.548242% worse on held-out loss at identical exposure.
+  Its 5.946502% runtime cost was not used to make the quality decision.
+decision:
+  Reject the row-by-column factorization. Its large one-update edge decayed to
+  a tie by 151 steps and became a clear held-out regression by 301 steps, so it
+  fails the prerequisite for profiling, implementation optimization, or a
+  450-second promotion gate. Remove the candidate implementation and control,
+  retain the accepted learned-global SymExpLin path, and continue research.
+post_restore:
+  The accepted parent passed a fresh exact sm_120a rebuild. Post-restore
+  diagnostic target/runs/20260719_124621Z_fineweb_900s completed one real
+  update with finite val_loss=9.784029, exactly reproducing the same-binary
+  global control. This one-step run is launch evidence only.
+```
+
+```text
+date: 2026-07-19
 commit: rejected source reverted; note-only result
 experiment: PACE pullback control on Adam-managed parameters, first with the
   paper's power-law EMA and then with the accepted AMUSE returned average.
