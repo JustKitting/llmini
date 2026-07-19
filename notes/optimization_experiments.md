@@ -30734,3 +30734,68 @@ decision:
   450-second run and records TRAIN_ATTENTION_HEADWISE_GATE=1 for explicit
   reproducibility.
 ```
+
+```text
+date: 2026-07-19
+commit: note-only rejection; PolyNorm implementation removed after screen
+experiment: Learned PolyNorm in every MLP, replacing ReLU-squared with the
+  paper's normalized cubic/quadratic/linear composition.
+status: rejected_matched_step_screen; no_profile; no_450s
+sources:
+  https://arxiv.org/abs/2411.03884
+  https://github.com/BryceZhuo/PolyCom
+rationale:
+  PolyCom reports PolyNorm as its strongest polynomial composition and lower
+  training and validation loss in dense 1B-language-model experiments. The
+  official implementation computes
+    a3 * RMSNorm(x^3) + a2 * RMSNorm(x^2) + a1 * RMSNorm(x) + b
+  with epsilon=1e-6, scalar trainable coefficients initialized to one third,
+  and zero scalar bias. This is distinct from the earlier local unnormalized
+  PolyReLU screen. Admission was determined only by loss at identical
+  optimizer steps.
+implementation:
+  Preserved the complete FineWeb/Llama-2 B4/S2048/L16/d2048/h32 model, all
+  four full-attention and twelve KDA blocks, value residuals, all 16 MLPs,
+  block-Top-K routing, NextLat, dataset, tokenizer, objective, and accepted
+  optimizer. Each MLP up projection fed the exact learned PolyNorm formula.
+  A one-block-per-row CUDA implementation reduced the x^2/x^4/x^6 moments
+  and applied the analytical backward Jacobian. The down-projection backward
+  retained block-Top-K routing. Because the three rowwise RMS terms couple
+  every feature, the up-projection backward was correctly dense after the
+  PolyNorm derivative. Four scalar gradients per block participated in Adam,
+  schedule-free materialization, global clipping, checkpoints, and
+  diagnostics. TRAIN_MLP_POLYNORM=0 selected a same-binary ReLU-squared
+  control.
+correctness:
+  cargo fmt --all -- --check: pass.
+  cargo check --workspace: pass.
+  cargo test --workspace --lib: pass.
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+  CUDA_DEVICE_INDEX=0 cargo test -p rust-kernels-cuda --release --test mlp
+    -- --ignored --nocapture --test-threads=1:
+    2 passed. The focused PolyNorm test matched FP32 forward output, the
+    analytical input gradient, all four coefficient gradients, and the
+    per-row amax handoff; the existing ReLU-squared test also remained green.
+bringup:
+  target/runs/20260719_045403Z_fineweb_900s was a one-step launch diagnostic
+  only. Metadata confirmed the intact B4/S2048/L16/d2048/h32 model and
+  mlp_polynorm_enabled=true. It completed one finite update and held-out
+  evaluation with val_loss=10.336108; it was not acceptance evidence.
+paired_matched_step_screen:
+  Candidate target/runs/20260719_045426Z_fineweb_30s and disabled same-binary
+  control target/runs/20260719_045509Z_fineweb_30s used seed 0x47505432, the
+  same intact model, FineWeb path, Llama-2 tokenizer, objective, optimizer,
+  and TRAIN_LOG_INTERVAL=50.
+    step 0:  10.761150360 versus 10.750482559, 0.099231% worse.
+    step 50:  6.649758339 versus  6.536000729, 1.740480% worse.
+  Both logged samples were finite/nonzero and every skip counter was zero.
+  Candidate and control completed 87 and 89 updates in 30.213s and 30.113s;
+  their 2.64% cadence difference and unequal-step held-out endpoints were not
+  used to reject the method.
+decision:
+  Reject this exact PolyNorm candidate without profiling, kernel tuning, a
+  fixed-step extension, or a 450-second gate. Its clear 1.74% regression at
+  the identical step fails the sole admission condition for implementation
+  optimization. Remove the candidate, exactly rebuild the accepted source,
+  and retain only this experiment record.
+```
