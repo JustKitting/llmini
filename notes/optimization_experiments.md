@@ -53,6 +53,98 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 
 ```text
 date: 2026-07-19
+commit: note-only rejection; Muon Split implementation removed after screen
+experiment: GLM-5-style independent per-head Muon polar maps for the fused
+  Q/K/V projection weights.
+status: rejected_fixed_151_step_resolution; no_profile; no_450s
+sources:
+  https://arxiv.org/abs/2602.15763
+  https://arxiv.org/abs/2603.00742
+rationale:
+  GLM-5 reports that applying one Muon orthogonalization jointly across a
+  fused multi-head Q/K/V projection prevents different heads from updating at
+  independent scales. Its Muon Split instead partitions the Q, K, and V
+  up-projection matrices by attention head before orthogonalization. In its
+  MLA ablation, this closes the quality gap to the GQA-8 control across most
+  reported evaluations. Independent contemporary analysis also identifies
+  whole-matrix versus per-head Muon as a consequential optimizer-geometry
+  choice. This exact per-head polar geometry was absent from the local ledger;
+  the prior independent-Q/K/V experiment split the three projections but did
+  not split their heads.
+implementation:
+  Preserved the complete FineWeb/Llama-2 B4/S2048/L16/d2048/h32 model, all
+  four full-attention and twelve KDA blocks, all 16 block-Top-K ReLU-squared
+  MLPs, value residuals, the accepted attention gates/XSA/partial-key offset,
+  NextLat, objective, and accepted Hyperball/Muon-VS/NorMuon optimizer.
+  On each of the two polar steps in the established three-step schedule, the
+  existing fused QKV gradient advanced its momentum and BF16 Muon-VS variance
+  recurrence exactly once. The resulting pre-polar matrix was then gathered
+  into 64-by-2048 Q, K, and V blocks, one for every head. Each block received
+  the same five-iteration Polar Express map independently and was scattered
+  back into the fused direction. The non-QKV projection tail remained one
+  complete polar block. The assembled tensor then passed once through the
+  accepted per-output NorMuon conditioner, full-tensor Hyperball projection,
+  Q/K clipping, schedule-free averaging, and NVFP4 materialization. Sign
+  interleave steps were unchanged. TRAIN_MUON_SPLIT_HEADS=0 selected the
+  same-binary control.
+correctness:
+  cargo fmt --all: pass.
+  cargo check --workspace --lib --bins: pass.
+  cargo check -p rust-kernels-cuda --test muon_split_block: pass while the
+    candidate was present.
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+  CUDA_DEVICE_INDEX=0 cargo test -p rust-kernels-cuda --release
+    --test muon_split_block -- --ignored --nocapture --test-threads=1:
+    1 passed. It covered both orientations of strided fused-tensor block
+    gather, paper-compatible Frobenius normalization, transpose, and exact
+    scatter while proving that values outside the selected block were
+    unchanged.
+  target/runs/20260719_202743Z_fineweb_900s was a one-step launch diagnostic
+  only. Run metadata confirmed the intact B4/S2048/L16/d2048/h32 model and
+  muon_split_heads_enabled=true. It completed one finite update and held-out
+  evaluation with val_loss=9.556341 and no runtime failure.
+health_and_ambiguous_admission_screen:
+  Candidate target/runs/20260719_202800Z_fineweb_30s and disabled same-binary
+  control target/runs/20260719_202841Z_fineweb_30s used identical seed, model,
+  FineWeb stream, tokenizer, objective, and TRAIN_LOG_INTERVAL=50.
+    step 0:  10.752481461 versus 10.752481461, identical.
+    step 50:  6.515515804 versus  6.527800560, 0.188191% lower.
+  Both samples were finite/nonzero and every update-skip counter was zero.
+  Candidate and control completed 52 and 85 steps. The first implementation's
+  large runtime difference and unequal-step held-out values were not used to
+  judge the algorithm. The small step-50 improvement was treated as ambiguous
+  and resolved with a fixed-step pair rather than admitted to profiling or a
+  450-second gate.
+fixed_151_step_resolution:
+  Candidate target/runs/20260719_202937Z_fineweb_900s and disabled control
+  target/runs/20260719_203111Z_fineweb_900s each completed exactly 151
+  optimizer updates:
+    step 0:   10.752481461 versus 10.752481461, identical.
+    step 50:   6.514132023 versus  6.536067963, 0.335614% lower.
+    step 100:  6.359218597 versus  6.345289707, 0.219515% higher.
+    step 150:  5.737616539 versus  5.714582443, 0.403076% higher.
+    held-out:  5.745556 versus 5.737703, 0.136867% higher.
+  Candidate and control train elapsed times were 88.747s and 54.166s. Both
+  runs remained finite/nonzero at every sample, all skip counters were zero,
+  and grad norms stayed finite. Candidate polar-step Muon time was about
+  485-489ms versus 128-131ms for control, identifying the correctness-first
+  sequential-head implementation cost without using it as rejection evidence.
+decision:
+  Reject this GLM-5-style Muon Split adaptation without profiling, batched-head
+  fusion, or a 450-second gate. The step-50 improvement repeated but was only
+  0.19-0.34%, then reversed at both later common checkpoints and in matched-
+  step held-out validation. It therefore does not provide the credible,
+  persistent loss-per-step gain required to spend an optimization pass.
+  This result does not contradict GLM-5's MLA-specific result; the local
+  full-attention/KDA hybrid and accepted optimizer stack are materially
+  different. Candidate source was removed, the accepted source passed the
+  exact sm_120a rebuild, and post-restore launch diagnostic
+  target/runs/20260719_203505Z_fineweb_900s completed one update with finite
+  val_loss=9.715622. That one-step run is restoration evidence only.
+```
+
+```text
+date: 2026-07-19
 commit: note-only rejection; rectified-softmax implementation removed
 experiment: Controlled-study Softpick variant on the four ordinary
   full-attention layers.
