@@ -30535,3 +30535,69 @@ decision:
   parameter-free topology as a distinct research candidate rather than
   modifying or optimizing this failed affine candidate.
 ```
+
+```text
+date: 2026-07-19
+commit: note-only rejection; parameter-free implementation removed after screen
+experiment: Parameter-free per-head RMSNorm on every SDPA/KDA output before
+  c_proj.
+status: rejected_matched_step_screen; no_profile; no_450s
+sources:
+  https://arxiv.org/abs/2505.06708
+  https://github.com/qiuzh20/gated_attention
+  non-affine reference:
+    https://github.com/microsoft/torchscale/blob/main/torchscale/component/multiscale_retention.py
+rationale:
+  The Gated Attention paper's Table 3 reports a substantial perplexity gain
+  from independently RMS-normalizing each head after SDPA. The paper does not
+  specify whether its RMSNorm has a learned affine scale. Its cited official
+  RetNet implementation uses RMSNorm(head_dim, elementwise_affine=False), so
+  this test isolated that parameter-free topology from the separately rejected
+  affine Differential-Transformer convention. Admission was determined only
+  by loss at identical optimizer steps.
+implementation:
+  Preserved the complete FineWeb/Llama-2 B4/S2048/L16/d2048/h32 model, all
+  four full-attention and twelve KDA blocks, value residuals, block-Top-K MLPs,
+  NextLat, dataset, tokenizer, parameter count, and accepted optimizer. After
+  each attention mixer and before c_proj, every 64-wide head was independently
+  RMS-normalized with epsilon=1e-6 and no affine parameter. The analytical
+  backward applied the parameter-free RMSNorm Jacobian to c_proj's input
+  gradient before the existing full/KDA attention backward. The first
+  implementation added one forward and one backward launch per block and no
+  allocations, parameters, optimizer state, or checkpoint tensors.
+  TRAIN_ATTENTION_OUTPUT_RMS_NORM=0 selected the same-binary control.
+correctness:
+  cargo fmt --all: pass.
+  cargo check --workspace: pass.
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+  cargo test -p rust-kernels-cuda --test attention_output_rms_norm
+    -- --ignored --nocapture --test-threads=1:
+    1 passed, matching FP32 forward and analytical input gradients.
+  cargo test -p gpt2-nvfp4 --test block_attention_backward
+    -- --ignored --nocapture --test-threads=1:
+    1 passed through the complete KDA attention backward chain.
+bringup:
+  target/runs/20260719_033953Z_fineweb_900s was a one-step launch diagnostic
+  only. Metadata confirmed the intact B4/S2048/L16/d2048/h32 model and
+  attention_output_rms_norm=true. It completed one real update with
+  finite/nonzero metrics, no skips, and finite held-out val_loss=10.396673.
+paired_matched_step_screen:
+  Candidate target/runs/20260719_034016Z_fineweb_30s and disabled same-binary
+  control target/runs/20260719_034054Z_fineweb_30s used the same seed, model,
+  FineWeb path, tokenizer, and TRAIN_LOG_INTERVAL=50.
+    step 0:  10.759788 versus 10.741848, 0.1670% worse.
+    step 50:  7.403332 versus  6.497851, 13.9351% worse.
+  Candidate and control completed 94 and 91 updates; those unequal counts and
+  their fixed-time held-out endpoints were not used to decide the candidate.
+  Both samples were finite/nonzero with every skip counter zero. Candidate
+  grad norms were 1121.0369 and 603.8784 versus control's 3.5491 and 1.6818.
+  Removing the affine parameter therefore reduced the later regression but
+  showed that the dominant gradient inflation comes from the normalized
+  attention path itself rather than the learned scale.
+decision:
+  Reject without profiling, fusion work, a fixed-step extension, or a
+  450-second gate. The parameter-free method remains 13.94% worse at the
+  identical step and therefore has no algorithmic loss-per-step signal to
+  optimize. Remove it, exactly rebuild the accepted source, and retain only
+  this experiment record.
+```
