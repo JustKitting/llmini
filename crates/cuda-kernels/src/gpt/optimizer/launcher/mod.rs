@@ -1,5 +1,6 @@
 mod adam;
 mod embedding;
+mod ember;
 mod grad_clip;
 mod kda_clip;
 mod muon_mega;

@@ -24,7 +24,7 @@ pub(in crate::training) fn materialize_training_weights(
     let mut materializer =
         Materializer::new(stream, &runtime.optimizer, scratch, beta, symexp_lin_beta);
 
-    materializer.adam(&mut uploaded.token_embedding, &state.token_embedding)?;
+    materializer.token_embedding(&mut uploaded.token_embedding, &state.token_embedding)?;
     if gpt2_nvfp4::exclusive_self_attention_enabled() {
         materializer.adam(&mut uploaded.xsa_alphas, &state.xsa_alphas)?;
     }
@@ -73,7 +73,7 @@ pub(in crate::training) fn materialize_evaluation_weights(
 
     materializer.master(
         &mut uploaded.token_embedding,
-        &state.token_embedding.x_master,
+        state.token_embedding.x_master(),
     )?;
     if gpt2_nvfp4::exclusive_self_attention_enabled() {
         materializer.master(&mut uploaded.xsa_alphas, &state.xsa_alphas.x_master)?;

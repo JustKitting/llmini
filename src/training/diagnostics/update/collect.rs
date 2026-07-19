@@ -19,12 +19,20 @@ pub(in crate::training::diagnostics) fn collect_update_snapshots(
     grad_scale: f32,
 ) -> AppResult<Vec<PendingTensorUpdateDiagnostics>> {
     let mut collector = UpdateSnapshotCollector::new(stream, step, average_coefficient, grad_scale);
-    collector.push_adam(
-        "token_embedding",
-        &uploaded.token_embedding,
-        &grads.d_lm_head_weight,
-        &state.token_embedding,
-    )?;
+    if let Some(adam) = state.token_embedding.as_adam() {
+        collector.push_adam(
+            "token_embedding",
+            &uploaded.token_embedding,
+            &grads.d_lm_head_weight,
+            adam,
+        )?;
+    } else {
+        collector.push_observed(
+            "token_embedding",
+            &uploaded.token_embedding,
+            &grads.d_lm_head_weight,
+        )?;
+    }
     if gpt2_nvfp4::exclusive_self_attention_enabled() {
         collector.push_adam_with_weight_decay(
             "xsa_alphas",

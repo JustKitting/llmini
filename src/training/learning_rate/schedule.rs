@@ -17,6 +17,10 @@ pub(in crate::training) fn muon_multiplier(step: u32) -> f32 {
     scale() * warmup_only(step)
 }
 
+pub(in crate::training) fn warmup_multiplier(step: u32) -> f32 {
+    warmup_only(step)
+}
+
 pub(in crate::training) fn schedule_free_beta(step: u32) -> f32 {
     let step = step.max(1);
     let warmup = warmup_steps().max(2);

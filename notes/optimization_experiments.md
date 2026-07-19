@@ -53,6 +53,115 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 
 ```text
 date: 2026-07-19
+commit: accepted local JJ commit after matched-step admission, focused CUDA
+  correctness validation, profiling, and a paired 450-second promotion gate
+experiment: Ember factored second-moment optimizer for the tied token
+  embedding and language-model-head table.
+status: accepted; new FineWeb baseline
+sources:
+  https://arxiv.org/html/2607.01455
+rationale:
+  Token Geometry derives Ember specifically for embedding and output-token
+  tables, where rows represent token identities and columns represent hidden
+  features. It removes Adam's first moment and approximates the dense second
+  moment from exponential moving averages of row-wise and column-wise mean
+  squared gradients. The paper reports better pretraining loss than AdamW for
+  these token-interface tables while retaining Muon for the model body. This
+  is a direct optimizer-quality candidate on the complete model, not a model
+  deletion or fixed-time shortcut.
+scope:
+  The complete FineWeb/Llama-2 B4/S2048/L16/d2048/h32 model remained active:
+  all four full-attention and twelve KDA blocks, all 16 MLPs, value residuals,
+  block Top-K, NextLat, tokenizer, objective, Selective Attention, and the
+  accepted body optimizer. Because this model ties input embedding and output
+  head weights, Ember consumes their already-combined table gradient,
+  including the existing NextLat target-embedding contribution. No other
+  parameter group changed optimizer.
+implementation:
+  TRAIN_EMBER defaults to 1 and provides a same-binary Adam control. The kept
+  defaults follow the paper's algorithm: learning rate 0.001, beta2 0.999,
+  epsilon 1e-8, no first moment, and zero weight decay. The existing
+  step-count warmup and schedule-free parameter averaging remain active.
+  Dedicated CUDA kernels update row and column second-moment statistics,
+  compute the bias-corrected geometric normalizer, apply the factored
+  preconditioner, and update the schedule-free z/x masters. Candidate state
+  replaces two 32000-by-2048 dense f32 Adam moment buffers with 32000 row
+  values, 2048 column values, and 250-by-2048 reduction partials.
+correctness:
+  cargo fmt --all: pass.
+  cargo check --workspace --lib --bins --test optimizer_ember: pass.
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+  CUDA_DEVICE_INDEX=0 TMPDIR=$PWD/target/tmp cargo test
+    -p rust-kernels-cuda --test optimizer_ember -- --ignored --nocapture
+    --test-threads=1: 1 passed. The focused test compares row and column
+    statistics, bias correction, factored preconditioning, weight decay, and
+    schedule-free z/x updates against a CPU reference.
+  target/runs/20260719_220101Z_fineweb_900s was a one-step launch diagnostic
+  only. It was not used for keep/reject selection.
+  After making Ember the default and rebuilding, the no-TRAIN_EMBER launch
+  diagnostic target/runs/20260719_222720Z_fineweb_900s confirmed
+  ember_enabled=true on the intact B4/S2048/L16/d2048/h32 model and completed
+  one finite update. It was also not used for selection.
+initial_admission:
+  Candidate target/runs/20260719_220116Z_fineweb_30s and same-binary Adam
+  control target/runs/20260719_220151Z_fineweb_30s completed 85 and 84
+  training iterations:
+    step 50: 6.426550865 versus 6.470438480, 0.678292% lower.
+    held-out: 5.966660 versus 5.981611, 0.249949% lower.
+    elapsed: 30.140s versus 30.070s.
+  Every observed value was finite/nonzero and no update was skipped.
+fixed_201_iteration_confirmation:
+  Candidate target/runs/20260719_220419Z_fineweb_900s and control
+  target/runs/20260719_220535Z_fineweb_900s each completed 201 training
+  iterations:
+    step 50:  6.420784950 versus 6.464899540, 0.682372% lower.
+    step 100: 6.323142052 versus 6.290650845, 0.516503% higher.
+    step 150: 5.644250870 versus 5.661528587, 0.305184% lower.
+    step 200: 5.637449265 versus 5.623651505, 0.245354% higher.
+    held-out: 5.489869 versus 5.517416, 0.499272% lower.
+    elapsed: 71.920s versus 72.968s, 1.436249% lower.
+  The mixed common-step curve but repeated step-50 and held-out improvements
+  justified the sustained promotion pair.
+profiling_and_memory:
+  Ten-step Nsight Systems reports
+    target/nsys/ember_candidate_b4s2048_10_20260719T2203Z.nsys-rep and
+    target/nsys/ember_control_b4s2048_10_20260719T2203Z.nsys-rep measured
+    3729.242ms and 3738.794ms total CUDA kernel time. Ember's five kernels
+    totaled 1.172ms per step, while replacing the token table's approximately
+    1.530ms Adam kernel family. Further work on this path cannot meet the
+    whole-step 0.5% optimization threshold, so no micro-tuning pass was spent.
+  Live nvidia-smi measurements during the paired gate were 43218 MiB for
+  Ember and 43716 MiB for Adam, a 498 MiB reduction. This agrees with replacing
+  500 MiB of dense moments by approximately 2 MiB of factored state.
+paired_450_second_gate:
+  Candidate target/runs/20260719_220730Z_fineweb_450s:
+    completed_steps=1235, train_elapsed_s=450.026, val_loss=4.215252.
+  Same-binary Adam control target/runs/20260719_221508Z_fineweb_450s:
+    completed_steps=1230, train_elapsed_s=450.170, val_loss=4.281758.
+  Ember completed 0.406504% more training iterations and reached 1.553241%
+  lower held-out loss. It was lower at 23 of 25 common logged training
+  iterations, tied at iteration zero, and was higher only at iteration 100.
+  At iteration 1200 it was 1.907572% lower. All 25 samples in both runs were
+  finite/nonzero.
+  The candidate's existing update guard skipped one finite grad-norm outlier
+  at training iteration 350 (grad_norm=2.897949); it reported no non-finite or
+  loss-spike skip. The control skipped no updates. Because the training-loop
+  completed_steps counter includes skipped iterations, the candidate applied
+  1234 optimizer updates versus the control's 1230. The one guarded update
+  therefore does not manufacture its fixed-time exposure advantage, and the
+  persistent later common-iteration gain survives despite candidate optimizer
+  state being one update behind.
+decision:
+  Accept Ember and make it the active FineWeb baseline. Against the previous
+  accepted Selective-Attention endpoint at the same 1235 completed training
+  iterations, Ember lowers held-out loss from 4.273637 to 4.215252, a
+  1.366167% improvement. It also improves both fixed-time loss and memory
+  versus its same-binary Adam control without changing the model, data,
+  tokenizer, objective, or body optimizer.
+```
+
+```text
+date: 2026-07-19
 commit: accepted local JJ commit after repeated matched-step admission,
   implementation optimization, focused gradient validation, and paired
   450-second promotion gate

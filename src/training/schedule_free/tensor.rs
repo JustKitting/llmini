@@ -7,7 +7,7 @@ use rust_kernels_cuda::optimizer::{
 use crate::upload::UploadedNvfp4;
 
 use super::super::optimizer::OptimizerScratch;
-use super::super::optimizer_state::{AdamState, MuonState, SymExpLinState};
+use super::super::optimizer_state::{AdamState, MuonState, SymExpLinState, TokenEmbeddingState};
 
 pub(super) struct Materializer<'a> {
     stream: &'a CudaStream,
@@ -40,6 +40,14 @@ impl<'a> Materializer<'a> {
         state: &AdamState,
     ) -> Result<(), DriverError> {
         self.tensor(tensor, &state.z_master, &state.x_master, 0.0, None)
+    }
+
+    pub(super) fn token_embedding(
+        &mut self,
+        tensor: &mut UploadedNvfp4,
+        state: &TokenEmbeddingState,
+    ) -> Result<(), DriverError> {
+        self.tensor(tensor, state.z_master(), state.x_master(), 0.0, None)
     }
 
     pub(super) fn symexp_lin_adam(

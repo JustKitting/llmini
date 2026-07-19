@@ -13,6 +13,7 @@
 mod adam;
 mod args;
 mod embedding;
+mod ember;
 mod grad_clip;
 mod kda_clip;
 mod launcher;
@@ -24,12 +25,13 @@ mod threads;
 mod work_grid;
 
 pub use args::{
-    AdamWUpdateArgs, EmbeddingLookupGradArgs, Fp32AdamWUpdateArgs, GradientClipArgs,
-    KdaMuonClipArgs, KdaMuonClipFactorArgs, MuonMegaUpdateArgs, MuonSlotDescriptor,
-    MuonTmaFinishArgs, MuonTmaHyperballFinishArgs, MuonTmaPrepareArgs, MuonTmaSignUpdateArgs,
-    ScheduleFreeMaterializeArgs, ScheduleFreeMaterializePrecomputedArgs, SymExpLinScaleRefs,
-    SymExpLinSlotDescriptor,
+    AdamWUpdateArgs, EmbeddingLookupGradArgs, EmberUpdateArgs, Fp32AdamWUpdateArgs,
+    GradientClipArgs, KdaMuonClipArgs, KdaMuonClipFactorArgs, MuonMegaUpdateArgs,
+    MuonSlotDescriptor, MuonTmaFinishArgs, MuonTmaHyperballFinishArgs, MuonTmaPrepareArgs,
+    MuonTmaSignUpdateArgs, ScheduleFreeMaterializeArgs, ScheduleFreeMaterializePrecomputedArgs,
+    SymExpLinScaleRefs, SymExpLinSlotDescriptor,
 };
+pub use ember::ember_column_partial_len;
 pub use grad_clip::GRAD_CLIP_VALUES_PER_CHUNK;
 pub use launcher::OptimizerModule;
 pub use muon::polar::fused::{

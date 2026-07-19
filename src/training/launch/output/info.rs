@@ -83,6 +83,26 @@ pub(in crate::training::launch) fn build_run_info(dataset: &str, config: &TrainC
     );
     push_info(
         &mut info,
+        "ember_enabled",
+        crate::training::optimizer_apply::ember::enabled(),
+    );
+    push_info(
+        &mut info,
+        "ember_learning_rate",
+        crate::training::optimizer_apply::ember::learning_rate(100),
+    );
+    push_info(
+        &mut info,
+        "ember_beta2",
+        crate::training::optimizer_apply::ember::beta2(),
+    );
+    push_info(
+        &mut info,
+        "ember_weight_decay",
+        crate::training::optimizer_apply::ember::weight_decay(),
+    );
+    push_info(
+        &mut info,
         "symexp_lin_enabled",
         crate::training::symexp_lin::enabled(),
     );
@@ -158,6 +178,11 @@ fn push_run_env(info: &mut String) {
         "TRAIN_HYPERBALL_POLAR_PERIOD",
         "TRAIN_HYPERBALL_POLAR_NUMERATOR",
         "TRAIN_MUON_VS",
+        "TRAIN_EMBER",
+        "TRAIN_EMBER_LR",
+        "TRAIN_EMBER_BETA2",
+        "TRAIN_EMBER_WEIGHT_DECAY",
+        "TRAIN_EMBER_EPS",
         "TRAIN_SYMEXP_LIN",
         "TRAIN_SYMEXP_LIN_BETA",
         "TRAIN_SYMEXP_LIN_LEARN_SCALES",

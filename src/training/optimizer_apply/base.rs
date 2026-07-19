@@ -9,6 +9,7 @@ use crate::training::optimizer_state::OptimizerStateBuffers;
 use crate::upload::UploadedModel;
 
 use super::adam::AdamUpdate;
+use super::ember::EmberUpdate;
 use super::layer_norm::update_layer_norm_timed;
 use super::next_latent::{NextLatUpdateArgs, update_next_latent};
 use super::timed_ms;
@@ -28,7 +29,37 @@ pub(super) struct BaseAdamUpdateArgs<'a> {
 }
 
 pub(super) fn update_base_adam(args: BaseAdamUpdateArgs<'_>) -> Result<(), DriverError> {
-    let (token_embedding_ms, xsa_alphas_ms, final_norm_ms) = {
+    let token_embedding_ms = match &mut args.state.token_embedding {
+        super::super::optimizer_state::TokenEmbeddingState::Adam(state) => {
+            let mut adam = AdamUpdate::new(
+                args.stream,
+                args.optimizer,
+                args.scratch,
+                args.step,
+                args.average_coefficient,
+                args.grad_scale,
+            );
+            adam.update_timed(
+                &mut args.uploaded.token_embedding,
+                &args.grads.d_lm_head_weight,
+                state,
+            )?
+        }
+        super::super::optimizer_state::TokenEmbeddingState::Ember(state) => EmberUpdate::new(
+            args.stream,
+            args.optimizer,
+            args.step,
+            args.average_coefficient,
+            args.grad_scale,
+        )
+        .update_timed(
+            &args.uploaded.token_embedding,
+            &args.grads.d_lm_head_weight,
+            state,
+        )?,
+    };
+
+    let (xsa_alphas_ms, final_norm_ms) = {
         let mut adam = AdamUpdate::new(
             args.stream,
             args.optimizer,
@@ -37,11 +68,6 @@ pub(super) fn update_base_adam(args: BaseAdamUpdateArgs<'_>) -> Result<(), Drive
             args.average_coefficient,
             args.grad_scale,
         );
-        let token_embedding_ms = adam.update_timed(
-            &mut args.uploaded.token_embedding,
-            &args.grads.d_lm_head_weight,
-            &mut args.state.token_embedding,
-        )?;
         let xsa_alphas_ms = if gpt2_nvfp4::exclusive_self_attention_enabled() {
             adam.update_timed_with_weight_decay(
                 &mut args.uploaded.xsa_alphas,
@@ -58,7 +84,7 @@ pub(super) fn update_base_adam(args: BaseAdamUpdateArgs<'_>) -> Result<(), Drive
             &args.grads.final_norm,
             &mut args.state.ln_f,
         )?;
-        (token_embedding_ms, xsa_alphas_ms, final_norm_ms)
+        (xsa_alphas_ms, final_norm_ms)
     };
 
     let next_latent_ms = timed_ms(|| {

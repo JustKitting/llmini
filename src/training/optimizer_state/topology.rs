@@ -3,7 +3,7 @@ use gpt2_nvfp4::GPT2_N_LAYER;
 use rust_kernels_cuda::nvfp4::Nvfp4DecodeModule;
 use rust_kernels_cuda::optimizer::OptimizerModule;
 
-use super::tensor::{AdamState, StateInit};
+use super::tensor::{AdamState, StateInit, TokenEmbeddingState};
 use crate::{
     training::{
         device_buffer::block_array,
@@ -21,7 +21,7 @@ pub struct OptimizerStateBuffers {
     pub(in crate::training) step: u32,
     pub(in crate::training) schedule_free_weight_sum: f32,
     pub(in crate::training) update_skip: UpdateSkipState,
-    pub(in crate::training) token_embedding: AdamState,
+    pub(in crate::training) token_embedding: TokenEmbeddingState,
     pub(in crate::training) xsa_alphas: AdamState,
     pub(in crate::training) ln_f: LayerNormState,
     pub(in crate::training) next_latent: NextLatState,
@@ -40,7 +40,7 @@ impl OptimizerStateBuffers {
             step: 0,
             schedule_free_weight_sum: 0.0,
             update_skip: UpdateSkipState::new(),
-            token_embedding: AdamState::new(init, &uploaded.token_embedding)?,
+            token_embedding: TokenEmbeddingState::new(init, &uploaded.token_embedding)?,
             xsa_alphas: AdamState::new(init, &uploaded.xsa_alphas)?,
             ln_f: LayerNormState::new(init, &uploaded.ln_f)?,
             next_latent: NextLatState::new(init, &uploaded.next_latent)?,
