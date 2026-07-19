@@ -54,6 +54,112 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-19
 commit: rejected experiment; source removed and result retained as a note
+experiment: DynMuon dynamic spectral shaping for Muon updates, including the
+  released full schedule and an isolated late negative-exponent compatibility
+  test over the accepted Hyperball/Muon-VS/NorMuon optimizer.
+status: rejected_no_matched_step_loss_signal; no_profile; no_450s
+sources:
+  https://arxiv.org/abs/2605.17109
+  https://github.com/fzwark/DynMuon
+  inspected official repository commit:
+    89baa66693819ef09e26915a5b46bccfc77913eb
+rationale:
+  DynMuon reports 10.6%-13.0% fewer optimizer steps than Muon on 1.1B
+  FineWeb pretraining by annealing the update's spectral exponent from p=1
+  to p=-0.25. The v3 schedule is
+    p(t) = p_min + (p_max-p_min)/(1+exp((t/T-tau)/w))
+  with p_max=1, p_min=-0.25, tau=0.02, and w=0.01. The released operator uses
+  the raw momentum update for p>=0.25, Newton-Schulz orthogonalization for
+  0<=p<0.25, and Fast-Spectral shaping for p<0.
+scope:
+  The intact FineWeb/Llama-2 B4/S2048/L16/d2048/h32 model remained active:
+  all four full-attention and twelve KDA blocks, value residuals, every
+  block-Top-K ReLU-squared MLP, the headwise attention gate, NextLat,
+  objective, tokenizer, and parameter allocations were unchanged.
+implementation:
+  The correctness-first full mapping followed the released schedule. Its
+  negative branch reconstructed the exact Frobenius-normalized momentum X,
+  reused the five-iteration Polar Express result Y_mu, and evaluated
+    A = X X^T
+    U = (c0 I + c1 A + c2 A^2) Y_mu
+  with c0=1-1.5*delta+0.5*delta^2, c1=2*delta-delta^2,
+  c2=0.5*delta*(delta-1), and delta=p/2. Under Hyperball's globally
+  direction-normalized update, the released global ||M||_F^p multiplier
+  cancels exactly and was therefore not materialized. Exact reconstruction,
+  the expanded polynomial, and an explicit NorMuon bypass were covered by
+  host and rebuilt-PTX CUDA reference tests.
+  The full schedule necessarily replaced the accepted two-polar/one-sign
+  cadence with a spectral update every step. It was screened first without
+  NorMuon, matching DynMuon's plain-Muon direction, and then with NorMuon to
+  test compatibility. After both failed immediately, a separate late-only
+  compatibility formulation preserved the accepted optimizer exactly while
+  p>=0 and applied Fast-Spectral only to existing polar steps after p crossed
+  below zero near step 104. This isolated the paper's late negative-exponent
+  claim without deleting the accepted sign cadence or neuron adaptation; it
+  is explicitly not claimed as the released full algorithm.
+correctness:
+  cargo fmt --all: pass.
+  cargo check --workspace: pass.
+  cargo check -p rust-kernels-cuda --test optimizer: pass.
+  Two schedule/polynomial host tests and two rebuilt-PTX CUDA references for
+  exact Frobenius reconstruction and the NorMuon bypass passed.
+  Every device-code revision used the required exact rebuild:
+    TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a
+  A forced-negative one-step run exposed a KDA 6176-by-2048 logical-width
+  versus 6272 padded-width assertion. Reusing the accepted deferred-bound
+  shape rule fixed it; target/runs/20260719_095752Z_fineweb_900s then
+  completed at val_loss 10.191369. The normal pre-transition diagnostic
+  target/runs/20260719_100531Z_fineweb_900s reproduced the accepted one-step
+  val_loss 10.168910 exactly. Both are launch/correctness diagnostics only.
+released_full_schedule_screen:
+  With the repository command's initial tau=0.04, w=0.04 schedule and
+  NorMuon bypassed, candidate target/runs/20260719_095809Z_fineweb_30s
+  completed 112 steps in 30.203s at val_loss 6.554893. Disabled same-binary
+  control target/runs/20260719_095850Z_fineweb_30s completed 89 steps in
+  30.166s at val_loss 6.033820. At their common step 50, training loss was
+  7.095579 versus 6.526964, 8.7118% worse.
+  Retaining NorMuon did not rescue the full mapping:
+  target/runs/20260719_100121Z_fineweb_30s completed 111 steps in 30.009s
+  at val_loss 6.566836; step-50 loss 7.117740 was 9.0513% worse than the
+  same control. Every logged sample was finite and nonzero and every update,
+  non-finite, loss-spike, and grad-norm-spike skip counter was zero. The large
+  regression was therefore algorithmic incompatibility, not instability or
+  recoverable implementation overhead.
+late_negative_stage_screen:
+  The v3 tau=0.02, w=0.01 schedule crosses p=0 near step 104 for the active
+  3051-step token budget. Fixed 201-step candidate
+  target/runs/20260719_100542Z_fineweb_900s and fresh disabled same-binary
+  control target/runs/20260719_100657Z_fineweb_900s produced:
+    step 50:  6.532404 versus 6.538161, 0.0881% better.
+    step 100: 6.388139 versus 6.392127, 0.0624% better.
+    step 150: 5.795299 versus 5.781287, 0.2424% worse.
+    step 200: 5.756812 versus 5.749143, 0.1334% worse.
+    held-out: 5.595443 versus 5.593665, 0.0318% worse.
+    elapsed:  69.616s versus 68.693s, 1.3437% slower.
+  The two pre-transition differences are run noise because the candidate is
+  mathematically dormant there. Once Fast-Spectral activates, both common
+  checkpoints regress. Every sample in both runs was finite and nonzero with
+  every skip counter zero.
+post_restore:
+  Removed every DynMuon implementation, environment, logging, and test hook,
+  then re-ran cargo fmt --all, cargo check --workspace, the focused optimizer
+  test-target check, and the exact sm_120a cargo-oxide rebuild: pass.
+  Clean accepted-source one-step diagnostic
+  target/runs/20260719_101227Z_fineweb_900s completed with finite held-out
+  validation loss 10.168886. This is launch/rebuild evidence only.
+decision:
+  Reject DynMuon for this optimizer lineage. The full released phase mapping
+  severely worsened matched-step loss with and without NorMuon. Isolating the
+  negative-exponent phase while retaining every accepted optimizer component
+  removed that large failure but produced no matched-step loss advantage after
+  activation. Since neither formulation supplies the sole admission signal,
+  do not profile, optimize, or consume a 450-second gate. Preserve the
+  accepted optimizer and continue loss-method research.
+```
+
+```text
+date: 2026-07-19
+commit: rejected experiment; source removed and result retained as a note
 experiment: Gradient Smoothing standard window averaging over corresponding
   block-linear optimizer updates.
 status: rejected_no_matched_step_loss_signal; no_profile; no_450s
