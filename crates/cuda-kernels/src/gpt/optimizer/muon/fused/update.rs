@@ -6,6 +6,7 @@ use crate::f16_tc_matmul::cta_tile::CTA_THREADS;
 use crate::float_ptx::max_f32;
 use crate::float_ptx::sqrt_f32;
 
+use super::super::super::symexp_lin::Scalars as SymExpLinScalars;
 use super::super::super::threads::{WARP_SIZE, WARPS_PER_BLOCK};
 use super::super::super::work_grid::WorkGrid;
 
@@ -37,6 +38,7 @@ pub(super) fn update_master_chunks(
     weight_decay: f32,
     average_coefficient: f32,
     schedule_beta: f32,
+    symexp_lin: SymExpLinScalars,
     warp_sums: &mut SharedArray<f32, { WARPS_PER_BLOCK as usize }>,
     warp_max_pairs: &mut SharedArray<f32, { WARPS_PER_BLOCK as usize }>,
     work: WorkGrid,
@@ -78,6 +80,7 @@ pub(super) fn update_master_chunks(
             weight_decay,
             average_coefficient,
             schedule_beta,
+            symexp_lin,
             qk_clip_factor,
             base,
             tid,
@@ -121,6 +124,7 @@ pub(super) fn update_sign_master_chunks(
     weight_decay: f32,
     average_coefficient: f32,
     schedule_beta: f32,
+    symexp_lin: SymExpLinScalars,
     warp_sums: &mut SharedArray<f32, { WARPS_PER_BLOCK as usize }>,
     warp_max_pairs: &mut SharedArray<f32, { WARPS_PER_BLOCK as usize }>,
     work: WorkGrid,
@@ -157,6 +161,7 @@ pub(super) fn update_sign_master_chunks(
             weight_decay,
             average_coefficient,
             schedule_beta,
+            symexp_lin,
             qk_clip_factor,
             base + tid,
         );
@@ -174,6 +179,7 @@ pub(super) fn update_sign_master_chunks(
             weight_decay,
             average_coefficient,
             schedule_beta,
+            symexp_lin,
             qk_clip_factor,
             base + tid + CTA_THREADS,
         );
@@ -191,6 +197,7 @@ pub(super) fn update_sign_master_chunks(
             weight_decay,
             average_coefficient,
             schedule_beta,
+            symexp_lin,
             qk_clip_factor,
             base + tid + 2 * CTA_THREADS,
         );
@@ -208,6 +215,7 @@ pub(super) fn update_sign_master_chunks(
             weight_decay,
             average_coefficient,
             schedule_beta,
+            symexp_lin,
             qk_clip_factor,
             base + tid + 3 * CTA_THREADS,
         );
@@ -225,6 +233,7 @@ pub(super) fn update_sign_master_chunks(
             weight_decay,
             average_coefficient,
             schedule_beta,
+            symexp_lin,
             qk_clip_factor,
             base + tid + 4 * CTA_THREADS,
         );
@@ -242,6 +251,7 @@ pub(super) fn update_sign_master_chunks(
             weight_decay,
             average_coefficient,
             schedule_beta,
+            symexp_lin,
             qk_clip_factor,
             base + tid + 5 * CTA_THREADS,
         );
@@ -259,6 +269,7 @@ pub(super) fn update_sign_master_chunks(
             weight_decay,
             average_coefficient,
             schedule_beta,
+            symexp_lin,
             qk_clip_factor,
             base + tid + 6 * CTA_THREADS,
         );
@@ -276,6 +287,7 @@ pub(super) fn update_sign_master_chunks(
             weight_decay,
             average_coefficient,
             schedule_beta,
+            symexp_lin,
             qk_clip_factor,
             base + tid + 7 * CTA_THREADS,
         );

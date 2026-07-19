@@ -74,5 +74,14 @@ fn linear(weight: &UploadedNvfp4, grad: &DeviceBuffer<f32>, state: &MuonState) -
         learning_rate_multiplier: 1.0,
         qk_clip_factor_offset: u32::MAX,
         qk_clip_head_dim: 0,
+        symexp_exponential_z: state.symexp_lin.exponential.z_master.cu_deviceptr(),
+        symexp_exponential_x: state.symexp_lin.exponential.x_master.cu_deviceptr(),
+        symexp_exponential_grad: state.symexp_lin.exponential.grad.cu_deviceptr(),
+        symexp_linear_z: state.symexp_lin.linear.z_master.cu_deviceptr(),
+        symexp_linear_x: state.symexp_lin.linear.x_master.cu_deviceptr(),
+        symexp_linear_grad: state.symexp_lin.linear.grad.cu_deviceptr(),
+        symexp_curvature_z: state.symexp_lin.curvature.z_master.cu_deviceptr(),
+        symexp_curvature_x: state.symexp_lin.curvature.x_master.cu_deviceptr(),
+        symexp_curvature_grad: state.symexp_lin.curvature.grad.cu_deviceptr(),
     }
 }

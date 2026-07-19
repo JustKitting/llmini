@@ -3,7 +3,7 @@ use super::super::next_latent::NextLatGradBuffers;
 use super::super::optimizer_state::OptimizerStateBuffers;
 use crate::upload::UploadedModel;
 use cuda_core::{CudaStream, DeviceBuffer, DriverError};
-use rust_kernels_cuda::optimizer::MuonSlotDescriptor;
+use rust_kernels_cuda::optimizer::{MuonSlotDescriptor, SymExpLinSlotDescriptor};
 
 mod host_ptrs;
 mod padding;
@@ -24,6 +24,8 @@ pub(in crate::training) struct MuonPointerTables {
 pub(in crate::training) struct MuonGroupTable {
     pub(super) slots: DeviceBuffer<MuonSlotDescriptor>,
     pub(super) host_slots: Vec<MuonSlotDescriptor>,
+    pub(super) symexp_lin_slots: DeviceBuffer<SymExpLinSlotDescriptor>,
+    pub(super) host_symexp_lin_slots: Vec<SymExpLinSlotDescriptor>,
 }
 
 impl MuonPointerTables {

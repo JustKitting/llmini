@@ -1,8 +1,8 @@
 const ADAM_LR: f32 = 2.0e-4;
-pub(super) const ADAM_WEIGHT_DECAY: f32 = 0.005;
-pub(super) const ADAM_BETA1: f32 = 0.9;
-pub(super) const ADAM_BETA2: f32 = 0.95;
-pub(super) const ADAM_EPS: f32 = 1.0e-10;
+pub(in crate::training::optimizer_apply) const ADAM_WEIGHT_DECAY: f32 = 0.005;
+pub(in crate::training::optimizer_apply) const ADAM_BETA1: f32 = 0.9;
+pub(in crate::training::optimizer_apply) const ADAM_BETA2: f32 = 0.95;
+pub(in crate::training::optimizer_apply) const ADAM_EPS: f32 = 1.0e-10;
 
 #[derive(Clone, Copy)]
 pub(crate) struct AdamDebugConfig {

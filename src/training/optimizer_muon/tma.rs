@@ -85,6 +85,7 @@ pub(in crate::training) fn apply_muon_tma(args: MuonTmaArgs<'_>) -> Result<(), D
                 .muon_tma_sign_update_deferred_quantization(MuonTmaSignUpdateArgs {
                     stream,
                     slots: &args.table.slots,
+                    symexp_lin_slots: &args.table.symexp_lin_slots,
                     update_chunks: &mut args.scratch.polar_chunks,
                     qk_clip_factors: args.qk_clip_factors,
                     slot_index: slot_index as u32,
@@ -96,6 +97,7 @@ pub(in crate::training) fn apply_muon_tma(args: MuonTmaArgs<'_>) -> Result<(), D
                     weight_decay: MUON_WEIGHT_DECAY,
                     average_coefficient,
                     schedule_beta,
+                    symexp_lin_beta: super::super::symexp_lin::beta(),
                 })?;
             continue;
         }
@@ -156,6 +158,7 @@ pub(in crate::training) fn apply_muon_tma(args: MuonTmaArgs<'_>) -> Result<(), D
         let finish = MuonTmaFinishArgs {
             stream,
             slots: &args.table.slots,
+            symexp_lin_slots: &args.table.symexp_lin_slots,
             polar_update,
             polar_bound_amax: &args.scratch.tma.bound_amax,
             polar_chunks: &mut args.scratch.polar_chunks,
@@ -169,6 +172,7 @@ pub(in crate::training) fn apply_muon_tma(args: MuonTmaArgs<'_>) -> Result<(), D
             weight_decay: MUON_WEIGHT_DECAY,
             average_coefficient,
             schedule_beta,
+            symexp_lin_beta: super::super::symexp_lin::beta(),
             apply_polar_sqrt_bound: defer_bounds as u32,
         };
         if use_hyperball && use_polar {

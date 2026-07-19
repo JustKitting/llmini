@@ -8,6 +8,9 @@ use gpt2_nvfp4::{GPT2_MLP, GPT2_N_EMBD, GPT2_N_LAYER, GPT2_QKV, NEXTLAT_HIDDEN, 
 pub(super) use groups::{MuonGroupTable, MuonPointerTables};
 pub(super) use tma::{MuonTmaArgs, apply_muon_tma};
 
+use crate::training::runtime::Runtime;
+use cuda_core::{DriverError, memory};
+
 const SIGN_MUON_BETA: f32 = 0.9;
 const SIGN_MUON_PERIOD: u32 = 2;
 const SIGN_MUON_FULL_LR_MULTIPLIER: f32 = 2.0;
@@ -20,6 +23,69 @@ const POLAR_ITERATIONS: u32 = 5;
 pub(super) const MUON_LR: f32 = 1.0e-4;
 pub(super) const MUON_WEIGHT_DECAY: f32 = 0.025;
 pub(in crate::training) const MUON_MATRIX_SLOTS: usize = GPT2_N_LAYER * 4 + 3;
+
+pub(super) fn apply_symexp_lin_chain_rule(
+    runtime: &Runtime,
+    tables: &MuonPointerTables,
+    schedule_beta: f32,
+    beta: f32,
+    learn_scales: bool,
+) -> Result<(), DriverError> {
+    let stream = runtime.stream.as_ref();
+    for (slot_index, (desc, symexp_desc)) in tables
+        .all
+        .host_slots
+        .iter()
+        .copied()
+        .zip(tables.all.host_symexp_lin_slots.iter().copied())
+        .enumerate()
+    {
+        let matrix_len = desc.rows * desc.cols;
+        if matrix_len == 0 {
+            continue;
+        }
+        if learn_scales {
+            unsafe {
+                memory::memset_d8_async(
+                    symexp_desc.exponential_grad,
+                    0,
+                    size_of::<f32>(),
+                    stream.cu_stream(),
+                )?;
+                memory::memset_d8_async(
+                    symexp_desc.linear_grad,
+                    0,
+                    size_of::<f32>(),
+                    stream.cu_stream(),
+                )?;
+                memory::memset_d8_async(
+                    symexp_desc.curvature_grad,
+                    0,
+                    size_of::<f32>(),
+                    stream.cu_stream(),
+                )?;
+            }
+            runtime.optimizer.symexp_lin_scaled_slot_chain_rule(
+                stream,
+                &tables.all.symexp_lin_slots,
+                slot_index as u32,
+                matrix_len,
+                schedule_beta,
+                beta,
+            )?;
+        } else {
+            runtime.optimizer.symexp_lin_slot_chain_rule(
+                stream,
+                &tables.all.slots,
+                slot_index as u32,
+                matrix_len,
+                schedule_beta,
+                beta,
+            )?;
+        }
+    }
+    Ok(())
+}
 
 pub(super) fn hyperball_enabled() -> bool {
     super::env::env_bool("TRAIN_HYPERBALL").unwrap_or(true)

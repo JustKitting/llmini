@@ -62,6 +62,7 @@ pub struct MuonTmaPrepareArgs<'a> {
 pub struct MuonTmaFinishArgs<'a> {
     pub stream: &'a CudaStream,
     pub slots: &'a DeviceBuffer<MuonSlotDescriptor>,
+    pub symexp_lin_slots: &'a DeviceBuffer<super::SymExpLinSlotDescriptor>,
     pub polar_update: &'a DeviceBuffer<f32>,
     pub polar_bound_amax: &'a DeviceBuffer<f32>,
     pub polar_chunks: &'a mut DeviceBuffer<f32>,
@@ -75,6 +76,7 @@ pub struct MuonTmaFinishArgs<'a> {
     pub weight_decay: f32,
     pub average_coefficient: f32,
     pub schedule_beta: f32,
+    pub symexp_lin_beta: f32,
     pub apply_polar_sqrt_bound: u32,
 }
 
@@ -87,6 +89,7 @@ pub struct MuonTmaHyperballFinishArgs<'a> {
 pub struct MuonTmaSignUpdateArgs<'a> {
     pub stream: &'a CudaStream,
     pub slots: &'a DeviceBuffer<MuonSlotDescriptor>,
+    pub symexp_lin_slots: &'a DeviceBuffer<super::SymExpLinSlotDescriptor>,
     pub update_chunks: &'a mut DeviceBuffer<f32>,
     pub qk_clip_factors: &'a DeviceBuffer<f32>,
     pub slot_index: u32,
@@ -98,4 +101,5 @@ pub struct MuonTmaSignUpdateArgs<'a> {
     pub weight_decay: f32,
     pub average_coefficient: f32,
     pub schedule_beta: f32,
+    pub symexp_lin_beta: f32,
 }

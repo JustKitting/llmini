@@ -53,6 +53,150 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 
 ```text
 date: 2026-07-19
+commit: accepted implementation
+experiment: SymExpLin exponential-linear weight reparameterization with
+  learned global matrix controls and fused NVFP4 materialization amax.
+status: accepted_matched_step_and_450s_promotion
+source:
+  https://arxiv.org/abs/2607.09967
+rationale:
+  "Learning in Curved Weight Space: Exponential-Linear Weight
+  Reparameterization for Improved Optimization" reports improved convergence
+  by optimizing a raw weight and materializing an exponential-linear effective
+  weight. The fixed core tested here is
+    E = e/beta * (exp(beta*m*abs(w)) - 1)
+    L = l/beta * w
+    w_effective = sign(w) * (E + L).
+  The paper's principal learned form factorizes e, l, and m by row and column,
+  but explicitly lists global controls as a valid lower-cost factorization.
+  This implementation is therefore a paper-supported global probe, not a
+  claim to reproduce the paper's main row-by-column parameterization. The
+  paper does not release an implementation or fully specify every control
+  transform and annealing detail; the exact local choices are recorded below.
+scope:
+  The complete FineWeb/Llama-2 B4/S2048/L16/d2048/h32 model remains active:
+  all four full-attention and twelve KDA blocks, value residuals, all 16
+  block-Top-K ReLU-squared MLPs, query-dependent headwise attention gating,
+  NextLat, tokenizer, objective, and parameter allocations are retained.
+  No layer, token range, loss term, or backward path is frozen, skipped,
+  shortened, or removed.
+implementation:
+  TRAIN_SYMEXP_LIN=1 uses beta=12.5 by default. Every linear matrix and bias
+  keeps a raw FP32 schedule-free z/x master and materializes the transformed
+  effective value for NVFP4 forward/evaluation. Initialization applies a
+  Newton congruent inverse so the initial effective tensors reproduce the
+  accepted initialized tensors rather than changing the starting model.
+  Exact-zero raw coordinates use the live exponential subgradient because the
+  local NVFP4-oriented initializer contains exact zeros, unlike the continuous
+  Xavier initialization assumed by the paper.
+  Before global clipping and optimizer application, the implementation applies
+  the analytical chain rule to every linear gradient. With
+  TRAIN_SYMEXP_LIN_LEARN_SCALES=1, every matrix learns one global e, l, and m
+  control with schedule-free FP32 Adam state; biases retain fixed unit
+  controls. Matrix-control gradients are exact full-matrix reductions. Their
+  learning-rate multipliers anneal in log space from 50 to 8 for e/l and 0.01
+  to 0.5 for m over TRAIN_SYMEXP_LIN_ANNEAL_STEPS=150000. Multipliers apply to
+  the unscaled base Adam LR, not the repo's separate 12.5x Adam-tensor scale.
+  e/l use the accepted Adam weight decay and m uses no decay.
+  The state is included in allocation, save/load, pointer-table, run-info, and
+  end-of-run summaries. TRAIN_SYMEXP_LIN=0 remains the same-binary control;
+  TRAIN_SYMEXP_LIN_LEARN_SCALES=0 retains the fixed transform.
+correctness:
+  cargo fmt --all: pass.
+  cargo check --workspace: pass.
+  cargo test -p rust-kernels symexp_lin: four focused formula, derivative,
+  initialization, and schedule tests pass.
+  Every device-code revision used the exact required rebuild:
+    TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a
+  Candidate launch diagnostic target/runs/20260719_103125Z_fineweb_900s
+  completed one real update with finite val_loss=9.795163. Same-binary
+  disabled control target/runs/20260719_103135Z_fineweb_900s reproduced the
+  accepted val_loss=10.168910. These one-step results were launch diagnostics
+  only and were not used for promotion.
+fixed_control_transfer_screen:
+  The fixed-control beta=12.5 form first established that the transform was
+  operational without attributing a noisy endpoint to learned controls:
+    101-step candidate target/runs/20260719_103353Z_fineweb_900s:
+      val_loss=5.924680 in 35.754s.
+    101-step control target/runs/20260719_103439Z_fineweb_900s:
+      val_loss=5.948817 in 34.602s.
+    201-step candidate target/runs/20260719_103529Z_fineweb_900s:
+      val_loss=5.587801 in 71.354s.
+    201-step control target/runs/20260719_103656Z_fineweb_900s:
+      val_loss=5.586272 in 68.951s.
+  The fixed form improved the 101-step held-out result by 0.406%, tied the
+  201-step held-out result within 0.028%, and had lower logged training loss
+  at step 200 (5.714211 versus 5.759823). A beta screen rejected 7.5 and found
+  15 weaker than 12.5, so beta=12.5 was retained.
+learned_global_admission:
+  After correcting the control LR to the optimizer's unscaled base LR,
+  learned-global candidate target/runs/20260719_105848Z_fineweb_900s and
+  same-binary control target/runs/20260719_110118Z_fineweb_900s each completed
+  exactly 401 optimizer steps:
+    candidate val_loss=5.175879 in 144.992s.
+    control   val_loss=5.199477 in 137.701s.
+  The 0.453853% lower matched-step validation loss admitted the structural
+  candidate for profiling and runtime optimization despite its initial
+  5.294805% elapsed-time cost.
+profiling_and_optimization:
+  Initial six-step profile /tmp/sym_fused.nsys-rep measured
+  symexp_lin_scaled_slot_chain_rule_kernel at 107.697703ms total, or
+  17.949617ms per optimizer step. A fixed-control profile measured the
+  unavoidable chain traversal at 9.170267ms/step. Raising the learned
+  reduction from 125 to 500 CTAs increased latency hiding and reduced the
+  learned kernel to 9.417182ms/step, a 47.535% reduction and essentially the
+  fixed-transform floor.
+  Materialization initially evaluated the exponential transform once during a
+  full tensor-amax scan and again during quantization. The retained kernel
+  evaluates the next schedule-free effective amax inside the existing Muon
+  master-update traversal and reuses it during the following materialization.
+  A temporary rebuilt diagnostic compared this fused amax against the
+  standalone effective scan for every one of the 67 matrices after each of
+  the first two updates; every value matched bit-for-bit. The diagnostic was
+  removed after verification. TRAIN_SYMEXP_LIN_REUSE_AMAX=0 remains an
+  explicit same-binary fallback.
+  Folding the chain traversal into global grad-norm was not pursued: the
+  complete existing grad-norm sum pass is only 2.43ms/step, so its absolute
+  elimination ceiling is 0.70% of the approximately 344ms step before adding
+  transform metadata, scale-gradient atomics, or the remaining work. The
+  realistically recoverable portion falls below the repo's 0.5% step rule.
+optimized_health_and_matched_step_gate:
+  Candidate target/runs/20260719_111907Z_fineweb_30s completed 87 finite
+  updates in 30.173s with val_loss=6.026100. Same-binary disabled control
+  target/runs/20260719_111955Z_fineweb_30s completed 89 updates in 30.218s
+  with val_loss=6.028549. Both remained finite with no stability failure; the
+  unequal-step endpoints were health diagnostics only.
+  The decisive optimized fixed-step pair used identical seed, FineWeb stream,
+  tokenizer, intact model, objective, optimizer, and TRAIN_LOG_INTERVAL=50:
+    candidate target/runs/20260719_112055Z_fineweb_200s:
+      401 steps, val_loss=5.167297, elapsed=141.283s.
+    control target/runs/20260719_112321Z_fineweb_200s:
+      401 steps, val_loss=5.188114, elapsed=138.122s.
+  The optimized candidate repeated the structural signal with 0.401244% lower
+  matched-step validation loss. Its remaining 2.288556% runtime cost was low
+  enough to test honestly at the fixed-time endpoint.
+fixed_time_gate:
+  Candidate target/runs/20260719_112813Z_fineweb_450s completed 1271 updates
+  in 450.056s with held-out val_loss=4.448462. Its final learned-control means
+  were e_z=2.406793, e_x=1.874996, l_z=1.652507, l_x=1.370133,
+  m_z=1.000324, and m_x=1.000195.
+  Disabled same-binary control target/runs/20260719_113555Z_fineweb_450s
+  completed 1303 updates in 450.050s with held-out val_loss=4.554815.
+  The candidate trained 2.455871% fewer steps but achieved 2.334958% lower
+  fixed-time validation loss. It also improves the former accepted
+  target/runs/20260719_041701Z_fineweb_450s val_loss=4.554121 by 2.320074%.
+decision:
+  Accept learned-global SymExpLin with beta=12.5, 500 reduction CTAs, and fused
+  effective-amax reuse as the new default and active FineWeb baseline. It
+  preserves the full model, repeats its loss-per-step advantage after
+  optimization, remains stable for the complete gate, and lowers the actual
+  fixed-time held-out objective by more than 2.3% despite lower throughput.
+  Promote target/runs/20260719_112813Z_fineweb_450s and commit the passing
+  source in JJ.
+```
+
+```text
+date: 2026-07-19
 commit: rejected experiment; source removed and result retained as a note
 experiment: DynMuon dynamic spectral shaping for Muon updates, including the
   released full schedule and an isolated late negative-exponent compatibility

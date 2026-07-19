@@ -83,6 +83,21 @@ pub(in crate::training::launch) fn build_run_info(dataset: &str, config: &TrainC
     );
     push_info(
         &mut info,
+        "symexp_lin_enabled",
+        crate::training::symexp_lin::enabled(),
+    );
+    push_info(
+        &mut info,
+        "symexp_lin_beta",
+        crate::training::symexp_lin::beta(),
+    );
+    push_info(
+        &mut info,
+        "symexp_lin_learn_scales",
+        crate::training::symexp_lin::learn_scales(),
+    );
+    push_info(
+        &mut info,
         "attention_headwise_gate_enabled",
         gpt2_nvfp4::attention_headwise_gate_enabled(),
     );
@@ -123,6 +138,11 @@ fn push_run_env(info: &mut String) {
         "TRAIN_HYPERBALL_POLAR_PERIOD",
         "TRAIN_HYPERBALL_POLAR_NUMERATOR",
         "TRAIN_MUON_VS",
+        "TRAIN_SYMEXP_LIN",
+        "TRAIN_SYMEXP_LIN_BETA",
+        "TRAIN_SYMEXP_LIN_LEARN_SCALES",
+        "TRAIN_SYMEXP_LIN_ANNEAL_STEPS",
+        "TRAIN_SYMEXP_LIN_REUSE_AMAX",
         "TRAIN_ATTENTION_HEADWISE_GATE",
         "TRAIN_NEXTLAT_LOSS_WEIGHT",
         "TRAIN_SKIP_UNSTABLE_UPDATES",

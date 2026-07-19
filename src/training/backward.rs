@@ -53,7 +53,7 @@ impl Trainer {
             batch,
             uploaded: &mut self.uploaded,
             grads: &mut self.buffers.backward,
-            next_latent_grads: &self.buffers.next_latent_grads,
+            next_latent_grads: &mut self.buffers.next_latent_grads,
             observed_loss,
             scratch: &mut self.buffers.optimizer,
             state: &mut self.buffers.optimizer_state,

@@ -1,6 +1,7 @@
 use cuda_core::{CudaStream, DriverError};
 use gpt2_nvfp4::GPT2_N_LAYER;
 use rust_kernels_cuda::nvfp4::Nvfp4DecodeModule;
+use rust_kernels_cuda::optimizer::OptimizerModule;
 
 use super::tensor::{AdamState, StateInit};
 use crate::{
@@ -30,9 +31,10 @@ impl OptimizerStateBuffers {
     pub fn new(
         stream: &CudaStream,
         decode: &Nvfp4DecodeModule,
+        optimizer: &OptimizerModule,
         uploaded: &UploadedModel,
     ) -> Result<Self, DriverError> {
-        let init = StateInit::new(stream, decode);
+        let init = StateInit::new(stream, decode, optimizer, super::super::symexp_lin::beta());
         Ok(Self {
             step: 0,
             schedule_free_weight_sum: 0.0,

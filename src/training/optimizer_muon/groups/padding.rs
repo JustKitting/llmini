@@ -48,6 +48,15 @@ impl MuonPaddingBuffers {
             learning_rate_multiplier: 1.0,
             qk_clip_factor_offset: u32::MAX,
             qk_clip_head_dim: 0,
+            symexp_exponential_z: 0,
+            symexp_exponential_x: 0,
+            symexp_exponential_grad: 0,
+            symexp_linear_z: 0,
+            symexp_linear_x: 0,
+            symexp_linear_grad: 0,
+            symexp_curvature_z: 0,
+            symexp_curvature_x: 0,
+            symexp_curvature_grad: 0,
         }
     }
 }

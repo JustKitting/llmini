@@ -14,7 +14,12 @@ impl Trainer {
     pub fn load_model(&mut self, path: &Path) -> AppResult {
         let stream = self.runtime.stream.as_ref();
         let uploaded = load_uploaded_model(stream, path)?;
-        let optimizer_state = OptimizerStateBuffers::new(stream, &self.runtime.decode, &uploaded)?;
+        let optimizer_state = OptimizerStateBuffers::new(
+            stream,
+            &self.runtime.decode,
+            &self.runtime.optimizer,
+            &uploaded,
+        )?;
         let muon_tables = MuonPointerTables::new(
             stream,
             &uploaded,

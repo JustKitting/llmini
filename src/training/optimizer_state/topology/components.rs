@@ -87,7 +87,7 @@ impl LinearState {
     ) -> Result<Self, DriverError> {
         Ok(Self {
             weight_muon: MuonState::new(init, &linear.weight, normuon_neurons)?,
-            bias: AdamState::new(init, &linear.bias)?,
+            bias: AdamState::new_symexp_lin(init, &linear.bias)?,
         })
     }
 }

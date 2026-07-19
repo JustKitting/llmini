@@ -1,6 +1,7 @@
 use crate::amax::max4_f32;
 use crate::f16_tc_matmul::cta_tile::CTA_THREADS;
 use crate::float_ptx::max_f32;
+use crate::optimizer::symexp_lin::Scalars as SymExpLinScalars;
 
 use super::one::{UpdateAmax, update_one};
 
@@ -22,6 +23,7 @@ struct UpdateChunk {
     weight_decay: f32,
     average_coefficient: f32,
     schedule_beta: f32,
+    symexp_lin: SymExpLinScalars,
     qk_clip_factor: f32,
     base: u32,
     tid: u32,
@@ -47,6 +49,7 @@ impl UpdateChunk {
             self.weight_decay,
             self.average_coefficient,
             self.schedule_beta,
+            self.symexp_lin,
             self.qk_clip_factor,
             self.base + self.tid + CTA_THREADS * mul,
         )
@@ -72,6 +75,7 @@ pub(super) fn update_eight_amax(
     weight_decay: f32,
     average_coefficient: f32,
     schedule_beta: f32,
+    symexp_lin: SymExpLinScalars,
     qk_clip_factor: f32,
     base: u32,
     tid: u32,
@@ -94,6 +98,7 @@ pub(super) fn update_eight_amax(
         weight_decay,
         average_coefficient,
         schedule_beta,
+        symexp_lin,
         qk_clip_factor,
         base,
         tid,

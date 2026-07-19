@@ -174,6 +174,7 @@ impl OptimizerModule {
                 args.finish.stream,
                 grid_x_config(chunk_count, CTA_THREADS),
                 args.finish.slots,
+                args.finish.symexp_lin_slots,
                 args.finish.polar_update,
                 &mut *args.finish.polar_chunks,
                 &*args.finish.normuon_factors,
@@ -183,6 +184,7 @@ impl OptimizerModule {
                 args.finish.learning_rate,
                 args.finish.average_coefficient,
                 args.finish.schedule_beta,
+                args.finish.symexp_lin_beta,
                 args.use_schedule_free as u32,
             )?;
         self.apply
@@ -217,6 +219,7 @@ impl OptimizerModule {
                 args.stream,
                 grid_x_config(chunk_count, CTA_THREADS),
                 args.slots,
+                args.symexp_lin_slots,
                 &mut *args.update_chunks,
                 args.qk_clip_factors,
                 args.slot_index,
@@ -227,6 +230,7 @@ impl OptimizerModule {
                 args.weight_decay,
                 args.average_coefficient,
                 args.schedule_beta,
+                args.symexp_lin_beta,
             )?;
 
         self.apply
@@ -351,6 +355,7 @@ impl OptimizerModule {
                 args.stream,
                 grid_x_config(chunk_count, CTA_THREADS),
                 args.slots,
+                args.symexp_lin_slots,
                 args.polar_update,
                 args.polar_bound_amax,
                 &mut *args.polar_chunks,
@@ -362,6 +367,7 @@ impl OptimizerModule {
                 args.weight_decay,
                 args.average_coefficient,
                 args.schedule_beta,
+                args.symexp_lin_beta,
                 args.apply_polar_sqrt_bound,
             )?;
 
@@ -390,6 +396,7 @@ impl OptimizerModule {
             args.stream,
             launch_config((MUON_COOPERATIVE_BLOCKS as u32, 1, 1), CTA_THREADS),
             args.slots,
+            args.symexp_lin_slots,
             args.polar_update,
             args.polar_bound_amax,
             args.polar_chunks,
@@ -400,6 +407,7 @@ impl OptimizerModule {
             args.weight_decay,
             args.average_coefficient,
             args.schedule_beta,
+            args.symexp_lin_beta,
             args.apply_polar_sqrt_bound,
         )
     }

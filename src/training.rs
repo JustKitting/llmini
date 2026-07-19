@@ -31,6 +31,7 @@ mod save;
 mod schedule_free;
 mod scratch;
 mod stats;
+mod symexp_lin;
 mod tape;
 mod tape_block;
 mod tape_leaf;

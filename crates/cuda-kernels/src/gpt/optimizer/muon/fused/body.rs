@@ -1,5 +1,7 @@
 use cuda_device::grid;
 
+use crate::optimizer::symexp_lin::Scalars as SymExpLinScalars;
+
 use super::super::super::work_grid::WorkGrid;
 use super::momentum::momentum_orient;
 use super::polar_step::run_polar_step;
@@ -77,6 +79,7 @@ pub(super) fn muon_matrix_update_body(
         scalars.weight_decay,
         scalars.average_coefficient,
         1.0,
+        SymExpLinScalars::new(0.0, 1.0, 1.0, 1.0),
         tiles.warp_sums,
         tiles.warp_max_pairs,
         work,

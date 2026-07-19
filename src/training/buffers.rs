@@ -55,7 +55,8 @@ impl TrainBuffers {
     ) -> Result<Self, DriverError> {
         let backward = BackwardBuffers::new(stream)?;
         let next_latent_grads = NextLatGradBuffers::new(stream)?;
-        let optimizer_state = OptimizerStateBuffers::new(stream, &runtime.decode, uploaded)?;
+        let optimizer_state =
+            OptimizerStateBuffers::new(stream, &runtime.decode, &runtime.optimizer, uploaded)?;
         let muon_tables = MuonPointerTables::new(
             stream,
             uploaded,

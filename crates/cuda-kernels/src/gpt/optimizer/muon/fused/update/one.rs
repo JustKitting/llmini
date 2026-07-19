@@ -3,6 +3,7 @@ use crate::float_ptx::abs_f32;
 use crate::f16_tc_matmul::convert::{
     load_bf16_global, load_f32_global_read_only, store_bf16_global,
 };
+use crate::optimizer::symexp_lin::Scalars as SymExpLinScalars;
 
 #[derive(Clone, Copy)]
 pub(super) struct UpdateAmax {
@@ -29,6 +30,7 @@ pub(super) fn update_one(
     weight_decay: f32,
     average_coefficient: f32,
     schedule_beta: f32,
+    symexp_lin: SymExpLinScalars,
     qk_clip_factor: f32,
     index: u32,
 ) -> UpdateAmax {
@@ -73,7 +75,7 @@ pub(super) fn update_one(
         *x = next_x;
         UpdateAmax {
             master: abs_f32(next_x),
-            schedule: abs_f32(next_z + schedule_beta * (next_x - next_z)),
+            schedule: abs_f32(symexp_lin.forward(next_z + schedule_beta * (next_x - next_z))),
         }
     }
 }
@@ -93,6 +95,7 @@ pub(super) fn update_one_sign(
     weight_decay: f32,
     average_coefficient: f32,
     schedule_beta: f32,
+    symexp_lin: SymExpLinScalars,
     qk_clip_factor: f32,
     index: u32,
 ) -> UpdateAmax {
@@ -146,7 +149,7 @@ pub(super) fn update_one_sign(
         *x = next_x;
         UpdateAmax {
             master: abs_f32(next_x),
-            schedule: abs_f32(next_z + schedule_beta * (next_x - next_z)),
+            schedule: abs_f32(symexp_lin.forward(next_z + schedule_beta * (next_x - next_z))),
         }
     }
 }

@@ -18,8 +18,11 @@ pub(in crate::training) fn materialize_training_weights(
     state: &OptimizerStateBuffers,
 ) -> Result<(), DriverError> {
     let beta = schedule_free_beta(state.next_step());
-    let reuse_muon_amax = state.next_step() > 1;
-    let mut materializer = Materializer::new(stream, &runtime.optimizer, scratch, beta);
+    let symexp_lin_beta = super::super::symexp_lin::beta();
+    let reuse_muon_amax = state.next_step() > 1
+        && (symexp_lin_beta == 0.0 || super::super::symexp_lin::reuse_precomputed_amax());
+    let mut materializer =
+        Materializer::new(stream, &runtime.optimizer, scratch, beta, symexp_lin_beta);
 
     materializer.adam(&mut uploaded.token_embedding, &state.token_embedding)?;
     materialize_layer_norm(&mut materializer, &mut uploaded.ln_f, &state.ln_f)?;
@@ -57,7 +60,13 @@ pub(in crate::training) fn materialize_evaluation_weights(
     scratch: &mut OptimizerScratch,
     state: &OptimizerStateBuffers,
 ) -> Result<(), DriverError> {
-    let mut materializer = Materializer::new(stream, &runtime.optimizer, scratch, 0.0);
+    let mut materializer = Materializer::new(
+        stream,
+        &runtime.optimizer,
+        scratch,
+        0.0,
+        super::super::symexp_lin::beta(),
+    );
 
     materializer.master(
         &mut uploaded.token_embedding,
@@ -167,7 +176,7 @@ fn materialize_linear(
     } else {
         materializer.muon(&mut linear.weight, &state.weight_muon)?;
     }
-    materializer.adam(&mut linear.bias, &state.bias)
+    materializer.symexp_lin_adam(&mut linear.bias, &state.bias)
 }
 
 fn materialize_evaluation_next_latent(
@@ -220,6 +229,10 @@ fn materialize_evaluation_linear(
     linear: &mut UploadedLinear,
     state: &LinearState,
 ) -> Result<(), DriverError> {
-    materializer.master(&mut linear.weight, &state.weight_muon.x_master)?;
-    materializer.master(&mut linear.bias, &state.bias.x_master)
+    materializer.symexp_lin_muon_master(
+        &mut linear.weight,
+        &state.weight_muon.x_master,
+        &state.weight_muon.symexp_lin,
+    )?;
+    materializer.symexp_lin_master(&mut linear.bias, &state.bias.x_master)
 }

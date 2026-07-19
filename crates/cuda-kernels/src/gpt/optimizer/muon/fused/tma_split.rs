@@ -10,7 +10,8 @@ use crate::f16_tc_matmul::convert::{
 use crate::float_ptx::{abs_f32, fma_f32, max_f32, sqrt_f32};
 use crate::nvfp4_quant::kernels::four_six::helpers::four_six_global_scale;
 use crate::nvfp4_quant::kernels::row_amax::TENSOR_AMAX_VALUES_PER_BLOCK;
-use crate::optimizer::MuonSlotDescriptor;
+use crate::optimizer::symexp_lin::{Scalars as SymExpLinScalars, ScalePointers};
+use crate::optimizer::{MuonSlotDescriptor, SymExpLinSlotDescriptor};
 
 use super::super::super::threads::{WARP_SIZE, WARPS_PER_BLOCK};
 use super::super::super::work_grid::WorkGrid;
@@ -25,6 +26,23 @@ use super::update::{update_master_chunks, update_sign_master_chunks};
 
 const NORMUON_BETA2: f32 = 0.95;
 const NORMUON_EPSILON: f32 = 1.0e-10;
+
+#[inline(always)]
+fn symexp_lin_scalars(
+    desc: SymExpLinSlotDescriptor,
+    schedule_beta: f32,
+    beta: f32,
+) -> SymExpLinScalars {
+    ScalePointers {
+        exponential_z: desc.exponential_z,
+        exponential_x: desc.exponential_x,
+        linear_z: desc.linear_z,
+        linear_x: desc.linear_x,
+        curvature_z: desc.curvature_z,
+        curvature_x: desc.curvature_x,
+    }
+    .scalars(schedule_beta, beta)
+}
 
 #[cuda_module]
 pub(crate) mod module {
@@ -389,6 +407,7 @@ pub(crate) mod module {
     #[kernel]
     pub fn muon_tma_hyperball_project_chunks_kernel(
         slots: &[MuonSlotDescriptor],
+        symexp_lin_slots: &[SymExpLinSlotDescriptor],
         polar_update: &[f32],
         mut polar_chunks: DisjointSlice<f32>,
         normuon_factors: &[f32],
@@ -398,6 +417,7 @@ pub(crate) mod module {
         learning_rate: f32,
         average_coefficient: f32,
         schedule_beta: f32,
+        symexp_lin_beta: f32,
         use_schedule_free: u32,
     ) {
         static mut WARP_SUMS: SharedArray<f32, { WARPS_PER_BLOCK as usize }> = SharedArray::UNINIT;
@@ -405,6 +425,11 @@ pub(crate) mod module {
             SharedArray::UNINIT;
 
         let desc = slots[slot_index as usize];
+        let symexp_lin = symexp_lin_scalars(
+            symexp_lin_slots[slot_index as usize],
+            schedule_beta,
+            symexp_lin_beta,
+        );
         let work = WorkGrid::x_axis();
         let radius = hyperball_chunks[0];
         let parameter_update_dot = hyperball_chunks[1];
@@ -430,6 +455,7 @@ pub(crate) mod module {
                 projection_scale,
                 average_coefficient,
                 schedule_beta,
+                symexp_lin,
                 use_schedule_free != 0,
                 &mut WARP_SUMS,
                 &mut WARP_MAX_PAIRS,
@@ -442,6 +468,7 @@ pub(crate) mod module {
     #[cooperative_launch]
     pub fn muon_tma_finish_update_kernel(
         slots: &[MuonSlotDescriptor],
+        symexp_lin_slots: &[SymExpLinSlotDescriptor],
         polar_update: &[f32],
         polar_bound_amax: &[f32],
         mut polar_chunks: DisjointSlice<f32>,
@@ -452,6 +479,7 @@ pub(crate) mod module {
         weight_decay: f32,
         average_coefficient: f32,
         schedule_beta: f32,
+        symexp_lin_beta: f32,
         apply_polar_sqrt_bound: u32,
     ) {
         static mut WARP_SUMS: SharedArray<f32, { WARPS_PER_BLOCK as usize }> = SharedArray::UNINIT;
@@ -459,6 +487,11 @@ pub(crate) mod module {
             SharedArray::UNINIT;
 
         let desc = slots[slot_index as usize];
+        let symexp_lin = symexp_lin_scalars(
+            symexp_lin_slots[slot_index as usize],
+            schedule_beta,
+            symexp_lin_beta,
+        );
         let shape = MuonMatrixShape {
             rows: desc.rows,
             cols: desc.cols,
@@ -502,6 +535,7 @@ pub(crate) mod module {
                 scalars.weight_decay,
                 scalars.average_coefficient,
                 schedule_beta,
+                symexp_lin,
                 &mut WARP_SUMS,
                 &mut WARP_MAX_PAIRS,
                 work,
@@ -528,6 +562,7 @@ pub(crate) mod module {
     #[kernel]
     pub fn muon_tma_update_master_chunks_kernel(
         slots: &[MuonSlotDescriptor],
+        symexp_lin_slots: &[SymExpLinSlotDescriptor],
         polar_update: &[f32],
         polar_bound_amax: &[f32],
         mut polar_chunks: DisjointSlice<f32>,
@@ -539,6 +574,7 @@ pub(crate) mod module {
         weight_decay: f32,
         average_coefficient: f32,
         schedule_beta: f32,
+        symexp_lin_beta: f32,
         apply_polar_sqrt_bound: u32,
     ) {
         static mut WARP_SUMS: SharedArray<f32, { WARPS_PER_BLOCK as usize }> = SharedArray::UNINIT;
@@ -546,6 +582,11 @@ pub(crate) mod module {
             SharedArray::UNINIT;
 
         let desc = slots[slot_index as usize];
+        let symexp_lin = symexp_lin_scalars(
+            symexp_lin_slots[slot_index as usize],
+            schedule_beta,
+            symexp_lin_beta,
+        );
         let shape = MuonMatrixShape {
             rows: desc.rows,
             cols: desc.cols,
@@ -579,6 +620,7 @@ pub(crate) mod module {
                 weight_decay,
                 average_coefficient,
                 schedule_beta,
+                symexp_lin,
                 &mut WARP_SUMS,
                 &mut WARP_MAX_PAIRS,
                 WorkGrid::x_axis(),
@@ -589,6 +631,7 @@ pub(crate) mod module {
     #[kernel]
     pub fn muon_tma_sign_update_master_chunks_kernel(
         slots: &[MuonSlotDescriptor],
+        symexp_lin_slots: &[SymExpLinSlotDescriptor],
         mut update_chunks: DisjointSlice<f32>,
         qk_clip_factors: &[f32],
         slot_index: u32,
@@ -599,12 +642,18 @@ pub(crate) mod module {
         weight_decay: f32,
         average_coefficient: f32,
         schedule_beta: f32,
+        symexp_lin_beta: f32,
     ) {
         static mut WARP_SUMS: SharedArray<f32, { WARPS_PER_BLOCK as usize }> = SharedArray::UNINIT;
         static mut WARP_MAX_PAIRS: SharedArray<f32, { WARPS_PER_BLOCK as usize }> =
             SharedArray::UNINIT;
 
         let desc = slots[slot_index as usize];
+        let symexp_lin = symexp_lin_scalars(
+            symexp_lin_slots[slot_index as usize],
+            schedule_beta,
+            symexp_lin_beta,
+        );
         let shape = MuonMatrixShape {
             rows: desc.rows,
             cols: desc.cols,
@@ -629,6 +678,7 @@ pub(crate) mod module {
                 weight_decay,
                 average_coefficient,
                 schedule_beta,
+                symexp_lin,
                 &mut WARP_SUMS,
                 &mut WARP_MAX_PAIRS,
                 WorkGrid::x_axis(),

@@ -8,6 +8,7 @@ mod layer_norm;
 mod muon;
 mod next_latent;
 mod skip;
+mod symexp_lin;
 mod types;
 mod utils;
 

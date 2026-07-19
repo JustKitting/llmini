@@ -14,7 +14,7 @@ pub struct WeightUpdateArgs<'a> {
     pub batch: &'a TokenBatch,
     pub uploaded: &'a mut UploadedModel,
     pub grads: &'a mut BackwardBuffers,
-    pub next_latent_grads: &'a NextLatGradBuffers,
+    pub next_latent_grads: &'a mut NextLatGradBuffers,
     pub observed_loss: Option<f32>,
     pub scratch: &'a mut OptimizerScratch,
     pub state: &'a mut OptimizerStateBuffers,

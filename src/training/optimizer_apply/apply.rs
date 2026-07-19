@@ -37,6 +37,15 @@ pub fn apply_weight_updates(args: WeightUpdateArgs<'_>) -> AppResult<WeightUpdat
     trace.embedding_lookup_ms =
         timed_ms(|| add_embedding_lookup_grad(stream, optimizer, batch, grads, next_latent_grads))?;
 
+    super::super::symexp_lin::apply_gradient_chain_rule(
+        runtime,
+        muon_tables,
+        grads,
+        next_latent_grads,
+        state,
+        super::super::learning_rate::schedule_free_beta(candidate_step),
+    )?;
+
     let grad_clip = grad_clip.clip(stream, optimizer)?;
     trace.grad_norm = grad_clip.norm;
 
@@ -72,6 +81,17 @@ pub fn apply_weight_updates(args: WeightUpdateArgs<'_>) -> AppResult<WeightUpdat
             )
         })
         .transpose()?;
+
+    trace.adam_ms += timed_ms(|| {
+        super::symexp_lin::update_global_scales(
+            stream,
+            optimizer,
+            state,
+            step,
+            average_coefficient,
+            grad_clip.scale,
+        )
+    })?;
 
     update_base_adam(BaseAdamUpdateArgs {
         stream,

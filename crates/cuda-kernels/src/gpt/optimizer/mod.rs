@@ -19,14 +19,16 @@ mod launcher;
 mod modules;
 mod muon;
 mod schedule_free;
+mod symexp_lin;
 mod threads;
 mod work_grid;
 
 pub use args::{
-    AdamWUpdateArgs, EmbeddingLookupGradArgs, GradientClipArgs, KdaMuonClipArgs,
-    KdaMuonClipFactorArgs, MuonMegaUpdateArgs, MuonSlotDescriptor, MuonTmaFinishArgs,
-    MuonTmaHyperballFinishArgs, MuonTmaPrepareArgs, MuonTmaSignUpdateArgs,
-    ScheduleFreeMaterializeArgs, ScheduleFreeMaterializePrecomputedArgs,
+    AdamWUpdateArgs, EmbeddingLookupGradArgs, Fp32AdamWUpdateArgs, GradientClipArgs,
+    KdaMuonClipArgs, KdaMuonClipFactorArgs, MuonMegaUpdateArgs, MuonSlotDescriptor,
+    MuonTmaFinishArgs, MuonTmaHyperballFinishArgs, MuonTmaPrepareArgs, MuonTmaSignUpdateArgs,
+    ScheduleFreeMaterializeArgs, ScheduleFreeMaterializePrecomputedArgs, SymExpLinScaleRefs,
+    SymExpLinSlotDescriptor,
 };
 pub use grad_clip::GRAD_CLIP_VALUES_PER_CHUNK;
 pub use launcher::OptimizerModule;

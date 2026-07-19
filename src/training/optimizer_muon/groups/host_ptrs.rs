@@ -1,4 +1,4 @@
-use rust_kernels_cuda::optimizer::MuonSlotDescriptor;
+use rust_kernels_cuda::optimizer::{MuonSlotDescriptor, SymExpLinSlotDescriptor};
 
 #[derive(Clone, Copy)]
 pub(super) struct HostPtrs {
@@ -17,6 +17,15 @@ pub(super) struct HostPtrs {
     pub(super) learning_rate_multiplier: f32,
     pub(super) qk_clip_factor_offset: u32,
     pub(super) qk_clip_head_dim: u32,
+    pub(super) symexp_exponential_z: u64,
+    pub(super) symexp_exponential_x: u64,
+    pub(super) symexp_exponential_grad: u64,
+    pub(super) symexp_linear_z: u64,
+    pub(super) symexp_linear_x: u64,
+    pub(super) symexp_linear_grad: u64,
+    pub(super) symexp_curvature_z: u64,
+    pub(super) symexp_curvature_x: u64,
+    pub(super) symexp_curvature_grad: u64,
 }
 
 impl HostPtrs {
@@ -37,6 +46,25 @@ impl HostPtrs {
             learning_rate_multiplier: self.learning_rate_multiplier,
             qk_clip_factor_offset: self.qk_clip_factor_offset,
             qk_clip_head_dim: self.qk_clip_head_dim,
+        }
+    }
+
+    pub(super) fn symexp_lin_descriptor(self) -> SymExpLinSlotDescriptor {
+        SymExpLinSlotDescriptor {
+            grad: self.grad,
+            z_master: self.z_master,
+            x_master: self.x_master,
+            exponential_z: self.symexp_exponential_z,
+            exponential_x: self.symexp_exponential_x,
+            exponential_grad: self.symexp_exponential_grad,
+            linear_z: self.symexp_linear_z,
+            linear_x: self.symexp_linear_x,
+            linear_grad: self.symexp_linear_grad,
+            curvature_z: self.symexp_curvature_z,
+            curvature_x: self.symexp_curvature_x,
+            curvature_grad: self.symexp_curvature_grad,
+            rows: self.rows,
+            cols: self.cols,
         }
     }
 

@@ -84,6 +84,9 @@ impl CudaTrainingStrategy {
             "heldout_eval split=val val_loss={:.6} train_elapsed_s={:.3} eval_elapsed_s={:.3} completed_steps={completed_steps}",
             final_eval.val_loss, train_elapsed_s, final_eval.eval_elapsed_s,
         );
+        if let Some(summary) = crate::training::symexp_lin::scale_summary(&trainer)? {
+            println!("{summary}");
+        }
 
         finish_training_artifacts(
             &mut trainer,

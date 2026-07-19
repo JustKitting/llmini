@@ -23,3 +23,22 @@ pub struct AdamWUpdateArgs<'a> {
     pub eps: f32,
     pub average_coefficient: f32,
 }
+
+pub struct Fp32AdamWUpdateArgs<'a> {
+    pub stream: &'a CudaStream,
+    pub z_master: &'a mut DeviceBuffer<f32>,
+    pub x_master: &'a mut DeviceBuffer<f32>,
+    pub grad: &'a DeviceBuffer<f32>,
+    pub grad_scale: f32,
+    pub first_moment: &'a mut DeviceBuffer<f32>,
+    pub second_moment: &'a mut DeviceBuffer<f32>,
+    pub len: u32,
+    pub learning_rate: f32,
+    pub weight_decay: f32,
+    pub beta1: f32,
+    pub beta2: f32,
+    pub beta1_correction: f32,
+    pub beta2_correction: f32,
+    pub eps: f32,
+    pub average_coefficient: f32,
+}

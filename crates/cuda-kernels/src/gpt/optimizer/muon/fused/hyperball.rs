@@ -4,6 +4,7 @@ use crate::block_reduce::{block_max_pair_leader_f32, block_sum_shared_f32};
 use crate::device_ptr::{read_f32, write_f32};
 use crate::f16_tc_matmul::convert::load_f32_global_read_only;
 use crate::float_ptx::{abs_f32, max_f32, sqrt_f32};
+use crate::optimizer::symexp_lin::Scalars as SymExpLinScalars;
 
 use super::super::super::threads::{WARP_SIZE, WARPS_PER_BLOCK};
 use super::super::super::work_grid::WorkGrid;
@@ -51,6 +52,7 @@ pub(super) fn project_update_and_average_chunks(
     projection_scale: f32,
     average_coefficient: f32,
     schedule_beta: f32,
+    symexp_lin: SymExpLinScalars,
     use_schedule_free: bool,
     warp_sums: &mut SharedArray<f32, { WARPS_PER_BLOCK as usize }>,
     warp_max_pairs: &mut SharedArray<f32, { WARPS_PER_BLOCK as usize }>,
@@ -83,7 +85,7 @@ pub(super) fn project_update_and_average_chunks(
         local_master_amax = max_f32(local_master_amax, abs_f32(next_x));
         local_schedule_amax = max_f32(
             local_schedule_amax,
-            abs_f32(projected_z + schedule_beta * (next_x - projected_z)),
+            abs_f32(symexp_lin.forward(projected_z + schedule_beta * (next_x - projected_z))),
         );
         index += work.stride();
     }
