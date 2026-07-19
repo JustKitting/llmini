@@ -30050,3 +30050,77 @@ decision:
   same optimizer step. Restore and exactly rebuild the accepted normalized-
   layer/ReLU-squared baseline; retain only this result.
 ```
+
+```text
+date: 2026-07-19
+commit: rejected source reverted; note only
+experiment: Newton-Muon full activation-covariance preconditioning.
+status: rejected_no_matched_step_gain; no_profile; no_450s
+sources:
+  https://arxiv.org/abs/2604.01472
+  https://github.com/zhehangdu/Newton-Muon
+rationale:
+  Test the optimizer paper's direct loss-per-step claim on the intact local
+  transformer. The method preconditions each raw matrix gradient by the
+  inverse activation second moment before momentum and the existing
+  matrix-sign/polar update. Its reported Modded-NanoGPT/FineWeb result is
+  unusually aligned with this trainer and the fixed-step screening rule.
+implementation:
+  Preserved B4/S2048/L16/d2048/h32, all four full-attention and twelve KDA
+  blocks, value residuals, block Top-K MLPs, NextLat, data/tokenizer path, and
+  every optimizer update. Added seven full d2048 FP32 covariance/inverse
+  states per transformer block: QKV input, attention-output input, MLP-up
+  input, and four d2048 blocks of the 8192-wide MLP-down input. Saved rowwise
+  NVFP4 tapes supplied the actual projection operands.
+  Every 16 optimizer updates, cuBLAS formed X^T X / token_rows and updated a
+  0.80 EWMA. Each covariance received the reference trace-scaled 0.20 ridge
+  and was inverted in FP32 with cuSOLVER Cholesky. The inverse was applied to
+  the raw gradient before momentum. Local transposed weight storage was
+  handled exactly: QKV, attention output, and MLP-up used a left
+  preconditioner; MLP-down used four left-preconditioned input blocks.
+  Covariances initialized to 0.001 I and inverses to I, matching the official
+  implementation. The first pass intentionally kept synchronous trace reads
+  and unfused library calls; those were eligible for optimization only after
+  a credible matched-step loss gain.
+correctness:
+  cargo fmt --all: pass.
+  cargo check: pass.
+  cargo check --tests: pass.
+  cargo test matrix_slots_are_dense_and_layer_major --no-fail-fast: pass.
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+  target/runs/20260719_012642Z_fineweb_30s was a one-step launch diagnostic
+  only. Before the first refresh it exactly matched control train loss
+  10.741848, completed the intact graph with finite held-out val_loss
+  9.998300, and reported 47,866,642,432 used device bytes.
+  target/runs/20260719_012700Z_fineweb_900s was a 17-step refresh-path
+  diagnostic, not screening evidence. It exercised covariance formation,
+  all 112 Cholesky inversions, and gradient application with finite held-out
+  val_loss 7.163620 and no solver/runtime failure.
+matched_step_screen:
+  target/runs/20260719_012721Z_fineweb_30s completed 73 steps in 30.480s,
+  remained finite with zero skipped updates, and produced held-out val_loss
+  6.150522. At step 50 it was 6.568058 versus 6.531911 for active historical
+  control target/runs/20260718_200249Z_fineweb_30s, 0.5534% worse.
+  Because that small early result was ambiguous and the two accepted
+  historical controls themselves differed at step 50, the smallest useful
+  fixed-step extension was run rather than profiling or a 450-second gate.
+paired_fixed_step_check:
+  Candidate target/runs/20260719_012828Z_fineweb_900s and disabled same-binary
+  control target/runs/20260719_013024Z_fineweb_900s each completed exactly 151
+  updates with the same seed, model, data path, and logging:
+    step 0:   10.741848 versus 10.741848, identical.
+    step 50:   6.549203 versus  6.582925, 0.5123% better.
+    step 100:  6.438104 versus  6.432709, 0.0839% worse.
+    step 150:  5.802237 versus  5.814456, 0.2102% better.
+    held-out val at step 151:
+                5.806512 versus  5.806425, 0.0015% worse.
+  Both runs were finite/nonzero with zero update skips. Candidate elapsed
+  65.146s versus 49.847s, but runtime was not used to reject the structural
+  candidate.
+decision:
+  Reject without profiling, implementation optimization, or a 450-second
+  gate. The paired common-step signs are mixed and the decisive fixed-step
+  held-out losses are equal to 0.0015%, so there is no credible loss-per-step
+  improvement to admit for optimization. Restore and exactly rebuild the
+  accepted source; retain only this result.
+```
