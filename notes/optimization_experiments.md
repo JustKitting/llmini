@@ -30459,3 +30459,79 @@ decision:
   the implementation, exactly rebuild the accepted source, and retain only
   this experiment record.
 ```
+
+```text
+date: 2026-07-19
+commit: note-only rejection; affine implementation removed after screening
+experiment: Affine per-head RMSNorm on every SDPA/KDA output before c_proj.
+status: rejected_matched_step_screen; no_profile; no_450s
+sources:
+  https://arxiv.org/abs/2505.06708
+  https://github.com/qiuzh20/gated_attention
+  inspected repository commit:
+    f4c2a5f6ffd6ec709e0c60072c95ed4f5ce5b5d2
+  affine reference:
+    https://github.com/microsoft/unilm/blob/master/Diff-Transformer/multihead_diffattn.py
+rationale:
+  The Gated Attention paper isolates the missing nonlinearity between the
+  value and output projections. Its Table 3 reports PPL 5.847 for independently
+  RMS-normalizing each attention head after SDPA versus 6.026 for the baseline.
+  This exact placement had not been tested locally: the accepted QKNorm
+  normalizes Q/K before the mixer, while rejected HybridNorm* normalized Q/K/V
+  before attention and changed the residual-normalization topology.
+  Admission was determined only by loss at identical optimizer steps.
+implementation:
+  Preserved the complete FineWeb/Llama-2 B4/S2048/L16/d2048/h32 model, all
+  four full-attention and twelve KDA blocks, value residuals, block-Top-K MLPs,
+  NextLat, dataset, tokenizer, and accepted optimizer geometry. After each
+  attention mixer and before c_proj, every 64-wide head was independently
+  RMS-normalized with epsilon=1e-6. Each block had one learned 64-element
+  affine scale shared across its 32 heads, matching the affine per-head
+  convention used by the cited Differential Transformer implementation.
+  The scale was initialized exactly to one without consuming model RNG and
+  participated in Adam, schedule-free materialization, global clipping,
+  checkpoints, and update diagnostics. Backward used the analytical RMSNorm
+  Jacobian and accumulated the shared affine gradient. The first
+  correctness-oriented implementation used separate inverse-RMS, parameter,
+  and input-gradient launches. TRAIN_ATTENTION_OUTPUT_RMS_NORM=0 selected the
+  same-binary control and bypassed only the new forward/backward math.
+correctness:
+  cargo fmt --all: pass.
+  cargo check --workspace: pass.
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+  cargo test -p rust-kernels-cuda --test attention_output_rms_norm
+    -- --ignored --nocapture --test-threads=1:
+    1 passed, matching FP32 forward and analytical input/affine gradients.
+  cargo test -p gpt2-nvfp4 --test block_attention_backward
+    -- --ignored --nocapture --test-threads=1:
+    1 passed through the complete KDA attention backward chain.
+  The broad all-target build remains blocked by unrelated pre-existing stale
+  GPT MLP/forward test initializers (`pre_activation`, QK-scale, and missing
+  TMA fields); no all-workspace test claim is made.
+bringup:
+  target/runs/20260719_033246Z_fineweb_900s was a one-step launch and
+  allocation diagnostic only. Metadata confirmed the intact
+  B4/S2048/L16/d2048/h32 model and attention_output_rms_norm=true. It completed
+  one real update with finite/nonzero metrics, no skips, and finite held-out
+  val_loss=10.392066.
+paired_matched_step_screen:
+  Candidate target/runs/20260719_033325Z_fineweb_30s and disabled same-binary
+  control target/runs/20260719_033403Z_fineweb_30s used the same seed, model,
+  FineWeb path, tokenizer, and TRAIN_LOG_INTERVAL=50. Both completed exactly
+  91 optimizer updates.
+    step 0:  10.759788 versus 10.741848, 0.1670% worse.
+    step 50:  7.610516 versus  6.545861, 16.2646% worse.
+  Both logged samples were finite/nonzero and every skip counter was zero.
+  The affine candidate's grad norm was 1121.0369 at step 0 and 1290.7944 at
+  step 50, versus 3.5491 and 1.6415 for control. This is diagnostic evidence
+  that the shared affine gradient dominated global clipping, not an acceptance
+  decision based on speed or the unequal-step fixed-time endpoint.
+decision:
+  Reject this exact affine formulation without profiling, launch fusion, a
+  fixed-step extension, or a 450-second gate. Its 16.26% same-step regression
+  fails the sole prerequisite for implementation optimization. The Gated
+  Attention paper does not state the affine convention, and its cited official
+  RetNet implementation instead uses elementwise_affine=False; treat that
+  parameter-free topology as a distinct research candidate rather than
+  modifying or optimizing this failed affine candidate.
+```
