@@ -53,6 +53,156 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 
 ```text
 date: 2026-07-19
+commit: note-only rejection; NAMO scalar-adaptation implementation removed
+  after the required 450-second gate
+experiment: NAMO matrix-level gradient-norm adaptation composed with the
+  accepted Hyperball/Muon-VS/NorMuon optimizer.
+status: rejected_after_optimized_450s_gate
+sources:
+  https://arxiv.org/abs/2602.17080
+  https://github.com/minxin-zhg/namo
+  inspected official repository commit:
+    a3f37b01dc8addf1a626be851168a8cacdcd34f9
+rationale:
+  NAMO reports better GPT-2 pretraining than Muon by retaining Muon's polar
+  direction while replacing its fixed matrix step magnitude with an
+  AdamNorm-style scalar. For each matrix it maintains only
+    v_t = 0.99*v_(t-1) + 0.01*||g_t||_F^2
+  and multiplies the base rate by
+    sqrt(1-0.99^t)/(1-mu^t)
+      * ||mu*m_t + (1-mu)*g_t||_F/(sqrt(v_t)+1e-8).
+  This experiment deliberately composed that scalar magnitude with the
+  already accepted Muon-VS direction, NorMuon neuron balancing, Hyperball
+  projection, two-polar/one-sign schedule, and schedule-free averaging. It
+  was therefore a NAMO-derived compatibility test, not a claim of exact
+  plain-Muon reproduction.
+scope:
+  The complete FineWeb/Llama-2 B4/S2048/L16/d2048/h32 model remained active:
+  all four full-attention and twelve KDA blocks, all value-residual paths, all
+  16 block-Top-K ReLU-squared MLPs, the query-dependent headwise attention
+  gate, NextLat, tokenizer, objective, and parameter allocations were
+  unchanged.
+implementation_and_correctness:
+  Each Muon matrix received two FP32 scalars: accumulated raw-gradient norm
+  square and the current adaptive factor. The factor scaled both Hyperball
+  polar and sign updates and returned exactly to 1.0 when the candidate phase
+  ended. TRAIN_NAMO, TRAIN_NAMO_LR_SCALE, and TRAIN_NAMO_STEPS provided
+  same-binary controls and schedule sweeps, and run_info recorded all three.
+  CUDA reference tests covered the scalar recurrence, non-mutating standalone
+  norm collection, fused polar momentum/norm collection in both rectangular
+  orientations, sign-update scaling, Hyperball scaling, and the exact reset
+  to the accepted update scale. The complete ignored Muon GPU suite passed 18
+  tests after the final implementation.
+  cargo fmt --all and cargo check --workspace passed. Every device-code pass
+  used the required exact rebuild:
+    TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a
+initial_health_and_scale_sweep:
+  The first correctness implementation was stable but its uncompensated
+  scale 1 was too conservative. Candidate
+  target/runs/20260719_081728Z_fineweb_900s versus disabled control
+  target/runs/20260719_081610Z_fineweb_900s at exactly 201 steps produced
+  val_loss 5.710919 versus 5.592099, 2.125% worse.
+  A fixed 101-step sweep used the same seed/model/data and
+  TRAIN_LOG_INTERVAL=50:
+    disabled control target/runs/20260719_081929Z_fineweb_900s:
+      val_loss=5.963122.
+    scale 4 target/runs/20260719_082010Z_fineweb_900s:
+      val_loss=5.949404, 0.230% lower.
+    scale 8 target/runs/20260719_082054Z_fineweb_900s:
+      val_loss=5.931942, 0.523% lower.
+    scale 12 target/runs/20260719_082146Z_fineweb_900s:
+      val_loss=5.950984, 0.204% lower.
+  Scale 8 formed the best local point and approximately matched the tuned
+  NAMO-to-Muon learning-rate ratio in the official GPT-2 sweep. Replacing
+  Muon-VS rather than composing with it failed:
+  target/runs/20260719_082440Z_fineweb_900s reached val_loss=6.055559 at
+  101 steps, 1.550% worse than control.
+always_on_201_step_resolution:
+  Scale-8 candidate target/runs/20260719_082233Z_fineweb_900s versus control
+  target/runs/20260719_081610Z_fineweb_900s, both at 201 steps:
+    step 50:  6.488176 versus 6.532443, 0.678% lower.
+    step 100: 6.382222 versus 6.395761, 0.212% lower.
+    step 150: 5.757290 versus 5.782461, 0.435% lower.
+    step 200: 5.768085 versus 5.743592, 0.426% higher.
+    held-out: 5.590722 versus 5.592099, 0.025% lower.
+  The early same-step advantage admitted implementation optimization, but the
+  step-200 reversal ruled out promoting the always-on schedule.
+profiling_and_optimization:
+  Initial 20-step profiles
+  target/nsys/namo_scalar_s8_candidate_b4s2048_20_20260719T0827Z.nsys-rep
+  and
+  target/nsys/namo_scalar_control_b4s2048_20_20260719T0828Z.nsys-rep
+  measured 7.102673248s and 6.981406860s total GPU-kernel time. The standalone
+  NAMO norm scan cost 249.999302ms across 1,340 launches, or 12.5ms per
+  optimizer step and 3.5% of candidate GPU time.
+  The optimized path fused raw-gradient and conventional-Nesterov norm
+  collection into the existing momentum/orientation pass on the two polar
+  steps out of three. It retained the standalone scan only on sign steps,
+  where the current-step scalar must be known before the master update.
+  Profile
+  target/nsys/namo_scalar_s8_fused_polar_b4s2048_20_20260719T0834Z.nsys-rep
+  measured 6.985572423s total GPU-kernel time, only 0.0597% above the paired
+  control. The fused CUDA/CPU recurrence test passed in both matrix
+  orientations, and 20-step held-out loss remained effectively unchanged
+  (7.007195 optimized versus 7.010005 correctness-first).
+early_only_schedule:
+  The consistent early win followed by a step-200 reversal motivated an
+  explicit step-gated schedule: scale 8 through optimizer step 100, then a
+  one-time device reset to the exact accepted scale 1.
+  First fixed-201 pair, candidate
+  target/runs/20260719_083935Z_fineweb_900s versus control
+  target/runs/20260719_083444Z_fineweb_900s:
+    step 50:  6.490292 versus 6.529464, 0.600% lower.
+    step 100: 6.378919 versus 6.393374, 0.226% lower.
+    step 150: 5.746972 versus 5.781383, 0.595% lower.
+    step 200: 5.713552 versus 5.733295, 0.344% lower.
+    held-out: 5.580972 versus 5.583497, 0.045% lower.
+    elapsed: 68.127s versus 67.683s.
+  Reverse-order repeat, candidate
+  target/runs/20260719_084102Z_fineweb_900s versus control
+  target/runs/20260719_084221Z_fineweb_900s:
+    step 50:  6.481544 versus 6.533751, 0.799% lower.
+    step 100: 6.379740 versus 6.383366, 0.057% lower.
+    step 150: 5.750172 versus 5.778353, 0.488% lower.
+    step 200: 5.714777 versus 5.746388, 0.550% lower.
+    held-out: 5.579395 versus 5.598239, 0.337% lower.
+    elapsed: 68.794s versus 68.903s.
+  The repeated mapped-step win and recovered cadence promoted only this
+  early-only schedule to the required final gates.
+final_gates:
+  Final default 30-second health run
+  target/runs/20260719_084427Z_fineweb_30s completed 88 finite updates with
+  val_loss=6.004945 and no skip warnings. The comparable disabled run
+  target/runs/20260719_081528Z_fineweb_30s completed 89 updates with
+  val_loss=6.027757.
+  Required 450-second candidate
+  target/runs/20260719_084515Z_fineweb_450s completed 1,307 updates with
+  val_loss=4.596367. All 27 logged samples were finite and nonzero and every
+  aggregate, non-finite, loss-spike, and grad-norm-spike skip counter was zero.
+  Accepted baseline target/runs/20260719_041701Z_fineweb_450s completed 1,316
+  updates with val_loss=4.554121 under the same B4/S2048/L16/d2048/h32 model,
+  FineWeb data, Llama-2 tokenizer, seed, objective, and accepted optimizer.
+  The candidate therefore completed 0.684% fewer updates and had 0.928% worse
+  held-out loss.
+post_restore:
+  All NAMO source and tests were removed. The accepted parent source passed
+  cargo check --workspace and the exact sm_120a rebuild. Post-restore
+  diagnostic target/runs/20260719_090346Z_fineweb_900s completed one real
+  update and held-out evaluation with finite val_loss=10.168910. This
+  one-step run is launch evidence only, not promotion evidence.
+decision:
+  Reject the NAMO-derived scalar and early-only schedule despite its real,
+  repeated early matched-step advantage. The optimized implementation was
+  stable and essentially cadence-neutral in the short profile, but it failed
+  the only decisive long-run criterion: after 450 seconds it was both slower
+  and worse than the accepted model. The original speed-for-at-most-roughly-1%
+  loss tolerance does not apply because this candidate did not increase
+  throughput. Remove all candidate source, exactly rebuild the accepted
+  source, retain only this record, and continue loss-method research.
+```
+
+```text
+date: 2026-07-19
 commit: rejected experiment; note-only result
 experiment: MONA-Lite gradient acceleration stacked before accepted Muon-VS
 status: rejected_no_matched_step_loss_signal
