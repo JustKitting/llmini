@@ -53,6 +53,112 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 
 ```text
 date: 2026-07-19
+commit: rejected source removed; note-only result
+experiment: Previous-token embedding smear, tested as fixed, warmup-ramped,
+  and zero-initialized learned token-conditioned forms.
+status: rejected_no_persistent_matched_step_heldout_gain; no_profile; no_450s
+sources:
+  https://github.com/KellerJordan/modded-nanogpt/tree/master/records/track_1_short/2025-09-18_Smear
+  https://github.com/KellerJordan/modded-nanogpt
+  Upstream source and history inspected at commit
+    edf47a05a12062d661c4cfd4eef848c5ab5bed32, including originating
+    implementation commit d149ec4ac119fc600fbda007da7303878c9aae9b.
+rationale:
+  Modded-NanoGPT observed several heads spending attention work on the
+  immediately previous token and replaced that behavior with a cheap embedding
+  path. Its ten-run record reports mean validation loss 3.2790 versus the
+  former 3.2800 target (one-sample p=0.0084), while cautioning that the
+  quality-equivalent benefit is about five steps rather than the full
+  wall-clock headline. The learned representation was approximately
+    embedding[t] + 0.07 * embedding[t-1].
+  This was relevant to the local four-full-attention/twelve-KDA topology
+  because a direct one-token path could preserve attention capacity without
+  deleting or freezing any existing section.
+scope_and_implementation:
+  Preserved the complete FineWeb/Llama-2 B4/S2048/L16/d2048/h32 model, all
+  attention and KDA mixers, value residuals, sixteen MLPs, block TopK, XSA,
+  head gates, NextLat, SymExpLin, tokenizer, objective, and optimizer.
+  The first probe implemented
+    z[b,t] = e[b,t] + c * e[b,t-1]
+  for t>0 and reset the path at each 2048-token batch-sequence boundary.
+  Its exact backward gathered
+    d_e[b,t] = d_z[b,t] + c * d_z[b,t+1]
+  away from the final position. TRAIN_EMBED_SMEAR selected c in the same
+  binary. A second probe linearly ramped c from zero through the accepted
+  83-step warmup.
+  Due diligence then implemented upstream's actual zero-initialized learned
+  form with thirteen active parameters:
+    c_t = lambda * sigmoid(w . e_t[:12])
+    z_t = e_t + c_t * e_(t-1).
+  One NVFP4 tensor held lambda and twelve gate weights with FP32
+  schedule-free Adam masters, beta1=0.9, beta2=0.95, and zero weight decay.
+  The analytical backward included direct current/next-position embedding
+  gradients plus d_lambda and d_w. The learned path started exactly at the
+  accepted function. TRAIN_LEARNED_EMBED_SMEAR=0 was its same-binary control;
+  TRAIN_EMBED_SMEAR_LR_SCALE isolated only this tensor's Adam LR.
+correctness:
+  cargo fmt --all -- --check: pass.
+  cargo check --workspace: pass.
+  cargo test --workspace --lib: pass.
+  Exact TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+  GPU embedding_forward_smears_only_within_each_sequence: pass for both fixed
+  and learned lambda=1/zero-gate paths, including the sequence boundary.
+  GPU embedding_lookup_grad_backpropagates_smear_with_sequence_boundaries:
+  pass.
+  GPU learned_embedding_smear_backward_matches_reference: pass against the
+  complete host analytical reference for embedding, lambda, and all twelve
+  gate gradients.
+  Diagnostic-only one-step trace
+  target/runs/20260719_163245Z_fineweb_900s reported one finite/nonzero
+  embedding-smear gradient at zero initialization, zero zero-grad changes,
+  and finite held-out evaluation. This was not keep/revert evidence.
+fixed_and_ramped_screens:
+  Fixed c=0.07 target/runs/20260719_161207Z_fineweb_30s was 0.426308%
+  lower than same-binary c=0 control
+  target/runs/20260719_161248Z_fineweb_30s at common step 50
+  (6.5111465 versus 6.5390229). c=0.04
+  target/runs/20260719_161337Z_fineweb_30s and c=0.10
+  target/runs/20260719_161415Z_fineweb_30s were weaker, so 0.07 advanced.
+  At 201 identical updates, fixed c=0.07
+  target/runs/20260719_161500Z_fineweb_900s had held-out
+  val_loss=5.574649 versus 5.569151 for c=0 control
+  target/runs/20260719_161617Z_fineweb_900s: 0.098722% worse. It was lower
+  on sampled train batches at steps 0/50/150 but higher at 100/200.
+  Ramping 0->0.07 over 83 steps
+  target/runs/20260719_162013Z_fineweb_900s preserved identical step-0 loss
+  but finished at val_loss=5.570631, still 0.026575% worse than control.
+learned_screens:
+  Normal-LR learned smear target/runs/20260719_163320Z_fineweb_30s began
+  identically and was 0.172900% lower than disabled control
+  target/runs/20260719_163356Z_fineweb_30s at common step 50
+  (6.5188150 versus 6.5301056). Its 201-step run
+  target/runs/20260719_163451Z_fineweb_900s reached val_loss=5.581730
+  versus 5.564546 for fresh disabled control
+  target/runs/20260719_163611Z_fineweb_900s: 0.308812% worse.
+  LR=0.25 target/runs/20260719_164047Z_fineweb_30s and LR=0.5
+  target/runs/20260719_164132Z_fineweb_30s retained small step-50 gains;
+  0.25 was the better bracket and advanced. At 201 steps, LR=0.25
+  target/runs/20260719_164227Z_fineweb_900s was lower on sampled training
+  batches at steps 50/100/150 but turned higher at step 200 and reached
+  val_loss=5.570780, 0.112031% worse than control. Final LR=0.1
+  target/runs/20260719_164401Z_fineweb_900s was worse at every noninitial
+  common train sample and 0.344538% worse held-out.
+  Every sustained candidate remained finite and reported zero skipped updates.
+decision:
+  Reject without profiling or a 450-second run. The attractive early/common
+  training-batch signal did not become a held-out improvement in any fixed,
+  ramped, faithful learned, or learned-LR formulation. Slowing the learned
+  gate reduced its first held-out regression but did not reverse it, and the
+  final lower-LR confirmation was clearly worse. The successful upstream
+  result may require its much larger token exposure and surrounding
+  architecture; it does not transfer at this local screening horizon.
+  Remove every smear parameter, kernel, optimizer, checkpoint, environment,
+  and test change; rebuild the accepted gated-XSA parent exactly; retain only
+  this evidence.
+```
+
+```text
+date: 2026-07-19
 commit: passing gated-XSA source promoted in this JJ change
 experiment: Zero-initialized learned Exclusive Self Attention gates on every
   compatible full-attention and KDA mixer.
