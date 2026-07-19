@@ -30918,3 +30918,99 @@ decision:
   450-second gate. Remove the implementation, exactly rebuild the accepted
   source, retain only this record, and continue loss-method research.
 ```
+
+```text
+date: 2026-07-19
+commit: note-only rejection; linearized heavy-tail correction implementation
+  removed after optimized matched-step resolution
+experiment: First-order heavy-tail spectral correction added to the existing
+  Hyperball/NorMuon polar update.
+status: rejected_after_due_diligence; no_450s
+sources:
+  https://arxiv.org/abs/2603.10067
+  https://github.com/TDCSZ327/HTmuon
+rationale:
+  HTMuon replaces Muon's polar factor U V^T with U Sigma^p V^T and reports
+  lower loss/perplexity, including a LLaMA-1B C4 comparison. Exact SVD or a
+  matrix-root Newton-Schulz path would be prohibitively expensive in this
+  fixed-time single-GPU implementation. This experiment therefore tested an
+  explicitly approximate tangent direction, not exact HTMuon:
+    corrected = bounded_polar + mix * normalized_prepolar_momentum.
+  The paper's robust p=0.125 and a reference singular value of 0.125 imply the
+  initial tangent mix p / ((1-p) * sigma_ref) = 8/7. The complete
+  FineWeb/Llama-2 B4/S2048/L16/d2048/h32 model, all four full-attention and
+  twelve KDA blocks, value residuals, all 16 block-Top-K MLPs, NextLat,
+  objective, and accepted optimizer schedule remained active.
+bringup_and_health:
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+  The complete ignored optimizer GPU suite passed 26 tests, including both
+  rectangular Hyperball orientations and split prepare/finish references.
+  One-step candidate target/runs/20260719_061515Z_fineweb_900s and control
+  target/runs/20260719_061503Z_fineweb_900s produced val_loss 10.191010 and
+  10.168886. These were launch diagnostics only.
+  Candidate health run target/runs/20260719_061529Z_fineweb_30s completed 89
+  finite updates in 30.259s with val_loss=6.043778 and no instability.
+initial_fixed_step_admission:
+  Candidate target/runs/20260719_061621Z_fineweb_120s and control
+  target/runs/20260719_061703Z_fineweb_120s each completed 101 updates:
+    step 50:  6.509667873 versus 6.537697315, 0.428736% lower.
+    step 100: 6.391291618 versus 6.395010471, 0.058152% lower.
+    held-out: 5.965817 versus 5.960531, 0.088683% higher.
+  Candidate elapsed time was 34.579s versus 34.450s. The credible common-step
+  win at step 50 admitted the method for profiling and implementation
+  optimization despite the small held-out and cadence regressions.
+profiling_and_optimization:
+  Initial 20-step profiles
+  target/nsys/linearized_htsc_candidate_b4s2048_20_20260719T0620Z.nsys-rep
+  and
+  target/nsys/linearized_htsc_control_b4s2048_20_20260719T0620Z.nsys-rep
+  measured 7076.026935ms and 7003.786367ms total GPU-kernel time. The scalar
+  correction materialization consumed 97.105310ms across 938 launches.
+  A correction-plus-NorMuon-stats fusion was rejected: it removed the
+  standalone pass but expanded stats from approximately 180ms to 449ms and
+  raised candidate total GPU time to 7217.189471ms. A 128-thread diagnostic
+  was also invalid because the fixed eight-warp shared reduction read
+  uninitialized warp slots and produced NaNs; it was immediately reverted.
+  The retained optimization vectorized the standalone correction into
+  read-only f32x2 loads and f32x2 stores. Profile
+  target/nsys/linearized_htsc_vec2_candidate_b4s2048_20_20260719T0641Z.nsys-rep
+  reduced the correction to 66.528811ms, 31.487978% below the scalar version.
+  Total GPU-kernel time became 7006.530236ms, only 0.039177% above the paired
+  7003.786367ms control. One-step val_loss remained bit-identical at
+  10.191010, confirming the optimized materialization preserved the tested
+  algorithm.
+strength_sweep_at_101_steps:
+  All runs used TRAIN_LOG_INTERVAL=50 and the same seed/model/data path.
+  Relative to control target/runs/20260719_061703Z_fineweb_120s:
+    mix 0.25, target/runs/20260719_064437Z_fineweb_120s:
+      step 50 0.216563% lower, step 100 0.030750% lower, held-out
+      val_loss=5.963845 or 0.055599% higher.
+    mix 0.50, target/runs/20260719_064519Z_fineweb_120s:
+      step 50 0.149790% lower, step 100 0.041040% higher, held-out
+      val_loss=5.959618 or 0.015317% lower.
+    mix 0.75, target/runs/20260719_064602Z_fineweb_120s:
+      step 50 0.287319% lower, step 100 0.085465% lower, held-out
+      val_loss=5.975044 or 0.243485% higher.
+  The samples crossed in both directions, and the sole held-out improvement
+  at mix 0.50 was too small to establish a persistent quality signal.
+fixed_201_step_resolution:
+  Fresh control target/runs/20260719_064709Z_fineweb_120s and optimized
+  mix-0.50 candidate target/runs/20260719_064827Z_fineweb_120s each completed
+  201 updates:
+    step 50:  6.522484779 versus 6.534815311, 0.188690% lower.
+    step 100: 6.401855946 versus 6.393125534, 0.136559% higher.
+    step 150: 5.783185959 versus 5.789378166, 0.106958% lower.
+    step 200: 5.747297764 versus 5.754450321, 0.124296% lower.
+    held-out: 5.602749 versus 5.591701, 0.197579% higher.
+  Candidate and control elapsed times were 69.302s and 68.260s. Both remained
+  finite with no unexpected skips. The mixed training samples and clearly
+  worse held-out result failed to reproduce a credible persistent advantage.
+decision:
+  Reject this linearized approximation after the profiling, fusion attempt,
+  vector optimization, strength sweep, and longer matched-step confirmation
+  required by its initial admission. Do not spend a 450-second gate on it.
+  Remove the implementation, exactly rebuild the accepted source, retain only
+  this record, and continue loss-method research. This result does not reject
+  exact HTMuon; it rejects this inexpensive first-order approximation in the
+  current Hyperball/NorMuon stack.
+```
