@@ -53,6 +53,94 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 
 ```text
 date: 2026-07-19
+commit: note-only rejection; all LAuReL-RW source, checkpoint, optimizer,
+  environment, and logging hooks removed before the clean rebuild
+experiment: LAuReL residual weights at every attention and MLP residual
+  junction.
+status: rejected_at_matched_step_admission; no_profile; no_450s
+sources:
+  https://arxiv.org/abs/2411.07501
+  https://proceedings.mlr.press/v267/menghani25a.html
+rationale:
+  LAuReL-RW replaces a canonical residual y=f(x)+x with
+    y=alpha*f(x)+beta*x
+  and bounds the learned scalar weights with sigmoid or softmax
+  normalization. Its controlled 157.2M-parameter C4 ablation reports test
+  loss 2.9557 versus 3.0159 for the same 24-layer baseline after about 10B
+  tokens, approximately 1.997% lower. The paper reports two learned weights
+  per residual and separately suggests a one-parameter sigmoid form when the
+  two parameters need to be compressed. It does not prescribe the exact
+  normalization or baseline-preserving initialization, so both local forms
+  below used 2*sigmoid(0)=1 at initialization.
+scope:
+  The complete FineWeb/Llama-2 B4/S2048/L16/d2048/h32 model remained active:
+  all four full-attention and twelve KDA blocks, all 16 block-Top-K MLPs,
+  value residuals, NextLat, tokenizer, objective, Selective Attention, and
+  the accepted Ember plus Hyperball/Muon-VS optimizer stack. No layer,
+  branch, token, or objective term was removed.
+implementation_and_correctness:
+  The weighted forward epilogue was fused into the existing attention c_proj
+  and MLP down TMA kernels. Backward reused the saved FP16 residual boundaries
+  and existing QKV scratch, so the candidate added no model-width activation
+  tape. Scalar gradients were reduced on GPU and updated with zero-decay Adam.
+  The optional one-parameter form used alpha=2*sigmoid(p) and beta=2-alpha.
+  The two-parameter form used independently bounded
+  alpha=2*sigmoid(p_alpha), beta=2*sigmoid(p_beta).
+  For both implementations:
+    cargo fmt --all and cargo check --workspace --lib --bins: pass.
+    TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+  A focused ignored CUDA test passed against the analytical residual and
+  scalar-gradient reference and verified the p=0 baseline. One-step runs
+  target/runs/20260719_224324Z_fineweb_900s and
+  target/runs/20260719_224941Z_fineweb_900s were launch diagnostics only.
+one_parameter_screen:
+  Candidate health run target/runs/20260719_224342Z_fineweb_30s completed 83
+  finite iterations in 30.005s with val_loss=5.975007; disabled control
+  target/runs/20260719_224421Z_fineweb_30s completed 84 in 30.025s with
+  val_loss=5.967817. At their shared step 50, candidate loss 6.415585995 was
+  only 0.030278% below control 6.417529106, so the health screen was
+  inconclusive rather than promotion evidence.
+  Candidate target/runs/20260719_224520Z_fineweb_900s and disabled control
+  target/runs/20260719_224637Z_fineweb_900s then completed exactly 200
+  iterations:
+    step 50:  6.412325859 versus 6.415192604, 0.044687% lower.
+    step 100: 6.321453094 versus 6.319190979, 0.035798% higher.
+    step 150: 5.591174126 versus 5.601295948, 0.180705% lower.
+    step 199: 6.354960442 versus 6.334170341, 0.328221% higher.
+    held-out: 5.476267 versus 5.482666, 0.116713% lower.
+    elapsed: 73.332s versus 72.892s, 0.603633% slower.
+  The held-out edge was below the observed noise scale and the common-step
+  samples crossed twice, so this compressed form did not establish the
+  repeated same-step improvement required for optimization.
+two_parameter_resolution:
+  Because the paper's reported RW experiment uses two learned parameters, the
+  candidate was corrected before rejecting the method. Candidate
+  target/runs/20260719_225034Z_fineweb_900s and fresh same-binary control
+  target/runs/20260719_225200Z_fineweb_900s each completed exactly 200
+  iterations:
+    step 50:  6.420151711 versus 6.424512863, 0.067883% lower.
+    step 100: 6.340065002 versus 6.324481964, 0.246392% higher.
+    step 150: 5.631610394 versus 5.610310555, 0.379655% higher.
+    step 199: 6.346243858 versus 6.356439114, 0.160393% lower.
+    held-out: 5.493937 versus 5.471994, 0.401006% higher.
+    elapsed: 73.134s versus 72.659s, 0.653739% slower.
+  Every logged sample in all four 200-iteration runs was finite/nonzero and
+  every update-skip counter was zero. The two-weight curve again crossed in
+  both directions and finished clearly worse on held-out loss.
+decision:
+  Reject both local LAuReL-RW realizations at matched-step admission. Neither
+  produced a credible persistent loss-per-update improvement, so the
+  structural rule does not justify profiling, kernel optimization, LR tuning,
+  or a 450-second promotion gate. This does not contradict the paper's
+  long-token result; it rejects LAuReL-RW for the current short fixed-budget
+  optimizer/model regime. All implementation was removed. The accepted parent
+  source passed the exact sm_120a rebuild, and post-restore diagnostic
+  target/runs/20260719_225905Z_fineweb_900s completed one finite update with
+  val_loss=9.594919. That run is launch evidence only.
+```
+
+```text
+date: 2026-07-19
 commit: accepted local JJ commit after matched-step admission, focused CUDA
   correctness validation, profiling, and a paired 450-second promotion gate
 experiment: Ember factored second-moment optimizer for the tied token
