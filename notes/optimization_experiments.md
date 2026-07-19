@@ -53,6 +53,105 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 
 ```text
 date: 2026-07-19
+commit: note-only rejection; fused compatibility implementation removed
+experiment: Mode-1 K=2 TEON over pairs of fused full-attention QKV matrices.
+status: rejected_at_fresh_450s_control; source_removed
+source:
+  https://arxiv.org/abs/2601.23261
+rationale:
+  "TEON: Tensorized Orthonormalization Beyond Layer-Wise Muon for Large
+  Language Model Pre-Training" stacks same-type momentum matrices from two
+  consecutive layers, unfolds the resulting tensor along mode 1, and applies
+  the ordinary Muon orthogonalization to the m-by-(2n) matrix. The paper's
+  ablations choose K=2, mode 1, Q/K/V only, and Polar Express. Its 1B
+  LLaMA/FineWeb result reports validation perplexity 10.84 versus 11.19 for
+  layer-wise Muon.
+scope_and_fidelity:
+  The complete FineWeb/Llama-2 B4/S2048/L16/d2048/h32 model remained active:
+  all four full-attention and twelve KDA blocks, value residuals, all sixteen
+  block-Top-K ReLU-squared MLPs, query-dependent headwise attention gates,
+  NextLat, SymExpLin, tokenizer, objective, and every backward path remained.
+  This was explicitly a local fused-matrix compatibility probe, not an exact
+  reproduction of TEON. The active architecture has full attention only in
+  blocks 3, 7, 11, and 15, so it paired those four matrices as (3,7) and
+  (11,15), rather than pairing adjacent transformer layers. The local Q/K/V
+  weights are one fused 2048-by-6176 optimizer matrix including 32 gate
+  columns; the experiment jointly orthogonalized each complete active fused
+  matrix rather than running three independent same-type Q, K, and V groups.
+  KDA matrices and all non-QKV matrices retained the accepted optimizer.
+implementation:
+  TRAIN_TEON_QKV selected a same-binary path only on polar steps. It updated
+  the accepted AMUSE/Muon-VS momentum and variance states for both matrices,
+  packed their rows into the exact mode-1 2048-by-12352 layout, ran the
+  existing five-iteration Polar Express implementation once, and unpacked the
+  two slices. Each slice then retained its accepted per-matrix NorMuon,
+  Hyperball, schedule-free averaging, Q/K clipping, SymExpLin materialization,
+  and deferred NVFP4 quantization. Sign steps were unchanged.
+correctness:
+  cargo fmt --all, cargo check --workspace, the focused TEON test target, and
+  git diff --check passed. Every device revision used the exact required
+  rebuild:
+    TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a
+  A standalone rebuilt-PTX GPU test independently checked both momentum and
+  BF16 Muon-VS state updates, the row-interleaved mode-1 layout, joint
+  normalization, and exact slice unpacking against an FP32 host reference.
+bringup_and_health:
+  One-update candidate target/runs/20260719_130048Z_fineweb_900s reached
+  finite val_loss=9.599772. Same-binary control
+  target/runs/20260719_130059Z_fineweb_900s reproduced val_loss=9.784029.
+  The 1.883243% diagnostic edge was not promotion evidence.
+  Candidate target/runs/20260719_130110Z_fineweb_30s completed 87 finite
+  updates in 30.193s with val_loss=6.021395. Same-binary control
+  target/runs/20260719_130153Z_fineweb_30s completed 86 updates in 30.129s
+  with val_loss=6.022305. At common step 50, candidate training loss was
+  6.532435 versus 6.527536, 0.075044% worse. No stability counter fired.
+matched_step_resolution:
+  At exactly 201 updates:
+    candidate target/runs/20260719_130253Z_fineweb_900s:
+      val_loss=5.578968 in 70.623s.
+    control target/runs/20260719_130413Z_fineweb_900s:
+      val_loss=5.571120 in 71.124s.
+  Candidate held-out loss was 0.140869% worse, while training loss crossed
+  from worse at step 50 to lower at steps 100, 150, and 200. The smallest
+  longer bracket therefore resolved whether the paper's later advantage was
+  emerging.
+  At exactly 401 updates:
+    candidate target/runs/20260719_130807Z_fineweb_900s:
+      val_loss=5.171850 in 141.194s.
+    control target/runs/20260719_131035Z_fineweb_900s:
+      val_loss=5.172400 in 142.766s.
+  Candidate training loss was lower at every logged step from 50 through 400,
+  ending 5.842502 versus 5.885768, and elapsed time was 1.101103% lower.
+  Held-out loss, however, was lower by only 0.010633%. The persistent training
+  curve plus recovered runtime admitted the required fixed-time check, but did
+  not by itself establish promotion.
+fixed_time_gate:
+  Candidate target/runs/20260719_131406Z_fineweb_450s completed 1264 updates
+  in 450.245s with held-out val_loss=4.438578. It was lower than the older
+  accepted target/runs/20260719_112813Z_fineweb_450s, demonstrating why a
+  fresh control was necessary rather than treating cross-run drift as a win.
+  Fresh same-binary control target/runs/20260719_132153Z_fineweb_450s completed
+  1262 updates in 450.084s with held-out val_loss=4.430127. The candidate
+  processed 0.158479% more steps but had 0.190762% worse validation loss.
+decision:
+  Reject this fused full-attention TEON compatibility form. It received the
+  full structural due diligence because its later training curve improved and
+  its implementation was already faster, but it failed the decisive fresh
+  fixed-time held-out comparison. Remove the implementation and environment
+  control; retain only this record.
+  This result does not reject paper-faithful TEON. Independently pairing Q,
+  K, and V from adjacent hybrid-attention layers would require strided
+  submatrix optimizer state plus a separate update for the fused KDA/gate
+  columns, and was not represented by this experiment.
+post_restore:
+  The accepted parent passed a fresh exact sm_120a rebuild. Post-restore
+  diagnostic target/runs/20260719_133024Z_fineweb_900s completed one real
+  update with finite val_loss=9.784029, exactly restoring the accepted result.
+  This one-step run is launch evidence only.
+```
+
+```text
+date: 2026-07-19
 commit: note-only rejection; factorized source removed
 experiment: SymExpLin row-by-column multiplicative controls for every hidden
   matrix, replacing the accepted learned-global e, l, and m controls.
