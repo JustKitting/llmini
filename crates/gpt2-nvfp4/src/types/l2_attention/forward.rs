@@ -1,6 +1,7 @@
 use cuda_core::DriverError;
 use rust_kernels_cuda::attention::{
-    ApplyRopeArgs, CaptureValueResidualArgs, CausalAttentionTcArgs, MixValueResidualArgs,
+    ApplyRopeArgs, CaptureValueResidualArgs, CausalAttentionTcArgs,
+    HeadwiseAttentionGateForwardArgs, MixValueResidualArgs,
 };
 use rust_kernels_cuda::nvfp4_tma_matmul::{
     pad::U4RowPadArgs, scale_layout::sm120_scale_padded_mn_extent,
@@ -8,7 +9,10 @@ use rust_kernels_cuda::nvfp4_tma_matmul::{
 
 use super::tensors::AttentionForwardArgs;
 use crate::types::HiddenStateDevice;
-use crate::{AttentionDims, GPT2_FULL_ATTENTION_WINDOW};
+use crate::{
+    AttentionDims, GPT2_FULL_ATTENTION_WINDOW, attention_headwise_gate_enabled,
+    attention_headwise_gate_offset,
+};
 
 pub(super) fn forward<'a, 'scratch>(
     args: AttentionForwardArgs<'a, 'scratch>,
@@ -172,6 +176,38 @@ pub(super) fn forward<'a, 'scratch>(
         args.module.causal_attention_tc(attention_args)?;
     } else {
         args.module.kda_attention_tc(attention_args)?;
+    }
+
+    if attention_headwise_gate_enabled() {
+        let (qkv_f16, raw_out_f16) = match tape.as_mut() {
+            Some(tape) if args.use_full_attention => {
+                (Some(&mut *tape.qkv_f16), Some(&mut *tape.attention_out_f16))
+            }
+            Some(tape) => (
+                Some(&mut *tape.qkv_f16),
+                Some(
+                    &mut **tape
+                        .headwise_gate_input_f16
+                        .as_mut()
+                        .expect("KDA headwise gate requires a raw-output tape"),
+                ),
+            ),
+            None => (None, None),
+        };
+        args.module
+            .headwise_attention_gate_forward(HeadwiseAttentionGateForwardArgs {
+                stream: hidden.stream,
+                qkv: &*args.qkv,
+                out: &mut *hidden.normalized,
+                qkv_f16,
+                raw_out_f16,
+                row_count: hidden.row_count,
+                embedding_dim: dims.embedding_dim,
+                qkv_dim: dims.qkv_dim,
+                head_count: dims.head_count,
+                head_dim: dims.head_dim,
+                gate_offset: attention_headwise_gate_offset(args.use_full_attention) as u32,
+            })?;
     }
 
     input_nvfp4.quantize_row_amax(

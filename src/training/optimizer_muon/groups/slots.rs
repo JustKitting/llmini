@@ -2,7 +2,7 @@ use std::cmp::Reverse;
 
 use gpt2_nvfp4::{
     AttentionDims, GPT2_MLP, GPT2_N_EMBD, GPT2_N_LAYER, NEXTLAT_HIDDEN, NEXTLAT_INPUT,
-    uses_full_attention,
+    attention_trainable_qkv_dim, uses_full_attention,
 };
 use rust_kernels_cuda::optimizer::MUON_MATRIX_PHASES;
 
@@ -40,7 +40,10 @@ fn all_slots(
         let dims = AttentionDims::new(uses_full_attention(i));
         rows.push(
             ptrs::qkv(uploaded, grads, state, i)
-                .shape(GPT2_N_EMBD, dims.qkv_dim as usize)
+                .shape(
+                    GPT2_N_EMBD,
+                    attention_trainable_qkv_dim(uses_full_attention(i)),
+                )
                 .qk_clip(i * dims.head_count as usize, dims.head_dim as usize),
         );
     }

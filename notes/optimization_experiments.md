@@ -30601,3 +30601,136 @@ decision:
   optimize. Remove it, exactly rebuild the accepted source, and retain only
   this experiment record.
 ```
+
+```text
+date: 2026-07-19
+commit: accepted working-copy experiment after matched-step admission,
+  due-diligence optimization, repeated matched-step screen, and one
+  450-second promotion gate
+experiment: Query-dependent headwise sigmoid gate after every attention mixer
+  and before c_proj.
+status: accepted_450s
+sources:
+  https://arxiv.org/abs/2505.06708
+  https://github.com/qiuzh20/gated_attention
+rationale:
+  Gated Attention identifies the post-SDPA/pre-output-projection placement as
+  its strongest gate location and reports that a query-dependent headwise
+  sigmoid gate captures most of the elementwise gate's quality gain with only
+  one scalar per token and head. The earlier local elementwise gate was
+  rejected from a mixed 200-step curve, while an older local headwise gate had
+  been judged only by a much slower unequal-step 450-second endpoint. The
+  latter did not establish matched-exposure harm and therefore was not a valid
+  rejection under the active structural-method rule. This experiment retested
+  the genuinely cheaper headwise topology from a clean implementation.
+admission_rule:
+  Structural or architecture status was neither an exemption nor a rejection
+  criterion. The sole condition for profiling and implementation optimization
+  was a credible training-loss improvement at identical optimizer steps. A
+  450-second run was reserved for the optimized implementation only after it
+  repeated that matched-step improvement.
+implementation:
+  Preserved the complete FineWeb/Llama-2 B4/S2048/L16/d2048/h32 model, all
+  four full-attention and twelve KDA blocks, all value-residual paths,
+  block-Top-K MLPs, NextLat, data, tokenizer, objective, and accepted
+  Hyperball/Muon-VS optimizer. Each attention QKV projection now emits 32
+  extra query-dependent logits, one per head and token. Forward computes
+    y[t,h,:] = raw_attention[t,h,:] * sigmoid(g[t,h])
+  immediately after the full-attention or KDA mixer and before c_proj.
+  Reverse mode computes
+    d_raw = d_y * sigmoid(g)
+    d_g = sum_dim(d_y * raw_attention) * sigmoid(g) * (1-sigmoid(g)).
+  Full-attention gate rows begin at projection row 6144 and use a 6272-row
+  padded work shape so the real 6176 trainable rows retain the aligned fast
+  projection path without changing Muon's matrix geometry. KDA consumes 32
+  existing padding rows beginning at row 8224 inside its unchanged 8320-row
+  allocation. Full attention reuses its existing raw-output FP16 tape; KDA
+  allocates that tape only when the gate is enabled. TRAIN_ATTENTION_HEADWISE_GATE=0
+  remains a same-binary disabled control.
+correctness:
+  cargo fmt --all: pass.
+  cargo check --workspace: pass.
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+  CUDA_DEVICE_INDEX=0 cargo test -p rust-kernels-cuda --release
+    --test headwise_attention_gate -- --ignored --nocapture --test-threads=1:
+    1 passed, covering forward output, the FP16 raw-output tape, d_raw, d_g,
+    per-row gate amax, and explicit padding-gradient zeroing.
+  CUDA_DEVICE_INDEX=0 TRAIN_ATTENTION_HEADWISE_GATE=1 cargo test
+    -p gpt2-nvfp4 --release --test block_attention_backward
+    -- --ignored --nocapture --test-threads=1:
+    1 passed through the complete KDA backward chain.
+  target/runs/20260719_035433Z_fineweb_900s was a one-step launch diagnostic
+  only. It confirmed the intact model topology and one finite/nonzero update
+  with no skip counters; it was not acceptance evidence.
+  After promotion and the final exact rebuild,
+  target/runs/20260719_042938Z_fineweb_900s was a second one-step dispatch
+  diagnostic only. With TRAIN_ATTENTION_HEADWISE_GATE absent, run metadata
+  reported attention_headwise_gate_enabled=true on the intact model and the
+  update was finite/nonzero with no skip. The sustained gate below remains the
+  acceptance evidence.
+initial_matched_step_screen:
+  Correctness-first candidate target/runs/20260719_035507Z_fineweb_30s
+  completed 77 steps; disabled control
+  target/runs/20260719_035549Z_fineweb_30s completed 91. At the common
+  step-50 sample, candidate loss was 6.522781849 versus 6.561082840,
+  0.583760% lower. Step zero differed by only +0.080383%. Both samples were
+  finite/nonzero with every skip counter zero. The step-50 loss win was the
+  sole admission reason for profiling; the approximately 18% first-pass
+  slowdown did not reject the method.
+due_diligence_optimization:
+  Nsight Systems showed the correctness-first 6176-row full-attention
+  projection falling off the aligned backward path:
+  linear_backward_projection_device_scale_kernel consumed 257.959092ms over
+  40 launches in five profiled training steps, or about 51.592ms per step.
+  Padding projection work to 6272 rows eliminated that fallback while keeping
+  only 6176 rows in the Muon slot. Replacing the serial gate reduction with
+  eight warps per token row and folding gate amax into the same block reduced
+  headwise gate backward from 24.535911ms to 5.604271ms across 80 launches in
+  the same five-step profile. The optimized explicit gate kernels cost roughly
+  2.6ms per training step, recovering the large implementation artifact before
+  the method was judged again.
+repeated_matched_step_screen:
+  Optimized candidate target/runs/20260719_041224Z_fineweb_30s completed
+  90 steps in 30.160s with held-out val_loss=6.021652. Disabled same-binary
+  control target/runs/20260719_041301Z_fineweb_30s completed 91 steps in
+  30.259s with held-out val_loss=6.029288.
+    step 0:  10.750482559 versus 10.741847992, 0.080383% worse.
+    step 50:  6.524116516 versus  6.542781353, 0.285274% better.
+  Both samples were finite/nonzero and every skip counter was zero. Candidate
+  cadence was 335.111ms/step versus 332.516ms/step, 0.780% slower. The repeated
+  common-step win, not either unequal-step endpoint, qualified the optimized
+  implementation for the one promotion gate.
+promotion_gate:
+  Candidate target/runs/20260719_041701Z_fineweb_450s completed 1316 updates
+  in 450.209s with held-out val_loss=4.554121017456055.
+  Against the active best baseline
+  target/runs/20260718_195107Z_fineweb_450s:
+    held-out loss: 4.554121 versus 4.575288, 0.462633% lower.
+    completed steps: 1316 versus 1355, 2.878229% fewer.
+    mean step time: 342.104ms versus 332.285ms, 2.955065% slower.
+    matched curve: lower at 25 of 26 noninitial common samples, with a
+      0.586657% mean advantage and every sample from step 400 through 1300
+      lower. The last eight samples average 0.954669% lower.
+  Against the currently accepted Muon-VS implementation gate
+  target/runs/20260719_023053Z_fineweb_450s:
+    held-out loss: 4.554121 versus 4.577050, 0.500955% lower.
+    completed steps: 1316 versus 1336, 1.497006% fewer.
+    mean step time is 1.513894% slower.
+    matched curve is lower at 16 of 26 noninitial samples overall and all
+      eight samples from step 950 through 1300, where it averages 0.593819%
+      lower.
+stability:
+  All 27 high-fidelity samples have Finite=1 and Nonzero=1.
+  Update_skipped, Skip_non_finite, Skip_loss_spike, and
+  Skip_grad_norm_spike are zero throughout. Sampled grad_norm remains finite
+  from 0.778393 to 3.373127. Training loss reaches 4.491278 and remains finite
+  through the last step-1300 sample.
+decision:
+  Accept the optimized headwise attention gate and make it the default.
+  Despite its remaining throughput cost, it lowers the actual fixed-time
+  held-out endpoint against both the active best baseline and the currently
+  accepted optimizer gate, while its repeated common-step advantage becomes
+  stronger late in training. notes/sweep_baseline.env now points to this
+  450-second run and records TRAIN_ATTENTION_HEADWISE_GATE=1 for explicit
+  reproducibility.
+```

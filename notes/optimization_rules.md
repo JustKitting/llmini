@@ -23,6 +23,9 @@ working structural candidate for 450 seconds:
   against control step 50, is the sole condition for beginning due-diligence
   profiling and implementation optimization. The candidate does not need to
   win a 450-second held-out run before that work begins.
+- Structural or architecture status is irrelevant to admission: it neither
+  advances nor rejects a candidate. The only admission condition is a credible
+  loss improvement at identical optimizer steps.
 - A schedule parameter that is mathematically dormant for the entire
   30-second window must instead use a matched fixed-step diagnostic after the
   parameter activates. For the current 83-step warmup, use 200 completed

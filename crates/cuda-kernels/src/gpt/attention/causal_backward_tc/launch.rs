@@ -179,10 +179,10 @@ impl AttentionModule {
             params.head_count * params.head_dim,
             "full-attention embedding must equal head_count * head_dim"
         );
-        assert_eq!(
-            params.qkv_dim,
-            3 * params.embedding_dim,
-            "full-attention output must contain contiguous Q, K, and V sections"
+        assert!(
+            params.qkv_dim == 3 * params.embedding_dim
+                || params.qkv_dim >= 3 * params.embedding_dim + params.head_count,
+            "full-attention output must contain contiguous Q, K, V, optional head-gate, and padding sections"
         );
         let chunk_count = 3 * params.row_count;
         assert!(d_qkv_chunk_amax.len() >= chunk_count as usize);

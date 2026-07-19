@@ -19,6 +19,7 @@ impl<'a> BlockForwardTape<'a> {
             qkv_input_nvfp4: self.qkv_input_nvfp4.saved(),
             qkv: &*self.qkv,
             attention_out: &*self.attention_out,
+            headwise_gate_input: self.headwise_gate_input.as_ref().map(|buffer| &**buffer),
             attention_probs: self.attention_probs.as_ref().map(|buffer| &**buffer),
             kda_v_new: self.kda_v_new.as_ref().map(|buffer| &**buffer),
             kda_akk_inv: self.kda_akk_inv.as_ref().map(|buffer| &**buffer),
@@ -40,6 +41,10 @@ impl<'a> BlockForwardTape<'a> {
             qkv_input_nvfp4: self.qkv_input_nvfp4.reborrow(),
             qkv: &mut *self.qkv,
             attention_out: &mut *self.attention_out,
+            headwise_gate_input: self
+                .headwise_gate_input
+                .as_mut()
+                .map(|buffer| &mut **buffer),
             attention_probs: self.attention_probs.as_mut().map(|buffer| &mut **buffer),
             kda_v_new: self.kda_v_new.as_mut().map(|buffer| &mut **buffer),
             kda_akk_inv: self.kda_akk_inv.as_mut().map(|buffer| &mut **buffer),
@@ -60,6 +65,10 @@ impl<'a> BlockForwardTape<'a> {
             qkv_input_nvfp4: self.qkv_input_nvfp4.reborrow(),
             qkv_f16: &mut *self.qkv,
             attention_out_f16: &mut *self.attention_out,
+            headwise_gate_input_f16: self
+                .headwise_gate_input
+                .as_mut()
+                .map(|buffer| &mut **buffer),
             attention_probs_f16: self.attention_probs.as_mut().map(|buffer| &mut **buffer),
             kda_v_new: self.kda_v_new.as_mut().map(|buffer| &mut **buffer),
             kda_akk_inv: self.kda_akk_inv.as_mut().map(|buffer| &mut **buffer),

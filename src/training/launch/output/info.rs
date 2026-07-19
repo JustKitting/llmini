@@ -81,6 +81,11 @@ pub(in crate::training::launch) fn build_run_info(dataset: &str, config: &TrainC
         "muon_vs_enabled",
         crate::training::optimizer_muon::muon_vs_enabled(),
     );
+    push_info(
+        &mut info,
+        "attention_headwise_gate_enabled",
+        gpt2_nvfp4::attention_headwise_gate_enabled(),
+    );
     push_info(&mut info, "step_cap", config.step_cap);
     push_info(&mut info, "log_interval", config.log_interval);
     push_info(&mut info, "max_seconds", config.max_seconds);
@@ -118,6 +123,7 @@ fn push_run_env(info: &mut String) {
         "TRAIN_HYPERBALL_POLAR_PERIOD",
         "TRAIN_HYPERBALL_POLAR_NUMERATOR",
         "TRAIN_MUON_VS",
+        "TRAIN_ATTENTION_HEADWISE_GATE",
         "TRAIN_NEXTLAT_LOSS_WEIGHT",
         "TRAIN_SKIP_UNSTABLE_UPDATES",
         "TRAIN_SKIP_ROLLING_INTERVAL",

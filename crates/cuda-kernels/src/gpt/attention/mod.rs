@@ -1,6 +1,7 @@
 mod causal;
 mod causal_backward_tc;
 mod causal_tc;
+mod headwise_gate;
 pub(crate) mod layout;
 mod qkv_projection;
 mod rope;
@@ -15,6 +16,7 @@ pub(crate) const QK_NORM_EPS: f32 = 1.0e-12;
 pub use causal::{CausalAttentionArgs, CausalAttentionParams};
 pub use causal_backward_tc::{CausalAttentionBackwardTcArgs, CausalAttentionBackwardTcScratch};
 pub use causal_tc::{CausalAttentionTcArgs, CausalAttentionTcScratch};
+pub use headwise_gate::{HeadwiseAttentionGateBackwardArgs, HeadwiseAttentionGateForwardArgs};
 pub use qkv_projection::{CProjArgs, QkvProjectionArgs, QkvProjectionParams};
 pub use rope::{ApplyRopeArgs, ApplyRopeParams};
 pub use value_residual::{
@@ -27,6 +29,7 @@ pub struct AttentionModule {
     causal_attention: causal::kernels::LoadedModule,
     causal_attention_backward_tc: causal_backward_tc::kernels::LoadedModule,
     causal_attention_tc: causal_tc::kernels::LoadedModule,
+    headwise_gate: headwise_gate::kernels::LoadedModule,
     rope: rope::kernels::LoadedModule,
     value_residual: value_residual::kernels::LoadedModule,
 }
@@ -38,6 +41,7 @@ impl AttentionModule {
             causal_attention: causal::kernels::from_module(module.clone())?,
             causal_attention_backward_tc: causal_backward_tc::kernels::from_module(module.clone())?,
             causal_attention_tc: causal_tc::kernels::from_module(module.clone())?,
+            headwise_gate: headwise_gate::kernels::from_module(module.clone())?,
             rope: rope::kernels::from_module(module.clone())?,
             value_residual: value_residual::kernels::from_module(module)?,
         })

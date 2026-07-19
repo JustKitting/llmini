@@ -17,6 +17,8 @@ pub const GPT2_MLP_DENSE_PREFIX_LAYERS: usize = 1;
 pub const GPT2_VALUE_RESIDUAL_LAYERS: usize = 3 * GPT2_N_LAYER / 8;
 pub const GPT2_VALUE_RESIDUAL_START_LAYER: usize = GPT2_N_LAYER - GPT2_VALUE_RESIDUAL_LAYERS;
 pub const GPT2_FULL_ATTENTION_QKV: usize = 3 * GPT2_N_EMBD;
+pub const GPT2_FULL_ATTENTION_GATED_QKV: usize =
+    align_up(GPT2_FULL_ATTENTION_QKV + GPT2_N_HEAD, 128);
 pub const GPT2_QK_SCALE_STORAGE: usize = 16;
 pub const GPT2_ATTENTION_BACKWARD_TILE_BUDGET: f32 = 12.0;
 pub const GPT2_KDA_ACTIVE_QKV: usize = 4 * GPT2_N_EMBD + GPT2_N_HEAD;
@@ -30,6 +32,8 @@ pub const GPT2_K_OFFSET: usize = GPT2_N_EMBD;
 pub const GPT2_V_OFFSET: usize = 2 * GPT2_N_EMBD;
 pub const GPT2_KDA_G_OFFSET: usize = 3 * GPT2_N_EMBD;
 pub const GPT2_KDA_BETA_OFFSET: usize = 4 * GPT2_N_EMBD;
+pub const GPT2_FULL_ATTENTION_GATE_OFFSET: usize = GPT2_FULL_ATTENTION_QKV;
+pub const GPT2_KDA_GATE_OFFSET: usize = GPT2_KDA_BETA_OFFSET + GPT2_N_HEAD;
 pub const KDA_CHUNK_SIZE: usize = 64;
 pub const KDA_DECAY_SCALE: f32 = 0.01;
 pub const NEXTLAT_INPUT: usize = 2 * GPT2_N_EMBD;
@@ -92,13 +96,42 @@ pub struct AttentionDims {
 }
 
 impl AttentionDims {
-    pub const fn new(use_full_attention: bool) -> Self {
+    pub fn new(use_full_attention: bool) -> Self {
+        let mut qkv_dim = Gpt2Config::attention_qkv_dim(use_full_attention);
+        if use_full_attention && attention_headwise_gate_enabled() {
+            qkv_dim = GPT2_FULL_ATTENTION_GATED_QKV;
+        }
         Self {
             embedding_dim: GPT2_EMBEDDING_DIM,
-            qkv_dim: Gpt2Config::attention_qkv_dim(use_full_attention) as u32,
+            qkv_dim: qkv_dim as u32,
             head_count: GPT2_N_HEAD as u32,
             head_dim: Gpt2Config::head_dim() as u32,
         }
+    }
+}
+
+pub fn attention_headwise_gate_enabled() -> bool {
+    std::env::var("TRAIN_ATTENTION_HEADWISE_GATE").map_or(true, |value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    })
+}
+
+pub const fn attention_headwise_gate_offset(use_full_attention: bool) -> usize {
+    if use_full_attention {
+        GPT2_FULL_ATTENTION_GATE_OFFSET
+    } else {
+        GPT2_KDA_GATE_OFFSET
+    }
+}
+
+pub fn attention_trainable_qkv_dim(use_full_attention: bool) -> usize {
+    if use_full_attention && attention_headwise_gate_enabled() {
+        GPT2_FULL_ATTENTION_QKV + GPT2_N_HEAD
+    } else {
+        Gpt2Config::attention_qkv_dim(use_full_attention)
     }
 }
 

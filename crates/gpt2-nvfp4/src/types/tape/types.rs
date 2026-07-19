@@ -13,6 +13,7 @@ pub struct BlockForwardTape<'a> {
     pub qkv_input_nvfp4: RowwiseNvfp4Tape<'a>,
     pub qkv: &'a mut DeviceBuffer<u16>,
     pub attention_out: &'a mut DeviceBuffer<u16>,
+    pub headwise_gate_input: Option<&'a mut DeviceBuffer<u16>>,
     pub attention_probs: Option<&'a mut DeviceBuffer<u16>>,
     pub kda_v_new: Option<&'a mut DeviceBuffer<f32>>,
     pub kda_akk_inv: Option<&'a mut DeviceBuffer<f32>>,

@@ -1,6 +1,7 @@
 use cuda_core::DriverError;
 use rust_kernels_cuda::attention::{
-    AccumulateValueResidualGradArgs, FinishValueResidualGradArgs, InitializeValueResidualGradArgs,
+    AccumulateValueResidualGradArgs, FinishValueResidualGradArgs,
+    HeadwiseAttentionGateBackwardArgs, InitializeValueResidualGradArgs,
 };
 
 use super::types::BlockAttentionBackwardArgs;
@@ -11,7 +12,10 @@ use crate::backward::{
     qkv_projection_backward,
 };
 use crate::types::BlockBackwardGrads;
-use crate::{AttentionDims, GPT2_N_LAYER, uses_value_residual};
+use crate::{
+    AttentionDims, GPT2_N_LAYER, attention_headwise_gate_enabled, attention_headwise_gate_offset,
+    uses_value_residual,
+};
 
 pub fn attention_side_backward(
     args: BlockAttentionBackwardArgs<'_, '_, '_>,
@@ -59,6 +63,38 @@ pub fn attention_side_backward(
         scratch: scratch.c_proj,
         seeds: seeds.c_proj,
     })?;
+    let gate_amax_offset = if use_full_attention {
+        3 * saved.row_count
+    } else {
+        4 * saved.row_count
+    };
+    if attention_headwise_gate_enabled() {
+        let raw_out = if use_full_attention {
+            saved.attention_out
+        } else {
+            saved
+                .headwise_gate_input
+                .expect("KDA headwise gate requires a saved raw-output tape")
+        };
+        let dims = AttentionDims::new(use_full_attention);
+        modules
+            .attention
+            .headwise_attention_gate_backward(HeadwiseAttentionGateBackwardArgs {
+                stream,
+                qkv_f16: saved.qkv,
+                raw_out_f16: raw_out,
+                d_out: &mut *d_hidden,
+                d_qkv: &mut *d_qkv,
+                d_qkv_chunk_amax: &mut *scratch.qkv.linear.e_h.chunk_amax,
+                gate_amax_offset,
+                row_count: saved.row_count,
+                embedding_dim: dims.embedding_dim,
+                qkv_dim: dims.qkv_dim,
+                head_count: dims.head_count,
+                head_dim: dims.head_dim,
+                gate_offset: attention_headwise_gate_offset(use_full_attention) as u32,
+            })?;
+    }
     let d_qkv_amax_chunks = causal_attention_backward(AttentionCoreBackwardArgs {
         block_index,
         use_full_attention,
@@ -75,6 +111,13 @@ pub fn attention_side_backward(
         scratch: scratch.core,
         backward_mask_seed: seeds.qkv.attention_mask_seed(),
     })?;
+    if attention_headwise_gate_enabled() {
+        assert_eq!(
+            d_qkv_amax_chunks,
+            Some(gate_amax_offset),
+            "gate amax chunks must immediately follow the attention-core chunks"
+        );
+    }
     let dims = AttentionDims::new(use_full_attention);
     let routes_value_residual = uses_value_residual(block_index);
     if routes_value_residual && block_index == GPT2_N_LAYER - 1 {
@@ -125,6 +168,11 @@ pub fn attention_side_backward(
         // Unrouted blocks can reuse the exact amax that core already produced.
         precomputed_d_qkv_amax_chunks: if block_index == 0 || routes_value_residual {
             None
+        } else if attention_headwise_gate_enabled() {
+            Some(
+                d_qkv_amax_chunks.expect("attention core must report gradient amax chunks")
+                    + saved.row_count,
+            )
         } else {
             d_qkv_amax_chunks
         },
