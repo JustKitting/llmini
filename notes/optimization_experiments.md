@@ -53,6 +53,141 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 
 ```text
 date: 2026-07-19
+commit: note-only rejection; complete bigram implementation removed
+experiment: Modded-NanoGPT-style signed bigram hash embedding injected before
+  every transformer block.
+status: rejected_at_fresh_450s_control_after_matched_step_gain; source_removed
+sources:
+  https://github.com/KellerJordan/modded-nanogpt
+  Current upstream implementation inspected at commit
+    edf47a05a12062d661c4cfd4eef848c5ab5bed32.
+  Original Bigram Hash Embedding record inspected at commit
+    b2e8f82f0432618ae12ad33ebc6af68e815e1c32.
+rationale:
+  Modded-NanoGPT's original record reports a material speed-to-loss
+  improvement from a zero-initialized learned bigram hash table injected at
+  every block. Current upstream retains the method with a 15-times-vocabulary
+  table, one-quarter-width vectors, a fixed random sign table, and learned
+  per-layer injection strengths. This is a genuine additional language-model
+  feature rather than removing, freezing, or shortening an existing path.
+  Admission was therefore based only on credible lower held-out loss at
+  identical optimizer steps. Initial runtime cost could not reject it.
+scope_and_implementation:
+  The complete FineWeb/Llama-2 B4/S2048/L16/d2048/h32 model remained active:
+  all four full-attention and twelve KDA blocks, value residuals, all sixteen
+  block-Top-K ReLU-squared MLPs, query-dependent headwise attention gates,
+  NextLat, SymExpLin, tokenizer, objective, and every existing backward path
+  were retained.
+  The candidate added a zero-initialized 480000-by-512 hash table
+  (245760000 parameters), an 8192-by-512 fixed random sign table, and sixteen
+  learned lambdas initialized to 0.05. For each token it computed
+    hash = ((36313*current) XOR (27191*previous)) mod 479999
+  and
+    sign_row = (current XOR previous) mod 8192.
+  Each local B4 sequence start used the reserved final hash row. The signed
+  vector was added to the first 512 residual coordinates before every one of
+  the sixteen blocks. Exact reverse mode accumulated every layer-lambda
+  gradient and atomically scattered the signed embedding gradient.
+  The correctness-first table used NVFP4 forward weights plus FP32
+  schedule-free Adam masters with beta1=0.75, beta2=0.95, 75-times base Adam
+  LR, and five-times Adam weight decay. Lambdas used beta1=0.9, beta2=0.95,
+  ordinary LR, and no decay.
+correctness:
+  cargo fmt --all and cargo check --workspace --lib --bins passed.
+  Every CUDA implementation pass used the exact required rebuild:
+    TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a
+  A focused rebuilt-PTX GPU test matched an independent FP32 reference for
+  both FP32-master and NVFP4 lookup, hashing, signs, injection, residual
+  backward, every lambda gradient, collision-aware atomic embedding scatter,
+  unique active-row collection, and row-sparse gradient sum of squares.
+  The broad all-test check remained blocked by pre-existing stale unrelated
+  Muon/MLP/attention test initializers and was not claimed as passing.
+initial_admission:
+  The 30-second candidate
+  target/runs/20260719_135327Z_fineweb_30s completed 85 finite updates with
+  val_loss=5.920753. Disabled same-binary control
+  target/runs/20260719_135409Z_fineweb_30s completed 86 with
+  val_loss=6.029971. Their unequal-step endpoints were health evidence only.
+  At common step 50, candidate training loss was 6.444796 versus 6.535567,
+  1.389081% lower.
+  At exactly 151 updates, correctness-first candidate
+  target/runs/20260719_135457Z_fineweb_900s reached val_loss=5.627818 in
+  54.662s. Control target/runs/20260719_135556Z_fineweb_900s reached
+  val_loss=5.762093 in 53.571s. The candidate was 2.330324% lower at matched
+  exposure despite being 2.036176% slower, so it qualified for implementation
+  optimization rather than fixed-time rejection.
+profiling_and_optimization:
+  An Nsight diagnostic identified three avoidable full-table passes. The
+  245760000-element Adam update cost approximately 5.94ms; training-time
+  schedule-free NVFP4 materialization cost approximately 2.48ms; and scanning
+  the mostly-zero dense table contributed to global clipping.
+  The first retained pass read the existing FP32 schedule-free z/x masters
+  directly during the sparse lookup and reserved NVFP4 table materialization
+  for held-out evaluation/checkpoint output. This preserved the schedule-free
+  training value while removing the full materialization and reduced the
+  151-step candidate from 54.662s to 54.060s.
+  The second pass collected unique hash rows during the existing embedding
+  gradient scatter and computed the exact collision-aware embedding-gradient
+  norm from only those rows. It retained the dense non-finite diagnostic and
+  reduced the 151-step candidate to 53.959s while improving held-out loss to
+  5.619953.
+  Finally, current Modded-NanoGPT's odd-step Adam cadence was tested. Bigram
+  gradients accumulated for two base-model updates, then the table and
+  lambdas received one standard averaged-weight Adam update with the proper
+  bigram-specific bias-correction count. This halved the remaining dominant
+  table-update frequency. At 151 steps it reached val_loss=5.631129 in
+  53.424s: 2.272855% lower loss and 0.274402% lower elapsed time than the
+  5.762093/53.571s control. The small 0.199% loss trade against every-step
+  Adam bought approximately 0.99% runtime and was retained for the final
+  candidate.
+repeated_matched_step_gate:
+  Final optimized candidate target/runs/20260719_142244Z_fineweb_900s and
+  fresh disabled same-binary control
+  target/runs/20260719_142436Z_fineweb_900s each completed exactly 301
+  updates with the same seed, data, tokenizer, intact model, objective,
+  optimizer, and TRAIN_LOG_INTERVAL=50:
+    candidate val_loss=5.235542 in 106.830s.
+    control   val_loss=5.376140 in 107.017s.
+  Candidate loss was 2.615222% lower and elapsed time was 0.174739% lower.
+  This repeated the structural signal after all optimization passes and
+  qualified the candidate for the required 450-second endpoint.
+fresh_fixed_time_resolution:
+  Candidate target/runs/20260719_142653Z_fineweb_450s completed 1248 updates
+  in 450.217s with held-out val_loss=4.446655. It was 0.040621% lower than
+  the older accepted target/runs/20260719_112813Z_fineweb_450s
+  val_loss=4.448462, a margin too small to distinguish from run drift.
+  Fresh disabled same-binary control
+  target/runs/20260719_143606Z_fineweb_450s completed 1267 updates in
+  450.348s with held-out val_loss=4.416070. Against that authority, the
+  candidate processed 1.499605% fewer updates and had 0.692584% higher
+  validation loss.
+  The fixed-time training curve explains the reversal: candidate loss was
+  lower at the common step-450 through step-700 samples, then higher at every
+  logged sample from step 750 through step 1150 except for a near tie at
+  step 1150; step 1200 crossed lower again, but the held-out endpoint remained
+  clearly worse. This is a late quality reversal, not an instability. All 25
+  candidate high-fidelity samples were finite/nonzero, every skip counter was
+  zero, and grad norm remained finite from 0.887287 to 3.500260.
+decision:
+  Reject this exact signed bigram integration. Its large and reproducible
+  151/301-step improvement justified the full correctness, profiling, and
+  implementation-optimization effort, but it did not lower the decisive
+  fresh fixed-time held-out endpoint. The older-baseline near-win was drift
+  and is not promotion evidence. Remove the table, kernels, optimizer state,
+  environment controls, checkpoint fields, and tests; retain only this
+  experiment record. This does not reject bigram embeddings generally. A
+  smaller table/width, a different late schedule, or a non-Schedule-Free
+  integration is a separate candidate and must establish its own matched-step
+  and fresh fixed-time evidence.
+post_restore:
+  The accepted SymExpLin parent passed a fresh exact sm_120a rebuild.
+  Post-restore diagnostic target/runs/20260719_144512Z_fineweb_900s completed
+  one real update and held-out evaluation with finite val_loss=9.784080. This
+  one-step result is launch evidence only, not acceptance evidence.
+```
+
+```text
+date: 2026-07-19
 commit: note-only rejection; fused compatibility implementation removed
 experiment: Mode-1 K=2 TEON over pairs of fused full-attention QKV matrices.
 status: rejected_at_fresh_450s_control; source_removed
