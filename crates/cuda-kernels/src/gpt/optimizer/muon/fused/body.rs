@@ -23,6 +23,7 @@ pub(super) fn muon_matrix_update_body(
     momentum_orient(
         state.grad,
         state.momentum,
+        core::ptr::null_mut(),
         scratch.oriented,
         work,
         shape,
@@ -30,6 +31,8 @@ pub(super) fn muon_matrix_update_body(
         scalars.grad_scale,
         transposed,
         true,
+        false,
+        1.0,
     );
     grid::sync();
 
@@ -58,6 +61,7 @@ pub(super) fn muon_matrix_update_body(
         state.z_master,
         state.x_master,
         state.momentum,
+        core::ptr::null_mut(),
         scratch.polar_chunks,
         core::ptr::null(),
         1.0,

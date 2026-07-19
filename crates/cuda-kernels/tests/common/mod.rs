@@ -67,3 +67,27 @@ pub fn assert_slice_close(actual: &[f32], expected: &[f32], tolerance: f32) {
         );
     }
 }
+
+pub fn f32_to_bf16_bits(value: f32) -> u16 {
+    let bits = value.to_bits();
+    let rounding_bias = 0x7fff + ((bits >> 16) & 1);
+    (bits.wrapping_add(rounding_bias) >> 16) as u16
+}
+
+pub fn bf16_bits_to_f32(bits: u16) -> f32 {
+    f32::from_bits((bits as u32) << 16)
+}
+
+pub fn f32_slice_to_bf16_bits(values: &[f32]) -> Vec<u16> {
+    values
+        .iter()
+        .map(|&value| f32_to_bf16_bits(value))
+        .collect()
+}
+
+pub fn bf16_bits_slice_to_f32(values: &[u16]) -> Vec<f32> {
+    values
+        .iter()
+        .map(|&value| bf16_bits_to_f32(value))
+        .collect()
+}

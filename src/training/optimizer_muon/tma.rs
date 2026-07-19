@@ -18,7 +18,7 @@ use rust_kernels_cuda::optimizer::{
 use super::{
     MUON_WEIGHT_DECAY, MuonGroupTable, POLAR_ITERATIONS, SIGN_MUON_BETA, hyperball_enabled,
     hyperball_learning_rate, hyperball_momentum, hyperball_uses_polar,
-    hyperball_uses_schedule_free, muon_learning_rate, muon_sign_learning_rate,
+    hyperball_uses_schedule_free, muon_learning_rate, muon_sign_learning_rate, muon_vs_enabled,
     sign_muon_uses_polar,
 };
 use crate::training::env::{env_bool, env_usize};
@@ -60,6 +60,12 @@ pub(in crate::training) fn apply_muon_tma(args: MuonTmaArgs<'_>) -> Result<(), D
     } else {
         SIGN_MUON_BETA
     };
+    let use_muon_vs = muon_vs_enabled();
+    let bias_correction_inv = if use_muon_vs {
+        1.0 / (1.0 - momentum.powi(args.step as i32))
+    } else {
+        1.0
+    };
     let use_schedule_free = !use_hyperball || hyperball_uses_schedule_free();
     let average_coefficient = if use_schedule_free {
         args.average_coefficient
@@ -85,6 +91,7 @@ pub(in crate::training) fn apply_muon_tma(args: MuonTmaArgs<'_>) -> Result<(), D
                     matrix_len: desc.rows * desc.cols,
                     mu: momentum,
                     grad_scale: args.grad_scale,
+                    variance_adaptive: use_muon_vs as u32,
                     learning_rate,
                     weight_decay: MUON_WEIGHT_DECAY,
                     average_coefficient,
@@ -108,6 +115,8 @@ pub(in crate::training) fn apply_muon_tma(args: MuonTmaArgs<'_>) -> Result<(), D
                     mu: momentum,
                     grad_scale: args.grad_scale,
                     nesterov: use_hyperball as u32,
+                    variance_adaptive: use_muon_vs as u32,
+                    bias_correction_inv,
                 })?;
         args.runtime.quant.tensor_amax_from_chunks_f32(
             stream,

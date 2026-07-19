@@ -4,6 +4,7 @@ use rust_kernels_cuda::optimizer::MuonSlotDescriptor;
 pub(super) struct HostPtrs {
     pub(super) grad: u64,
     pub(super) momentum: u64,
+    pub(super) variance: u64,
     pub(super) second_momentum: u64,
     pub(super) z_master: u64,
     pub(super) x_master: u64,
@@ -23,6 +24,7 @@ impl HostPtrs {
         MuonSlotDescriptor {
             grad: self.grad,
             momentum: self.momentum,
+            variance: self.variance,
             second_momentum: self.second_momentum,
             z_master: self.z_master,
             x_master: self.x_master,

@@ -53,15 +53,21 @@ impl OptimizerModule {
             .div_ceil(NVFP4_TENSOR_AMAX_VALUES_PER_BLOCK as u32);
         assert!(args.polar_x_chunk_amax.len() >= amax_chunk_count as usize);
 
+        let elements_per_thread = if args.variance_adaptive != 0 { 2 } else { 1 };
         self.apply.muon.tma_split.muon_tma_momentum_orient_kernel(
             args.stream,
-            grid_x_config(args.matrix_len.div_ceil(CTA_THREADS), CTA_THREADS),
+            grid_x_config(
+                args.matrix_len.div_ceil(elements_per_thread * CTA_THREADS),
+                CTA_THREADS,
+            ),
             args.slots,
             &mut *args.oriented,
             args.slot_index,
             args.mu,
             args.grad_scale,
             args.nesterov,
+            args.variance_adaptive,
+            args.bias_correction_inv,
         )?;
 
         self.apply
@@ -117,6 +123,8 @@ impl OptimizerModule {
             args.mu,
             args.grad_scale,
             args.nesterov,
+            args.variance_adaptive,
+            args.bias_correction_inv,
         )
     }
 
@@ -214,6 +222,7 @@ impl OptimizerModule {
                 args.slot_index,
                 args.mu,
                 args.grad_scale,
+                args.variance_adaptive,
                 args.learning_rate,
                 args.weight_decay,
                 args.average_coefficient,

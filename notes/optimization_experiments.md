@@ -30124,3 +30124,182 @@ decision:
   improvement to admit for optimization. Restore and exactly rebuild the
   accepted source; retain only this result.
 ```
+
+```text
+date: 2026-07-19
+commit: passing implementation in this change
+experiment: Variance-Adaptive Muon (Muon-VS) with BF16 variance state and
+  polar-only adaptation of the local sign-interleave shortcut.
+status: accepted_matched_step_and_450s_promotion
+sources:
+  https://arxiv.org/abs/2601.14603
+  https://github.com/jingru-lee/Variance-Adaptive-Muon
+  inspected repository commit:
+    75f78ad7dd56133c01696c9298fdc5f08182dbe0
+rationale:
+  Muon-VS reports better iteration efficiency than tuned Muon by adapting
+  each matrix gradient to its elementwise innovation variance before the
+  polar map. Unlike the previously rejected AdaMuon candidate, this method
+  estimates variance around the previous momentum before orthogonalization;
+  it does not apply a second-moment transform to the already-polar update.
+  The paper reports a 1.36x reduction in iterations to a target loss for its
+  LLaMA-1.2B experiment, making it directly relevant to the local intact
+  approximately 1B fixed-step screen.
+implementation:
+  Preserved the complete FineWeb/Llama-2 B4/S2048/L16/d2048/h32 model, all
+  four full-attention and twelve KDA blocks, value residuals, block Top-K
+  ReLU-squared MLPs, NextLat, Hyperball/AMUSE schedule-free update, two-polar
+  plus one-sign cadence, dataset, tokenizer, and every optimizer update.
+  TRAIN_MUON_VS defaults to true and is recorded in run_info; setting it to
+  zero provides a same-binary control.
+  For each raw scaled matrix gradient G_t and existing EMA momentum M_t:
+    Gamma_t = beta*Gamma_(t-1)
+              + beta*(1-beta)*(M_(t-1)-G_t)^2
+    M_t = beta*M_(t-1) + (1-beta)*G_t
+    M_hat = M_t/(1-beta^t)
+    Gamma_hat = Gamma_t/(1-beta^t)
+    M_tilde = G_t + beta/(1-beta)*M_hat
+    polar input = M_tilde/(sqrt(Gamma_hat)+1e-8)
+  The variance update deliberately reads M_(t-1) before writing M_t, matching
+  both the paper and released implementation. Q/K clipping scales momentum
+  by the clipping factor and variance by its square.
+  The local optimizer substitutes an elementwise sign update for one of every
+  three polar maps. The first formulation used sign(M_tilde) on that shortcut.
+  Its 450-second gate exposed a late loss reversal. The accepted formulation
+  still advances the paper's M/Gamma recurrence on every optimizer step, but
+  shortcut steps retain their established sign(M_t) direction; Muon-VS
+  preprocessing is applied only when a polar map actually consumes it.
+  This keeps the paper-defined transform at the operation it defines instead
+  of treating elementwise sign as if it were a polar decomposition.
+correctness:
+  cargo fmt --all: pass.
+  cargo check: pass.
+  cargo check -p rust-kernels-cuda --test optimizer: pass.
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+  CUDA_DEVICE_INDEX=0 cargo test -p rust-kernels-cuda --release
+    --test optimizer muon_vs_
+    -- --ignored --nocapture --test-threads=1:
+    2 passed. The tests cover the exact mean/innovation-variance recurrence,
+    bias correction, Nesterov numerator, both matrix orientations, split and
+    cooperative prepare paths, BF16 persisted-state rounding, and recurrence
+    advancement across the local sign-interleave step.
+  CUDA_DEVICE_INDEX=0 cargo test -p rust-kernels-cuda --release
+    --test optimizer muon_tma
+    -- --ignored --nocapture --test-threads=1:
+    9 passed, covering all pre-existing split-TMA optimizer regressions.
+  The broad all-target check remains blocked by unrelated pre-existing stale
+  GPT attention/MLP test initializers; no passing claim is made for it.
+bringup_and_admission:
+  target/runs/20260719_014728Z_fineweb_900s was a one-step allocation/launch
+  diagnostic only. It completed the full graph with finite validation loss
+  and no skips; it was not promotion evidence.
+  target/runs/20260719_014745Z_fineweb_30s completed 91 steps in 30.183s.
+  Step 50 was 6.518080 versus 6.531911 in active control
+  target/runs/20260718_200249Z_fineweb_30s, only 0.2118% better, so this
+  ambiguous health screen triggered the smallest useful fixed-step extension
+  rather than profiling or a 450-second gate.
+  The original FP32-state paired runs
+  target/runs/20260719_014853Z_fineweb_900s and
+  target/runs/20260719_014952Z_fineweb_900s each completed 151 updates:
+    step 0:   10.741848 versus 10.741848, identical.
+    step 50:   6.496538 versus  6.567649, 1.0828% better.
+    step 100:  6.328636 versus  6.424039, 1.4851% better.
+    step 150:  5.700409 versus  5.802824, 1.7649% better.
+    held-out val at step 151:
+                5.791881 versus 5.791351, 0.0092% worse.
+  Both were finite/nonzero with zero skips. The repeated common-step gain was
+  the sole reason the structural candidate advanced to profiling. The tied
+  held-out endpoint and runtime were not used as admission criteria.
+profile_and_optimization:
+  The initial 20-step same-binary nsys pair used:
+    target/nsys/muon_vs_candidate_b4s2048_20_20260719T0151Z.nsys-rep
+    target/nsys/muon_vs_control_b4s2048_20_20260719T0152Z.nsys-rep
+  Candidate versus control totals were:
+    muon_tma_momentum_orient_kernel:
+      195.642ms versus 127.097ms over 938 launches.
+    muon_tma_sign_update_master_chunks_kernel:
+      131.253ms versus 101.310ms over 402 launches.
+  The added variance traffic therefore cost about 98.49ms/20 steps, or
+  4.92ms/step. A paired-FP32 vectorization pass left those totals effectively
+  unchanged at 195.598ms and 131.199ms, confirming a bandwidth rather than
+  scalar-instruction limit; it was not counted as a speed win.
+  The kept optimization persists the positive variance EMA in BF16 while
+  computing the complete recurrence and polar numerator in FP32. Paired loads
+  and stores use native packed BF16 conversion. This is a local implementation
+  optimization rather than a paper equation; the matched-step reruns below
+  explicitly retest its quality, and BF16 retains exponent range for squared
+  gradients.
+  The post-optimization 20-step same-binary nsys pair used:
+    target/nsys/muon_vs_bf16_candidate_b4s2048_20_20260719T0206Z.nsys-rep
+    target/nsys/muon_vs_bf16_control_b4s2048_20_20260719T0206Z.nsys-rep
+  Candidate versus control totals became:
+    muon_tma_momentum_orient_kernel:
+      160.921ms versus 126.046ms.
+    muon_tma_sign_update_master_chunks_kernel:
+      116.652ms versus 100.868ms.
+  Excess time fell to 50.66ms/20 steps, or 2.53ms/step: a 48.56% reduction
+  in the admitted algorithm's bounded overhead.
+  The intact model owns 900,726,784 Muon variance elements. BF16 therefore
+  saves exactly 1,801,453,568 bytes (1,718MiB, 1.678GiB) versus FP32. Live
+  B4/S2048 allocation during the fixed-step screen was 43,332MiB.
+first_optimized_formulation_and_failed_gate:
+  The BF16 full-sign-lookahead pair
+  target/runs/20260719_020656Z_fineweb_900s and
+  target/runs/20260719_020754Z_fineweb_900s repeated the early signal:
+    step 50:   6.525823 versus 6.551824, 0.3969% better.
+    step 100:  6.339072 versus 6.431942, 1.4439% better.
+    step 150:  5.701666 versus 5.809028, 1.8482% better.
+  This qualified that optimized formulation for its first 450-second gate.
+  target/runs/20260719_020931Z_fineweb_450s remained fully stable, but it
+  completed 1339 steps with held-out val_loss=4.629691. The historical control
+  target/runs/20260718_195107Z_fineweb_450s completed 1355 steps with
+  val_loss=4.575288. More importantly, the candidate's common-step advantage
+  faded by step 350 and reversed to 0.78-1.29% worse at steps 1200-1300.
+  The 1.189% worse held-out endpoint confirmed a real late quality failure.
+  This formulation was not accepted or committed.
+polar_only_sign_adaptation:
+  After reserving M_tilde for actual polar steps, fresh paired 151-step runs
+  target/runs/20260719_022041Z_fineweb_900s and
+  target/runs/20260719_022136Z_fineweb_900s produced:
+    step 50:   6.495793 versus 6.568363, 1.1048% better.
+    step 100:  6.343903 versus 6.417823, 1.1518% better.
+    step 150:  5.703777 versus 5.799023, 1.6424% better.
+  Because the known failure appeared later, paired fixed-651 runs were the
+  smallest targeted extension that crossed the fade region:
+    candidate target/runs/20260719_022252Z_fineweb_900s
+    control   target/runs/20260719_022639Z_fineweb_900s
+  Candidate versus control common-step differences were:
+    step 50:  1.0804% better.   step 100: 1.7626% better.
+    step 150: 1.7415% better.   step 200: 2.0422% better.
+    step 250: 1.1347% better.   step 300: 0.4897% better.
+    step 350: 0.1075% worse.    step 400: 0.1694% better.
+    step 450: 0.5294% better.   step 500: 0.5688% better.
+    step 550: 0.0078% worse.    step 600: 0.0290% better.
+    step 650: 0.4726% better.
+  Matched-step held-out validation was 4.978653 versus 5.011124, 0.6480%
+  better. Runtime was 218.554s versus 217.631s, only 0.424% slower. Both runs
+  were finite/nonzero with every skip counter zero. This sustained fixed-step
+  evidence, not an unequal-time endpoint, qualified the tuned implementation
+  for a fresh promotion gate.
+promotion_gate:
+  target/runs/20260719_023053Z_fineweb_450s completed 1336 updates in
+  450.235s with held-out val_loss=4.577050. All 27 high-fidelity samples were
+  finite/nonzero and all skip counters remained zero.
+  Against historical accepted control
+  target/runs/20260718_195107Z_fineweb_450s:
+    completed steps: 1336 versus 1355, 1.402% fewer.
+    held-out val:    4.577050 versus 4.575288, 0.0385% worse.
+    common steps: candidate was better at 21 of 26 noninitial samples.
+    late tail: candidate was better at every logged step from 950 through
+      1300, by 0.105-0.505%.
+  Thus fixed-time held-out validation is effectively identical despite fewer
+  updates, while common-step training loss and the paired fixed-651 held-out
+  evaluation both show a repeatable algorithmic gain.
+decision:
+  Accept the BF16-state, polar-only sign-adaptation Muon-VS implementation.
+  It satisfies the structural matched-step rule, received due-diligence
+  profiling and a material optimization pass, corrected the first gate's
+  demonstrated late regression, and passed a fresh 450-second stability and
+  promotion gate without meaningful fixed-time loss regression. Commit the
+  implementation and this exact ledger together in JJ.
+```

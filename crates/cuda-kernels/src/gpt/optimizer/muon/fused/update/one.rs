@@ -1,6 +1,8 @@
 use crate::float_ptx::abs_f32;
 
-use crate::f16_tc_matmul::convert::load_f32_global_read_only;
+use crate::f16_tc_matmul::convert::{
+    load_bf16_global, load_f32_global_read_only, store_bf16_global,
+};
 
 #[derive(Clone, Copy)]
 pub(super) struct UpdateAmax {
@@ -14,6 +16,7 @@ pub(super) fn update_one(
     z_master: *mut f32,
     x_master: *mut f32,
     momentum: *mut f32,
+    variance: *mut u16,
     rows: u32,
     cols: u32,
     len: u32,
@@ -60,6 +63,11 @@ pub(super) fn update_one(
             next_z *= qk_clip_factor;
             next_x *= qk_clip_factor;
             *momentum.add(index as usize) *= qk_clip_factor;
+            if !variance.is_null() {
+                let variance_value =
+                    load_bf16_global(variance, index as usize) * qk_clip_factor * qk_clip_factor;
+                store_bf16_global(variance, index as usize, variance_value);
+            }
         }
         *z = next_z;
         *x = next_x;
@@ -76,9 +84,11 @@ pub(super) fn update_one_sign(
     z_master: *mut f32,
     x_master: *mut f32,
     momentum: *mut f32,
+    variance: *mut u16,
     len: u32,
     mu: f32,
     grad_scale: f32,
+    variance_adaptive: bool,
     learning_rate: f32,
     weight_decay: f32,
     average_coefficient: f32,
@@ -96,10 +106,20 @@ pub(super) fn update_one_sign(
     unsafe {
         let momentum_ptr = momentum.add(index as usize);
         let g = *grad.add(index as usize) * grad_scale;
-        let next_momentum = mu * *momentum_ptr + (1.0 - mu) * g;
-        let direction = if next_momentum > 0.0 {
+        let previous_momentum = *momentum_ptr;
+        let next_momentum = mu * previous_momentum + (1.0 - mu) * g;
+        let mut next_variance = 0.0;
+        let direction_source = if variance_adaptive {
+            let innovation = previous_momentum - g;
+            next_variance = mu * load_bf16_global(variance, index as usize)
+                + mu * (1.0 - mu) * innovation * innovation;
+            next_momentum
+        } else {
+            next_momentum
+        };
+        let direction = if direction_source > 0.0 {
             1.0
-        } else if next_momentum < 0.0 {
+        } else if direction_source < 0.0 {
             -1.0
         } else {
             0.0
@@ -114,6 +134,12 @@ pub(super) fn update_one_sign(
             next_z *= qk_clip_factor;
             next_x *= qk_clip_factor;
             clipped_momentum *= qk_clip_factor;
+            if variance_adaptive {
+                next_variance *= qk_clip_factor * qk_clip_factor;
+            }
+        }
+        if variance_adaptive {
+            store_bf16_global(variance, index as usize, next_variance);
         }
         *momentum_ptr = clipped_momentum;
         *z = next_z;

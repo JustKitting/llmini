@@ -35,6 +35,10 @@ pub(super) fn hyperball_momentum() -> f32 {
     HYPERBALL_MOMENTUM
 }
 
+pub(super) fn muon_vs_enabled() -> bool {
+    super::env::env_bool("TRAIN_MUON_VS").unwrap_or(true)
+}
+
 pub(super) fn hyperball_uses_schedule_free() -> bool {
     super::env::env_bool("TRAIN_HYPERBALL_AMUSE").unwrap_or(true)
 }
@@ -120,7 +124,9 @@ const fn max3(a: usize, b: usize, c: usize) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::{hyperball_uses_polar, matrix_learning_rate, sign_muon_uses_polar};
+    use super::{
+        hyperball_uses_polar, matrix_learning_rate, muon_vs_enabled, sign_muon_uses_polar,
+    };
 
     #[test]
     fn sign_muon_period_starts_with_polar_and_alternates() {
@@ -151,6 +157,13 @@ mod tests {
             assert!(hyperball_uses_polar(2));
             assert!(!hyperball_uses_polar(3));
             assert!(hyperball_uses_polar(4));
+        }
+    }
+
+    #[test]
+    fn variance_adaptive_muon_is_default_candidate() {
+        if std::env::var_os("TRAIN_MUON_VS").is_none() {
+            assert!(muon_vs_enabled());
         }
     }
 }

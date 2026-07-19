@@ -9,10 +9,16 @@ use crate::common;
 
 pub fn run_split_matches_reference_case() -> Result<(), Box<dyn Error>> {
     let (_, stream, module) = common::cuda_test_module(OptimizerModule::from_module)?;
-    compare_shape(&stream, &module, 64, 128, true)?;
-    compare_shape(&stream, &module, 128, 64, true)?;
-    compare_shape(&stream, &module, 64, 128, false)?;
-    compare_shape(&stream, &module, 128, 64, false)
+    compare_shape(&stream, &module, 64, 128, true, false)?;
+    compare_shape(&stream, &module, 128, 64, true, false)?;
+    compare_shape(&stream, &module, 64, 128, false, false)?;
+    compare_shape(&stream, &module, 128, 64, false, false)
+}
+
+pub fn run_muon_vs_reference_case() -> Result<(), Box<dyn Error>> {
+    let (_, stream, module) = common::cuda_test_module(OptimizerModule::from_module)?;
+    compare_shape(&stream, &module, 64, 128, true, true)?;
+    compare_shape(&stream, &module, 128, 64, true, true)
 }
 
 fn compare_shape(
@@ -21,10 +27,28 @@ fn compare_shape(
     rows: usize,
     cols: usize,
     nesterov: bool,
+    variance_adaptive: bool,
 ) -> Result<(), Box<dyn Error>> {
-    let split = run_prepare(stream, module, rows, cols, false, nesterov)?;
-    let cooperative = run_prepare(stream, module, rows, cols, true, nesterov)?;
+    let split = run_prepare(
+        stream,
+        module,
+        rows,
+        cols,
+        false,
+        nesterov,
+        variance_adaptive,
+    )?;
+    let cooperative = run_prepare(
+        stream,
+        module,
+        rows,
+        cols,
+        true,
+        nesterov,
+        variance_adaptive,
+    )?;
     assert_eq!(split.momentum, cooperative.momentum);
+    assert_eq!(split.variance, cooperative.variance);
     assert_eq!(split.oriented, cooperative.oriented);
     assert_eq!(split.polar_x, cooperative.polar_x);
     assert_eq!(split.polar_chunks, cooperative.polar_chunks);
@@ -41,6 +65,7 @@ fn compare_shape(
 
 struct PrepareOutput {
     momentum: Vec<f32>,
+    variance: Vec<u16>,
     oriented: Vec<f32>,
     polar_x: Vec<f32>,
     polar_chunks: Vec<f32>,
@@ -54,6 +79,7 @@ fn run_prepare(
     cols: usize,
     cooperative: bool,
     nesterov: bool,
+    variance_adaptive: bool,
 ) -> Result<PrepareOutput, Box<dyn Error>> {
     let len = rows * cols;
     let grad_values: Vec<_> = (0..len)
@@ -62,8 +88,14 @@ fn run_prepare(
     let momentum_values: Vec<_> = (0..len)
         .map(|i| ((i * 29 % 131) as f32 - 65.0) / 173.0)
         .collect();
+    let variance_values: Vec<_> = (0..len)
+        .map(|i| 0.01 + (i * 17 % 97) as f32 / 503.0)
+        .collect();
+    let variance_bits = common::f32_slice_to_bf16_bits(&variance_values);
+    let stored_variance_values = common::bf16_bits_slice_to_f32(&variance_bits);
     let grad = DeviceBuffer::from_host(stream, &grad_values)?;
     let momentum = DeviceBuffer::from_host(stream, &momentum_values)?;
+    let variance = DeviceBuffer::from_host(stream, &variance_bits)?;
     let z_master = DeviceBuffer::<f32>::zeroed(stream, 1)?;
     let x_master = DeviceBuffer::<f32>::zeroed(stream, 1)?;
     let schedule_amax = DeviceBuffer::<f32>::zeroed(stream, 1)?;
@@ -73,6 +105,7 @@ fn run_prepare(
     let descriptor = MuonSlotDescriptor {
         grad: grad.cu_deviceptr(),
         momentum: momentum.cu_deviceptr(),
+        variance: variance.cu_deviceptr(),
         second_momentum: 0,
         z_master: z_master.cu_deviceptr(),
         x_master: x_master.cu_deviceptr(),
@@ -103,6 +136,12 @@ fn run_prepare(
         mu: 0.9,
         grad_scale: 0.125,
         nesterov: nesterov as u32,
+        variance_adaptive: variance_adaptive as u32,
+        bias_correction_inv: if variance_adaptive {
+            1.0 / (1.0 - 0.9_f32.powi(3))
+        } else {
+            1.0
+        },
     };
     if cooperative {
         module.muon_tma_prepare_polar_cooperative_reference(args)?;
@@ -110,13 +149,33 @@ fn run_prepare(
         module.muon_tma_prepare_polar(args)?;
     }
     let actual_momentum = momentum.to_host_vec(stream)?;
+    let actual_variance = variance.to_host_vec(stream)?;
     let actual_oriented = oriented.to_host_vec(stream)?;
     let mut expected_momentum = vec![0.0_f32; len];
+    let mut expected_variance = stored_variance_values.clone();
     let mut expected_oriented = vec![0.0_f32; len];
+    let bias_correction_inv = 1.0 / (1.0 - 0.9_f32.powi(3));
     for index in 0..len {
         let g = grad_values[index] * 0.125;
         let next = 0.9 * momentum_values[index] + 0.1 * g;
-        let update = if nesterov { 0.9 * next + 0.1 * g } else { next };
+        let update = if variance_adaptive {
+            let innovation = momentum_values[index] - g;
+            let next_variance =
+                0.9 * stored_variance_values[index] + 0.9 * 0.1 * innovation * innovation;
+            expected_variance[index] =
+                common::bf16_bits_to_f32(common::f32_to_bf16_bits(next_variance));
+            let corrected_momentum = next * bias_correction_inv;
+            let numerator = if nesterov {
+                g + 9.0 * corrected_momentum
+            } else {
+                corrected_momentum
+            };
+            numerator / ((next_variance * bias_correction_inv).sqrt() + 1.0e-8)
+        } else if nesterov {
+            0.9 * next + 0.1 * g
+        } else {
+            next
+        };
         expected_momentum[index] = next;
         let row = index / cols;
         let col = index % cols;
@@ -124,10 +183,20 @@ fn run_prepare(
         expected_oriented[dst] = update;
     }
     common::assert_slice_close(&actual_momentum, &expected_momentum, 1.0e-6);
-    common::assert_slice_close(&actual_oriented, &expected_oriented, 1.0e-6);
+    common::assert_slice_close(
+        &common::bf16_bits_slice_to_f32(&actual_variance),
+        &expected_variance,
+        0.0,
+    );
+    common::assert_slice_close(
+        &actual_oriented,
+        &expected_oriented,
+        if variance_adaptive { 5.0e-5 } else { 1.0e-6 },
+    );
 
     Ok(PrepareOutput {
         momentum: actual_momentum,
+        variance: actual_variance,
         oriented: actual_oriented,
         polar_x: polar_x.to_host_vec(stream)?,
         polar_chunks: polar_chunks.to_host_vec(stream)?,

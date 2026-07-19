@@ -5,6 +5,7 @@ use cuda_core::{CudaStream, DeviceBuffer, DeviceCopy};
 pub struct MuonSlotDescriptor {
     pub grad: u64,
     pub momentum: u64,
+    pub variance: u64,
     pub second_momentum: u64,
     pub z_master: u64,
     pub x_master: u64,
@@ -54,6 +55,8 @@ pub struct MuonTmaPrepareArgs<'a> {
     pub mu: f32,
     pub grad_scale: f32,
     pub nesterov: u32,
+    pub variance_adaptive: u32,
+    pub bias_correction_inv: f32,
 }
 
 pub struct MuonTmaFinishArgs<'a> {
@@ -90,6 +93,7 @@ pub struct MuonTmaSignUpdateArgs<'a> {
     pub matrix_len: u32,
     pub mu: f32,
     pub grad_scale: f32,
+    pub variance_adaptive: u32,
     pub learning_rate: f32,
     pub weight_decay: f32,
     pub average_coefficient: f32,

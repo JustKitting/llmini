@@ -1,4 +1,6 @@
-use cuda_device::{DisjointSlice, convert::cvt_f16x2_f32, ptx_asm, thread};
+use cuda_device::{
+    DisjointSlice, convert::cvt_f16x2_f32, ptx_asm, tcgen05::cvt_f32x2_bf16x2, thread,
+};
 
 use super::kernels::F16_THREADS_PER_BLOCK;
 
@@ -34,6 +36,11 @@ pub(crate) fn cvt_f32_f16(bits: u16) -> f32 {
         );
     }
     value
+}
+
+#[inline(always)]
+pub(crate) fn cvt_f32_bf16(bits: u16) -> f32 {
+    f32::from_bits((bits as u32) << 16)
 }
 
 #[inline(always)]
@@ -84,6 +91,21 @@ pub(crate) fn load_f16x2_global(src: *const u16, index: usize) -> (f32, f32) {
     (
         cvt_f32_f16(packed as u16),
         cvt_f32_f16((packed >> 16) as u16),
+    )
+}
+
+#[inline(always)]
+pub(crate) fn load_bf16_global(src: *const u16, index: usize) -> f32 {
+    let bits = unsafe { *src.add(index) };
+    cvt_f32_bf16(bits)
+}
+
+#[inline(always)]
+pub(crate) fn load_bf16x2_global(src: *const u16, index: usize) -> (f32, f32) {
+    let packed = load_f16x2_global_bits(src, index);
+    (
+        cvt_f32_bf16(packed as u16),
+        cvt_f32_bf16((packed >> 16) as u16),
     )
 }
 
@@ -143,6 +165,26 @@ pub(crate) fn store_f32x2_global(dst: *mut f32, index: usize, lo: f32, hi: f32) 
             in("l") dst.add(index) as u64,
             in("f") lo,
             in("f") hi,
+        );
+    }
+}
+
+#[inline(always)]
+pub(crate) fn store_bf16_global(dst: *mut u16, index: usize, value: f32) {
+    let packed = cvt_f32x2_bf16x2(value, 0.0);
+    unsafe {
+        *dst.add(index) = packed as u16;
+    }
+}
+
+#[inline(always)]
+pub(crate) fn store_bf16x2_global(dst: *mut u16, index: usize, lo: f32, hi: f32) {
+    let packed = cvt_f32x2_bf16x2(lo, hi);
+    unsafe {
+        ptx_asm!(
+            "st.global.u32 [%0], %1;",
+            in("l") dst.add(index) as u64,
+            in("r") packed,
         );
     }
 }

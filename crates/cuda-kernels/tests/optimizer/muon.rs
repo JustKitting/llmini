@@ -73,6 +73,12 @@ fn muon_tma_sign_update_matches_single_ema_reference() -> Result<(), Box<dyn Err
 
 #[ignore = "requires generated sm_120a PTX"]
 #[test]
+fn muon_vs_sign_interleave_matches_paper_state_recurrence() -> Result<(), Box<dyn Error>> {
+    tma_finish::run_muon_vs_sign_update_case()
+}
+
+#[ignore = "requires generated sm_120a PTX"]
+#[test]
 fn muon_tma_sign_update_applies_qk_clip() -> Result<(), Box<dyn Error>> {
     tma_finish::run_sign_qk_clip_case()
 }
@@ -87,4 +93,10 @@ fn muon_tma_split_finish_matches_cooperative_reference() -> Result<(), Box<dyn E
 #[test]
 fn muon_tma_split_prepare_matches_cooperative_reference() -> Result<(), Box<dyn Error>> {
     tma_prepare::run_split_matches_reference_case()
+}
+
+#[ignore = "requires generated sm_120a PTX"]
+#[test]
+fn muon_vs_prepare_matches_paper_recurrence() -> Result<(), Box<dyn Error>> {
+    tma_prepare::run_muon_vs_reference_case()
 }

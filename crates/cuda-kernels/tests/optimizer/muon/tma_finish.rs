@@ -35,6 +35,7 @@ pub fn run_schedule_amax_case() -> Result<(), Box<dyn Error>> {
     let descriptor = MuonSlotDescriptor {
         grad: grad.cu_deviceptr(),
         momentum: momentum.cu_deviceptr(),
+        variance: 0,
         second_momentum: second_momentum.cu_deviceptr(),
         z_master: z_master.cu_deviceptr(),
         x_master: x_master.cu_deviceptr(),
@@ -106,6 +107,7 @@ pub fn run_qk_clip_case() -> Result<(), Box<dyn Error>> {
     let descriptor = MuonSlotDescriptor {
         grad: grad.cu_deviceptr(),
         momentum: momentum.cu_deviceptr(),
+        variance: 0,
         second_momentum: second_momentum.cu_deviceptr(),
         z_master: z_master.cu_deviceptr(),
         x_master: x_master.cu_deviceptr(),
@@ -216,6 +218,7 @@ pub fn run_normuon_variance_case() -> Result<(), Box<dyn Error>> {
     let descriptor = MuonSlotDescriptor {
         grad: grad.cu_deviceptr(),
         momentum: momentum.cu_deviceptr(),
+        variance: 0,
         second_momentum: second_momentum.cu_deviceptr(),
         z_master: z_master.cu_deviceptr(),
         x_master: x_master.cu_deviceptr(),
@@ -379,6 +382,7 @@ pub fn run_hyperball_update_case() -> Result<(), Box<dyn Error>> {
     let descriptor = MuonSlotDescriptor {
         grad: grad.cu_deviceptr(),
         momentum: momentum.cu_deviceptr(),
+        variance: 0,
         second_momentum: second_momentum.cu_deviceptr(),
         z_master: z_master.cu_deviceptr(),
         x_master: x_master.cu_deviceptr(),
@@ -527,6 +531,7 @@ fn run_hyperball_shape(
     let descriptor = MuonSlotDescriptor {
         grad: grad.cu_deviceptr(),
         momentum: momentum.cu_deviceptr(),
+        variance: 0,
         second_momentum: second_momentum.cu_deviceptr(),
         z_master: z_master.cu_deviceptr(),
         x_master: x_master.cu_deviceptr(),
@@ -588,6 +593,14 @@ fn run_hyperball_shape(
 }
 
 pub fn run_sign_update_case() -> Result<(), Box<dyn Error>> {
+    run_sign_update(false)
+}
+
+pub fn run_muon_vs_sign_update_case() -> Result<(), Box<dyn Error>> {
+    run_sign_update(true)
+}
+
+fn run_sign_update(variance_adaptive: bool) -> Result<(), Box<dyn Error>> {
     const SIGN_ROWS: usize = 32;
     const SIGN_COLS: usize = 32;
     const SIGN_LEN: usize = SIGN_ROWS * SIGN_COLS;
@@ -605,6 +618,11 @@ pub fn run_sign_update_case() -> Result<(), Box<dyn Error>> {
     let momentum_values: Vec<_> = (0..SIGN_LEN)
         .map(|index| ((index * 17 % 61) as f32 - 30.0) / 53.0)
         .collect();
+    let variance_values: Vec<_> = (0..SIGN_LEN)
+        .map(|index| 0.02 + (index * 19 % 89) as f32 / 401.0)
+        .collect();
+    let variance_bits = common::f32_slice_to_bf16_bits(&variance_values);
+    let stored_variance_values = common::bf16_bits_slice_to_f32(&variance_bits);
     let second_values: Vec<_> = (0..SIGN_COLS)
         .map(|index| 0.25 + index as f32 / 1000.0)
         .collect();
@@ -617,6 +635,7 @@ pub fn run_sign_update_case() -> Result<(), Box<dyn Error>> {
 
     let grad = DeviceBuffer::from_host(&stream, &grad_values)?;
     let momentum = DeviceBuffer::from_host(&stream, &momentum_values)?;
+    let variance = DeviceBuffer::from_host(&stream, &variance_bits)?;
     let second_momentum = DeviceBuffer::from_host(&stream, &second_values)?;
     let z_master = DeviceBuffer::from_host(&stream, &z_values)?;
     let x_master = DeviceBuffer::from_host(&stream, &x_values)?;
@@ -627,6 +646,7 @@ pub fn run_sign_update_case() -> Result<(), Box<dyn Error>> {
     let descriptor = MuonSlotDescriptor {
         grad: grad.cu_deviceptr(),
         momentum: momentum.cu_deviceptr(),
+        variance: variance.cu_deviceptr(),
         second_momentum: second_momentum.cu_deviceptr(),
         z_master: z_master.cu_deviceptr(),
         x_master: x_master.cu_deviceptr(),
@@ -653,6 +673,7 @@ pub fn run_sign_update_case() -> Result<(), Box<dyn Error>> {
         matrix_len: SIGN_LEN as u32,
         mu: MU,
         grad_scale: GRAD_SCALE,
+        variance_adaptive: variance_adaptive as u32,
         learning_rate: LEARNING_RATE,
         weight_decay: WEIGHT_DECAY,
         average_coefficient: AVERAGE_COEFFICIENT,
@@ -662,15 +683,27 @@ pub fn run_sign_update_case() -> Result<(), Box<dyn Error>> {
     let effective_lr = LEARNING_RATE * LR_MULTIPLIER;
     let decay = 1.0 - effective_lr * WEIGHT_DECAY;
     let mut expected_momentum = Vec::with_capacity(SIGN_LEN);
+    let mut expected_variance = stored_variance_values.clone();
     let mut expected_z = Vec::with_capacity(SIGN_LEN);
     let mut expected_x = Vec::with_capacity(SIGN_LEN);
     let mut expected_schedule_amax = 0.0_f32;
     for index in 0..SIGN_LEN {
         let next_momentum =
             MU * momentum_values[index] + (1.0 - MU) * grad_values[index] * GRAD_SCALE;
-        let sign = if next_momentum > 0.0 {
+        let direction_source = if variance_adaptive {
+            let g = grad_values[index] * GRAD_SCALE;
+            let innovation = momentum_values[index] - g;
+            let next_variance =
+                MU * stored_variance_values[index] + MU * (1.0 - MU) * innovation * innovation;
+            expected_variance[index] =
+                common::bf16_bits_to_f32(common::f32_to_bf16_bits(next_variance));
+            next_momentum
+        } else {
+            next_momentum
+        };
+        let sign = if direction_source > 0.0 {
             1.0
-        } else if next_momentum < 0.0 {
+        } else if direction_source < 0.0 {
             -1.0
         } else {
             0.0
@@ -685,6 +718,11 @@ pub fn run_sign_update_case() -> Result<(), Box<dyn Error>> {
     }
 
     common::assert_slice_close(&momentum.to_host_vec(&stream)?, &expected_momentum, 1.0e-6);
+    common::assert_slice_close(
+        &common::bf16_bits_slice_to_f32(&variance.to_host_vec(&stream)?),
+        &expected_variance,
+        0.0,
+    );
     common::assert_slice_close(&z_master.to_host_vec(&stream)?, &expected_z, 1.0e-6);
     common::assert_slice_close(&x_master.to_host_vec(&stream)?, &expected_x, 1.0e-6);
     assert_eq!(second_momentum.to_host_vec(&stream)?, second_values);
@@ -720,6 +758,7 @@ pub fn run_sign_qk_clip_case() -> Result<(), Box<dyn Error>> {
     let descriptor = MuonSlotDescriptor {
         grad: grad.cu_deviceptr(),
         momentum: momentum.cu_deviceptr(),
+        variance: 0,
         second_momentum: second_momentum.cu_deviceptr(),
         z_master: z_master.cu_deviceptr(),
         x_master: x_master.cu_deviceptr(),
@@ -746,6 +785,7 @@ pub fn run_sign_qk_clip_case() -> Result<(), Box<dyn Error>> {
         matrix_len: CLIP_LEN as u32,
         mu: MU,
         grad_scale: 1.0,
+        variance_adaptive: 0,
         learning_rate: LEARNING_RATE,
         weight_decay: 0.0,
         average_coefficient: AVERAGE_COEFFICIENT,
@@ -821,6 +861,7 @@ fn run_finish(
     let descriptor = MuonSlotDescriptor {
         grad: grad.cu_deviceptr(),
         momentum: momentum.cu_deviceptr(),
+        variance: 0,
         second_momentum: second_momentum.cu_deviceptr(),
         z_master: z_master.cu_deviceptr(),
         x_master: x_master.cu_deviceptr(),

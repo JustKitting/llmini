@@ -41,6 +41,8 @@ pub(crate) mod module {
         mu: f32,
         grad_scale: f32,
         nesterov: u32,
+        variance_adaptive: u32,
+        bias_correction_inv: f32,
     ) {
         static mut WARP_SUMS: SharedArray<f32, { WARPS_PER_BLOCK as usize }> = SharedArray::UNINIT;
 
@@ -55,6 +57,7 @@ pub(crate) mod module {
         momentum_orient(
             ptr_const(desc.grad),
             ptr_mut(desc.momentum),
+            ptr_mut(desc.variance),
             oriented.as_mut_ptr(),
             work,
             shape,
@@ -62,6 +65,8 @@ pub(crate) mod module {
             grad_scale,
             transposed,
             nesterov != 0,
+            variance_adaptive != 0,
+            bias_correction_inv,
         );
         grid::sync();
 
@@ -91,6 +96,8 @@ pub(crate) mod module {
         mu: f32,
         grad_scale: f32,
         nesterov: u32,
+        variance_adaptive: u32,
+        bias_correction_inv: f32,
     ) {
         let desc = slots[slot_index as usize];
         let shape = MuonMatrixShape {
@@ -100,6 +107,7 @@ pub(crate) mod module {
         momentum_orient(
             ptr_const(desc.grad),
             ptr_mut(desc.momentum),
+            ptr_mut(desc.variance),
             oriented.as_mut_ptr(),
             WorkGrid::x_axis(),
             shape,
@@ -107,6 +115,8 @@ pub(crate) mod module {
             grad_scale,
             shape.polar_transposed(),
             nesterov != 0,
+            variance_adaptive != 0,
+            bias_correction_inv,
         );
     }
 
@@ -476,6 +486,7 @@ pub(crate) mod module {
                 ptr_mut(desc.z_master),
                 ptr_mut(desc.x_master),
                 ptr_mut(desc.momentum),
+                ptr_mut(desc.variance),
                 polar_chunks.as_mut_ptr(),
                 normuon_factors.as_ptr(),
                 normuon_chunks[0],
@@ -552,6 +563,7 @@ pub(crate) mod module {
                 ptr_mut(desc.z_master),
                 ptr_mut(desc.x_master),
                 ptr_mut(desc.momentum),
+                ptr_mut(desc.variance),
                 polar_chunks.as_mut_ptr(),
                 normuon_factors.as_ptr(),
                 normuon_chunks[0],
@@ -582,6 +594,7 @@ pub(crate) mod module {
         slot_index: u32,
         mu: f32,
         grad_scale: f32,
+        variance_adaptive: u32,
         learning_rate: f32,
         weight_decay: f32,
         average_coefficient: f32,
@@ -602,6 +615,7 @@ pub(crate) mod module {
                 ptr_mut(desc.z_master),
                 ptr_mut(desc.x_master),
                 ptr_mut(desc.momentum),
+                ptr_mut(desc.variance),
                 update_chunks.as_mut_ptr(),
                 qk_clip_factors.as_ptr(),
                 desc.qk_clip_factor_offset,
@@ -610,6 +624,7 @@ pub(crate) mod module {
                 shape.len(),
                 mu,
                 grad_scale,
+                variance_adaptive != 0,
                 learning_rate * desc.learning_rate_multiplier,
                 weight_decay,
                 average_coefficient,

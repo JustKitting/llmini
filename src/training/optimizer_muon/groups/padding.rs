@@ -5,6 +5,7 @@ use super::HostPtrs;
 pub(super) struct MuonPaddingBuffers {
     grad: DeviceBuffer<f32>,
     momentum: DeviceBuffer<f32>,
+    variance: DeviceBuffer<u16>,
     second_momentum: DeviceBuffer<f32>,
     z_master: DeviceBuffer<f32>,
     x_master: DeviceBuffer<f32>,
@@ -19,6 +20,7 @@ impl MuonPaddingBuffers {
         Ok(Self {
             grad: DeviceBuffer::zeroed(stream, 16)?,
             momentum: DeviceBuffer::zeroed(stream, 16)?,
+            variance: DeviceBuffer::zeroed(stream, 16)?,
             second_momentum: DeviceBuffer::zeroed(stream, 1)?,
             z_master: DeviceBuffer::zeroed(stream, 16)?,
             x_master: DeviceBuffer::zeroed(stream, 16)?,
@@ -33,6 +35,7 @@ impl MuonPaddingBuffers {
         HostPtrs {
             grad: self.grad.cu_deviceptr(),
             momentum: self.momentum.cu_deviceptr(),
+            variance: self.variance.cu_deviceptr(),
             second_momentum: self.second_momentum.cu_deviceptr(),
             z_master: self.z_master.cu_deviceptr(),
             x_master: self.x_master.cu_deviceptr(),

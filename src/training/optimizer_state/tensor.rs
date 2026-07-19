@@ -39,6 +39,7 @@ pub(in crate::training) struct MuonState {
     pub(in crate::training) z_master: DeviceBuffer<f32>,
     pub(in crate::training) x_master: DeviceBuffer<f32>,
     pub(in crate::training) momentum: DeviceBuffer<f32>,
+    pub(in crate::training) variance: DeviceBuffer<u16>,
     pub(in crate::training) second_momentum: DeviceBuffer<f32>,
     pub(in crate::training) schedule_amax: DeviceBuffer<f32>,
 }
@@ -54,6 +55,7 @@ impl MuonState {
             z_master: clone_device(init.stream, &master)?,
             x_master: master,
             momentum: zero(init.stream, tensor.len)?,
+            variance: zero(init.stream, tensor.len)?,
             second_momentum: zero(init.stream, normuon_neurons)?,
             schedule_amax: zero(init.stream, 1)?,
         })

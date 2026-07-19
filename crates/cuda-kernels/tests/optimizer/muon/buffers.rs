@@ -69,6 +69,7 @@ pub fn descriptors(slots: &Slots, rows: usize, cols: usize) -> Vec<MuonSlotDescr
         .map(|slot| MuonSlotDescriptor {
             grad: slots.grads[slot].cu_deviceptr(),
             momentum: slots.momentums[slot].cu_deviceptr(),
+            variance: 0,
             second_momentum: 0,
             z_master: slots.z_masters[slot].cu_deviceptr(),
             x_master: slots.x_masters[slot].cu_deviceptr(),

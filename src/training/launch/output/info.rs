@@ -76,6 +76,11 @@ pub(in crate::training::launch) fn build_run_info(dataset: &str, config: &TrainC
         "hyperball_polar_numerator",
         crate::training::optimizer_muon::hyperball_polar_numerator(),
     );
+    push_info(
+        &mut info,
+        "muon_vs_enabled",
+        crate::training::optimizer_muon::muon_vs_enabled(),
+    );
     push_info(&mut info, "step_cap", config.step_cap);
     push_info(&mut info, "log_interval", config.log_interval);
     push_info(&mut info, "max_seconds", config.max_seconds);
@@ -112,6 +117,7 @@ fn push_run_env(info: &mut String) {
         "TRAIN_HYPERBALL_AMUSE",
         "TRAIN_HYPERBALL_POLAR_PERIOD",
         "TRAIN_HYPERBALL_POLAR_NUMERATOR",
+        "TRAIN_MUON_VS",
         "TRAIN_NEXTLAT_LOSS_WEIGHT",
         "TRAIN_SKIP_UNSTABLE_UPDATES",
         "TRAIN_SKIP_ROLLING_INTERVAL",
