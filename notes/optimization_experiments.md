@@ -53,6 +53,119 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 
 ```text
 date: 2026-07-19
+commit: note-only rejection; mimetic initialization implementation removed
+experiment: Mimetic value/output initialization, first on every attention/KDA
+  mixer and then isolated to the four ordinary full-attention layers.
+status: rejected_after_decisive_450s_and_placement_isolation
+sources:
+  https://proceedings.mlr.press/v202/trockman23a.html
+  https://arxiv.org/abs/2305.09828
+  https://github.com/KellerJordan/modded-nanogpt/commit/5d2365f9508d33d764126ba90c895be8d923ae3c
+rationale:
+  Mimetic Initialization initializes the composed attention value/output map
+  near a negative identity and reports improved optimization. A later
+  Modded-NanoGPT record applied only the V/O part, using per-head identity
+  blocks with product approximately -0.05 I plus 0.01 Gaussian noise, and
+  shortened its eight-run schedule by 20 steps. This is an initialization-only
+  intervention, so a successful implementation adds no training-step kernel,
+  activation, parameter, or optimizer-state cost.
+scope_and_nvfp4_adaptation:
+  Preserved the complete FineWeb/Llama-2 B4/S2048/L16/d2048/h32 model, all
+  four full-attention and twelve KDA mixers, all sixteen block-Top-K MLPs,
+  value residuals, headwise gates, XSA, partial key offset, NextLat,
+  SymExpLin, objective, optimizer, tokenizer, parameter allocations, and RNG
+  consumption.
+  Baseline weights and noise were initialized first. Candidate initialization
+  then overwrote only the 2048 V-diagonal and 2048 output-projection diagonal
+  payloads in each selected mixer, retaining all off-diagonal baseline noise.
+  With global scale 0.02, local E4M3 scale 1.875, and E2M1 payloads +6 and -6,
+  the represented diagonals were +0.225 and -0.225, giving a composed product
+  of -0.050625 I. This is the nearest directly representable local NVFP4
+  analogue of the reference beta=0.05 construction. Q and K were unchanged.
+  TRAIN_MIMETIC_VO_INIT selected the candidate in the same binary.
+correctness:
+  cargo fmt --all, cargo check -p gpt2-nvfp4, cargo check --workspace,
+  cargo test --workspace --lib, and git diff --check: pass.
+  The focused host test proved candidate/control RNG parity, unchanged
+  nonselected payloads, selected payload signs and scales, and the exact
+  represented -0.050625 diagonal product.
+  Exact TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass for
+  both candidate formulations and again after source removal.
+  Diagnostic-only all-mixer launch
+  target/runs/20260719_184603Z_fineweb_900s completed one intact finite
+  update with val_loss=10.061467. Diagnostic-only full-attention launch
+  target/runs/20260719_191256Z_fineweb_900s completed one intact finite
+  update with val_loss=10.211823. Neither was decision evidence.
+all_mixer_health_and_fixed_step_admission:
+  Candidate target/runs/20260719_184626Z_fineweb_30s and same-binary control
+  target/runs/20260719_184701Z_fineweb_30s completed 86 and 85 updates. At
+  common step 50, candidate training loss was 6.526862621 versus
+  6.522377014, 0.06877% worse; unequal-step held-out endpoints were used only
+  as health evidence.
+  Two exact 201-step seed-matched pairs nevertheless showed small repeated
+  held-out improvements:
+    default seed:
+      candidate target/runs/20260719_184856Z_fineweb_900s, 5.563295;
+      control target/runs/20260719_185014Z_fineweb_900s, 5.572192;
+      candidate 0.159668% lower.
+    seed 0x47505433:
+      candidate target/runs/20260719_185236Z_fineweb_900s, 5.556242;
+      control target/runs/20260719_185352Z_fineweb_900s, 5.573273;
+      candidate 0.305583% lower.
+  The mean held-out improvement was 0.232633%. Sampled training loss was
+  slightly worse at every postinitial checkpoint in both pairs, making this
+  specifically a repeated held-out signal rather than a claim of lower
+  minibatch loss. Because it changed no runtime graph, it advanced directly
+  to the fresh sustained gate.
+all_mixer_decisive_gate:
+  Candidate target/runs/20260719_185552Z_fineweb_450s completed 1256 updates
+  in 450.213s with held-out val_loss=4.324769. Fresh same-binary control
+  target/runs/20260719_190332Z_fineweb_450s completed 1253 updates in
+  450.200s with held-out val_loss=4.312948.
+    held-out loss: candidate 0.274082% worse.
+    completed updates: candidate 3 more, or 0.239425% more.
+    common-step curve: candidate worse at 21 of 25 postinitial samples.
+    mean common-sample loss: candidate 0.315425% worse.
+    final eight common samples: candidate 0.165045% worse.
+  Candidate and control were finite and nonzero at every high-fidelity sample.
+  Every update/instability skip counter was zero, and every sample retained
+  batch 4, sequence 2048, and 8192 tokens. The candidate was numerically
+  stable but algorithmically inferior; its three-step cadence difference is
+  clock noise for an initialization-only change, not a speed claim.
+full_attention_only_isolation:
+  The paper and Modded-NanoGPT reference apply mimetic V/O initialization to
+  ordinary attention. Applying it to this model's twelve nonlinear recurrent
+  KDA mixers was unsupported, so one final formulation restricted the same
+  represented diagonals to zero-based full-attention layers 3, 7, 11, and 15.
+  KDA initialization returned exactly to control.
+  Two exact 201-step seed-matched pairs failed to reproduce a direction:
+    default seed:
+      candidate target/runs/20260719_191302Z_fineweb_900s, 5.556872;
+      control target/runs/20260719_191418Z_fineweb_900s, 5.565470;
+      candidate 0.154488% lower held-out.
+    seed 0x47505433:
+      candidate target/runs/20260719_191548Z_fineweb_900s, 5.574543;
+      control target/runs/20260719_191706Z_fineweb_900s, 5.572430;
+      candidate 0.037919% higher held-out.
+  The two-seed mean held-out effect was only 0.058225% favorable. Training
+  checkpoints crossed repeatedly: at step 200 the candidate was 0.445375%
+  worse on the default seed but 0.517641% better on the second seed. This is
+  noise-scale mixed evidence, not a credible repeated same-step gain.
+decision:
+  Reject both formulations. The all-mixer candidate failed the decisive fresh
+  450-second gate despite extra exposure, and the paper-supported
+  full-attention placement did not replicate its very small fixed-step gain.
+  Do not spend another 450-second gate or tune initialization strength without
+  a surviving direction. Remove all source and environment controls and keep
+  the accepted partial-key-offset baseline unchanged.
+restoration:
+  After removal, the exact sm_120a rebuild passed. Diagnostic-only accepted
+  source launch target/runs/20260719_191936Z_fineweb_900s completed one
+  finite update with held-out val_loss=9.715739. It is launch evidence only.
+```
+
+```text
+date: 2026-07-19
 commit: note-only rejection; complete implementation removed
 experiment: Position-stationary RoPE on the two partial-key-offset quarters.
 status: rejected_matched_step_screen; no_profile; no_fixed_201; no_450s
