@@ -53,6 +53,88 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 
 ```text
 date: 2026-07-19
+commit: note-only rejection; ScheduleFree+ c-warm-start implementation removed
+experiment: Defer schedule-free averaging during the optimizer warmup using
+  the ScheduleFree+ c_t=1 warm-start.
+status: rejected_after_decisive_450s
+source:
+  https://arxiv.org/abs/2605.19095
+rationale:
+  ScheduleFree+ identifies premature interpolation toward the running average
+  as a source of weak early optimization. Its c-warm-start holds c_t=1 during
+  warmup, so the iterate follows z directly, and reports two times the
+  learning-rate warmup as a robust heuristic. The active learning-rate warmup
+  is 83 optimizer steps, so this experiment used 166 c-warm-start steps.
+  The paper's r=1 weighting was not included: its ablation was slightly worse
+  below 30B tokens, far beyond this gate's exposure, and the active AMUSE
+  optimizer already changes the inner and outer momentum schedules. This
+  isolated only the directly applicable c-warm-start.
+scope_and_implementation:
+  Preserved the complete FineWeb/Llama-2 B4/S2048/L16/d2048/h32 model, all
+  four full-attention and twelve KDA mixers, all sixteen block-Top-K MLPs,
+  value residuals, XSA, partial key offset, NextLat, SymExpLin, objective,
+  tokenizer, optimizer updates, parameter allocations, and runtime kernels.
+  TRAIN_SCHEDULE_FREE_C_WARMUP_STEPS selected the experiment in the same
+  binary. For steps through the configured warm-start window, the
+  schedule-free average coefficient was 1 and its accumulated weight was
+  reset. Normal schedule-free weighting restarted after the window, making
+  the first post-warm-start coefficient 1 as prescribed by the algorithm.
+correctness_and_health:
+  cargo fmt --all, focused
+  c_warmup_tracks_z_then_restarts_the_average test, cargo check --workspace,
+  and exact TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+  Diagnostic-only one-step candidate
+  target/runs/20260719_192423Z_fineweb_900s completed a finite update with
+  val_loss=9.715622. It was not decision evidence.
+  The 30-second health run
+  target/runs/20260719_192429Z_fineweb_30s completed 86 updates in 30.300s
+  with val_loss=6.149646. It retained batch 4, sequence 2048, and 8192 tokens;
+  finite/nonzero checks passed and every skip counter remained zero. As
+  required for this optimizer change, that run was launch evidence only.
+fixed_step_admission:
+  An exact 301-step pair produced a large enough held-out direction to justify
+  the sustained gate:
+    candidate target/runs/20260719_192514Z_fineweb_900s:
+      301 steps in 106.971s, val_loss=5.225811.
+    control target/runs/20260719_192708Z_fineweb_900s:
+      301 steps in 108.340s, val_loss=5.281803.
+    candidate held-out loss: 1.060093% lower.
+  Sampled training loss was mixed before the transition, then candidate-favoring
+  at steps 200, 250, and 300 by 0.3668%, 0.6667%, and 0.5430%. This met the
+  matched-step admission rule. The change adds no training-graph work, so
+  there was no implementation overhead to optimize before the fresh 450-second
+  candidate/control pair.
+decisive_gate:
+  Candidate target/runs/20260719_192921Z_fineweb_450s completed 1255 updates
+  in 450.179s with held-out val_loss=4.340013504.
+  Fresh same-binary control target/runs/20260719_193702Z_fineweb_450s
+  completed 1249 updates in 450.204s with held-out val_loss=4.321500301.
+    held-out loss: candidate 0.428398% worse.
+    completed updates: candidate 6 more, or 0.480384% more.
+    common-step curve: candidate worse at 23 of 24 postinitial samples.
+    mean common-sample loss: candidate 0.468799% worse.
+    final eight common samples: candidate worse at all eight, with a
+      0.471425% mean regression.
+  Both runs were finite and nonzero at every high-fidelity sample, every
+  update/instability skip counter was zero, and every sample retained batch 4,
+  sequence 2048, and 8192 tokens. The candidate's six-step cadence advantage
+  is clock noise for a scalar host-side schedule choice, not a kernel-speed
+  claim, and did not compensate for its worse same-step or held-out loss.
+decision:
+  Reject. The promising 301-step held-out result did not reproduce in the
+  decisive fresh sustained pair; the 450-second candidate was consistently
+  inferior across the complete common-step tail despite slightly greater
+  exposure. Do not promote the environment control or tune this isolated
+  warm-start duration without new evidence.
+restoration:
+  Removed all four implementation/config/logging source changes and repeated
+  the exact sm_120a build successfully. Diagnostic-only accepted-source launch
+  target/runs/20260719_194644Z_fineweb_900s completed one finite update with
+  held-out val_loss=9.715622. It is launch evidence only.
+```
+
+```text
+date: 2026-07-19
 commit: note-only rejection; mimetic initialization implementation removed
 experiment: Mimetic value/output initialization, first on every attention/KDA
   mixer and then isolated to the four ordinary full-attention layers.
