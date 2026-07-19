@@ -53,6 +53,126 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 
 ```text
 date: 2026-07-19
+commit: note-only rejection; rectified-softmax implementation removed
+experiment: Controlled-study Softpick variant on the four ordinary
+  full-attention layers.
+status: rejected_after_two_seed_matched_step_screen; no_profile; no_450s
+sources:
+  https://arxiv.org/abs/2605.20798
+  https://arxiv.org/abs/2504.20966
+  https://github.com/zaydzuhri/softpick-attention
+rationale_and_formula_selection:
+  The controlled 1.2B/3B study evaluates
+    q = ReLU(softmax(z) - 1/n)
+  without post-ReLU renormalization. At 1.2B it reports validation loss
+  2.4814 versus 2.4890 for baseline, 0.305344% lower, and CLIMB-average
+  0.4922 versus 0.4829. Its three Softpick seeds clear the study's corrected
+  significance threshold, and the method remains stable and positive at 3B.
+  This is stronger scale-matched evidence than most surveyed modifications.
+  The current v3 Softpick paper and official reference code instead implement
+  ReLU(exp(z)-1)/sum(abs(exp(z)-1)), with a numerically stable equivalent.
+  That later formula reports a 0.12 training-loss gap and worse downstream
+  results at 1.8B. The formulas are not algebraically equivalent. This
+  experiment therefore reproduced the controlled study's exact
+  ReLU(softmax-1/n) intervention that generated the favorable 1.2B/3B
+  evidence; it did not silently substitute the later absolute-denominator
+  formula.
+scope_and_forward:
+  Preserved the complete FineWeb/Llama-2 B4/S2048/L16/d2048/h32 model, all
+  four full-attention and twelve KDA mixers, all sixteen block-Top-K MLPs,
+  value residuals, XSA, partial key offset, NextLat, SymExpLin, objective,
+  tokenizer, optimizer, parameters, and RNG streams. TRAIN_SOFTPICK selected
+  the candidate in the same binary.
+  Only the four ordinary attention softmaxes changed; KDA has no softmax and
+  remained mathematically identical. For each causal/windowed row, n was the
+  exact visible-key count. Forward stored f16
+  max(softmax_probability - 1/n, 0), retained normal log-sum-exp, and applied
+  no renormalization.
+exact_backward_and_memory_layout:
+  For p=softmax(z), threshold t=1/n, active mask m=[p>t], and upstream
+  attention-weight gradient g, the implemented score gradient was
+    dz_i = p_i * (m_i*g_i - sum_j(p_j*m_j*g_j)).
+  Thus below-threshold forward zeros retained the dense negative softmax
+  coupling; this was not a gradient-dead ReLU approximation. dV used the saved
+  rectified forward weights.
+  The first diagnostic-only launch
+  target/runs/20260719_200052Z_fineweb_900s exposed that a naive exact
+  implementation attempted to materialize both QK and dO*V^T in f32 while the
+  production dot scratch is intentionally compact; it stopped before an
+  update at the corresponding buffer-size assertion. The corrected
+  memory-neutral layout materialized QK in the existing score matrix, encoded
+  both p and m in the existing f16 ds scratch (positive p for active,
+  negative p otherwise), then overwrote the score matrix with dO*V^T.
+  Row reduction formed the exact mixed-precision coupling term before the
+  signed probabilities were overwritten in place by dz. Sparse-backward tile
+  sampling used abs(p), while the saved rectified weights remained untouched
+  for dV and for the final layer's shared-scratch path. No model tape or peak
+  square-buffer allocation was added.
+correctness:
+  cargo fmt --all, cargo check --workspace, cargo test --workspace --lib
+  --bins, and git diff --check: pass.
+  Exact TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+  Two generated-PTX GPU tests passed:
+    softpick_forward_backward_matches_rectified_softmax_reference compared
+      forward sparsity and every Q/K/V gradient against an independent
+      reference, including a below-threshold key with nonzero score gradient
+      and the final-layer shared probability scratch.
+    softpick_qknorm_backward_matches_scale_finite_difference covered the
+      production head_dim=64 QK normalization and accepted partial-key-offset
+      path against a QK-scale finite difference.
+  Diagnostic-only corrected launch
+  target/runs/20260719_200504Z_fineweb_900s completed one finite intact update
+  with held-out val_loss=9.882915. It was not decision evidence.
+health_screen:
+  Candidate target/runs/20260719_200512Z_fineweb_30s completed 80 updates in
+  30.185s with val_loss=6.068032. Fresh same-binary control
+  target/runs/20260719_200548Z_fineweb_30s completed 85 updates in 30.156s
+  with val_loss=6.033043.
+  At common step 50, candidate training loss was 6.522686958 versus
+  6.526965618, 0.065554% lower. This was directional but not credible enough
+  alone. Both runs were finite/nonzero, had zero update/instability skips, and
+  retained batch 4, sequence 2048, and 8192 tokens. The exact first
+  implementation was 6.352177% slower per update, so it required replicated
+  same-step quality before any profiling or fusion pass.
+two_seed_fixed_step_screen:
+  Two exact 201-step pairs did not reproduce a held-out direction:
+    default seed:
+      candidate target/runs/20260719_200643Z_fineweb_900s:
+        201 steps in 76.706s, val_loss=5.557805.
+      control target/runs/20260719_200804Z_fineweb_900s:
+        201 steps in 72.224s, val_loss=5.567106.
+      candidate held-out loss was 0.167071% lower, but it was worse at common
+      training steps 100, 150, and 200 and 0.089851% worse on average across
+      the four postinitial samples.
+    seed 0x47505433:
+      candidate target/runs/20260719_200942Z_fineweb_900s:
+        201 steps in 77.157s, val_loss=5.575055.
+      control target/runs/20260719_201104Z_fineweb_900s:
+        201 steps in 72.370s, val_loss=5.568065.
+      candidate held-out loss was 0.125537% worse. The sampled training curve
+      crossed again, with candidate better only at step 200.
+  The mean relative held-out effect was only 0.020767% favorable
+  (0.020754% on pooled losses), with opposite signs across seeds. Candidate
+  runtime regressed by 6.205693% and 6.614619%. Every fixed-step run remained
+  finite/nonzero with every skip counter zero.
+decision:
+  Reject without profiling, fusion, or a 450-second gate. The sole admission
+  condition is a credible repeated same-step quality improvement. Opposite
+  held-out signs, repeatedly crossing training curves, and a noise-scale
+  pooled effect do not satisfy it, so optimizing the recoverable extra QK
+  recomputation would be target drift. The controlled study's transformer
+  applies rectification to every attention layer; this hybrid has only four
+  softmax attention layers, which may dilute the effect, but KDA cannot receive
+  the intervention without becoming a different recurrence algorithm.
+restoration:
+  Removed all source, tests, and environment/logging controls. The exact
+  sm_120a rebuild passed. Diagnostic-only accepted-source launch
+  target/runs/20260719_201331Z_fineweb_900s completed one finite update with
+  held-out val_loss=9.715527. It is launch evidence only.
+```
+
+```text
+date: 2026-07-19
 commit: note-only rejection; ScheduleFree+ c-warm-start implementation removed
 experiment: Defer schedule-free averaging during the optimizer warmup using
   the ScheduleFree+ c_t=1 warm-start.
