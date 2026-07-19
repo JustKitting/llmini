@@ -52,6 +52,88 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```
 
 ```text
+date: 2026-07-19
+commit: rejected experiment; note-only result
+experiment: MONA-Lite gradient acceleration stacked before accepted Muon-VS
+status: rejected_no_matched_step_loss_signal
+sources:
+  https://arxiv.org/abs/2605.26842
+  Paper source equations and MONA-Lite state/storage discussion were inspected
+  directly from the arXiv TeX source.
+rationale:
+  MONA reports better iteration efficiency than Muon from 1B through 68B by
+  accelerating the gradient before Muon momentum and polar decomposition.
+  This is an algorithmic optimizer candidate for the intact approximately 1B
+  model, so its first implementation was admitted or rejected solely by
+  matched-step loss. Initial runtime and fixed-time endpoint loss were not
+  screening criteria.
+implementation:
+  Preserved the complete FineWeb/Llama-2 B4/S2048/L16/d2048/h32 model, all
+  four full-attention and twelve KDA blocks, value residuals, block Top-K
+  ReLU-squared MLPs, NextLat, accepted Muon-VS, Hyperball/AMUSE schedule-free
+  update, two-polar plus one-sign cadence, dataset, tokenizer, and every
+  optimizer update.
+  The paper recurrence is:
+    D_t = G_t - G_(t-1)
+    A_t = beta_a*A_(t-1) + (1-beta_a)*D_t
+    G_tilde = G_t + alpha*A_t
+  with the paper's 1B/shared defaults beta_a=0.99 and alpha=-50.
+  The implementation used the algebraically exact one-state streaming form:
+    E_t = beta_a*E_(t-1) + (1-beta_a)*G_t
+    A_t = (1-beta_a)*(G_t-E_(t-1))
+    G_tilde = G_t + alpha*A_t
+  This avoids separate previous-gradient and acceleration tensors. E_t was
+  persisted in BF16, as in MONA-Lite, while the recurrence and G_tilde were
+  computed in FP32. The added state is one BF16 value per 900,726,784 Muon
+  matrix elements: 1,801,453,568 bytes (1,718MiB, 1.678GiB).
+  G_tilde fed the accepted Muon-VS mean/innovation recurrence on both polar
+  and local sign-interleave steps. Q/K clipping scaled E by the same clipping
+  factor used for momentum. TRAIN_MONA defaulted on for the candidate and
+  TRAIN_MONA=0 selected a same-binary accepted Muon-VS control.
+correctness_and_health:
+  cargo fmt --all: pass.
+  cargo check: pass.
+  cargo check -p rust-kernels-cuda --test optimizer: pass.
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+  cargo test mona_streaming_state_matches_paper_recurrence: pass.
+  cargo test mona_is_default_candidate: pass.
+  CUDA GPU tests:
+    mona_lite_prepare_matches_streaming_paper_recurrence: pass.
+    mona_lite_sign_interleave_matches_streaming_paper_recurrence: pass.
+    all 15 pre-existing Muon GPU regression tests: pass.
+  target/runs/20260719_025300Z_fineweb_900s was a one-step allocation and
+  launch diagnostic only. It proved the extra state fit and completed the
+  intact graph; it was not screening evidence.
+matched_step_screen:
+  Candidate target/runs/20260719_025313Z_fineweb_30s and same-binary control
+  target/runs/20260719_025359Z_fineweb_30s both completed 91 updates. Both
+  were finite/nonzero with every skip counter zero. At matched step 50:
+    candidate 6.548475 versus control 6.543476, 0.0764% worse.
+  This single near-tie was ambiguous, so the smallest useful fixed-step
+  extension was run. It did not qualify the candidate for profiling.
+paired_fixed_step_check:
+  Candidate target/runs/20260719_025516Z_fineweb_900s and disabled same-binary
+  control target/runs/20260719_025611Z_fineweb_900s each completed exactly
+  151 updates with the same configured seed, intact model, FineWeb path, and
+  TRAIN_LOG_INTERVAL=50:
+    step 0:   10.741848 versus 10.741848, identical.
+    step 50:   6.548516 versus  6.552099, 0.0547% better.
+    step 100:  6.417211 versus  6.394190, 0.3601% worse.
+    step 150:  5.809012 versus  5.743566, 1.1394% worse.
+    held-out val at step 151:
+                5.792878 versus  5.772928, 0.3456% worse.
+  Both runs remained finite/nonzero with zero update skips. Candidate runtime
+  was 50.437s versus 50.576s, but this was not used to make the decision.
+decision:
+  Reject this exact MONA-Lite-before-Muon-VS formulation. It does not show the
+  required credible matched-step loss improvement; instead, the gap becomes
+  materially worse by step 150. Under the structural screening rule, do not
+  profile or optimize its runtime and do not run a 450-second gate. Remove
+  the implementation, exactly rebuild the accepted Muon-VS source, and retain
+  only this result.
+```
+
+```text
 date: 2026-07-18
 commit: rejected source reverted; note only
 experiment: Per-layer trainable xIELU in the intact two-projection MLP.
