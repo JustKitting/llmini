@@ -30385,3 +30385,77 @@ decision:
   promotion gate without meaningful fixed-time loss regression. Commit the
   implementation and this exact ledger together in JJ.
 ```
+
+```text
+date: 2026-07-19
+commit: note-only rejection; implementation removed after screening
+experiment: MARS-M Efficient approximate no-clipping direction integrated
+  with the accepted Hyperball/Normuon matrix-update geometry.
+status: rejected_matched_step_screen; no_profile; no_450s
+sources:
+  https://arxiv.org/abs/2510.21800
+  https://github.com/AGI-Arena/MARS/tree/main/MARS_M
+  inspected repository commit:
+    4831e28eba863a4e69d7e9474ff8e73bc1b410fe
+rationale:
+  MARS-M reports lower matched-step training and validation loss than tuned
+  Moonlight on GPT-2 models from 125M through 1.5B, including 770M and 1.5B
+  FineWeb-Edu runs. The official memory-efficient implementation published
+  2026-03-04 removes corrected-gradient clipping and expresses approximate
+  MARS-M using only the existing momentum-sized state, so it was a credible
+  intact-model optimizer candidate with no additional persistent memory.
+  Admission was determined only by loss at identical optimizer steps.
+implementation:
+  Preserved the complete FineWeb/Llama-2 B4/S2048/L16/d2048/h32 model, all
+  attention and KDA blocks, value residuals, block Top-K MLPs, NextLat,
+  dataset, tokenizer, and every optimizer update. The candidate changed only
+  the direction supplied to the accepted local Hyperball/Normuon matrix
+  geometry; vector-like parameters retained their established optimizer.
+  For beta=0.95 and paper-default gamma=0.025, the existing FP32 matrix
+  momentum allocation represented U_t:
+    U_t = beta*U_(t-1)
+          + ((1-gamma)*(1-beta)/beta)*G_t
+    M_t = beta*U_t + gamma*G_t
+  M_t was supplied to the local polar map on polar steps and sign(M_t) to the
+  established sign-interleave shortcut. No extra Nesterov transform or
+  Muon-VS variance transform was stacked on M_t. Q/K clipping scaled U_t with
+  the same factor as the parameter. TRAIN_MARS_M_EFFICIENT=0 selected the
+  accepted Muon-VS same-binary control.
+correctness:
+  cargo fmt --all: pass.
+  cargo check --workspace: pass.
+  cargo test -p rust-kernels --bin rust-kernels mars_m_efficient: 2 passed,
+  including an algebraic comparison against the previous-gradient
+  approximate MARS-M recurrence over multiple updates.
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+  cargo test -p rust-kernels-cuda --test optimizer mars_m_efficient
+    -- --ignored --nocapture: 2 passed, covering both matrix orientations,
+    split/cooperative polar preparation, and the local sign-interleave path.
+  cargo test -p rust-kernels-cuda --test optimizer muon::
+    -- --ignored --nocapture: all 17 Muon GPU tests passed.
+  The broad workspace test build remains blocked by unrelated pre-existing
+  stale GPT MLP/forward test initializers (`pre_activation` and missing TMA
+  fields); no all-workspace test claim is made.
+bringup:
+  target/runs/20260719_031204Z_fineweb_900s was a one-step launch and
+  allocation diagnostic only. Run metadata confirmed the intact
+  B4/S2048/L16/d2048/h32 model and candidate gamma=0.025. It completed one
+  update and held-out evaluation with finite val_loss=9.996182.
+paired_matched_step_screen:
+  Candidate target/runs/20260719_031224Z_fineweb_30s and disabled same-binary
+  control target/runs/20260719_031300Z_fineweb_30s used the same seed, model,
+  FineWeb data path, tokenizer, and TRAIN_LOG_INTERVAL=50.
+    step 0:  10.741848 versus 10.741848, identical.
+    step 50:  6.598568 versus  6.492260, 1.6375% worse.
+  Both logged samples were finite/nonzero with zero grad-norm, loss,
+  non-finite, or aggregate update skips. Candidate and control completed 92
+  and 91 updates respectively; the unequal-step fixed-time held-out values
+  were not used to decide the structural candidate.
+decision:
+  Reject this exact MARS-M Efficient direction integration. The fresh
+  same-binary common-step result is materially worse, so there is no
+  loss-per-step signal that would admit the implementation to profiling or
+  optimization. Do not run a fixed-step extension or 450-second gate. Remove
+  the implementation, exactly rebuild the accepted source, and retain only
+  this experiment record.
+```
