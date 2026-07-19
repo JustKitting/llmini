@@ -31014,3 +31014,119 @@ decision:
   exact HTMuon; it rejects this inexpensive first-order approximation in the
   current Hyperball/NorMuon stack.
 ```
+
+```text
+date: 2026-07-19
+commit: note-only rejection; approximate-normalized implementation removed
+  after corrected matched-step resolution
+experiment: Local approximately normalized residual architecture inspired by
+  nGPT and anGPT.
+status: rejected_local_adaptation_after_due_diligence; no_profile; no_450s
+sources:
+  https://arxiv.org/abs/2410.01131
+  https://github.com/NVIDIA/ngpt
+  inspected NVIDIA repository commit:
+    ed19eb14d55209b46a604ce44a1e0f00f43fef50
+  https://arxiv.org/abs/2505.22014
+rationale:
+  nGPT reports faster convergence by constraining hidden states and matrix
+  directions to hyperspheres and learning elementwise residual interpolation
+  rates. anGPT replaces the exact post-LERP normalization with the
+  concentration-based factor
+    1 / sqrt(alpha^2 + (1-alpha)^2)
+  and replaces exact matrix normalization with per-neuron norm bounds. The
+  papers report approximately 3-4% convergence improvements in long
+  conventional-Adam training. This experiment tested whether the residual
+  geometry transfers to the accepted single-GPU NVFP4 model and its
+  Hyperball/Muon-VS optimizer. Admission remained a credible loss improvement
+  at identical optimizer steps; fixed-time throughput could not reject the
+  first implementation.
+scope:
+  The full FineWeb/Llama-2 B4/S2048/L16/d2048/h32 model remained present:
+  all four full-attention and twelve KDA blocks, all value-residual paths, all
+  16 block-Top-K ReLU-squared MLPs, the query-dependent headwise attention
+  gate, NextLat, tokenizer, objective, and parameter allocations were retained.
+  This was deliberately a local compatibility adaptation, not a claim of an
+  exact reproduction of either paper. In particular, it retained tied token
+  embedding/unembedding weights, ReLU-squared, biases, and the accepted
+  Hyperball/Muon-VS optimizer rather than NVIDIA nGPT's untied head, SwiGLU,
+  bias-free matrices, and all-Adam update.
+implementation:
+  TRAIN_APPROX_NORMALIZED_GPT=1:
+    - L2-normalized every token embedding row.
+    - Removed the 32 block pre-norm applications and final LayerNorm from the
+      candidate path only.
+    - L2-normalized each complete attention and MLP branch output.
+    - Reused each former LayerNorm gamma vector as an elementwise alpha
+      surrogate and applied the anGPT LERP normalization factor.
+    - Preserved standalone branch projections and implemented analytical
+      reverse mode through branch normalization, LERP, alpha, and the embedding
+      normalization.
+    - Zeroed gradients for the unused LayerNorm biases and final norm.
+  The fused TMA LM head accepted a runtime output scale without an additional
+  logits pass. Cross entropy applied the identical scale to dlogits, preserving
+  the exact derivative of the scaled head.
+correctness_and_bug_resolution:
+  cargo fmt --all and cargo check --workspace: pass during implementation.
+  Every implementation pass used the required exact rebuild:
+    TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a
+  Focused GPU reference tests passed for normalized embedding forward/backward,
+  branch normalization, approximate LERP forward/backward, alpha gradients,
+  and scaled cross-entropy gradients.
+  Initial screens exposed a real candidate-only backward bug: embedding
+  lookup initially received the gradient with respect to the normalized
+  embedding directly, omitting the L2-normalization Jacobian. The implementation
+  was not judged from those runs. The corrected kernel applies
+    d_x = (d_y - y * dot(y,d_y)) / norm(x)
+  before embedding accumulation and matched its FP32 reference. At logit scale
+  1, this correction changed step-50 loss from 7.532760 to 7.522217; it was
+  necessary but not the source of the large convergence gap.
+fidelity_and_hyperparameter_due_diligence:
+  The first alpha mapping, alpha=0.05*abs(gamma), gave the right initial alpha
+  but an effective alpha learning rate about 45 times below NVIDIA nGPT's
+  surrogate parameterization. A corrected runtime mapping retained
+  alpha_init=0.05 while using derivative 0.05*sqrt(2048). At head scale 1 it
+  improved the pre-fix step-50 loss from 7.728711 to 7.532760, but remained
+  far behind control.
+  Fixed 51-step screens covered head scales 1, approximately 2.55 (the
+  initialized tied-row unit-norm correction), 8, 12, 16, 24, sqrt(2048), 64,
+  and 90. The best early result was the larger sqrt(2048) scale with the
+  conservative alpha mapping; smaller scales suffered a collapsing late grad
+  norm and larger scales regressed again.
+  The paper-faithful no-warmup candidate was worse (step-50 loss 7.741820).
+  Hyperball polar LR values 0.0055, 0.011, 0.044, 0.088, and 0.176 were also
+  screened at matched exposure. Raising LR improved scale-1 step-50 loss only
+  to 7.268430, still 11.34% above the fresh control's 6.525681. Hyperball
+  already preserves each matrix's global Frobenius radius, so an expensive
+  per-neuron projection pass was not justified without a remaining
+  loss-per-step signal.
+corrected_fixed_201_step_resolution:
+  Fresh control target/runs/20260719_074519Z_fineweb_180s and corrected
+  best-observed candidate target/runs/20260719_074628Z_fineweb_180s each
+  completed exactly 201 optimizer updates with the same seed, FineWeb data,
+  tokenizer, intact model, and TRAIN_LOG_INTERVAL=50. Candidate versus control:
+    step 0:   16.798246384 versus 10.750482559
+    step 50:   6.807451725 versus  6.528643131, 4.270544% worse
+    step 100:  6.713591099 versus  6.384621620, 5.152529% worse
+    step 150:  6.261358738 versus  5.777635098, 8.372347% worse
+    step 200:  6.110622883 versus  5.747125149, 6.324862% worse
+    held-out:  6.162425 versus 5.582383, 10.390581% worse
+  Candidate and control elapsed times were 72.346s and 67.801s. All five
+  high-fidelity samples in both runs were finite and nonzero; every aggregate,
+  non-finite, loss-spike, and grad-norm-spike skip counter was zero. The
+  candidate therefore remained numerically stable but failed to catch the
+  control at any matched checkpoint.
+decision:
+  Reject this exact local approximate-normalized integration. The corrected,
+  longer matched-step curve is materially worse, so it does not qualify for
+  kernel profiling, implementation optimization, per-neuron weight projection,
+  or a 450-second promotion gate. This does not reject nGPT or anGPT under
+  their published all-Adam, normalized/bounded-weight architecture; it rejects
+  transplanting this residual geometry into the current tied-head,
+  ReLU-squared, Hyperball/Muon-VS model.
+  All candidate source was removed. The accepted parent source then passed the
+  exact sm_120a rebuild. Post-restore diagnostic
+  target/runs/20260719_074951Z_fineweb_120s completed one real update and
+  held-out evaluation with finite val_loss=10.168886; this one-step run is
+  launch evidence only, not promotion evidence.
+```
