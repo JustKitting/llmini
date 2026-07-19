@@ -98,6 +98,7 @@ fn causal_attention_backward_wrapper_matches_direct_kernel() -> Result<(), Box<d
             head_count: GPT2_N_HEAD as u32,
             head_dim: (GPT2_N_EMBD / GPT2_N_HEAD) as u32,
             attention_window: GPT2_SEQ_LEN as u32,
+            partial_key_offset: false,
             qk_norm_offset: 0,
             backward_mask_seed: 0,
             backward_tile_budget: 0.0,

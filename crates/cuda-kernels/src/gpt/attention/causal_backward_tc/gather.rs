@@ -36,10 +36,18 @@ pub(super) fn gather_body(
         return;
     }
 
+    let key_token = params.key_source_token(token, dim);
     unsafe {
         *q.get_unchecked_mut(index as usize) = qkv_value(qkv, batch, token, head, dim, 0, &params);
-        *k.get_unchecked_mut(index as usize) =
-            qkv_value(qkv, batch, token, head, dim, params.embedding_dim, &params);
+        *k.get_unchecked_mut(index as usize) = qkv_value(
+            qkv,
+            batch,
+            key_token,
+            head,
+            dim,
+            params.embedding_dim,
+            &params,
+        );
         *v.get_unchecked_mut(index as usize) = qkv_value(
             qkv,
             batch,
@@ -73,26 +81,42 @@ pub(super) fn gather_norms_body(
     params: CausalAttentionParams,
     q_warp_sums: &mut SharedArray<f32, 8>,
     k_warp_sums: &mut SharedArray<f32, 8>,
+    previous_k_warp_sums: &mut SharedArray<f32, 8>,
 ) {
     let tid = thread::threadIdx_x();
     let index = thread::blockIdx_x() * TC_BACKWARD_THREADS_PER_BLOCK + tid;
     let total = params.batch_size * params.head_count * params.seq_len * params.head_dim;
     let mut q_sumsq = 0.0;
     let mut k_sumsq = 0.0;
+    let mut previous_k_sumsq = 0.0;
     let mut q_value = 0;
     let mut k_value = 0;
+    let mut previous_k_value = 0;
     let mut v_value = 0;
     let mut d_out_value = 0;
     let mut norm_index = 0;
     let mut valid_row = false;
+    let mut token = 0;
+    let mut dim = 0;
     if index < total {
-        let (dim, token, _bh, batch, head) = compact_linear_parts(index, &params);
+        let (index_dim, index_token, _bh, batch, head) = compact_linear_parts(index, &params);
+        dim = index_dim;
+        token = index_token;
         let row = row_index(batch, token, &params);
         valid_row = row < params.row_count;
         norm_index = head * params.row_count + row;
         if valid_row {
             q_value = qkv_value(qkv, batch, token, head, dim, 0, &params);
             k_value = qkv_value(qkv, batch, token, head, dim, params.embedding_dim, &params);
+            previous_k_value = qkv_value(
+                qkv,
+                batch,
+                token.saturating_sub(1),
+                head,
+                dim,
+                params.embedding_dim,
+                &params,
+            );
             v_value = qkv_value(
                 qkv,
                 batch,
@@ -105,8 +129,10 @@ pub(super) fn gather_norms_body(
             d_out_value = cvt_rn_f16_f32(d_out_src[hidden_index(batch, token, head, dim, &params)]);
             let q_f32 = cvt_f32_f16(q_value);
             let k_f32 = cvt_f32_f16(k_value);
+            let previous_k_f32 = cvt_f32_f16(previous_k_value);
             q_sumsq = q_f32 * q_f32;
             k_sumsq = k_f32 * k_f32;
+            previous_k_sumsq = previous_k_f32 * previous_k_f32;
         }
     }
 
@@ -114,9 +140,11 @@ pub(super) fn gather_norms_body(
     let warp = tid / 32;
     let q_warp_sum = warp_sum_f32(q_sumsq);
     let k_warp_sum = warp_sum_f32(k_sumsq);
+    let previous_k_warp_sum = warp_sum_f32(previous_k_sumsq);
     if lane == 0 {
         q_warp_sums[warp as usize] = q_warp_sum;
         k_warp_sums[warp as usize] = k_warp_sum;
+        previous_k_warp_sums[warp as usize] = previous_k_warp_sum;
     }
     thread::sync_threads();
 
@@ -130,6 +158,13 @@ pub(super) fn gather_norms_body(
             sqrt_f32(k_warp_sums[first_warp as usize] + k_warp_sums[first_warp as usize + 1]),
             QK_NORM_EPS,
         );
+        let previous_k_norm = max_f32(
+            sqrt_f32(
+                previous_k_warp_sums[first_warp as usize]
+                    + previous_k_warp_sums[first_warp as usize + 1],
+            ),
+            QK_NORM_EPS,
+        );
         let learned_scale =
             nvfp4_value(qk_scale_bytes, qk_scale_scales, qk_scale_global_scale[0], 0);
         let q_scale = learned_scale / params.scale;
@@ -140,7 +175,11 @@ pub(super) fn gather_norms_body(
                 0
             };
             *k.get_unchecked_mut(index as usize) = if valid_row {
-                cvt_rn_f16_f32(cvt_f32_f16(k_value) / k_norm)
+                if token > 0 && params.key_offset_dim(dim) {
+                    cvt_rn_f16_f32(cvt_f32_f16(previous_k_value) / previous_k_norm)
+                } else {
+                    cvt_rn_f16_f32(cvt_f32_f16(k_value) / k_norm)
+                }
             } else {
                 0
             };

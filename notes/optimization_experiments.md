@@ -53,6 +53,134 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 
 ```text
 date: 2026-07-19
+commit: passing partial-key-offset source promoted in this JJ change
+experiment: Previous-token partial key offset in every full-attention layer.
+status: accepted_fresh_450s_candidate_control
+sources:
+  https://github.com/KellerJordan/modded-nanogpt/tree/master/records/track_1_short/2025-12-14_PartialKeyOffset
+  https://github.com/KellerJordan/modded-nanogpt
+  Upstream source and history inspected at commit
+    edf47a05a12062d661c4cfd4eef848c5ab5bed32.
+rationale:
+  Modded-NanoGPT offsets two quarters of every attention head's key features
+  by one token, giving each affected layer a direct one-layer induction path.
+  Its record selects the long-window attention layers as the best
+  quality/cost placement and reports 11-run mean loss 3.2780 with p=0.0004,
+  although that record bundles five updates and does not isolate the full
+  effect size of this one method. This repo's only long-window mixers are its
+  four full-attention layers, making that placement directly testable without
+  deleting, freezing, or bypassing any model section.
+scope_and_adaptation:
+  Preserved the complete FineWeb/Llama-2 B4/S2048/L16/d2048/h32 model: all
+  four full-attention and twelve KDA mixers, value residuals, all sixteen
+  block-Top-K ReLU-squared MLPs, headwise gates, gated XSA, NextLat,
+  SymExpLin, objective targets, optimizer updates, and parameter allocations
+  remained active.
+  The offset is enabled only in zero-based layers 3, 7, 11, and 15, which are
+  the existing full-attention layers with a 1024-token window. KDA remains
+  unchanged. For each 64-wide head, dimensions [16,32) and [48,64) at token
+  t>0 source the independently QK-normalized key at t-1; all other dimensions
+  and token zero retain their same-token source. The offset resets separately
+  for every sequence in the batch.
+  Upstream combines this method with half-truncated RoPE, so its shifted
+  quarters are stationary. The local model rotates all head dimensions. This
+  implementation retains the same quarter ranges after the local full RoPE,
+  and is therefore an explicit adaptation rather than a claim of bit-exact
+  reproduction of upstream's stationary-quarter construction.
+implementation_and_exact_backward:
+  The offset is applied while gathering K for the existing tensor-core
+  attention path; it does not materialize another activation tensor or launch
+  another kernel. Current and previous keys are independently normalized
+  before the selected normalized components are routed.
+  Reverse mode applies the exact adjoint to the post-normalization key
+  gradient for every selected dimension:
+    dK_in[0] = dK_out[0] + dK_out[1],
+    dK_in[t] = dK_out[t+1] for 0<t<T-1,
+    dK_in[T-1] = 0.
+  Unselected dimensions retain dK_in[t]=dK_out[t]. The combined vector then
+  passes through the original token's full QK-normalization VJP and inverse
+  RoPE, correctly retaining cross-dimension norm dependencies even when a
+  selected final-token component has no direct routed use.
+  TRAIN_PARTIAL_KEY_OFFSET=0 remains the same-binary control. The accepted
+  default and notes/sweep_baseline.env now set it to one.
+correctness:
+  cargo fmt --all, cargo check --workspace, and the targeted CUDA attention
+  test compilation: pass.
+  Host mapping tests verify exactly the two selected quarters and the
+  first-token boundary.
+  Exact TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+  GPU partial_key_offset_backward_matches_key_finite_differences: pass.
+  It compares analytical gradients with central differences for shifted and
+  unshifted dimensions at first, middle, and final tokens, and also verifies
+  that every per-token QK-normalization gradient remains tangent.
+  Existing GPU qknorm_backward_matches_scale_finite_difference with the
+  feature disabled: pass.
+  Diagnostic-only final-default one-step
+  target/runs/20260719_182033Z_fineweb_900s was launched with
+  TRAIN_PARTIAL_KEY_OFFSET unset, recorded partial_key_offset_enabled=true,
+  and completed the intact model update and held-out evaluation with finite
+  val_loss=9.715622. It was not decision evidence.
+initial_health_screen:
+  Candidate target/runs/20260719_175245Z_fineweb_30s completed 86 updates in
+  30.292s with held-out val_loss=6.029063. Fresh same-binary control
+  target/runs/20260719_175322Z_fineweb_30s completed 85 updates in 30.159s
+  with val_loss=6.047523. The unequal-step endpoints were health evidence
+  only. At common step 50, candidate train loss was 6.527158737 versus
+  6.539252281, 0.184938% lower. Both were finite/nonzero with zero skips.
+fixed_201_step_admission:
+  Candidate target/runs/20260719_175408Z_fineweb_900s and control
+  target/runs/20260719_175525Z_fineweb_900s each completed exactly 201
+  updates. Candidate train loss was lower at every post-initial sample:
+    step 50:  6.522814 versus 6.543601, 0.317666% lower.
+    step 100: 6.350276 versus 6.383877, 0.526353% lower.
+    step 150: 5.724833 versus 5.753619, 0.500323% lower.
+    step 200: 5.672270 versus 5.716626, 0.775910% lower.
+  Held-out was 5.557245 versus 5.583679, 0.473415% lower. Every stability
+  counter remained clean. This repeated matched-step improvement admitted
+  implementation profiling.
+profiling_due_diligence:
+  The ten-step candidate profile is
+    target/nsys/partial_key_offset_unoptimized_on_b4s2048_10_20260719T1758Z.nsys-rep.
+  It measured 3690.811249ms total GPU-kernel time versus 3700.654877ms for
+  the accepted gated-XSA parent profile
+    target/nsys/xsa_fused_b4s2048_10_20260719T1600Z.nsys-rep.
+  The small favorable whole-profile difference is clock noise, not a claimed
+  speedup. Forward key gather was effectively unchanged at 11.144423ms
+  versus 11.138670ms over the profiles; backward gather was 6.875515ms
+  versus 6.813930ms. The only clear local cost was the routed
+  QK-normalization scatter at 14.208502ms versus 13.255765ms, an added
+  0.095274ms per optimizer step. Even eliminating that entire delta cannot
+  recover 0.5% of the roughly 360ms whole step, so the explicit mathematical
+  floor forbids spending an optimization cycle on it. No provisional
+  algorithmic overhead large enough to optimize was found.
+promotion_gate:
+  Candidate target/runs/20260719_180108Z_fineweb_450s completed 1260 updates
+  in 450.321s with held-out val_loss=4.302140235900879. Fresh same-binary
+  control target/runs/20260719_180848Z_fineweb_450s completed 1250 updates in
+  450.209s with held-out val_loss=4.436795711517334.
+    held-out loss: 3.034971% lower.
+    completed updates: 10 more, or 0.800000% more.
+    mean cadence: 357.398ms versus 360.167ms, 0.768971% faster.
+    matched curve: lower at 23 of 24 noninitial common samples. Step 50 was
+      0.012037% higher; every sample from step 100 through 1200 was lower.
+      The mean common-sample reduction was 3.884360%, and the final eight
+      common samples averaged 3.749907% lower.
+stability:
+  All 26 candidate high-fidelity samples are finite and nonzero.
+  Update_skipped, Skip_non_finite, Skip_loss_spike, and
+  Skip_grad_norm_spike are zero throughout. Sampled candidate grad norm
+  remains finite from 0.878057 through 3.500250. The control is also clean.
+decision:
+  Accept and promote partial key offset on all four full-attention layers.
+  It passes an exact gradient test, two matched-step screens, implementation
+  profiling, and a decisive fresh 450-second same-binary gate with a large
+  persistent loss reduction and no throughput or stability regression.
+  Make TRAIN_PARTIAL_KEY_OFFSET=1 the default and point
+  notes/sweep_baseline.env at the passing gate.
+```
+
+```text
+date: 2026-07-19
 commit: rejected source removed; note-only result
 experiment: Output-logit softcapping and Modded-NanoGPT sigmoid rescaling,
   including cap tuning, an in-place fused implementation, and an annealed

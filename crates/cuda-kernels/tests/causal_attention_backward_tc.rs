@@ -74,6 +74,7 @@ fn qknorm_backward_matches_scale_finite_difference() -> Result<(), Box<dyn Error
         head_count: HEADS as u32,
         head_dim: HEAD_DIM as u32,
         attention_window: SEQ as u32,
+        partial_key_offset: false,
     })?;
 
     let mut softmax_d = DeviceBuffer::<f32>::zeroed(&stream, HEADS * SEQ)?;
@@ -111,6 +112,7 @@ fn qknorm_backward_matches_scale_finite_difference() -> Result<(), Box<dyn Error
         head_count: HEADS as u32,
         head_dim: HEAD_DIM as u32,
         attention_window: SEQ as u32,
+        partial_key_offset: false,
         qk_norm_offset: 0,
         backward_mask_seed: 0,
         backward_tile_budget: 0.0,
@@ -126,6 +128,7 @@ fn qknorm_backward_matches_scale_finite_difference() -> Result<(), Box<dyn Error
         SEQ,
         HEADS,
         HEAD_DIM,
+        false,
     )?;
     let minus = qknorm_forward_loss(
         &stream,
@@ -137,6 +140,7 @@ fn qknorm_backward_matches_scale_finite_difference() -> Result<(), Box<dyn Error
         SEQ,
         HEADS,
         HEAD_DIM,
+        false,
     )?;
     let expected_scale_grad = (plus - minus) / (2.0 * EPS);
     let scale_grads = d_qk_scale.to_host_vec(&stream)?;
@@ -194,6 +198,7 @@ fn qknorm_backward_matches_scale_finite_difference() -> Result<(), Box<dyn Error
         head_count: HEADS as u32,
         head_dim: HEAD_DIM as u32,
         attention_window: SEQ as u32,
+        partial_key_offset: false,
         qk_norm_offset: 0,
         backward_mask_seed: 0,
         backward_tile_budget: 0.0,
@@ -211,6 +216,168 @@ fn qknorm_backward_matches_scale_finite_difference() -> Result<(), Box<dyn Error
     for (section, values) in accumulated.chunks(EMBEDDING).enumerate() {
         let expected_amax = values.iter().copied().map(f32::abs).fold(0.0, f32::max);
         assert_eq!(accumulated_amax[section].to_bits(), expected_amax.to_bits());
+    }
+    Ok(())
+}
+
+#[ignore = "requires generated sm_120a PTX"]
+#[test]
+fn partial_key_offset_backward_matches_key_finite_differences() -> Result<(), Box<dyn Error>> {
+    const SEQ: usize = 16;
+    const HEADS: usize = 1;
+    const HEAD_DIM: usize = 64;
+    const EMBEDDING: usize = HEADS * HEAD_DIM;
+    const QKV_DIM: usize = 3 * EMBEDDING;
+    const SCALE: f32 = 4.0;
+    const EPS: f32 = 0.015625;
+
+    let (_, stream, ptx) = common::cuda_test_context()?;
+    let attention = AttentionModule::from_module(ptx.clone())?;
+    let tc = F16TcMatmulModule::from_module(ptx)?;
+    let qkv_values = qknorm_qkv(SEQ, HEADS, HEAD_DIM);
+    let d_out_values = qknorm_d_out(SEQ, HEADS, HEAD_DIM);
+    let qkv = DeviceBuffer::from_host(&stream, &qkv_values)?;
+    let (qkv_f16, qkv_rounded) = f16::saved_f16(&stream, &tc, &qkv_values)?;
+    let d_out = DeviceBuffer::from_host(&stream, &d_out_values)?;
+
+    let qk_scale_bytes = DeviceBuffer::from_host(&stream, &[0x02_u8; 8])?;
+    let qk_scale_scales = DeviceBuffer::from_host(&stream, &[0x38_u8])?;
+    let qk_scale_global_scale = DeviceBuffer::from_host(&stream, &[SCALE])?;
+    let qk_scale =
+        Nvfp4DeviceTensor::new(&qk_scale_bytes, &qk_scale_scales, &qk_scale_global_scale);
+    let mut out = DeviceBuffer::<f32>::zeroed(&stream, SEQ * EMBEDDING)?;
+    let mut attention_out_f16 = DeviceBuffer::<u16>::zeroed(&stream, SEQ * EMBEDDING)?;
+    let mut probabilities_f16 = DeviceBuffer::<u16>::zeroed(&stream, HEADS * SEQ * SEQ)?;
+    let mut log_sum_exp = DeviceBuffer::<f32>::zeroed(&stream, HEADS * SEQ)?;
+    let mut forward_scratch = TcForwardScratchBuffers::new(&stream, HEADS, SEQ, HEAD_DIM)?;
+    attention.causal_attention_tc(CausalAttentionTcArgs {
+        stream: &stream,
+        tc_module: &tc,
+        qkv: &qkv,
+        qk_scale,
+        out: &mut out,
+        qkv_f16: None,
+        attention_out_f16: Some(&mut attention_out_f16),
+        forward_probs_f16: Some(&mut probabilities_f16),
+        kda_v_new: None,
+        kda_akk_inv: None,
+        kda_w: None,
+        kda_aqk: None,
+        log_sum_exp: &mut log_sum_exp,
+        scratch: forward_scratch.args(),
+        row_count: SEQ as u32,
+        seq_len: SEQ as u32,
+        batch_size: 1,
+        embedding_dim: EMBEDDING as u32,
+        qkv_dim: QKV_DIM as u32,
+        head_count: HEADS as u32,
+        head_dim: HEAD_DIM as u32,
+        attention_window: SEQ as u32,
+        partial_key_offset: true,
+    })?;
+
+    let mut softmax_d = DeviceBuffer::<f32>::zeroed(&stream, HEADS * SEQ)?;
+    let mut qk_norm_max = DeviceBuffer::<f32>::zeroed(&stream, 2 * HEADS)?;
+    let mut d_qkv = DeviceBuffer::<f32>::zeroed(&stream, SEQ * QKV_DIM)?;
+    let mut d_qkv_chunk_amax = DeviceBuffer::<f32>::zeroed(&stream, 3 * SEQ)?;
+    let mut d_qk_scale = DeviceBuffer::<f32>::zeroed(&stream, 16)?;
+    let mut backward_scratch = TcScratchBuffers::new_for_shape(&stream, HEADS, SEQ, HEAD_DIM)?;
+    attention.causal_attention_backward_tc(CausalAttentionBackwardTcArgs {
+        reuse_forward_probs: true,
+        forward_probs_f16: Some(&probabilities_f16),
+        stream: &stream,
+        tc_module: &tc,
+        qkv: &qkv_f16,
+        attention_out: &attention_out_f16,
+        kda_v_new: None,
+        kda_akk_inv: None,
+        kda_w: None,
+        kda_aqk: None,
+        d_out: &d_out,
+        qk_scale,
+        log_sum_exp: &log_sum_exp,
+        softmax_d: &mut softmax_d,
+        qk_norm_max: &mut qk_norm_max,
+        d_qkv: &mut d_qkv,
+        d_qkv_chunk_amax: &mut d_qkv_chunk_amax,
+        d_qk_scale: &mut d_qk_scale,
+        accumulate_value_grad: false,
+        scratch: backward_scratch.args(),
+        row_count: SEQ as u32,
+        seq_len: SEQ as u32,
+        batch_size: 1,
+        embedding_dim: EMBEDDING as u32,
+        qkv_dim: QKV_DIM as u32,
+        head_count: HEADS as u32,
+        head_dim: HEAD_DIM as u32,
+        attention_window: SEQ as u32,
+        partial_key_offset: true,
+        qk_norm_offset: 0,
+        backward_mask_seed: 0,
+        backward_tile_budget: 0.0,
+    })?;
+
+    let gradients = d_qkv.to_host_vec(&stream)?;
+    assert_qk_gradients_are_tangent(&qkv_rounded, &gradients, SEQ, HEADS, HEAD_DIM);
+
+    // Cover both shifted quarters, an unshifted dimension, the duplicated
+    // first-token source, a middle token, and the final-token normalization
+    // dependency. The forward finite difference is with respect to the
+    // already-RoPE-rotated QKV tensor, so rotate the raw CUDA gradient back
+    // into that coordinate system before comparing.
+    for (token, dim) in [
+        (0_usize, 8_usize),
+        (0, 16),
+        (0, 48),
+        (4, 8),
+        (4, 16),
+        (4, 48),
+        (15, 8),
+        (15, 16),
+        (15, 48),
+    ] {
+        let index = token * QKV_DIM + EMBEDDING + dim;
+        let mut plus_values = qkv_values.clone();
+        plus_values[index] += EPS;
+        let plus_qkv = DeviceBuffer::from_host(&stream, &plus_values)?;
+        let plus = qknorm_forward_loss(
+            &stream,
+            &attention,
+            &tc,
+            &plus_qkv,
+            &d_out_values,
+            SCALE,
+            SEQ,
+            HEADS,
+            HEAD_DIM,
+            true,
+        )?;
+
+        let mut minus_values = qkv_values.clone();
+        minus_values[index] -= EPS;
+        let minus_qkv = DeviceBuffer::from_host(&stream, &minus_values)?;
+        let minus = qknorm_forward_loss(
+            &stream,
+            &attention,
+            &tc,
+            &minus_qkv,
+            &d_out_values,
+            SCALE,
+            SEQ,
+            HEADS,
+            HEAD_DIM,
+            true,
+        )?;
+
+        let expected = (plus - minus) / (2.0 * EPS);
+        let actual = rotated_key_gradient(&gradients, token, dim, EMBEDDING, QKV_DIM, HEAD_DIM);
+        let tolerance = expected.abs().max(actual.abs()) * 0.12 + 2.0e-3;
+        assert!(
+            (actual - expected).abs() <= tolerance,
+            "partial key offset gradient mismatch at token={token} dim={dim}: \
+             actual={actual:.8e} finite_difference={expected:.8e} \
+             tolerance={tolerance:.8e}"
+        );
     }
     Ok(())
 }
@@ -275,6 +442,7 @@ fn materialized_tc_backward_matches_reference() -> Result<(), Box<dyn Error>> {
         head_count: shape::HEADS as u32,
         head_dim: shape::HEAD_DIM as u32,
         attention_window: shape::TOKEN_COUNT as u32,
+        partial_key_offset: false,
         qk_norm_offset: 0,
         backward_mask_seed: 0,
         backward_tile_budget: 0.0,
@@ -333,6 +501,7 @@ fn materialized_tc_backward_matches_reference() -> Result<(), Box<dyn Error>> {
             head_count: shape::HEADS as u32,
             head_dim: shape::HEAD_DIM as u32,
             attention_window: shape::TOKEN_COUNT as u32,
+            partial_key_offset: false,
             qk_norm_offset: 0,
             backward_mask_seed: 0,
             backward_tile_budget: 0.0,
@@ -397,6 +566,7 @@ fn materialized_tc_backward_matches_reference() -> Result<(), Box<dyn Error>> {
         head_count: shape::HEADS as u32,
         head_dim: shape::HEAD_DIM as u32,
         attention_window: shape::TOKEN_COUNT as u32,
+        partial_key_offset: false,
         qk_norm_offset: 0,
         backward_mask_seed: 0,
         backward_tile_budget: 0.0,
@@ -476,6 +646,7 @@ fn sparse_tile_map_matches_probability_mass_and_seed() -> Result<(), Box<dyn Err
         head_count: HEADS as u32,
         head_dim: HEAD_DIM as u32,
         attention_window: SEQ as u32,
+        partial_key_offset: false,
         qk_norm_offset: 0,
         backward_mask_seed: SEED,
         backward_tile_budget: TILE_BUDGET,
@@ -582,6 +753,7 @@ fn qknorm_forward_loss(
     seq_len: usize,
     head_count: usize,
     head_dim: usize,
+    partial_key_offset: bool,
 ) -> Result<f32, Box<dyn Error>> {
     let embedding = head_count * head_dim;
     let qk_scale_bytes = DeviceBuffer::from_host(stream, &[0x02_u8; 8])?;
@@ -615,6 +787,7 @@ fn qknorm_forward_loss(
         head_count: head_count as u32,
         head_dim: head_dim as u32,
         attention_window: seq_len as u32,
+        partial_key_offset,
     })?;
     Ok(out
         .to_host_vec(stream)?
@@ -622,6 +795,27 @@ fn qknorm_forward_loss(
         .zip(d_out)
         .map(|(out, grad)| out * grad)
         .sum())
+}
+
+fn rotated_key_gradient(
+    gradients_raw: &[f32],
+    token: usize,
+    dim: usize,
+    embedding: usize,
+    qkv_dim: usize,
+    head_dim: usize,
+) -> f32 {
+    let pair_start = dim & !1;
+    let base = token * qkv_dim + embedding + pair_start;
+    let raw_even = gradients_raw[base];
+    let raw_odd = gradients_raw[base + 1];
+    let angle = token as f32 * (-9.210_340_5 * pair_start as f32 / head_dim as f32).exp();
+    let (sin, cos) = angle.sin_cos();
+    if dim.is_multiple_of(2) {
+        raw_even * cos - raw_odd * sin
+    } else {
+        raw_odd * cos + raw_even * sin
+    }
 }
 
 fn assert_qk_gradients_are_tangent(

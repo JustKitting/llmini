@@ -50,8 +50,8 @@ pub(super) fn scatter_body(
     let dk = rope_raw_grad(
         token,
         dim,
-        d_k[index as usize] * params.scale,
-        d_k[pair_index as usize] * params.scale,
+        key_input_grad(d_k, batch, token, head, dim, &params) * params.scale,
+        key_input_grad(d_k, batch, token, head, dim ^ 1, &params) * params.scale,
         params.head_dim,
     );
 
@@ -102,8 +102,8 @@ pub(super) fn scatter_amax_body(
             rope_raw_grad(
                 token,
                 dim,
-                d_k[compact] * params.scale,
-                d_k[compact ^ 1] * params.scale,
+                key_input_grad(d_k, batch, token, head, dim, &params) * params.scale,
+                key_input_grad(d_k, batch, token, head, dim ^ 1, &params) * params.scale,
                 params.head_dim,
             )
         } else {
@@ -193,7 +193,7 @@ pub(super) fn scatter_qknorm_amax_body(
                 grad = if section == 0 {
                     d_q[compact]
                 } else {
-                    d_k[compact]
+                    key_input_grad(d_k, batch, token, head, dim, &params)
                 };
             }
             let normalized = if valid_col { raw / norm } else { 0.0 };
@@ -229,7 +229,7 @@ pub(super) fn scatter_qknorm_amax_body(
                 let pair_grad = if section == 0 {
                     d_q[pair_compact]
                 } else {
-                    d_k[pair_compact]
+                    key_input_grad(d_k, batch, token, head, pair_dim, &params)
                 };
                 let pair_normalized = pair_raw / norm;
                 let grad_pair = (pair_grad - pair_normalized * head_dot) * jacobian_scale;
@@ -280,6 +280,32 @@ pub(super) fn scatter_qknorm_amax_body(
     }
 
     local_amax
+}
+
+#[inline(always)]
+fn key_input_grad(
+    d_k: &[f32],
+    batch: u32,
+    token: u32,
+    head: u32,
+    dim: u32,
+    params: &CausalAttentionParams,
+) -> f32 {
+    let current = compact_index(batch, token, head, dim, params);
+    if !params.key_offset_dim(dim) {
+        return d_k[current];
+    }
+    if token == 0 {
+        let mut grad = d_k[current];
+        if params.seq_len > 1 {
+            grad += d_k[compact_index(batch, 1, head, dim, params)];
+        }
+        grad
+    } else if token + 1 < params.seq_len {
+        d_k[compact_index(batch, token + 1, head, dim, params)]
+    } else {
+        0.0
+    }
 }
 
 #[inline(always)]

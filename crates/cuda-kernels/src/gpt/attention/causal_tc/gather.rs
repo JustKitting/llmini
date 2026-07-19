@@ -33,11 +33,12 @@ pub(super) fn gather_qkv_body(
         return;
     }
 
+    let key_token = params.key_source_token(token, dim);
     unsafe {
         *q.get_unchecked_mut(index as usize) =
             qkv[batched_qkv_index(batch, token, head, dim, 0, &params)];
         *k.get_unchecked_mut(index as usize) =
-            qkv[batched_qkv_index(batch, token, head, dim, params.embedding_dim, &params)];
+            qkv[batched_qkv_index(batch, key_token, head, dim, params.embedding_dim, &params)];
         *v.get_unchecked_mut(index as usize) =
             qkv[batched_qkv_index(batch, token, head, dim, params.embedding_dim * 2, &params)];
     }
@@ -58,23 +59,38 @@ pub(super) fn gather_qknorm_v_f16_body(
     params: CausalAttentionParams,
     q_warp_sums: &mut SharedArray<f32, 8>,
     k_warp_sums: &mut SharedArray<f32, 8>,
+    previous_k_warp_sums: &mut SharedArray<f32, 8>,
 ) {
     let tid = thread::threadIdx_x();
     let index = thread::blockIdx_x() * TC_FORWARD_THREADS_PER_BLOCK + tid;
     let total = params.batch_size * params.head_count * params.seq_len * params.head_dim;
     let mut q_value = 0.0;
     let mut k_value = 0.0;
+    let mut previous_k_value = 0.0;
     let mut v_value = 0;
     let mut valid_row = false;
+    let mut token = 0;
+    let mut dim = 0;
 
     if index < total {
-        let (dim, token, _bh, batch, head) = compact_linear_parts(index, &params);
+        let (index_dim, index_token, _bh, batch, head) = compact_linear_parts(index, &params);
+        dim = index_dim;
+        token = index_token;
         let row = row_index(batch, token, &params);
         valid_row = row < params.row_count;
         if valid_row {
             q_value = qkv[batched_qkv_index(batch, token, head, dim, 0, &params)];
             k_value =
                 qkv[batched_qkv_index(batch, token, head, dim, params.embedding_dim, &params)];
+            let previous_token = token.saturating_sub(1);
+            previous_k_value = qkv[batched_qkv_index(
+                batch,
+                previous_token,
+                head,
+                dim,
+                params.embedding_dim,
+                &params,
+            )];
             v_value = cvt_rn_f16_f32(
                 qkv[batched_qkv_index(batch, token, head, dim, params.embedding_dim * 2, &params)],
             );
@@ -85,9 +101,11 @@ pub(super) fn gather_qknorm_v_f16_body(
     let warp = tid / 32;
     let q_warp_sum = warp_sum_f32(q_value * q_value);
     let k_warp_sum = warp_sum_f32(k_value * k_value);
+    let previous_k_warp_sum = warp_sum_f32(previous_k_value * previous_k_value);
     if lane == 0 {
         q_warp_sums[warp as usize] = q_warp_sum;
         k_warp_sums[warp as usize] = k_warp_sum;
+        previous_k_warp_sums[warp as usize] = previous_k_warp_sum;
     }
     thread::sync_threads();
 
@@ -102,6 +120,13 @@ pub(super) fn gather_qknorm_v_f16_body(
             sqrt_f32(k_warp_sums[first_warp as usize] + k_warp_sums[first_warp as usize + 1]),
             QK_NORM_EPS,
         );
+        let previous_k_norm = max_f32(
+            sqrt_f32(
+                previous_k_warp_sums[first_warp as usize]
+                    + previous_k_warp_sums[first_warp as usize + 1],
+            ),
+            QK_NORM_EPS,
+        );
         let learned_scale =
             nvfp4_value(qk_scale_bytes, qk_scale_scales, qk_scale_global_scale[0], 0);
         let q_scale = learned_scale / params.scale;
@@ -111,7 +136,15 @@ pub(super) fn gather_qknorm_v_f16_body(
             } else {
                 0.0
             };
-            *k.get_unchecked_mut(index as usize) = if valid_row { k_value / k_norm } else { 0.0 };
+            *k.get_unchecked_mut(index as usize) = if valid_row {
+                if token > 0 && params.key_offset_dim(dim) {
+                    previous_k_value / previous_k_norm
+                } else {
+                    k_value / k_norm
+                }
+            } else {
+                0.0
+            };
             *v.get_unchecked_mut(index as usize) = if valid_row { v_value } else { 0 };
         }
     }
@@ -141,11 +174,12 @@ pub(super) fn gather_qk_v_f16_body(
         return;
     }
 
+    let key_token = params.key_source_token(token, dim);
     unsafe {
         *q.get_unchecked_mut(index as usize) =
             qkv[batched_qkv_index(batch, token, head, dim, 0, &params)];
         *k.get_unchecked_mut(index as usize) =
-            qkv[batched_qkv_index(batch, token, head, dim, params.embedding_dim, &params)];
+            qkv[batched_qkv_index(batch, key_token, head, dim, params.embedding_dim, &params)];
         *v.get_unchecked_mut(index as usize) = cvt_rn_f16_f32(
             qkv[batched_qkv_index(batch, token, head, dim, params.embedding_dim * 2, &params)],
         );

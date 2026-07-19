@@ -16,6 +16,7 @@ pub struct CausalAttentionParams {
     pub head_count: u32,
     pub head_dim: u32,
     pub attention_window: u32,
+    pub partial_key_offset: u32,
     pub scale: f32,
     pub chunk_size: u32,
     pub decay_scale: f32,
@@ -42,6 +43,7 @@ impl CausalAttentionParams {
             head_count,
             head_dim,
             attention_window: seq_len,
+            partial_key_offset: 0,
             scale: 1.0 / (head_dim as f32).sqrt(),
             chunk_size: CAUSAL_CHUNK_SIZE,
             decay_scale: CAUSAL_DECAY_SCALE,
@@ -55,6 +57,35 @@ impl CausalAttentionParams {
         );
         self.attention_window = attention_window;
         self
+    }
+
+    pub(crate) fn with_partial_key_offset(mut self, enabled: bool) -> Self {
+        if enabled {
+            assert!(
+                self.head_dim.is_multiple_of(4),
+                "partial key offset requires head_dim divisible by four"
+            );
+        }
+        self.partial_key_offset = u32::from(enabled);
+        self
+    }
+
+    #[inline(always)]
+    pub(crate) fn key_offset_dim(&self, dim: u32) -> bool {
+        if self.partial_key_offset == 0 {
+            return false;
+        }
+        let quarter = self.head_dim / 4;
+        (dim >= quarter && dim < 2 * quarter) || dim >= 3 * quarter
+    }
+
+    #[inline(always)]
+    pub(crate) fn key_source_token(&self, token: u32, dim: u32) -> u32 {
+        if token > 0 && self.key_offset_dim(dim) {
+            token - 1
+        } else {
+            token
+        }
     }
 
     #[inline(always)]
@@ -92,6 +123,25 @@ mod tests {
         assert!(params.key_is_visible(15, 15));
         assert!(!params.key_is_visible(15, 7));
         assert!(!params.key_is_visible(15, 16));
+    }
+
+    #[test]
+    fn partial_key_offset_shifts_only_the_middle_and_final_quarters() {
+        let params = params(16).with_partial_key_offset(true);
+        for dim in 0..64 {
+            let shifted = (16..32).contains(&dim) || (48..64).contains(&dim);
+            assert_eq!(params.key_offset_dim(dim), shifted, "dim={dim}");
+            assert_eq!(
+                params.key_source_token(0, dim),
+                0,
+                "the first token must remain in-sequence"
+            );
+            assert_eq!(
+                params.key_source_token(7, dim),
+                if shifted { 6 } else { 7 },
+                "dim={dim}"
+            );
+        }
     }
 }
 

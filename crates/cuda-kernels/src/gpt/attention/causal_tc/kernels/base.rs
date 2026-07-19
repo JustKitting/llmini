@@ -33,6 +33,7 @@ pub(super) mod module {
     ) {
         static mut Q_WARP_SUMS: SharedArray<f32, 8> = SharedArray::UNINIT;
         static mut K_WARP_SUMS: SharedArray<f32, 8> = SharedArray::UNINIT;
+        static mut PREVIOUS_K_WARP_SUMS: SharedArray<f32, 8> = SharedArray::UNINIT;
         gather_qknorm_v_f16_body(
             qkv,
             qk_scale_bytes,
@@ -44,6 +45,7 @@ pub(super) mod module {
             params,
             unsafe { &mut Q_WARP_SUMS },
             unsafe { &mut K_WARP_SUMS },
+            unsafe { &mut PREVIOUS_K_WARP_SUMS },
         );
     }
 

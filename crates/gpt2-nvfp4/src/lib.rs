@@ -43,8 +43,9 @@ pub use config::{
     GPT2_VOCAB_SIZE, GPT2_XSA_ALPHA_STORAGE, Gpt2Config, KDA_CHUNK_SIZE, KDA_DECAY_SCALE,
     KIMI_FULL_ATTENTION_PERIOD, NEXTLAT_HIDDEN, NEXTLAT_INPUT, attention_headwise_gate_enabled,
     attention_headwise_gate_offset, attention_trainable_qkv_dim, exclusive_self_attention_enabled,
-    exclusive_self_attention_kda_enabled, layer_norm_scale, qk_norm_initial_scale,
-    uses_block_topk_mlp, uses_exclusive_self_attention, uses_full_attention, uses_value_residual,
+    exclusive_self_attention_kda_enabled, layer_norm_scale, partial_key_offset_enabled,
+    qk_norm_initial_scale, uses_block_topk_mlp, uses_exclusive_self_attention, uses_full_attention,
+    uses_value_residual,
 };
 pub use config::{
     GPT2_EMBEDDING_DIM, GPT2_MLP_DIM, GPT2_TOKEN_ROWS_U32, GPT2_VOCAB_DIM, NEXTLAT_HIDDEN_DIM,

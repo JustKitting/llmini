@@ -70,6 +70,7 @@ impl AttentionModule {
             head_count,
             head_dim,
             attention_window: _,
+            partial_key_offset: _,
             qk_norm_offset,
             backward_mask_seed: _,
             backward_tile_budget: _,
