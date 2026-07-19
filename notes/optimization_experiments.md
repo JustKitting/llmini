@@ -53,6 +53,95 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 
 ```text
 date: 2026-07-19
+commit: note-only rejection; all ROOT-SoftThresh source, scratch, environment,
+  and focused-test hooks removed before the clean rebuild
+experiment: ROOT q90 outlier suppression on the accepted Muon-VS pre-polar
+  matrix direction.
+status: rejected_at_matched_step_admission; no_profile; no_450s
+sources:
+  https://arxiv.org/abs/2511.20626
+  https://github.com/huawei-noah/noah-research/tree/master/ROOT
+  official repository commit
+  a0431e2e26a23c95ac6efbc5bbce2cac23eea89a
+rationale:
+  ROOT decomposes each momentum matrix into a sparse outlier component and a
+  bounded base component. Its official implementation computes
+    epsilon = Quantile(abs(M), 0.90)
+    B = M - sign(M)*relu(abs(M)-epsilon)
+  which is exactly an elementwise clamp to +/-epsilon before
+  orthogonalization. The paper's directly relevant 1B FineWeb-Edu experiment
+  reports that ROOT-SoftThresh alone remains below its Muon training-loss
+  curve over 10B tokens, while full ROOT adds shape-calibrated Newton
+  coefficients. This experiment isolated SoftThresh because the accepted
+  five-step PolarExpress map already uses stronger iteration-specific
+  coefficients and should not be replaced by ROOT's fixed toy-code map.
+scope:
+  The complete FineWeb/Llama-2 B4/S2048/L16/d2048/h32 model remained active:
+  all four full-attention and twelve KDA blocks, all 16 block-Top-K MLPs,
+  value residuals, NextLat, tokenizer, objective, Selective Attention, Ember,
+  and Hyperball/Muon-VS. On polar steps only, the q90 clamp was applied to
+  the actual Muon-VS direction immediately before PolarExpress. Sign-only
+  Hyperball steps, persistent momentum/variance state, PolarExpress,
+  NorMuon, Q/K clipping, and every model parameter were unchanged.
+implementation_and_correctness:
+  TRAIN_ROOT_SOFT_THRESH defaulted on and provided a same-binary disabled
+  control. A full-matrix 1024-bin GPU histogram estimated q90. Its range ended
+  at sqrt(10)*RMS, which is guaranteed by the second-moment bound to contain
+  the 90th percentile; values above the range accumulated in the final bin.
+  Per-CTA shared histograms avoided global atomic contention. After selecting
+  q90, a vectorized pass clamped the pre-polar direction and the ordinary
+  PolarExpress normalization was recomputed.
+  cargo fmt --all --check, cargo check --workspace --lib --bins, and
+    cargo check -p rust-kernels-cuda --test optimizer_root: pass.
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+  CUDA_DEVICE_INDEX=0 cargo test -p rust-kernels-cuda
+    --test optimizer_root --release root_soft_thresh_clips_q90_before_polar
+    -- --ignored --nocapture --test-threads=1: 1 passed.
+  The CUDA reference covered wide and tall matrices, Muon-VS state updates,
+  transposed polar layout, histogram q90, clipping, and re-normalization.
+  target/runs/20260719_230930Z_fineweb_900s was a one-step allocation and
+  launch diagnostic only; it completed finitely with val_loss=9.596417 and
+  was not used for selection.
+health_screen:
+  Candidate target/runs/20260719_230938Z_fineweb_30s completed 82 updates in
+  30.329s with val_loss=5.984887. Same-binary disabled control
+  target/runs/20260719_231019Z_fineweb_30s completed 85 in 30.392s with
+  val_loss=5.955014. At common step 50:
+    candidate: 6.430812836
+    control:   6.413571835
+    delta:     0.268821% higher.
+  Both samples in each run were finite/nonzero and every skip counter was
+  zero. This was a health and preliminary common-step screen, not a fixed-time
+  quality decision.
+fixed_201_step_resolution:
+  Candidate target/runs/20260719_231109Z_fineweb_180s and disabled control
+  target/runs/20260719_231228Z_fineweb_180s each completed exactly 201
+  optimizer updates:
+    step 50:  6.421176434 versus 6.407826900, 0.208332% higher.
+    step 100: 6.344747543 versus 6.334630013, 0.159718% higher.
+    step 150: 5.616100311 versus 5.612407684, 0.065794% higher.
+    step 200: 5.624355316 versus 5.629004478, 0.082593% lower.
+    held-out: 5.472410 versus 5.472136, 0.005010% higher.
+    elapsed: 75.441s versus 73.073s, 3.240595% slower.
+  All five samples in both runs were finite/nonzero and every non-finite,
+  loss-spike, grad-norm-spike, aggregate, and update-skip counter was zero.
+decision:
+  Reject this ROOT-SoftThresh composition at matched-step admission. It was
+  worse at the first three informative common checkpoints; the isolated
+  0.083% final-minibatch edge did not transfer to held-out loss, which was
+  effectively tied but slightly worse. There is no credible loss-per-update
+  signal to justify profiling, histogram optimization, percentile tuning, or
+  a 450-second promotion gate. This does not contradict ROOT's 10B-token
+  plain-Muon result; it rejects adding its q90 clamp to the current short-run
+  Hyperball/Muon-VS stack.
+  All implementation was removed and the accepted parent passed the exact
+  sm_120a rebuild. Post-restore diagnostic
+  target/runs/20260719_231548Z_fineweb_180s completed one finite update with
+  val_loss=9.595139. That run is launch evidence only.
+```
+
+```text
+date: 2026-07-19
 commit: note-only rejection; all LAuReL-RW source, checkpoint, optimizer,
   environment, and logging hooks removed before the clean rebuild
 experiment: LAuReL residual weights at every attention and MLP residual
