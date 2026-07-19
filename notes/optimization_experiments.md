@@ -53,6 +53,126 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 
 ```text
 date: 2026-07-19
+commit: rejected source reverted; note-only result
+experiment: PACE pullback control on Adam-managed parameters, first with the
+  paper's power-law EMA and then with the accepted AMUSE returned average.
+status: rejected_no_persistent_matched_step_loss_signal; no_profile; no_450s
+sources:
+  https://arxiv.org/abs/2606.25086
+  https://github.com/leonou2010/pace-optimizer
+  Official implementation inspected at commit
+  58c6c0fea0b97d206e1c23f44463369c73b01ffe.
+rationale:
+  "Training for the Model You Return: Improving Optimization for
+  Iterate-Averaged Language Models" adds a curvature-scaled pullback toward
+  the returned EMA. Its practical update is
+    lambda_t = min(
+      eta*c*(1+t)^(-kappa)/(sqrt(v_hat_t)+epsilon),
+      1)
+    theta_t = AdamW(theta_(t-1)) +
+      lambda_t*(theta_ema_(t-1) - theta_(t-1))
+    theta_ema_t = theta_ema_(t-1) +
+      (1+t)^(-kappa)*(theta_t - theta_ema_(t-1)).
+  The paper's GPT-2/FineWeb pretraining sweep has a basin around
+  c=0.002--0.003 and uses kappa=0.5 for its headline comparison. The paper
+  compares PACE against Schedule-Free rather than composing the two, and
+  explicitly leaves adaptation to Muon/second-order preconditioners as future
+  work. This experiment therefore restricted the exact controller to tensors
+  already updated by AdamW; it did not relabel a speculative Muon pullback as
+  paper-faithful PACE.
+scope:
+  The full FineWeb/Llama-2 B4/S2048/L16/d2048/h32 model remained active:
+  all four full-attention and twelve KDA blocks, value residuals, all sixteen
+  block-Top-K ReLU-squared MLPs, query-dependent headwise attention gating,
+  NextLat, SymExpLin, and every loss target and backward path were retained.
+  PACE covered the approximately 65M token-embedding parameters plus the
+  existing Adam-managed normalization, bias, and vector parameters. All 67
+  hidden matrices retained the accepted Hyperball/Muon-VS/NorMuon optimizer.
+  SymExpLin's learned global control scalars retained their separately tuned
+  update and were not silently moved onto PACE.
+implementation:
+  TRAIN_PACE_ADAM selected a fused branch in the existing FP32 Adam kernel.
+  The kernel reused Adam's bias-corrected second moment, measured the
+  pullback direction from the pre-Adam fast weight as required by the paper,
+  applied the pullback after the ordinary AdamW update, and clamped each
+  coordinate gain at one. No extra kernel or optimizer-state allocation was
+  introduced.
+  The first formulation used the exact power-law EMA coefficient
+  (1+t)^(-kappa) for the Adam tensors' returned x state. After attribution
+  showed that timescale was the dominant incompatibility, a clearly labelled
+  compatibility probe retained the accepted AMUSE x average and applied only
+  PACE's eta*c*(1+t)^(-kappa)/(sqrt(v_hat)+epsilon) pullback toward it. This
+  second form is PACE-inspired, not claimed as the paper's algorithm.
+correctness_and_health:
+  cargo fmt --all, cargo check --workspace, git diff --check, the focused
+  power-law schedule test, and every exact
+    TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a
+  passed. The monolithic optimizer GPU test target remains blocked before the
+  Adam test by pre-existing stale Muon test initializers missing accepted
+  SymExpLin fields; it was not claimed as passing.
+  Exact-package launch diagnostic
+  target/runs/20260719_115751Z_fineweb_900s completed a real update and
+  held-out evaluation with finite val_loss=9.964876. This was launch evidence
+  only.
+  Exact-package 30-second candidate
+  target/runs/20260719_115817Z_fineweb_30s completed 87 finite updates with
+  val_loss=6.134270. Same-binary disabled control
+  target/runs/20260719_115901Z_fineweb_30s completed 86 finite updates with
+  val_loss=6.030886. Both had zero unexpected skips; their unequal-step
+  endpoints were health evidence only. At matched step 50, candidate training
+  loss was 6.519854 versus 6.532907, 0.200% lower.
+exact_power_ema_resolution:
+  Candidate target/runs/20260719_120001Z_fineweb_900s and disabled control
+  target/runs/20260719_120059Z_fineweb_900s each completed exactly 151
+  optimizer updates. Candidate versus control:
+    step 50:  6.533023 versus 6.546692, 0.209% lower.
+    step 100: 6.408075 versus 6.393881, 0.222% higher.
+    step 150: 5.809559 versus 5.756318, 0.925% higher.
+    held-out: 5.865437 versus 5.755668, 1.907% higher.
+  The c=0 power-EMA attribution control
+  target/runs/20260719_120222Z_fineweb_900s reached held-out 5.902036.
+  Thus c=0.003 improved its matched power-EMA baseline by 0.620%, evidence
+  that the controller itself helped inside that formulation, but the complete
+  power-EMA package remained materially worse than accepted AMUSE.
+amuse_compatibility_probe:
+  After retaining the accepted AMUSE average, 30-second candidate
+  target/runs/20260719_120449Z_fineweb_30s and disabled control
+  target/runs/20260719_115901Z_fineweb_30s both completed 86 updates.
+  Candidate held-out loss was 6.019213 versus 6.030886, 0.194% lower, and its
+  step-50 training loss was 6.520408 versus 6.532907, 0.191% lower.
+  At exactly 151 steps, c=0.003 candidate
+  target/runs/20260719_120535Z_fineweb_900s reached held-out 5.766654,
+  0.191% worse than the 5.755668 control despite lower training loss at steps
+  50 and 100. Reducing c to 0.001 in
+  target/runs/20260719_120651Z_fineweb_900s kept training loss lower at steps
+  50, 100, and 150 by 0.402%, 0.315%, and 0.170%, but its held-out 5.754278
+  edge was only 0.024%, too small to establish a persistent signal.
+fixed_401_step_resolution:
+  The c=0.001 candidate target/runs/20260719_120804Z_fineweb_900s and fresh
+  same-binary control target/runs/20260719_121038Z_fineweb_900s each
+  completed exactly 401 updates:
+    candidate val_loss=5.204774 in 142.266s.
+    control   val_loss=5.166034 in 142.812s.
+  Candidate loss was only 0.027% lower at step 50 and was higher at every
+  later logged sample from step 100 through 400. Its held-out loss was 0.750%
+  worse. The 0.382% runtime difference was not used to reject the method.
+decision:
+  Reject both the exact Adam-subset PACE package and the AMUSE-compatible
+  pullback. Neither preserves a credible loss-per-step advantage beyond the
+  early screen, so neither qualifies for profiling, implementation
+  optimization, or a 450-second promotion gate. Remove all PACE source and
+  environment controls.
+post_restore:
+  The accepted SymExpLin parent source is byte-for-byte restored. It passed
+  cargo check --workspace and a fresh exact sm_120a rebuild. Post-restore
+  diagnostic target/runs/20260719_121615Z_fineweb_900s completed one real
+  update with finite held-out val_loss=9.784029. This one-step result is
+  launch evidence only, not acceptance evidence. Continue research from the
+  committed SymExpLin baseline.
+```
+
+```text
+date: 2026-07-19
 commit: accepted implementation
 experiment: SymExpLin exponential-linear weight reparameterization with
   learned global matrix controls and fused NVFP4 materialization amax.
