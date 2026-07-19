@@ -54,6 +54,150 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```text
 date: 2026-07-19
 commit: rejected source removed; note-only result
+experiment: Output-logit softcapping and Modded-NanoGPT sigmoid rescaling,
+  including cap tuning, an in-place fused implementation, and an annealed
+  early-training-only rescue.
+status: rejected_decisive_450s_and_raw_logit_anneal
+sources:
+  https://arxiv.org/abs/2408.00118
+  https://github.com/KellerJordan/modded-nanogpt/tree/master/records/track_1_short/2025-01-04_SoftCap
+  https://github.com/KellerJordan/modded-nanogpt/tree/master/records/track_1_short/2025-12-26_LogitRescale
+  https://github.com/KellerJordan/modded-nanogpt/tree/master/records/track_1_short/2026-01-16_FusedSoftcappedEntropy
+  Modded-NanoGPT source and records inspected at commit
+    edf47a05a12062d661c4cfd4eef848c5ab5bed32.
+rationale:
+  Gemma 2 bounds final logits as
+    y = c * tanh(x/c)
+  to prevent excessive confidence. Modded-NanoGPT first reported that reducing
+  c from 30 to 15 cut its quality-equivalent schedule by 100 steps, then
+  reported a further 40-step reduction from replacing its existing transform
+    30 * sigmoid(x/7.5)
+  with
+    23 * sigmoid((x+5)/7.5).
+  These are repeated end-to-end convergence results on a closely related
+  fixed-loss benchmark, and output softcapping preserves the complete model
+  graph. This repo had not previously tested final-logit softcapping.
+scope:
+  Preserved the complete FineWeb/Llama-2 B4/S2048/L16/d2048/h32 model: all
+  four full-attention and twelve KDA mixers, value residuals, all sixteen
+  block-Top-K ReLU-squared MLPs, headwise gates, XSA, NextLat, SymExpLin,
+  tokenizer, objective targets, optimizer updates, and parameter allocations
+  remained active.
+implementation_and_exact_backward:
+  Added an optional sigmoid transform to the existing cross-entropy kernel:
+    y = a * sigmoid((x+b)/t)
+    dL/dx = dL/dy * (a/t) * sigmoid((x+b)/t)
+                         * (1-sigmoid((x+b)/t)).
+  A=0 selected the same-binary identity control. The Gemma tanh form was
+  represented exactly up to a per-row softmax-invariant constant as
+    a=2c, b=0, t=c/2.
+  The first implementation recomputed the sigmoid in all three vocabulary
+  scans. After the candidate earned optimization by improving at identical
+  steps, the final implementation transformed each logit in place during the
+  max scan. The sum and gradient scans reused y, and recovered the exact
+  derivative without another exponential as
+    dy/dx = y/t * (1-y/a).
+  This reduced three transform evaluations per vocabulary element to one.
+  The same transform was applied to training and validation. Environment
+  controls exposed scale, shift, temperature, and optional step-gated
+  annealing. The anneal linearly reduced inverse-cap strength; for a base
+  c=10 schedule from steps 150 to 300, c increased continuously to infinity
+  and step 300 plus final validation used ordinary raw logits.
+correctness:
+  cargo fmt --all -- --check: pass.
+  cargo check --workspace: pass.
+  cargo test --workspace --lib: pass.
+  Exact TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass after
+  both the initial and optimized implementations.
+  GPU cross_entropy_writes_losses_and_dlogits: pass for the identity route.
+  GPU cross_entropy_applies_sigmoid_logit_transform_and_exact_jacobian: pass
+  against an FP32 host reference for transformed loss, every raw-logit
+  derivative, and each row derivative amax.
+  Diagnostic-only one-step candidate
+  target/runs/20260719_170944Z_fineweb_900s completed the intact graph and
+  held-out evaluation with finite val_loss=9.639470. It was not decision
+  evidence.
+modded_formula_screen:
+  Exact a=23, b=5, t=7.5 candidate
+  target/runs/20260719_165451Z_fineweb_30s was healthy and completed 86
+  updates, but at common step 50 its train loss was 6.577304 versus 6.534391
+  for same-binary identity control
+  target/runs/20260719_165528Z_fineweb_30s: 0.656725% worse. Unequal-step
+  held-out endpoints were also 6.083469 versus 6.035046. This formula was
+  introduced upstream on top of an existing softcap, so it did not reject the
+  uncapped-to-Gemma-softcap ablation.
+softcap_tune_and_admission:
+  At 101 identical updates, fresh identity control
+  target/runs/20260719_170235Z_fineweb_900s reached val_loss=5.934158.
+  Candidate endpoints were:
+    c=10, target/runs/20260719_170022Z_fineweb_900s:
+      5.906044, 0.473766% lower.
+    c=20, target/runs/20260719_170105Z_fineweb_900s:
+      5.909695, 0.412240% lower.
+    c=30, target/runs/20260719_170146Z_fineweb_900s:
+      5.931077, 0.051920% lower.
+  The c=15 201-step candidate
+  target/runs/20260719_165651Z_fineweb_900s was lower than identity control
+  target/runs/20260719_165810Z_fineweb_900s at every post-initial common
+  training sample and held-out (5.542150 versus 5.574325, 0.577200% lower).
+  At 201 steps, c=10 target/runs/20260719_170333Z_fineweb_900s was the best
+  held-out tune at 5.538044, 0.650859% below that control; c=20
+  target/runs/20260719_170451Z_fineweb_900s reached 5.555402, 0.339467%
+  lower. These persistent same-step results admitted c=10 for implementation
+  optimization; provisional runtime was not used to reject it.
+optimized_reproduction:
+  After in-place fusion, c=10
+  target/runs/20260719_170951Z_fineweb_900s and fresh same-binary identity
+  target/runs/20260719_171110Z_fineweb_900s each completed 201 updates.
+  Candidate train loss was lower at every logged post-initial sample:
+    step 50:  6.521862 versus 6.536301, 0.220914% lower.
+    step 100: 6.360984 versus 6.370321, 0.146562% lower.
+    step 150: 5.684566 versus 5.752880, 1.187476% lower.
+    step 200: 5.674955 versus 5.712403, 0.655555% lower.
+  Held-out was 5.549698 versus 5.574064, 0.437132% lower. Both runs were
+  finite with zero skips. Candidate elapsed time was 71.431s versus 71.959s;
+  the small favorable timing difference was not used as quality evidence.
+decisive_450s_gate:
+  Optimized fixed-c=10 candidate
+  target/runs/20260719_171306Z_fineweb_450s completed 1245 updates in
+  450.037s with val_loss=4.501408. Fresh same-binary identity control
+  target/runs/20260719_172049Z_fineweb_450s completed 1244 updates in
+  450.266s with val_loss=4.416087. The candidate was 1.932050% worse despite
+  receiving one additional update. Both runs were finite/nonzero at all 25
+  high-fidelity samples and every skip counter was zero.
+  The matched train trajectory showed a clear regime reversal rather than an
+  isolated spike: c=10 was lower through step 250, crossed at step 300, and
+  was higher at every later common sample except the essentially tied step
+  500. It was 2.231% worse at 800, 2.412% worse at 850, 4.787% worse at 950,
+  and 0.989% worse at 1200.
+annealed_rescue:
+  To distinguish useful early optimization from loss calibration, c=10 was
+  retained through step 150, its inverse-cap strength was linearly reduced to
+  zero by step 300, and final validation used raw logits. Candidate
+  target/runs/20260719_173155Z_fineweb_900s and fresh identity control
+  target/runs/20260719_173349Z_fineweb_900s each completed 301 updates.
+  Candidate val_loss=5.465731 versus control 5.387212 was 1.457507% worse.
+  It was already 0.479741% worse on the common step-250 train batch and
+  0.510495% worse at step 300. Both remained finite with zero skips.
+decision:
+  Reject and remove the complete softcap/rescale family. The fixed cap's
+  repeatable 101/201-step improvement justified tuning and kernel
+  optimization, but it reversed decisively over the required 450-second
+  horizon. Annealing the cap away before the crossover made the final raw-logit
+  model worse, showing that the early capped endpoint did not encode a durable
+  learned-weight advantage. Do not promote a short-horizon calibration gain as
+  convergence. Restore and exactly rebuild the accepted gated-XSA parent;
+  retain only this evidence.
+  After source removal, cargo fmt/check/test, git diff --check, and the exact
+  sm_120a build passed. Diagnostic-only accepted-source launch
+  target/runs/20260719_173858Z_fineweb_900s completed one real update and
+  held-out evaluation with finite val_loss=9.783258. It is restoration
+  evidence only.
+```
+
+```text
+date: 2026-07-19
+commit: rejected source removed; note-only result
 experiment: Previous-token embedding smear, tested as fixed, warmup-ramped,
   and zero-initialized learned token-conditioned forms.
 status: rejected_no_persistent_matched_step_heldout_gain; no_profile; no_450s
