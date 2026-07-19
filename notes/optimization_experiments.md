@@ -53,6 +53,77 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 
 ```text
 date: 2026-07-19
+commit: note-only rejection; complete implementation removed
+experiment: Position-stationary RoPE on the two partial-key-offset quarters.
+status: rejected_matched_step_screen; no_profile; no_fixed_201; no_450s
+sources:
+  https://arxiv.org/abs/2603.11611
+  https://github.com/KellerJordan/modded-nanogpt/tree/master/records/track_1_short/2025-09-10_Yarn
+  https://github.com/KellerJordan/modded-nanogpt/tree/master/records/track_1_short/2025-12-14_PartialKeyOffset
+  Modded-NanoGPT source and history inspected at commit
+    edf47a05a12062d661c4cfd4eef848c5ab5bed32, including the originating
+    partial-key-offset geometry.
+rationale:
+  The Partial RoPE study reports that rotating 10% or more of each head
+  preserves the convergence band of full RoPE across 1B/8B models,
+  FineWeb/FineWeb-Edu, and 1024-8192-token contexts. It supports reducing
+  positional dimensions without a general quality penalty, but does not
+  claim lower loss. Modded-NanoGPT combines half-truncated RoPE with key
+  offset only on stationary dimensions, but its public records bundle this
+  choice with other changes and do not isolate its loss effect.
+  The accepted local key offset shifts dimensions [16,32) and [48,64) of
+  each 64-wide full-attention head. Test whether making exactly those
+  dimensions position-stationary improves that accepted induction path.
+scope_and_implementation:
+  Preserved the complete FineWeb/Llama-2 B4/S2048/L16/d2048/h32 model, all
+  four full-attention and twelve KDA mixers, value residuals, all sixteen
+  MLPs, block TopK, XSA, NextLat, SymExpLin, objective, optimizer, and
+  parameter allocations.
+  TRAIN_STATIONARY_OFFSET_ROPE=1 set RoPE angle to zero for Q and K only in
+  the two shifted quarters of the four existing full-attention layers.
+  The complementary quarters retained the accepted adjacent-pair RoPE and
+  base-10000 frequency geometry. KDA was unchanged.
+  This deliberately isolated stationarity and was named accordingly; it was
+  not represented as an exact reproduction of Modded-NanoGPT's historical
+  half-truncated cross-half pairing or its base-1024 retune.
+  Reverse mode used the exact identity Jacobian in stationary dimensions and
+  the existing inverse rotation elsewhere, before the full QK-normalization
+  VJP and accepted partial-key-offset adjoint.
+correctness:
+  cargo fmt --all and cargo check --workspace: pass.
+  Exact TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+  GPU stationary_offset_rope_rotates_only_complementary_quarters: pass
+  against an independent FP32 reference, including unchanged value features.
+  GPU stationary_offset_rope_backward_matches_key_finite_differences: pass
+  for shifted/unshifted first, middle, and final-token key dimensions.
+  The accepted full-RoPE partial-key-offset finite-difference test also
+  remained passing.
+  Diagnostic-only one-step
+  target/runs/20260719_183334Z_fineweb_900s completed the intact update and
+  held-out evaluation with finite val_loss=10.046404. It was not decision
+  evidence.
+matched_step_screen:
+  Candidate target/runs/20260719_183350Z_fineweb_30s and fresh same-binary
+  control target/runs/20260719_183426Z_fineweb_30s each completed exactly 85
+  updates. At common step 50, candidate train loss was 6.536700726 versus
+  6.518337250, 0.281720% worse. Same-exposure held-out loss was 6.048731
+  versus 6.021410, 0.453731% worse. Both runs were finite/nonzero and every
+  skip counter was zero.
+decision:
+  Reject without a frequency retune, profile, fixed-201 extension, or
+  450-second gate. The candidate is algorithmically worse at identical
+  exposure; implementation optimization cannot repair that admission failure.
+  Remove all stationary-RoPE source and environment controls.
+restoration:
+  After removal, cargo fmt/check/workspace library tests, git diff --check,
+  and the exact sm_120a rebuild passed. The accepted partial-key-offset GPU
+  finite-difference test passed. Diagnostic-only accepted-source launch
+  target/runs/20260719_183619Z_fineweb_900s completed one finite update with
+  val_loss=9.715527. Retain only this note.
+```
+
+```text
+date: 2026-07-19
 commit: passing partial-key-offset source promoted in this JJ change
 experiment: Previous-token partial key offset in every full-attention layer.
 status: accepted_fresh_450s_candidate_control
