@@ -36,6 +36,7 @@ pub struct AttentionCoreBackwardArgs<'a, 'scratch, 'out> {
     pub d_qkv: &'out mut DeviceBuffer<f32>,
     pub d_qkv_chunk_amax: &'out mut DeviceBuffer<f32>,
     pub d_qk_scale: &'out mut DeviceBuffer<f32>,
+    pub accumulate_value_grad: bool,
     pub scratch: AttentionCoreScratch<'scratch>,
     pub backward_mask_seed: u32,
 }

@@ -60,6 +60,7 @@ impl AttentionModule {
             d_qkv,
             d_qkv_chunk_amax,
             d_qk_scale: _,
+            accumulate_value_grad,
             scratch,
             row_count: _,
             seq_len,
@@ -262,7 +263,7 @@ impl AttentionModule {
         // After chunk_intra_kda_backward_kernel these reused buffers hold final compact gradients.
         // qg and kg are dead after the final gradient pass, so reuse their leading
         // batch-head rows for the post-SiLU norms already computed by that pass.
-        launch!(bwd_elementwise.finish_kda_backward_kernel(grid_x_config(finish_chunk_count, threads); qkv, w_du_dq, chunk_matrix, kneg_vnew_dqg_dv, dka_dg, d_beta, qg, kg, d_qkv, d_qkv_chunk_amax));
+        launch!(bwd_elementwise.finish_kda_backward_kernel(grid_x_config(finish_chunk_count, threads); qkv, w_du_dq, chunk_matrix, kneg_vnew_dqg_dv, dka_dg, d_beta, qg, kg, d_qkv, d_qkv_chunk_amax, u32::from(accumulate_value_grad)));
         bwd_elementwise.reduce_kda_qk_norm_max_kernel(
             stream,
             grid_x_config(head_count, KDA_NORM_REDUCE_THREADS_PER_BLOCK),

@@ -2,7 +2,7 @@ use cuda_core::{CudaStream, DeviceBuffer, DriverError};
 use gpt2_nvfp4::{
     AttentionLogSumExp, BlockForwardSaved, BlockForwardTape, GPT2_BATCH_SIZE, GPT2_MLP_ROUTE_MASKS,
     GPT2_N_HEAD, GPT2_N_LAYER, GPT2_SEQ_LEN, HiddenState, MlpActivation, QkvActivation,
-    attention_headwise_gate_enabled, uses_full_attention,
+    attention_headwise_gate_enabled, uses_exclusive_self_attention, uses_full_attention,
 };
 
 use super::device_buffer::zero;
@@ -35,8 +35,8 @@ impl BlockTapeBuffers {
             qkv_input: RowwiseTapeBuffers::gpt2_rows(stream, HiddenState::LEN)?,
             qkv: zero(stream, QkvActivation::LEN)?,
             attention_out: zero(stream, HiddenState::LEN)?,
-            headwise_gate_input: if attention_headwise_gate_enabled()
-                && !uses_full_attention(block_index)
+            headwise_gate_input: if !uses_full_attention(block_index)
+                && (attention_headwise_gate_enabled() || uses_exclusive_self_attention(false))
             {
                 Some(zero(stream, HiddenState::LEN)?)
             } else {

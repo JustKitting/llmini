@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use cuda_core::CudaStream;
-use gpt2_nvfp4::GPT2_N_LAYER;
+use gpt2_nvfp4::{GPT2_N_LAYER, GPT2_XSA_ALPHA_STORAGE};
 
 use super::{super::format::CheckpointTensor, tensor::take_uploaded};
 use crate::{
@@ -15,10 +15,29 @@ pub(super) fn load_model(
 ) -> AppResult<UploadedModel> {
     Ok(UploadedModel {
         token_embedding: take_uploaded(stream, tensors, "token_embedding")?,
+        xsa_alphas: take_xsa_alphas(stream, tensors)?,
         blocks: load_blocks(stream, tensors)?,
         ln_f: load_pair(stream, tensors, "ln_f")?,
         next_latent: load_next_latent(stream, tensors)?,
     })
+}
+
+fn take_xsa_alphas(
+    stream: &CudaStream,
+    tensors: &mut HashMap<String, CheckpointTensor>,
+) -> AppResult<crate::upload::UploadedNvfp4> {
+    if tensors.contains_key("xsa_alphas") {
+        return take_uploaded(stream, tensors, "xsa_alphas");
+    }
+    // Version-2 checkpoints written before gated XSA have one fewer tensor.
+    // A zero alpha reproduces their exact attention function at load time.
+    crate::upload::UploadedNvfp4::from_host(
+        stream,
+        &vec![0; GPT2_XSA_ALPHA_STORAGE / 2],
+        &vec![0x38; GPT2_XSA_ALPHA_STORAGE / 16],
+        1.0,
+        GPT2_XSA_ALPHA_STORAGE,
+    )
 }
 
 fn load_blocks(

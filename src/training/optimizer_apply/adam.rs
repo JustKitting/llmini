@@ -71,6 +71,16 @@ impl<'a, 'scratch> AdamUpdate<'a, 'scratch> {
         grad: &DeviceBuffer<f32>,
         state: &mut AdamState,
     ) -> Result<(), DriverError> {
+        self.update_with_weight_decay(tensor, grad, state, ADAM_WEIGHT_DECAY)
+    }
+
+    pub(super) fn update_with_weight_decay(
+        &mut self,
+        tensor: &mut UploadedNvfp4,
+        grad: &DeviceBuffer<f32>,
+        state: &mut AdamState,
+        weight_decay: f32,
+    ) -> Result<(), DriverError> {
         self.optimizer
             .apply_adamw_update_deferred_quantization(AdamWUpdateArgs {
                 stream: self.stream,
@@ -87,7 +97,7 @@ impl<'a, 'scratch> AdamUpdate<'a, 'scratch> {
                 chunk_amax: &mut self.scratch.chunk_amax,
                 len: tensor.len as u32,
                 learning_rate: self.learning_rate,
-                weight_decay: ADAM_WEIGHT_DECAY,
+                weight_decay,
                 beta1: ADAM_BETA1,
                 beta2: ADAM_BETA2,
                 beta1_correction: 1.0 - ADAM_BETA1.powi(self.step as i32),
@@ -104,5 +114,15 @@ impl<'a, 'scratch> AdamUpdate<'a, 'scratch> {
         state: &mut AdamState,
     ) -> Result<f64, DriverError> {
         timed_ms(|| self.update(tensor, grad, state))
+    }
+
+    pub(super) fn update_timed_with_weight_decay(
+        &mut self,
+        tensor: &mut UploadedNvfp4,
+        grad: &DeviceBuffer<f32>,
+        state: &mut AdamState,
+        weight_decay: f32,
+    ) -> Result<f64, DriverError> {
+        timed_ms(|| self.update_with_weight_decay(tensor, grad, state, weight_decay))
     }
 }

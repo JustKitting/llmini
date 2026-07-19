@@ -37,6 +37,6 @@ pub use shapes::{
     MlpUpWeightShape, MlpVectorShape, NextLatHiddenShape, NextLatInputShape, NextLatOutWeightShape,
     NextLatProjectionWeightShape, NextLatTransitionWeightShape, QkScaleShape, QkScaleTensor,
     QkvLinear, QkvVectorShape, QkvWeightShape, ResidualLinear, ResidualWeightShape, TokenEmbedding,
-    TokenEmbeddingShape, nvfp4_bytes, nvfp4_scales,
+    TokenEmbeddingShape, XsaAlphaShape, XsaAlphaTensor, nvfp4_bytes, nvfp4_scales,
 };
 pub use tape::{BlockForwardTape, Gpt2ForwardTape, LayerNormTape, RowwiseNvfp4Tape};

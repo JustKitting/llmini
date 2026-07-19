@@ -3,6 +3,7 @@ use gpt2_nvfp4::{
     AttentionProjectionTensors, Gpt2BlockWeights, MlpDownTensors, MlpProjectionTensors,
     MlpUpTensors,
 };
+use rust_kernels_cuda::nvfp4::Nvfp4DeviceTensor;
 
 use crate::AppResult;
 
@@ -31,12 +32,18 @@ impl UploadedBlock {
         })
     }
 
-    pub fn attention_tensors(&self) -> AttentionProjectionTensors<'_> {
+    pub fn attention_tensors<'a>(
+        &'a self,
+        xsa_alphas: Nvfp4DeviceTensor<'a>,
+        xsa_alpha_offset: u32,
+    ) -> AttentionProjectionTensors<'a> {
         AttentionProjectionTensors {
             qkv_weight: self.attn_qkv.weight.mma(),
             qkv_weight_device: self.attn_qkv.weight.device(),
             qkv_bias: self.attn_qkv.bias.device(),
             qk_scale: self.attn_qk_scale.device(),
+            xsa_alphas,
+            xsa_alpha_offset,
             c_proj_weight: self.attn_c_proj.weight.mma(),
             c_proj_weight_device: self.attn_c_proj.weight.device(),
             c_proj_bias: self.attn_c_proj.bias.device(),

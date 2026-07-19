@@ -40,10 +40,11 @@ pub use config::{
     GPT2_MLP_ROUTE_SCORES, GPT2_MLP_ROUTE_TILE, GPT2_MLP_ROUTE_TOKEN_TILES, GPT2_N_EMBD,
     GPT2_N_HEAD, GPT2_N_LAYER, GPT2_Q_OFFSET, GPT2_QK_SCALE_STORAGE, GPT2_QKV, GPT2_SEQ_LEN,
     GPT2_TOKEN_ROWS, GPT2_V_OFFSET, GPT2_VALUE_RESIDUAL_LAYERS, GPT2_VALUE_RESIDUAL_START_LAYER,
-    GPT2_VOCAB_SIZE, Gpt2Config, KDA_CHUNK_SIZE, KDA_DECAY_SCALE, KIMI_FULL_ATTENTION_PERIOD,
-    NEXTLAT_HIDDEN, NEXTLAT_INPUT, attention_headwise_gate_enabled, attention_headwise_gate_offset,
-    attention_trainable_qkv_dim, layer_norm_scale, qk_norm_initial_scale, uses_block_topk_mlp,
-    uses_full_attention, uses_value_residual,
+    GPT2_VOCAB_SIZE, GPT2_XSA_ALPHA_STORAGE, Gpt2Config, KDA_CHUNK_SIZE, KDA_DECAY_SCALE,
+    KIMI_FULL_ATTENTION_PERIOD, NEXTLAT_HIDDEN, NEXTLAT_INPUT, attention_headwise_gate_enabled,
+    attention_headwise_gate_offset, attention_trainable_qkv_dim, exclusive_self_attention_enabled,
+    exclusive_self_attention_kda_enabled, layer_norm_scale, qk_norm_initial_scale,
+    uses_block_topk_mlp, uses_exclusive_self_attention, uses_full_attention, uses_value_residual,
 };
 pub use config::{
     GPT2_EMBEDDING_DIM, GPT2_MLP_DIM, GPT2_TOKEN_ROWS_U32, GPT2_VOCAB_DIM, NEXTLAT_HIDDEN_DIM,
@@ -69,12 +70,12 @@ pub use types::{
     HiddenVectorShape, MlpDownWeightShape, MlpUpWeightShape, MlpVectorShape, NextLatHiddenShape,
     NextLatInputShape, NextLatOutWeightShape, NextLatProjectionWeightShape,
     NextLatTransitionWeightShape, QkScaleShape, QkvVectorShape, QkvWeightShape,
-    ResidualWeightShape, TokenEmbeddingShape,
+    ResidualWeightShape, TokenEmbeddingShape, XsaAlphaShape,
 };
 
 pub use types::{
     LayerNormTensor, MlpDownLinear, MlpUpLinear, QkScaleTensor, QkvLinear, ResidualLinear,
-    TokenEmbedding,
+    TokenEmbedding, XsaAlphaTensor,
 };
 
 pub use types::{nvfp4_bytes, nvfp4_scales};

@@ -111,6 +111,7 @@ pub(super) mod module {
         k_norms: DisjointSlice<f32>,
         d_qkv: DisjointSlice<f32>,
         mut d_qkv_chunk_amax: DisjointSlice<f32>,
+        accumulate_value_grad: u32,
         params: CausalAttentionParams,
     ) {
         static mut FINISH_AMAX: SharedArray<f32, FINISH_WARPS_PER_BLOCK> = SharedArray::UNINIT;
@@ -127,6 +128,7 @@ pub(super) mod module {
             q_norms,
             k_norms,
             d_qkv,
+            accumulate_value_grad,
             params,
         );
         let (_, lane, warp_in_block) = thread_lane_warp();

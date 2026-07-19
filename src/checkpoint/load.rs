@@ -18,9 +18,11 @@ pub fn load_uploaded_model(stream: &CudaStream, path: &Path) -> AppResult<Upload
     let mut reader = CheckpointReader::new(BufReader::new(file));
     let tensor_count = reader.read_header()?;
     let expected_tensor_count = schema::tensor_count(GPT2_N_LAYER);
-    if tensor_count != expected_tensor_count {
+    let legacy_tensor_count = expected_tensor_count - 1;
+    if tensor_count != expected_tensor_count && tensor_count != legacy_tensor_count {
         return Err(format!(
-            "checkpoint has {tensor_count} tensors; expected {expected_tensor_count}",
+            "checkpoint has {tensor_count} tensors; expected {expected_tensor_count} \
+             (or legacy count {legacy_tensor_count})",
         )
         .into());
     }

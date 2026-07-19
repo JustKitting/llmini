@@ -64,6 +64,18 @@ impl<'a> UpdateSnapshotCollector<'a> {
         grad: &DeviceBuffer<f32>,
         state: &AdamState,
     ) -> AppResult {
+        let weight_decay = adam_debug_config(self.step).weight_decay;
+        self.push_adam_with_weight_decay(name, tensor, grad, state, weight_decay)
+    }
+
+    pub(super) fn push_adam_with_weight_decay(
+        &mut self,
+        name: &str,
+        tensor: &UploadedNvfp4,
+        grad: &DeviceBuffer<f32>,
+        state: &AdamState,
+        weight_decay: f32,
+    ) -> AppResult {
         let config = adam_debug_config(self.step);
         let adam = AdamSnapshot {
             z_master: state.z_master.to_host_vec(self.stream)?,
@@ -71,7 +83,7 @@ impl<'a> UpdateSnapshotCollector<'a> {
             first: state.first.to_host_vec(self.stream)?,
             second: state.second.to_host_vec(self.stream)?,
             learning_rate: config.learning_rate,
-            weight_decay: config.weight_decay,
+            weight_decay,
             beta1: config.beta1,
             beta2: config.beta2,
             beta1_correction: config.beta1_correction,

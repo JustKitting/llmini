@@ -71,6 +71,7 @@ pub(crate) fn finish_kda_backward_body(
     mut q_norms: DisjointSlice<f32>,
     mut k_norms: DisjointSlice<f32>,
     mut d_qkv: DisjointSlice<f32>,
+    accumulate_value_grad: u32,
     params: CausalAttentionParams,
 ) -> f32 {
     let ctx = kda_warp_ctx(TC_BACKWARD_THREADS_PER_BLOCK, &params);
@@ -97,6 +98,7 @@ pub(crate) fn finish_kda_backward_body(
                 qk: qk0,
             },
             stats,
+            accumulate_value_grad,
             &params,
         );
     }
@@ -113,6 +115,7 @@ pub(crate) fn finish_kda_backward_body(
                     qk: qk1,
                 },
                 stats,
+                accumulate_value_grad,
                 &params,
             ),
         );
@@ -161,6 +164,7 @@ fn finish_dim(
     d_qkv: &mut DisjointSlice<f32>,
     point: FinishDimPoint,
     stats: FinishNormStats,
+    accumulate_value_grad: u32,
     params: &CausalAttentionParams,
 ) -> f32 {
     let FinishDimPoint { ctx, dim, qk } = point;
@@ -176,12 +180,18 @@ fn finish_dim(
     let raw_g = cvt_f32_f16(qkv[qkv_index(ctx.row, ctx.head, dim, g_offset(params), params)]);
     let dq = dq_norm * silu_grad(qk.raw_q);
     let dk = dk_norm * silu_grad(qk.raw_k);
-    let dv = grads.v[compact] * silu_grad(raw_v);
+    let value_index = qkv_index(ctx.row, ctx.head, dim, v_offset(params), params);
+    let direct_value_grad = if accumulate_value_grad != 0 {
+        unsafe { *d_qkv.as_mut_ptr().add(value_index) }
+    } else {
+        0.0
+    };
+    let dv = grads.v[compact] * silu_grad(raw_v) + direct_value_grad;
     let dg = -params.decay_scale * grads.g[compact] * sigmoid(raw_g);
     unsafe {
         *d_qkv.get_unchecked_mut(qkv_index(ctx.row, ctx.head, dim, q_offset(params), params)) = dq;
         *d_qkv.get_unchecked_mut(qkv_index(ctx.row, ctx.head, dim, k_offset(params), params)) = dk;
-        *d_qkv.get_unchecked_mut(qkv_index(ctx.row, ctx.head, dim, v_offset(params), params)) = dv;
+        *d_qkv.get_unchecked_mut(value_index) = dv;
         *d_qkv.get_unchecked_mut(qkv_index(ctx.row, ctx.head, dim, g_offset(params), params)) = dg;
     }
     max4_f32(abs_f32(dq), abs_f32(dk), abs_f32(dv), abs_f32(dg))

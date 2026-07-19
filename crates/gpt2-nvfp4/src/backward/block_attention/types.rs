@@ -68,6 +68,7 @@ pub struct BlockAttentionBackwardArgs<'a, 'scratch, 'out> {
     pub d_hidden: &'scratch mut DeviceBuffer<f32>,
     pub d_qkv: &'scratch mut DeviceBuffer<f32>,
     pub d_value_residual: &'scratch mut DeviceBuffer<f32>,
+    pub d_xsa_alphas: &'scratch mut DeviceBuffer<f32>,
     pub grads: BlockBackwardGrads<'out>,
     pub scratch: BlockAttentionBackwardScratch<'scratch>,
     pub seeds: BlockAttentionBackwardSeeds,

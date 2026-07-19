@@ -1,7 +1,8 @@
 use cuda_core::DriverError;
 use rust_kernels_cuda::attention::{
-    AccumulateValueResidualGradArgs, FinishValueResidualGradArgs,
-    HeadwiseAttentionGateBackwardArgs, InitializeValueResidualGradArgs,
+    AccumulateValueResidualGradArgs, ExclusiveSelfAttentionBackwardArgs,
+    FinishValueResidualGradArgs, HeadwiseAttentionGateBackwardArgs,
+    InitializeValueResidualGradArgs,
 };
 
 use super::types::BlockAttentionBackwardArgs;
@@ -14,7 +15,7 @@ use crate::backward::{
 use crate::types::BlockBackwardGrads;
 use crate::{
     AttentionDims, GPT2_N_LAYER, attention_headwise_gate_enabled, attention_headwise_gate_offset,
-    uses_value_residual,
+    uses_exclusive_self_attention, uses_value_residual,
 };
 
 pub fn attention_side_backward(
@@ -36,6 +37,7 @@ pub fn attention_side_backward(
         d_hidden,
         d_qkv,
         d_value_residual,
+        d_xsa_alphas,
         grads,
         scratch,
         seeds,
@@ -68,7 +70,38 @@ pub fn attention_side_backward(
     } else {
         4 * saved.row_count
     };
-    if attention_headwise_gate_enabled() {
+    let use_xsa = uses_exclusive_self_attention(use_full_attention);
+    if use_xsa {
+        let raw_out = if use_full_attention {
+            saved.attention_out
+        } else {
+            saved
+                .headwise_gate_input
+                .expect("KDA XSA requires a saved raw-output tape")
+        };
+        let dims = AttentionDims::new(use_full_attention);
+        modules.attention.exclusive_self_attention_backward(
+            ExclusiveSelfAttentionBackwardArgs {
+                stream,
+                qkv_f16: saved.qkv,
+                raw_out_f16: raw_out,
+                d_out: &mut *d_hidden,
+                d_qkv: &mut *d_qkv,
+                d_xsa_alphas,
+                xsa_alphas: projections.xsa_alphas,
+                row_count: saved.row_count,
+                embedding_dim: dims.embedding_dim,
+                qkv_dim: dims.qkv_dim,
+                head_count: dims.head_count,
+                head_dim: dims.head_dim,
+                value_offset: 2 * dims.embedding_dim,
+                gate_offset: attention_headwise_gate_offset(use_full_attention) as u32,
+                alpha_offset: projections.xsa_alpha_offset,
+                apply_headwise_gate: attention_headwise_gate_enabled(),
+                kda_value_activation: !use_full_attention,
+            },
+        )?;
+    } else if attention_headwise_gate_enabled() {
         let raw_out = if use_full_attention {
             saved.attention_out
         } else {
@@ -108,10 +141,11 @@ pub fn attention_side_backward(
         d_qkv,
         d_qkv_chunk_amax: &mut *scratch.qkv.linear.e_h.chunk_amax,
         d_qk_scale: d_attn_qk_scale,
+        accumulate_value_grad: use_xsa,
         scratch: scratch.core,
         backward_mask_seed: seeds.qkv.attention_mask_seed(),
     })?;
-    if attention_headwise_gate_enabled() {
+    if !use_xsa && attention_headwise_gate_enabled() {
         assert_eq!(
             d_qkv_amax_chunks,
             Some(gate_amax_offset),
@@ -166,7 +200,7 @@ pub fn attention_side_backward(
         d_attn_qkv_bias,
         // Only a routed value residual changes dQKV after the attention core.
         // Unrouted blocks can reuse the exact amax that core already produced.
-        precomputed_d_qkv_amax_chunks: if block_index == 0 || routes_value_residual {
+        precomputed_d_qkv_amax_chunks: if use_xsa || block_index == 0 || routes_value_residual {
             None
         } else if attention_headwise_gate_enabled() {
             Some(

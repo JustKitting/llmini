@@ -38,6 +38,7 @@ impl AttentionModule {
             d_qkv,
             d_qkv_chunk_amax,
             d_qk_scale,
+            accumulate_value_grad,
             scratch,
             row_count: _,
             seq_len,
@@ -202,6 +203,7 @@ impl AttentionModule {
                 d_qkv,
                 &mut *scratch.g_f32,
                 d_qkv_chunk_amax,
+                u32::from(accumulate_value_grad),
                 params,
             )?;
             kernels.reduce_qk_scale_grad_kernel(
@@ -220,6 +222,7 @@ impl AttentionModule {
                 scratch.d_v,
                 d_qkv,
                 d_qkv_chunk_amax,
+                u32::from(accumulate_value_grad),
                 params,
             )?;
             kernels.reduce_qk_scale_grad_kernel(

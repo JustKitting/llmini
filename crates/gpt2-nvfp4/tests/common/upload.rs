@@ -41,6 +41,8 @@ pub fn attention_projection_tensors<'a>(
         qkv_weight_device: qkv_weight.device(),
         qkv_bias: qkv_bias.device(),
         qk_scale: qkv_bias.device(),
+        xsa_alphas: qkv_bias.device(),
+        xsa_alpha_offset: 0,
         c_proj_weight: c_proj_weight.mma(),
         c_proj_weight_device: c_proj_weight.device(),
         c_proj_bias: c_proj_bias.device(),

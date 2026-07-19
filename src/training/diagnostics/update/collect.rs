@@ -25,6 +25,15 @@ pub(in crate::training::diagnostics) fn collect_update_snapshots(
         &grads.d_lm_head_weight,
         &state.token_embedding,
     )?;
+    if gpt2_nvfp4::exclusive_self_attention_enabled() {
+        collector.push_adam_with_weight_decay(
+            "xsa_alphas",
+            &uploaded.xsa_alphas,
+            &grads.d_xsa_alphas,
+            &state.xsa_alphas,
+            0.0,
+        )?;
+    }
     collector.push_layer_norm("ln_f", &uploaded.ln_f, &grads.final_norm, &state.ln_f)?;
 
     for (index, ((block, grad), state)) in uploaded

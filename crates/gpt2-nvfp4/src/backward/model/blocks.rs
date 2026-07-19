@@ -1,4 +1,6 @@
-use cuda_core::{CudaStream, DeviceBuffer, DriverError};
+use std::mem::size_of;
+
+use cuda_core::{CudaStream, DeviceBuffer, DriverError, memory};
 
 use super::types::{Gpt2BackwardModules, Gpt2BackwardSeeds, Gpt2BackwardWeights};
 use crate::backward::{
@@ -6,7 +8,7 @@ use crate::backward::{
     MlpBackwardScratch, attention_side_backward, mlp_side_backward,
 };
 use crate::types::{BlockBackwardGrads, Gpt2ForwardSaved};
-use crate::{GPT2_N_LAYER, uses_full_attention};
+use crate::{GPT2_N_LAYER, exclusive_self_attention_enabled, uses_full_attention};
 
 pub(super) struct BlocksBackwardRun<'ctx, 'a, 'scratch, 'out> {
     pub stream: &'a CudaStream,
@@ -14,6 +16,7 @@ pub(super) struct BlocksBackwardRun<'ctx, 'a, 'scratch, 'out> {
     pub saved: Gpt2ForwardSaved<'a>,
     pub weights: Gpt2BackwardWeights<'a>,
     pub blocks: &'ctx mut [BlockBackwardGrads<'out>; GPT2_N_LAYER],
+    pub d_xsa_alphas: &'ctx mut DeviceBuffer<f32>,
     pub d_embedding_residual: &'ctx mut DeviceBuffer<f32>,
     pub d_residual_after_attention: &'ctx mut DeviceBuffer<f32>,
     pub d_hidden: &'ctx mut DeviceBuffer<f32>,
@@ -27,6 +30,16 @@ pub(super) struct BlocksBackwardRun<'ctx, 'a, 'scratch, 'out> {
 }
 
 pub(super) fn run_blocks(args: BlocksBackwardRun<'_, '_, '_, '_>) -> Result<(), DriverError> {
+    if exclusive_self_attention_enabled() {
+        unsafe {
+            memory::memset_d8_async(
+                args.d_xsa_alphas.cu_deviceptr(),
+                0,
+                args.d_xsa_alphas.len() * size_of::<f32>(),
+                args.stream.cu_stream(),
+            )?;
+        }
+    }
     let mut d_residual_amax_chunks = Some(args.initial_d_residual_amax_chunks);
     for block_index in (0..GPT2_N_LAYER).rev() {
         let current = &mut args.blocks[block_index];
@@ -36,6 +49,7 @@ pub(super) fn run_blocks(args: BlocksBackwardRun<'_, '_, '_, '_>) -> Result<(), 
             args.saved,
             args.weights,
             current,
+            &mut *args.d_xsa_alphas,
             &mut *args.d_embedding_residual,
             &mut *args.d_residual_after_attention,
             &mut *args.d_hidden,
@@ -60,6 +74,7 @@ fn run_block<'a, 'scratch, 'out>(
     saved: Gpt2ForwardSaved<'a>,
     weights: Gpt2BackwardWeights<'a>,
     current: &mut BlockBackwardGrads<'out>,
+    d_xsa_alphas: &mut DeviceBuffer<f32>,
     d_residual: &mut DeviceBuffer<f32>,
     d_residual_after_attention: &mut DeviceBuffer<f32>,
     d_hidden: &mut DeviceBuffer<f32>,
@@ -109,6 +124,7 @@ fn run_block<'a, 'scratch, 'out>(
         d_hidden,
         d_qkv,
         d_value_residual,
+        d_xsa_alphas,
         grads: grads.reborrow(),
         scratch: attention_scratch.reborrow(),
         seeds: seeds.attention[block_index],

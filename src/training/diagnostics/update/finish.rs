@@ -21,16 +21,36 @@ pub(in crate::training::diagnostics) fn finish_update_snapshots(
         &uploaded.token_embedding,
         iter.next().unwrap(),
     )?;
+    if gpt2_nvfp4::exclusive_self_attention_enabled() {
+        finish_update(
+            &mut updates,
+            stream,
+            &uploaded.xsa_alphas,
+            iter.next().unwrap(),
+        )?;
+    }
     finish_pair(&mut updates, stream, &uploaded.ln_f, &mut iter)?;
 
-    for block in &uploaded.blocks {
+    for (index, block) in uploaded.blocks.iter().enumerate() {
         finish_pair(&mut updates, stream, &block.ln_1, &mut iter)?;
         finish_pair(&mut updates, stream, &block.attn_qkv, &mut iter)?;
+        if gpt2_nvfp4::uses_full_attention(index) {
+            finish_update(
+                &mut updates,
+                stream,
+                &block.attn_qk_scale,
+                iter.next().unwrap(),
+            )?;
+        }
         finish_pair(&mut updates, stream, &block.attn_c_proj, &mut iter)?;
         finish_pair(&mut updates, stream, &block.ln_2, &mut iter)?;
         finish_pair(&mut updates, stream, &block.mlp_up, &mut iter)?;
         finish_pair(&mut updates, stream, &block.mlp_down, &mut iter)?;
     }
+    assert!(
+        iter.next().is_none(),
+        "update snapshot topology must consume every tensor"
+    );
 
     Ok(updates)
 }

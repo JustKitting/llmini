@@ -31,6 +31,7 @@ pub fn causal_attention_backward(
         d_qkv: args.d_qkv,
         d_qkv_chunk_amax: args.d_qkv_chunk_amax,
         d_qk_scale: args.d_qk_scale,
+        accumulate_value_grad: args.accumulate_value_grad,
         scratch: args.scratch.tc,
         row_count: args.saved.row_count,
         seq_len: args.saved.seq_len,

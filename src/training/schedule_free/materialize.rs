@@ -25,6 +25,9 @@ pub(in crate::training) fn materialize_training_weights(
         Materializer::new(stream, &runtime.optimizer, scratch, beta, symexp_lin_beta);
 
     materializer.adam(&mut uploaded.token_embedding, &state.token_embedding)?;
+    if gpt2_nvfp4::exclusive_self_attention_enabled() {
+        materializer.adam(&mut uploaded.xsa_alphas, &state.xsa_alphas)?;
+    }
     materialize_layer_norm(&mut materializer, &mut uploaded.ln_f, &state.ln_f)?;
     materialize_next_latent(
         &mut materializer,
@@ -72,6 +75,9 @@ pub(in crate::training) fn materialize_evaluation_weights(
         &mut uploaded.token_embedding,
         &state.token_embedding.x_master,
     )?;
+    if gpt2_nvfp4::exclusive_self_attention_enabled() {
+        materializer.master(&mut uploaded.xsa_alphas, &state.xsa_alphas.x_master)?;
+    }
     materialize_evaluation_layer_norm(&mut materializer, &mut uploaded.ln_f, &state.ln_f)?;
     materialize_evaluation_next_latent(
         &mut materializer,

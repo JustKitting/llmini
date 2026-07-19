@@ -101,6 +101,7 @@ fn qknorm_backward_matches_scale_finite_difference() -> Result<(), Box<dyn Error
         d_qkv: &mut d_qkv,
         d_qkv_chunk_amax: &mut d_qkv_chunk_amax,
         d_qk_scale: &mut d_qk_scale,
+        accumulate_value_grad: false,
         scratch: backward_scratch.args(),
         row_count: SEQ as u32,
         seq_len: SEQ as u32,
@@ -150,6 +151,67 @@ fn qknorm_backward_matches_scale_finite_difference() -> Result<(), Box<dyn Error
 
     let gradients = d_qkv.to_host_vec(&stream)?;
     assert_qk_gradients_are_tangent(&qkv_rounded, &gradients, SEQ, HEADS, HEAD_DIM);
+
+    let mut direct_value_grad = vec![0.0_f32; SEQ * QKV_DIM];
+    for row in 0..SEQ {
+        for col in 0..EMBEDDING {
+            direct_value_grad[row * QKV_DIM + 2 * EMBEDDING + col] =
+                ((row + col) as f32 % 11.0 - 5.0) * 0.00390625;
+        }
+    }
+    let mut accumulated_grad = DeviceBuffer::from_host(&stream, &direct_value_grad)?;
+    let mut accumulated_chunk_amax = DeviceBuffer::<f32>::zeroed(&stream, 3 * SEQ)?;
+    let mut accumulated_softmax_d = DeviceBuffer::<f32>::zeroed(&stream, HEADS * SEQ)?;
+    let mut accumulated_qk_norm_max = DeviceBuffer::<f32>::zeroed(&stream, 2 * HEADS)?;
+    let mut accumulated_qk_scale_grad = DeviceBuffer::<f32>::zeroed(&stream, 16)?;
+    let mut accumulated_scratch = TcScratchBuffers::new_for_shape(&stream, HEADS, SEQ, HEAD_DIM)?;
+    attention.causal_attention_backward_tc(CausalAttentionBackwardTcArgs {
+        reuse_forward_probs: true,
+        forward_probs_f16: Some(&probabilities_f16),
+        stream: &stream,
+        tc_module: &tc,
+        qkv: &qkv_f16,
+        attention_out: &attention_out_f16,
+        kda_v_new: None,
+        kda_akk_inv: None,
+        kda_w: None,
+        kda_aqk: None,
+        d_out: &d_out,
+        qk_scale,
+        log_sum_exp: &log_sum_exp,
+        softmax_d: &mut accumulated_softmax_d,
+        qk_norm_max: &mut accumulated_qk_norm_max,
+        d_qkv: &mut accumulated_grad,
+        d_qkv_chunk_amax: &mut accumulated_chunk_amax,
+        d_qk_scale: &mut accumulated_qk_scale_grad,
+        accumulate_value_grad: true,
+        scratch: accumulated_scratch.args(),
+        row_count: SEQ as u32,
+        seq_len: SEQ as u32,
+        batch_size: 1,
+        embedding_dim: EMBEDDING as u32,
+        qkv_dim: QKV_DIM as u32,
+        head_count: HEADS as u32,
+        head_dim: HEAD_DIM as u32,
+        attention_window: SEQ as u32,
+        qk_norm_offset: 0,
+        backward_mask_seed: 0,
+        backward_tile_budget: 0.0,
+    })?;
+    let mut expected_accumulated = gradients.clone();
+    for row in 0..SEQ {
+        for col in 0..EMBEDDING {
+            let index = row * QKV_DIM + 2 * EMBEDDING + col;
+            expected_accumulated[index] += direct_value_grad[index];
+        }
+    }
+    let accumulated = accumulated_grad.to_host_vec(&stream)?;
+    common::assert_slice_close(&accumulated, &expected_accumulated, 1.0e-6);
+    let accumulated_amax = accumulated_chunk_amax.to_host_vec(&stream)?;
+    for (section, values) in accumulated.chunks(EMBEDDING).enumerate() {
+        let expected_amax = values.iter().copied().map(f32::abs).fold(0.0, f32::max);
+        assert_eq!(accumulated_amax[section].to_bits(), expected_amax.to_bits());
+    }
     Ok(())
 }
 
@@ -203,6 +265,7 @@ fn materialized_tc_backward_matches_reference() -> Result<(), Box<dyn Error>> {
         d_qkv: &mut tc_grad,
         d_qkv_chunk_amax: &mut tc_grad_chunk_amax,
         d_qk_scale: &mut tc_qk_scale_grad,
+        accumulate_value_grad: false,
         scratch: scratch.args(),
         row_count: shape::TOKEN_COUNT as u32,
         seq_len: shape::TOKEN_COUNT as u32,
@@ -224,6 +287,70 @@ fn materialized_tc_backward_matches_reference() -> Result<(), Box<dyn Error>> {
     for (section, values) in recomputed.chunks(shape::EMBEDDING).enumerate() {
         let expected_amax = values.iter().copied().map(f32::abs).fold(0.0, f32::max);
         assert_eq!(chunk_amax[section].to_bits(), expected_amax.to_bits());
+    }
+
+    let mut direct_value_grad = vec![0.0_f32; shape::TOKEN_COUNT * shape::QKV_DIM];
+    for token in 0..shape::TOKEN_COUNT {
+        for col in 0..shape::EMBEDDING {
+            direct_value_grad[token * shape::QKV_DIM + 2 * shape::EMBEDDING + col] =
+                (col as f32 - 7.5) * 0.0078125;
+        }
+    }
+    let mut accumulated_grad = DeviceBuffer::from_host(&stream, &direct_value_grad)?;
+    let mut accumulated_chunk_amax = DeviceBuffer::<f32>::zeroed(&stream, 3 * shape::TOKEN_COUNT)?;
+    let mut accumulated_softmax_d =
+        DeviceBuffer::<f32>::zeroed(&stream, shape::TOKEN_COUNT * shape::HEADS)?;
+    let mut accumulated_qk_norm_max = DeviceBuffer::<f32>::zeroed(&stream, 2 * shape::HEADS)?;
+    let mut accumulated_qk_scale_grad = DeviceBuffer::<f32>::zeroed(&stream, 16)?;
+    let mut accumulated_scratch = TcScratchBuffers::new(&stream)?;
+    let accumulated_chunk_count =
+        attention.causal_attention_backward_tc(CausalAttentionBackwardTcArgs {
+            reuse_forward_probs: false,
+            forward_probs_f16: None,
+            stream: &stream,
+            tc_module: &tc,
+            qkv: &qkv,
+            attention_out: &out,
+            kda_v_new: None,
+            kda_akk_inv: None,
+            kda_w: None,
+            kda_aqk: None,
+            d_out: &d_out,
+            qk_scale,
+            log_sum_exp: &log_sum_exp,
+            softmax_d: &mut accumulated_softmax_d,
+            qk_norm_max: &mut accumulated_qk_norm_max,
+            d_qkv: &mut accumulated_grad,
+            d_qkv_chunk_amax: &mut accumulated_chunk_amax,
+            d_qk_scale: &mut accumulated_qk_scale_grad,
+            accumulate_value_grad: true,
+            scratch: accumulated_scratch.args(),
+            row_count: shape::TOKEN_COUNT as u32,
+            seq_len: shape::TOKEN_COUNT as u32,
+            batch_size: 1,
+            embedding_dim: shape::EMBEDDING as u32,
+            qkv_dim: shape::QKV_DIM as u32,
+            head_count: shape::HEADS as u32,
+            head_dim: shape::HEAD_DIM as u32,
+            attention_window: shape::TOKEN_COUNT as u32,
+            qk_norm_offset: 0,
+            backward_mask_seed: 0,
+            backward_tile_budget: 0.0,
+        })?;
+    assert_eq!(accumulated_chunk_count, tc_chunk_count);
+    let mut expected_accumulated = recomputed.clone();
+    for token in 0..shape::TOKEN_COUNT {
+        for col in 0..shape::EMBEDDING {
+            let index = token * shape::QKV_DIM + 2 * shape::EMBEDDING + col;
+            expected_accumulated[index] += direct_value_grad[index];
+        }
+    }
+    let accumulated = accumulated_grad.to_host_vec(&stream)?;
+    common::assert_slice_close(&accumulated, &expected_accumulated, 1.0e-6);
+    let accumulated_amax = accumulated_chunk_amax.to_host_vec(&stream)?;
+    for (section, values) in accumulated.chunks(shape::EMBEDDING).enumerate() {
+        let expected_amax = values.iter().copied().map(f32::abs).fold(0.0, f32::max);
+        assert_eq!(accumulated_amax[section].to_bits(), expected_amax.to_bits());
     }
 
     let mut saved_probs = vec![0_u16; shape::HEADS * shape::TOKEN_COUNT * shape::TOKEN_COUNT];
@@ -260,6 +387,7 @@ fn materialized_tc_backward_matches_reference() -> Result<(), Box<dyn Error>> {
         d_qkv: &mut reuse_grad,
         d_qkv_chunk_amax: &mut reuse_grad_chunk_amax,
         d_qk_scale: &mut reuse_qk_scale_grad,
+        accumulate_value_grad: false,
         scratch: reuse_scratch.args(),
         row_count: shape::TOKEN_COUNT as u32,
         seq_len: shape::TOKEN_COUNT as u32,
@@ -338,6 +466,7 @@ fn sparse_tile_map_matches_probability_mass_and_seed() -> Result<(), Box<dyn Err
         d_qkv: &mut d_qkv,
         d_qkv_chunk_amax: &mut d_qkv_chunk_amax,
         d_qk_scale: &mut d_qk_scale,
+        accumulate_value_grad: false,
         scratch: scratch.args(),
         row_count: SEQ as u32,
         seq_len: SEQ as u32,

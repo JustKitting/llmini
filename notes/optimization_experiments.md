@@ -53,6 +53,158 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 
 ```text
 date: 2026-07-19
+commit: passing gated-XSA source promoted in this JJ change
+experiment: Zero-initialized learned Exclusive Self Attention gates on every
+  compatible full-attention and KDA mixer.
+status: accepted_fresh_450s_candidate_control
+sources:
+  https://arxiv.org/abs/2603.09078
+  https://github.com/KellerJordan/modded-nanogpt
+  Current upstream implementation inspected at commit
+    edf47a05a12062d661c4cfd4eef848c5ab5bed32.
+rationale:
+  The XSA paper removes the component of each attention output parallel to
+  its corresponding normalized value vector and reports lower train and
+  validation loss across 0.7B, 1.4B, and 2.7B models. Current
+  Modded-NanoGPT uses the learned form
+    y <- y - tanh(alpha[layer,head]) * (y . normalize(v)) * normalize(v)
+  with alpha zero-initialized and Adam-updated without weight decay. Its
+  repeated short-track result reaches the target in 30 fewer scheduled steps.
+  The learned gate is function-preserving at initialization and was therefore
+  tested directly under the local matched-step structural-method rule.
+scope_and_implementation:
+  Preserved the complete FineWeb/Llama-2 B4/S2048/L16/d2048/h32 model, all
+  four full-attention and twelve KDA mixers, value residuals, all sixteen
+  block-Top-K ReLU-squared MLPs, the existing query-dependent headwise
+  attention gates, NextLat, SymExpLin, tokenizer, objective, and accepted
+  optimizer. No layer, branch, token target, or parameter allocation was
+  removed.
+  Added 512 zero-initialized per-layer/per-head alpha parameters. They use the
+  existing FP32 schedule-free Adam masters with beta1=0.9, beta2=0.95,
+  ordinary Adam LR, and zero weight decay, then materialize through the
+  model's NVFP4 parameter path. XSA uses eps=1e-4 exactly as current upstream.
+  Full attention normalizes its raw projected V. KDA normalizes the
+  SiLU-transformed V actually consumed by that mixer. The exclusive projection
+  is applied before the existing head gate and c_proj. TRAIN_XSA=0 is the
+  same-binary disabled control; TRAIN_XSA_KDA=0 is the full-attention-only
+  ablation.
+  Reverse mode computes exact gradients for the attention output, raw value,
+  head gate, and alpha. The direct XSA value gradient is produced in the
+  pre-attention backward kernel and accumulated by the existing full-attention
+  scatter or KDA finish writer, including their amax calculation. One global
+  512-element gradient buffer is cleared once per model backward. Alpha
+  gradients participate in clipping, diagnostics, schedule-free
+  materialization, save/load, and legacy checkpoint loading; an older
+  version-2 checkpoint without xsa_alphas loads a zero gate and therefore
+  preserves its original attention function.
+correctness:
+  cargo fmt --all: pass.
+  cargo check --workspace: pass.
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass after each
+  CUDA implementation pass.
+  CUDA_DEVICE_INDEX=0 cargo test -p rust-kernels-cuda --release
+    --test headwise_attention_gate
+    gated_xsa_forward_and_backward_match_reference
+    -- --ignored --nocapture --test-threads=1: pass.
+    The test covers full-attention raw V and KDA SiLU(V), forward output,
+    FP16 tape behavior, dY, direct dV, dAlpha, and the composed head-gate
+    gradient against an independent FP32 reference.
+  CUDA_DEVICE_INDEX=0 cargo test -p rust-kernels-cuda --release
+    --test causal_attention_backward_tc
+    materialized_tc_backward_matches_reference
+    -- --ignored --nocapture --test-threads=1: pass.
+  CUDA_DEVICE_INDEX=0 cargo test -p rust-kernels-cuda --release
+    --test causal_attention_backward_tc
+    qknorm_backward_matches_scale_finite_difference
+    -- --ignored --nocapture --test-threads=1: pass.
+    These tests cover accumulated value gradients and exact amax for both
+    full-attention scatter implementations.
+  CUDA_DEVICE_INDEX=0 cargo test -p gpt2-nvfp4 --release
+    --test block_attention_backward
+    -- --ignored --nocapture --test-threads=1: pass through the complete KDA
+    backward with nonzero XSA alpha gradients.
+  One-step save/load round trip through
+    target/tmp/xsa_checkpoint_smoke.ckpt: pass. The loaded model completed a
+    finite update and held-out evaluation.
+  One-step trace diagnostic
+    target/runs/20260719_152130Z_fineweb_120s
+    preserved B4/S2048/L16/d2048/h32 and reported all 512 alpha gradients
+    finite and nonzero. It exposed a pre-existing TRAIN_TRACE topology bug:
+    collection included full-attention QK-scale tensors while finishing
+    skipped them. The diagnostic reader now mirrors collection order and
+    correctly records zero weight decay for XSA. This trace was diagnostic
+    only, not acceptance evidence.
+initial_matched_step_screen:
+  Correctness-first all-layer candidate
+  target/runs/20260719_152206Z_fineweb_30s completed 85 updates; disabled
+  same-binary control target/runs/20260719_152250Z_fineweb_30s completed 86.
+  At common step 50, candidate loss was 6.528717518 versus 6.544682503,
+  0.243940% lower. Step zero was bit-identical. Both runs were finite and
+  nonzero with every skip counter zero. The unequal-step held-out endpoints
+  were health evidence only.
+ablation:
+  Full-attention-only target/runs/20260719_152357Z_fineweb_30s reached
+  step-50 loss 6.540644169, only 0.061704% below the paired disabled control
+  and materially weaker than the 0.243940% all-layer gain. Retain XSA on KDA.
+profiling_and_optimization:
+  Initial profiles
+    target/nsys/xsa_all_b4s2048_10_20260719T1525Z.nsys-rep
+    target/nsys/xsa_off_b4s2048_10_20260719T1525Z.nsys-rep
+  measured 3719.035859ms and 3663.892569ms total GPU-kernel time. The separate
+  post-core value-gradient kernel consumed 29.960898ms over 160 calls, about
+  2.996ms per training step. It was not treated as an algorithmic cost.
+  The retained fusion computes direct dV in the XSA pre-backward pass and
+  makes the existing attention-core writers accumulate it. Profile
+    target/nsys/xsa_fused_b4s2048_10_20260719T1600Z.nsys-rep
+  removed all 160 post-core launches and reduced total GPU-kernel time to
+  3700.654877ms. The larger fused pre-backward pass plus forward XSA consumed
+  57.351472ms, versus 78.614265ms for the three initial XSA passes.
+repeated_matched_step_screen:
+  Optimized candidate target/runs/20260719_153545Z_fineweb_30s and disabled
+  control target/runs/20260719_153625Z_fineweb_30s both completed 86 updates.
+  Step zero was bit-identical. At step 50, candidate loss was 6.518851757
+  versus 6.538788795, 0.304904% lower. Elapsed time was 30.291s versus
+  30.198s, only 0.307967% slower, and every stability/skip metric was clean.
+fixed_201_step_resolution:
+  Candidate target/runs/20260719_153739Z_fineweb_120s and control
+  target/runs/20260719_153858Z_fineweb_120s each completed exactly 201
+  updates. Candidate was 0.214775% lower at step 50, then the individual
+  training-batch samples were 0.041603%, 0.136150%, and 0.817486% higher at
+  steps 100, 150, and 200. The same-exposure held-out result nevertheless
+  favored XSA: 5.566174 versus 5.570545, 0.078469% lower. This mixed curve did
+  not establish promotion, but it retained enough held-out signal to justify
+  the already-optimized candidate's single fresh 450-second comparison.
+promotion_gate:
+  Candidate target/runs/20260719_154109Z_fineweb_450s completed 1250 updates
+  in 450.083s with held-out val_loss=4.441298961639404.
+  Fresh disabled same-binary control
+  target/runs/20260719_154852Z_fineweb_450s completed 1261 updates in
+  450.146s with held-out val_loss=4.455561161041260.
+    held-out loss: 0.320099% lower.
+    completed updates: 0.872324% fewer.
+    mean cadence: 360.066ms versus 356.975ms, 0.865881% slower.
+    matched curve: lower at 23 of 24 noninitial common samples, averaging
+      0.314619% lower. It is lower at all final eight common samples, averaging
+      0.388684% lower over steps 850 through 1200.
+  Against the older accepted
+  target/runs/20260719_112813Z_fineweb_450s endpoint, XSA also lowers held-out
+  loss from 4.448462 to 4.441299 despite completing 21 fewer updates. The
+  fresh same-binary control, not this stale comparison, is the promotion
+  evidence.
+stability:
+  All 25 candidate high-fidelity samples are finite and nonzero. Update_skipped,
+  Skip_non_finite, Skip_loss_spike, and Skip_grad_norm_spike are zero
+  throughout. Sampled grad_norm remains finite from 0.818429 to 3.500204.
+decision:
+  Accept gated XSA on all sixteen compatible mixers and make it the default.
+  It survives repeated same-step screens, optimization due diligence, a
+  matched 201-update held-out check, and the decisive fresh 450-second
+  fixed-time comparison. notes/sweep_baseline.env now points at the passing
+  candidate and records TRAIN_XSA=1 and TRAIN_XSA_KDA=1.
+```
+
+```text
+date: 2026-07-19
 commit: note-only rejection; complete bigram implementation removed
 experiment: Modded-NanoGPT-style signed bigram hash embedding injected before
   every transformer block.

@@ -1,8 +1,8 @@
 use cuda_core::DeviceBuffer;
 use gpt2_nvfp4::{
     AttentionBackwardModules, BlockAttentionBackwardArgs, BlockAttentionBackwardModules,
-    BlockAttentionBackwardSeeds, GPT2_TOKEN_ROWS, GPT2_VALUE_RESIDUAL_START_LAYER, Gpt2Rng,
-    HiddenState, attention_side_backward,
+    BlockAttentionBackwardSeeds, GPT2_TOKEN_ROWS, GPT2_VALUE_RESIDUAL_START_LAYER,
+    GPT2_XSA_ALPHA_STORAGE, Gpt2Rng, HiddenState, attention_side_backward,
 };
 use rust_kernels_cuda::attention::AttentionModule;
 use rust_kernels_cuda::f16_tc_matmul::F16TcMatmulModule;
@@ -35,6 +35,7 @@ fn block_attention_side_backward_runs_full_chain() -> TestResult {
     let mut rng = Gpt2Rng::new(0x4154_544e);
     let mut d_residual_in_chunk_amax = DeviceBuffer::<f32>::zeroed(&stream, GPT2_TOKEN_ROWS)?;
     let mut d_value_residual = DeviceBuffer::<f32>::zeroed(&stream, HiddenState::LEN)?;
+    let mut d_xsa_alphas = DeviceBuffer::<f32>::zeroed(&stream, GPT2_XSA_ALPHA_STORAGE)?;
 
     let (d_residual_after_attention, d_residual_in, d_hidden, d_qkv, backward_grads) =
         grads.block();
@@ -65,6 +66,7 @@ fn block_attention_side_backward_runs_full_chain() -> TestResult {
         d_hidden,
         d_qkv,
         d_value_residual: &mut d_value_residual,
+        d_xsa_alphas: &mut d_xsa_alphas,
         grads: backward_grads,
         scratch: scratch.block(),
         seeds: BlockAttentionBackwardSeeds::from_rng(&mut rng),
@@ -74,6 +76,7 @@ fn block_attention_side_backward_runs_full_chain() -> TestResult {
     assert_nonzero_finite(&grads.d_hidden.to_host_vec(&stream)?);
     assert_nonzero_finite(&grads.d_qkv.to_host_vec(&stream)?);
     assert_nonzero_finite(&d_value_residual.to_host_vec(&stream)?);
+    assert_nonzero_finite(&d_xsa_alphas.to_host_vec(&stream)?[..32]);
     assert_nonzero_finite(&grads.d_attn_qkv_weight.to_host_vec(&stream)?);
     assert_nonzero_finite(&grads.d_attn_c_proj_weight.to_host_vec(&stream)?);
     Ok(())

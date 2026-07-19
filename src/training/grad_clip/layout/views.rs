@@ -1,5 +1,7 @@
 use cuda_core::DeviceBuffer;
-use gpt2_nvfp4::{GPT2_N_EMBD, GPT2_VOCAB_SIZE};
+use gpt2_nvfp4::{
+    GPT2_N_EMBD, GPT2_VOCAB_SIZE, GPT2_XSA_ALPHA_STORAGE, exclusive_self_attention_enabled,
+};
 
 use crate::training::{
     grad_block::LayerNormGradBuffers, grads::BackwardBuffers, next_latent::NextLatGradBuffers,
@@ -28,6 +30,14 @@ pub(super) fn parameter_gradient_views<'a>(
         &grads.d_lm_head_weight,
         GPT2_VOCAB_SIZE * GPT2_N_EMBD,
     );
+    if exclusive_self_attention_enabled() {
+        push_view(
+            &mut rows,
+            "xsa_alphas",
+            &grads.d_xsa_alphas,
+            GPT2_XSA_ALPHA_STORAGE,
+        );
+    }
     push_layer_norm_views(&mut rows, "final_norm", &grads.final_norm);
 
     for (block_index, block) in grads.blocks.iter().enumerate() {

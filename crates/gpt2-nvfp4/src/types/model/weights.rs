@@ -5,6 +5,7 @@ use super::forward;
 use crate::random::InitRng;
 use crate::types::{
     EmbeddingWeights, Gpt2BlockWeights, HiddenStateDevice, LayerNormWeights, NextLatWeights,
+    Nvfp4ShapeInit, XsaAlphaShape, XsaAlphaTensor,
 };
 use crate::{GPT2_N_LAYER, Gpt2Config};
 
@@ -15,6 +16,7 @@ pub struct Gpt2Weights {
     pub h: [Gpt2BlockWeights; GPT2_N_LAYER],
     pub ln_f: LayerNormWeights,
     pub next_latent: NextLatWeights,
+    pub xsa_alphas: XsaAlphaTensor,
 }
 
 impl Gpt2Weights {
@@ -26,6 +28,7 @@ impl Gpt2Weights {
             h: std::array::from_fn(|_| Gpt2BlockWeights::init(rng, residual_projection_scale)),
             ln_f: LayerNormWeights::init(),
             next_latent: NextLatWeights::init(rng),
+            xsa_alphas: XsaAlphaShape::zero_tensor(),
         }
     }
 

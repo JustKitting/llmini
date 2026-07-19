@@ -101,6 +101,16 @@ pub(in crate::training::launch) fn build_run_info(dataset: &str, config: &TrainC
         "attention_headwise_gate_enabled",
         gpt2_nvfp4::attention_headwise_gate_enabled(),
     );
+    push_info(
+        &mut info,
+        "exclusive_self_attention_enabled",
+        gpt2_nvfp4::exclusive_self_attention_enabled(),
+    );
+    push_info(
+        &mut info,
+        "exclusive_self_attention_kda_enabled",
+        gpt2_nvfp4::exclusive_self_attention_kda_enabled(),
+    );
     push_info(&mut info, "step_cap", config.step_cap);
     push_info(&mut info, "log_interval", config.log_interval);
     push_info(&mut info, "max_seconds", config.max_seconds);
@@ -144,6 +154,8 @@ fn push_run_env(info: &mut String) {
         "TRAIN_SYMEXP_LIN_ANNEAL_STEPS",
         "TRAIN_SYMEXP_LIN_REUSE_AMAX",
         "TRAIN_ATTENTION_HEADWISE_GATE",
+        "TRAIN_XSA",
+        "TRAIN_XSA_KDA",
         "TRAIN_NEXTLAT_LOSS_WEIGHT",
         "TRAIN_SKIP_UNSTABLE_UPDATES",
         "TRAIN_SKIP_ROLLING_INTERVAL",

@@ -20,6 +20,7 @@ pub const GPT2_FULL_ATTENTION_QKV: usize = 3 * GPT2_N_EMBD;
 pub const GPT2_FULL_ATTENTION_GATED_QKV: usize =
     align_up(GPT2_FULL_ATTENTION_QKV + GPT2_N_HEAD, 128);
 pub const GPT2_QK_SCALE_STORAGE: usize = 16;
+pub const GPT2_XSA_ALPHA_STORAGE: usize = GPT2_N_LAYER * GPT2_N_HEAD;
 pub const GPT2_ATTENTION_BACKWARD_TILE_BUDGET: f32 = 12.0;
 pub const GPT2_KDA_ACTIVE_QKV: usize = 4 * GPT2_N_EMBD + GPT2_N_HEAD;
 pub const GPT2_QKV: usize = align_kda_qkv(GPT2_KDA_ACTIVE_QKV);
@@ -111,7 +112,24 @@ impl AttentionDims {
 }
 
 pub fn attention_headwise_gate_enabled() -> bool {
-    std::env::var("TRAIN_ATTENTION_HEADWISE_GATE").map_or(true, |value| {
+    env_bool("TRAIN_ATTENTION_HEADWISE_GATE", true)
+}
+
+pub fn exclusive_self_attention_enabled() -> bool {
+    env_bool("TRAIN_XSA", true)
+}
+
+pub fn exclusive_self_attention_kda_enabled() -> bool {
+    env_bool("TRAIN_XSA_KDA", true)
+}
+
+pub fn uses_exclusive_self_attention(use_full_attention: bool) -> bool {
+    exclusive_self_attention_enabled()
+        && (use_full_attention || exclusive_self_attention_kda_enabled())
+}
+
+fn env_bool(name: &str, default: bool) -> bool {
+    std::env::var(name).map_or(default, |value| {
         matches!(
             value.trim().to_ascii_lowercase().as_str(),
             "1" | "true" | "yes" | "on"

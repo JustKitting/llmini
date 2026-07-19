@@ -28,7 +28,7 @@ pub(super) struct BaseAdamUpdateArgs<'a> {
 }
 
 pub(super) fn update_base_adam(args: BaseAdamUpdateArgs<'_>) -> Result<(), DriverError> {
-    let (token_embedding_ms, final_norm_ms) = {
+    let (token_embedding_ms, xsa_alphas_ms, final_norm_ms) = {
         let mut adam = AdamUpdate::new(
             args.stream,
             args.optimizer,
@@ -42,13 +42,23 @@ pub(super) fn update_base_adam(args: BaseAdamUpdateArgs<'_>) -> Result<(), Drive
             &args.grads.d_lm_head_weight,
             &mut args.state.token_embedding,
         )?;
+        let xsa_alphas_ms = if gpt2_nvfp4::exclusive_self_attention_enabled() {
+            adam.update_timed_with_weight_decay(
+                &mut args.uploaded.xsa_alphas,
+                &args.grads.d_xsa_alphas,
+                &mut args.state.xsa_alphas,
+                0.0,
+            )?
+        } else {
+            0.0
+        };
         let final_norm_ms = update_layer_norm_timed(
             &mut adam,
             &mut args.uploaded.ln_f,
             &args.grads.final_norm,
             &mut args.state.ln_f,
         )?;
-        (token_embedding_ms, final_norm_ms)
+        (token_embedding_ms, xsa_alphas_ms, final_norm_ms)
     };
 
     let next_latent_ms = timed_ms(|| {
@@ -67,6 +77,6 @@ pub(super) fn update_base_adam(args: BaseAdamUpdateArgs<'_>) -> Result<(), Drive
 
     args.trace.token_embedding_ms = token_embedding_ms;
     args.trace.final_norm_ms = final_norm_ms;
-    args.trace.adam_ms += token_embedding_ms + final_norm_ms + next_latent_ms;
+    args.trace.adam_ms += token_embedding_ms + xsa_alphas_ms + final_norm_ms + next_latent_ms;
     Ok(())
 }

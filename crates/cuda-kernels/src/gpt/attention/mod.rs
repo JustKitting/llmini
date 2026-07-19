@@ -16,7 +16,10 @@ pub(crate) const QK_NORM_EPS: f32 = 1.0e-12;
 pub use causal::{CausalAttentionArgs, CausalAttentionParams};
 pub use causal_backward_tc::{CausalAttentionBackwardTcArgs, CausalAttentionBackwardTcScratch};
 pub use causal_tc::{CausalAttentionTcArgs, CausalAttentionTcScratch};
-pub use headwise_gate::{HeadwiseAttentionGateBackwardArgs, HeadwiseAttentionGateForwardArgs};
+pub use headwise_gate::{
+    ExclusiveSelfAttentionBackwardArgs, ExclusiveSelfAttentionForwardArgs,
+    HeadwiseAttentionGateBackwardArgs, HeadwiseAttentionGateForwardArgs,
+};
 pub use qkv_projection::{CProjArgs, QkvProjectionArgs, QkvProjectionParams};
 pub use rope::{ApplyRopeArgs, ApplyRopeParams};
 pub use value_residual::{

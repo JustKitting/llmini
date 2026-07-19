@@ -18,6 +18,8 @@ pub struct AttentionProjectionTensors<'a> {
     pub qkv_weight_device: Nvfp4DeviceTensor<'a>,
     pub qkv_bias: Nvfp4DeviceTensor<'a>,
     pub qk_scale: Nvfp4DeviceTensor<'a>,
+    pub xsa_alphas: Nvfp4DeviceTensor<'a>,
+    pub xsa_alpha_offset: u32,
     pub c_proj_weight: Nvfp4FourSixMmaWeightTensor<'a>,
     pub c_proj_weight_device: Nvfp4DeviceTensor<'a>,
     pub c_proj_bias: Nvfp4DeviceTensor<'a>,

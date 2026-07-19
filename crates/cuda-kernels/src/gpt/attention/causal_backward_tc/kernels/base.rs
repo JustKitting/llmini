@@ -129,9 +129,10 @@ pub(super) mod module {
         d_k: &[f32],
         d_v: &[f32],
         d_qkv: DisjointSlice<f32>,
+        accumulate_value_grad: u32,
         params: CausalAttentionParams,
     ) {
-        scatter_body(d_q, d_k, d_v, d_qkv, params);
+        scatter_body(d_q, d_k, d_v, d_qkv, accumulate_value_grad, params);
     }
 
     #[kernel]
@@ -141,11 +142,12 @@ pub(super) mod module {
         d_v: &[f32],
         d_qkv: DisjointSlice<f32>,
         mut d_qkv_chunk_amax: DisjointSlice<f32>,
+        accumulate_value_grad: u32,
         params: CausalAttentionParams,
     ) {
         static mut SCATTER_AMAX: SharedArray<f32, 8> = SharedArray::UNINIT;
 
-        let local_amax = scatter_amax_body(d_q, d_k, d_v, d_qkv, params);
+        let local_amax = scatter_amax_body(d_q, d_k, d_v, d_qkv, accumulate_value_grad, params);
         let (_, lane, warp_in_block) = thread_lane_warp();
         block_max_store_f32!(
             SCATTER_AMAX,
@@ -170,6 +172,7 @@ pub(super) mod module {
         d_qkv: DisjointSlice<f32>,
         qk_scale_rows: DisjointSlice<f32>,
         mut d_qkv_chunk_amax: DisjointSlice<f32>,
+        accumulate_value_grad: u32,
         params: CausalAttentionParams,
     ) {
         static mut QK_DOT_WARP_SUMS: SharedArray<f32, 8> = SharedArray::UNINIT;
@@ -188,6 +191,7 @@ pub(super) mod module {
             qk_scale_global_scale,
             d_qkv,
             qk_scale_rows,
+            accumulate_value_grad,
             params,
             unsafe { &mut QK_DOT_WARP_SUMS },
             unsafe { &mut SCALE_GRAD_WARP_SUMS },

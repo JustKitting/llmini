@@ -12,6 +12,7 @@ pub(super) fn write_model(
     model: &UploadedModel,
 ) -> AppResult {
     tensor::write(writer, stream, "token_embedding", &model.token_embedding)?;
+    tensor::write(writer, stream, "xsa_alphas", &model.xsa_alphas)?;
     for (index, block) in model.blocks.iter().enumerate() {
         write_block(writer, stream, index, block)?;
     }

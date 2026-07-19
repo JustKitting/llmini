@@ -16,6 +16,7 @@ pub(super) fn scatter_body(
     d_k: &[f32],
     d_v: &[f32],
     mut d_qkv: DisjointSlice<f32>,
+    accumulate_value_grad: u32,
     params: CausalAttentionParams,
 ) {
     let index = thread::blockIdx_x() * TC_BACKWARD_THREADS_PER_BLOCK + thread::threadIdx_x();
@@ -54,10 +55,15 @@ pub(super) fn scatter_body(
         params.head_dim,
     );
 
+    let dv = if accumulate_value_grad != 0 {
+        unsafe { d_v[index as usize] + *d_qkv.as_mut_ptr().add(v) }
+    } else {
+        d_v[index as usize]
+    };
     unsafe {
         *d_qkv.get_unchecked_mut(q) = dq;
         *d_qkv.get_unchecked_mut(k) = dk;
-        *d_qkv.get_unchecked_mut(v) = d_v[index as usize];
+        *d_qkv.get_unchecked_mut(v) = dv;
     }
 }
 
@@ -66,6 +72,7 @@ pub(super) fn scatter_amax_body(
     d_k: &[f32],
     d_v: &[f32],
     mut d_qkv: DisjointSlice<f32>,
+    accumulate_value_grad: u32,
     params: CausalAttentionParams,
 ) -> f32 {
     let chunk = thread::blockIdx_x();
@@ -80,6 +87,9 @@ pub(super) fn scatter_amax_body(
         let head = col / params.head_dim;
         let dim = col - head * params.head_dim;
         let compact = compact_index(batch, token, head, dim, &params);
+        let out = row as usize * params.qkv_dim as usize
+            + section as usize * params.embedding_dim as usize
+            + col as usize;
         let value = if section == 0 {
             rope_raw_grad(
                 token,
@@ -98,10 +108,12 @@ pub(super) fn scatter_amax_body(
             )
         } else {
             d_v[compact]
+                + if accumulate_value_grad != 0 {
+                    unsafe { *d_qkv.as_mut_ptr().add(out) }
+                } else {
+                    0.0
+                }
         };
-        let out = row as usize * params.qkv_dim as usize
-            + section as usize * params.embedding_dim as usize
-            + col as usize;
         unsafe {
             *d_qkv.get_unchecked_mut(out) = value;
         }
@@ -128,6 +140,7 @@ pub(super) fn scatter_qknorm_amax_body(
     qk_scale_global_scale: &[f32],
     mut d_qkv: DisjointSlice<f32>,
     mut qk_scale_rows: DisjointSlice<f32>,
+    accumulate_value_grad: u32,
     params: CausalAttentionParams,
     qk_dot_warp_sums: &mut SharedArray<f32, 8>,
     scale_grad_warp_sums: &mut SharedArray<f32, 8>,
@@ -239,10 +252,15 @@ pub(super) fn scatter_qknorm_amax_body(
             let head = col / params.head_dim;
             let dim = col - head * params.head_dim;
             let compact = compact_index(batch, token, head, dim, &params);
-            let value = d_v[compact];
             let out = row as usize * params.qkv_dim as usize
                 + section as usize * params.embedding_dim as usize
                 + col as usize;
+            let value = d_v[compact]
+                + if accumulate_value_grad != 0 {
+                    unsafe { *d_qkv.as_mut_ptr().add(out) }
+                } else {
+                    0.0
+                };
             unsafe {
                 *d_qkv.get_unchecked_mut(out) = value;
             }

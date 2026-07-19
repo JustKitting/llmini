@@ -32,6 +32,7 @@ pub fn backward(args: Gpt2BackwardArgs<'_, '_, '_>) -> Result<(), DriverError> {
     let Gpt2BackwardGrads {
         dlogits,
         d_embedding_residual,
+        d_xsa_alphas,
         mut blocks,
         mut final_norm,
     } = grads;
@@ -77,6 +78,7 @@ pub fn backward(args: Gpt2BackwardArgs<'_, '_, '_>) -> Result<(), DriverError> {
         saved,
         weights,
         blocks: &mut blocks,
+        d_xsa_alphas,
         d_embedding_residual,
         d_residual_after_attention,
         d_hidden,
