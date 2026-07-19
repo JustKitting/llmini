@@ -53,6 +53,115 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 
 ```text
 date: 2026-07-19
+commit: rejected experiment; source removed and result retained as a note
+experiment: Gradient Smoothing standard window averaging over corresponding
+  block-linear optimizer updates.
+status: rejected_no_matched_step_loss_signal; no_profile; no_450s
+sources:
+  https://arxiv.org/abs/2606.30813
+  https://github.com/sugolov/gradient-smoothing
+  inspected official repository commit:
+    2a446c38be74bcce15cb7f638fe95b10df9945a0
+rationale:
+  Gradient Smoothing reports faster nanochat pretraining convergence for
+  1.38B depth-24 and 2.40B depth-30 GPT models using the existing Adam plus
+  NorMuon recipe. It applies the symmetric depth-window operator to each
+  corresponding base-optimizer update:
+    first:    (1-alpha/2)u_1 + (alpha/2)u_2
+    interior: (1-alpha)u_l + (alpha/2)(u_(l-1)+u_(l+1))
+    last:     (1-alpha/2)u_L + (alpha/2)u_(L-1).
+  The paper's pretraining comparison uses standard, unnormalized smoothing
+  with alpha=0.1. Its variance study additionally includes alpha=0.05.
+implementation:
+  The intact FineWeb/Llama-2 B4/S2048/L16/d2048/h32 model remained active:
+  all four full-attention and twelve KDA blocks, value residuals, block-Top-K
+  ReLU-squared MLPs, the headwise attention gate, NextLat, objective, and
+  parameter allocations were unchanged.
+  The correctness-first CUDA implementation captured the actual loss-driven
+  update emitted by the accepted Hyperball/Muon-VS/NorMuon optimizer into
+  each matrix's consumed gradient buffer, so it added no full-model state.
+  After all matrix updates, one batched kernel applied the exact window
+  correction to schedule-free z and x, with x receiving the same averaging
+  coefficient used by the base update. Decoupled weight decay was not
+  smoothed, matching the paper. A second batched reduction recomputed each
+  corrected matrix's complete x and next-step schedule amax before deferred
+  NVFP4 materialization.
+  The initial conservative mapping smoothed W_O plus the two MLP linears.
+  Layout inspection then established that Q, K, and V occupy the same
+  contiguous master prefix in both full-attention and KDA projections.
+  The complete Proj formulation therefore smoothed all six paper roles
+  (Q, K, V, W_O, MLP up, MLP down) across all 16 depths while leaving only
+  architecture-specific KDA/gate columns unchanged. TRAIN_GRADIENT_SMOOTHING
+  and TRAIN_GRADIENT_SMOOTHING_ALPHA supplied explicit same-binary controls,
+  and run_info recorded both.
+correctness:
+  cargo fmt --all: pass.
+  cargo check --workspace: pass.
+  cargo check -p rust-kernels-cuda --test optimizer: pass.
+  Every device-code revision used the exact required rebuild:
+    TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a
+  Rebuilt-PTX CUDA references passed for boundary/interior window weights,
+  an unsmoothed suffix with whole-matrix amax recomputation, Hyperball
+  effective-update capture, and sign-update capture with weight decay kept
+  separate. Existing Hyperball and Muon-VS sign recurrence tests also passed.
+  A broad cargo check --workspace --tests remains blocked by unrelated stale
+  GPT2 test fixtures that predate this candidate (missing current TMA,
+  qk-scale, and MLP scratch fields); the focused optimizer test target builds.
+post_restore:
+  Removed every implementation and test hook, then re-ran cargo fmt --all,
+  cargo check --workspace, and the exact sm_120a cargo-oxide rebuild: pass.
+  Clean accepted-source one-step diagnostic
+  target/runs/20260719_094350Z_fineweb_900s completed with finite held-out
+  validation loss 10.168910. This is launch/rebuild evidence only.
+partial_projection_screen:
+  One-step target/runs/20260719_092441Z_fineweb_900s was a launch diagnostic
+  only. Candidate target/runs/20260719_092518Z_fineweb_30s and disabled
+  same-binary control target/runs/20260719_092559Z_fineweb_30s completed 87
+  and 89 steps. Both were finite/nonzero with every skip counter zero. Their
+  common step-50 losses were 6.535117 versus 6.533580, 0.0235% worse.
+  Because that was a tie, a fixed 151-step pair resolved the partial mapping:
+    candidate target/runs/20260719_092652Z_fineweb_900s
+    control   target/runs/20260719_092750Z_fineweb_900s
+    step 50:  6.538096 versus 6.531693, 0.0980% worse.
+    step 100: 6.392904 versus 6.387228, 0.0889% worse.
+    step 150: 5.777895 versus 5.774109, 0.0656% worse.
+    held-out: 5.788647 versus 5.776394, 0.2121% worse.
+  This result motivated completing the source-defined projection scope, not
+  profiling or optimizing the partial implementation.
+complete_projection_screen:
+  One-step target/runs/20260719_093400Z_fineweb_900s verified allocation and
+  launch only. Complete-Proj alpha=0.1 candidate
+  target/runs/20260719_093423Z_fineweb_900s and reverse-order same-binary
+  control target/runs/20260719_093722Z_fineweb_900s each completed exactly
+  151 steps:
+    step 50:  6.524140 versus 6.527927, 0.0580% better.
+    step 100: 6.391461 versus 6.385812, 0.0885% worse.
+    step 150: 5.782263 versus 5.779243, 0.0523% worse.
+    held-out: 5.783028 versus 5.775042, 0.1383% worse.
+    elapsed:  53.209s versus 51.206s, 3.912% slower.
+  The paper-supported alpha=0.05 candidate
+  target/runs/20260719_093543Z_fineweb_900s against that same control gave:
+    step 50:  6.536528 versus 6.527927, 0.1317% worse.
+    step 100: 6.391254 versus 6.385812, 0.0852% worse.
+    step 150: 5.791043 versus 5.779243, 0.2042% worse.
+    held-out: 5.774453 versus 5.775042, 0.0102% better.
+    elapsed:  53.666s versus 51.206s, 4.804% slower.
+  Every sample in all three complete-Proj runs was finite and nonzero with
+  zero update skips, non-finite skips, loss-spike skips, or grad-norm skips.
+decision:
+  Reject standard Gradient Smoothing in this 16-layer hybrid-attention model.
+  Alpha=0.1 produced only a transient 0.058% step-50 advantage before
+  reversing at both later common checkpoints and held-out evaluation.
+  Alpha=0.05 was worse at every common training step; its 0.010% held-out
+  edge is noise contradicted by the matched-step curve. Neither source-backed
+  strength supplies the required credible loss-per-step improvement, so the
+  method does not earn runtime profiling, implementation optimization, or a
+  450-second gate. Remove the implementation, exactly rebuild the accepted
+  source, retain this note-only result, and continue loss-method research.
+```
+
+```text
+date: 2026-07-19
 commit: note-only rejection; NAMO scalar-adaptation implementation removed
   after the required 450-second gate
 experiment: NAMO matrix-level gradient-norm adaptation composed with the
