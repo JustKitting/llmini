@@ -12,7 +12,7 @@ use crate::types::HiddenStateDevice;
 use crate::{
     AttentionDims, GPT2_FULL_ATTENTION_WINDOW, attention_headwise_gate_enabled,
     attention_headwise_gate_offset, partial_key_offset_enabled, selective_attention_enabled,
-    uses_exclusive_self_attention,
+    stable_mask_gamma, uses_exclusive_self_attention,
 };
 
 pub(super) fn forward<'a, 'scratch>(
@@ -174,6 +174,11 @@ pub(super) fn forward<'a, 'scratch>(
         },
         partial_key_offset: args.use_full_attention && partial_key_offset_enabled(),
         selective_attention: args.use_full_attention && selective_attention_enabled(),
+        stable_mask_gamma: if args.use_full_attention {
+            stable_mask_gamma()
+        } else {
+            0.0
+        },
     };
     if args.use_full_attention {
         args.module.causal_attention_tc(attention_args)?;

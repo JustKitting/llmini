@@ -44,7 +44,7 @@ pub use config::{
     KIMI_FULL_ATTENTION_PERIOD, NEXTLAT_HIDDEN, NEXTLAT_INPUT, attention_headwise_gate_enabled,
     attention_headwise_gate_offset, attention_trainable_qkv_dim, exclusive_self_attention_enabled,
     exclusive_self_attention_kda_enabled, layer_norm_scale, partial_key_offset_enabled,
-    qk_norm_initial_scale, selective_attention_enabled, uses_block_topk_mlp,
+    qk_norm_initial_scale, selective_attention_enabled, stable_mask_gamma, uses_block_topk_mlp,
     uses_exclusive_self_attention, uses_full_attention, uses_value_residual,
 };
 pub use config::{

@@ -24,7 +24,7 @@ pub fn saved_f16(
     Ok((dst, rounded))
 }
 
-fn f16_bits_to_f32(bits: u16) -> f32 {
+pub fn f16_bits_to_f32(bits: u16) -> f32 {
     let sign = if bits & 0x8000 == 0 { 1.0 } else { -1.0 };
     let exponent = ((bits >> 10) & 0x1f) as i32;
     let mantissa = (bits & 0x03ff) as u32;

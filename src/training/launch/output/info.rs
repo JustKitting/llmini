@@ -160,6 +160,11 @@ pub(in crate::training::launch) fn build_run_info(dataset: &str, config: &TrainC
         "selective_attention_enabled",
         gpt2_nvfp4::selective_attention_enabled(),
     );
+    push_info(
+        &mut info,
+        "stable_mask_gamma",
+        gpt2_nvfp4::stable_mask_gamma(),
+    );
     push_info(&mut info, "step_cap", config.step_cap);
     push_info(&mut info, "log_interval", config.log_interval);
     push_info(&mut info, "max_seconds", config.max_seconds);

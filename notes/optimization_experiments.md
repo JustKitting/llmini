@@ -53,6 +53,113 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 
 ```text
 date: 2026-07-20
+commit: accepted source candidate; promoted after the required 30-second
+  matched-step screen and 450-second held-out gate
+experiment: StableMask causal attention with analytically summed future
+  pseudo-logits
+status: accepted_450s; active_baseline
+sources:
+  https://arxiv.org/abs/2402.04779
+  https://proceedings.mlr.press/v235/yin24a.html
+research_scope:
+  StableMask makes causal attention "leaky": future positions participate in
+  the softmax denominator with fixed pseudo-logit -j*gamma for zero-indexed
+  key j, then their probabilities are masked back to zero. This allows real
+  attention mass to sum below one and gives RoPE attention an absolute
+  position signal. The paper reports consistent perplexity gains through its
+  1.4B scale and uses no learned parameters.
+model_integrity:
+  The candidate retained the complete B4/S2048/L16/d2048/h32 model, all four
+  full-attention and twelve KDA blocks, every MLP and block-Top-K route,
+  value-residual, NextLat, embedding, and head path, the accepted Mistral v0.1
+  tokenizer, FineWeb stream, objective, optimizer, and approximately 1B
+  parameter sizing. StableMask applies only to the four actual softmax
+  attention blocks; KDA remains active and mathematically unchanged.
+implementation:
+  TRAIN_STABLE_MASK controls the feature and TRAIN_STABLE_MASK_GAMMA controls
+  gamma. The promoted defaults are enabled and gamma=0.7; setting the enable
+  flag to zero provides an exact same-binary parent control.
+  No upper-triangular matrix is materialized and no kernel is added. For query
+  q, the softmax kernel adds the exact geometric-series mass
+    exp(-(q+1)*gamma-max) *
+      (1-exp(-gamma*(N-q-1))) / (1-exp(-gamma))
+  to its denominator and includes -(q+1)*gamma in the row maximum. Real
+  probabilities and the saved LSE therefore reproduce the paper exactly.
+  Existing backward kernels remain exact: pseudo-values and their upstream
+  gradients are zero, so softmax_d is the sum over real probabilities, while
+  both saved-probability and LSE-recomputation paths already evaluate
+    p_i * (g_i - sum_j p_j*g_j).
+correctness:
+  Exact candidate rebuild:
+    TMPDIR=$PWD/target/tmp TOKENIZER_VARIANT=mistral_v01 \
+      cargo oxide build --arch sm_120a
+  Focused generated-PTX GPU test
+    stable_mask_forward_and_backward_match_reference
+  passed. It compares every probability, LSE, and output with an independent
+  CPU implementation, verifies that early real rows sum below one and the
+  final row sums to one, compares saved-probability and LSE-recomputed
+  backward paths, and checks Q, K, and V gradients by finite difference.
+  The targeted causal-attention test compiled cleanly. The workspace-wide
+  all-target test compile remains blocked by eight pre-existing Muon test
+  initializers missing symexp_lin_beta and symexp_lin_slots; those unrelated
+  tests were not modified.
+30_second_same_binary_screen:
+  Disabled control target/runs/20260720_131003Z_fineweb_30s:
+    85 updates, 30.266s, held-out CE 6.126455, BPB 2.087166.
+  Paper-default gamma=0.5 target/runs/20260720_131048Z_fineweb_30s:
+    85 updates, 30.393s, held-out CE 6.112217, BPB 2.082315.
+  Gamma=0.5 lowered 68 of 85 paired training losses and improved their mean
+  by 0.028959, or 0.419%. Mean recorded forward time was 14.722005ms for the
+  control and 14.768638ms for the candidate; this screen found no material
+  implementation-speed cost to optimize.
+gamma_resolution:
+  Exact 85-step gamma=0.3 target/runs/20260720_131256Z_fineweb_60s:
+    held-out CE 6.116876, BPB 2.083902.
+  Exact 85-step gamma=0.7 target/runs/20260720_131334Z_fineweb_60s:
+    held-out CE 6.110016, BPB 2.081565.
+  Exact 85-step gamma=1.0 target/runs/20260720_131434Z_fineweb_60s:
+    held-out CE 6.120872, BPB 2.085264.
+  Gamma=0.7 bracketed the short-run optimum: it beat gamma=0.3, 0.5, and 1.0
+  on held-out CE and had the best mean paired training-loss reduction versus
+  control, 0.032608.
+promotion_gate:
+  Candidate target/runs/20260720_131543Z_fineweb_450s:
+    1246 updates, 450.322s, held-out CE 4.308202266693115,
+    BPB 1.4677218124336717, TRAIN_LOG_INTERVAL=1, finite, and every skip
+    counter zero.
+  Accepted Mistral baseline target/runs/20260720_081648Z_fineweb_450s:
+    1229 updates, 450.240s, held-out CE 4.317791938781738,
+    BPB 1.4709888296318596, finite, and every skip counter zero.
+  Candidate CE and BPB are 0.2221% lower at fixed time. It completed 1.3832%
+  more updates, but the convergence signal also holds at identical exposure:
+  the candidate won 20 of 24 common checkpoints through step 1200 and its
+  mean training loss was 0.014509, or 0.2976%, lower.
+final_default_rebuild:
+  After changing the retained defaults to enabled and gamma=0.7, the exact
+  Mistral sm_120a PTX and release binary were rebuilt. With both StableMask
+  environment variables explicitly unset, run
+    target/runs/20260720_132707Z_fineweb_30s
+  reported gamma=0.7 and completed 85 updates in 30.293s with held-out
+  CE 6.107351, BPB 2.080657, full per-step logging, and clean stability
+  counters. The focused generated-PTX GPU reference passed again after this
+  final rebuild.
+baseline_correction:
+  notes/sweep_baseline.env still pointed to the superseded Llama-2
+  target/runs/20260719_220730Z_fineweb_450s artifact even though
+  notes/tokenizer_experiments.md and commit a5d976c7 had already accepted
+  Mistral v0.1. The promotion comparison therefore uses the actual accepted
+  Mistral run above, and the mutable baseline file is corrected directly to
+  this passing StableMask/Mistral gate.
+decision:
+  Accept StableMask gamma=0.7, enable it by default, and promote the sustained
+  run as the active FineWeb/Mistral baseline. It preserves the intact model,
+  passes independent forward/backward correctness, improves both fixed-step
+  convergence and the fixed-time held-out endpoint, and adds no parameter,
+  buffer, or kernel launch.
+```
+
+```text
+date: 2026-07-20
 commit: note-only rejection; all mHC-lite architecture, optimizer-state,
   checkpoint, kernel, test, and metadata source removed before the clean
   accepted-source rebuild

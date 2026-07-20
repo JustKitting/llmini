@@ -18,6 +18,7 @@ pub struct CausalAttentionParams {
     pub attention_window: u32,
     pub partial_key_offset: u32,
     pub scale: f32,
+    pub stable_mask_gamma: f32,
     pub chunk_size: u32,
     pub decay_scale: f32,
 }
@@ -45,6 +46,7 @@ impl CausalAttentionParams {
             attention_window: seq_len,
             partial_key_offset: 0,
             scale: 1.0 / (head_dim as f32).sqrt(),
+            stable_mask_gamma: 0.0,
             chunk_size: CAUSAL_CHUNK_SIZE,
             decay_scale: CAUSAL_DECAY_SCALE,
         }
@@ -67,6 +69,15 @@ impl CausalAttentionParams {
             );
         }
         self.partial_key_offset = u32::from(enabled);
+        self
+    }
+
+    pub(crate) fn with_stable_mask_gamma(mut self, gamma: f32) -> Self {
+        assert!(
+            gamma.is_finite() && gamma >= 0.0,
+            "StableMask gamma must be finite and non-negative"
+        );
+        self.stable_mask_gamma = gamma;
         self
     }
 

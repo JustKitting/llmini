@@ -164,7 +164,11 @@ fn query_max(
     ctx: SoftmaxRow<'_>,
     reduce: &mut SharedArray<f32, WARPS_PER_BLOCK>,
 ) -> f32 {
-    let mut local = NEG_INFINITY;
+    let mut local = if ctx.tid == 0 {
+        stable_mask_max(ctx.query, ctx.params)
+    } else {
+        NEG_INFINITY
+    };
     let mut key = ctx.params.first_visible_key(ctx.query) + ctx.tid;
     while key <= ctx.query {
         local = max_f32(
@@ -182,7 +186,11 @@ fn query_denom(
     max_score: f32,
     reduce: &mut SharedArray<f32, WARPS_PER_BLOCK>,
 ) -> f32 {
-    let mut local = 0.0;
+    let mut local = if ctx.tid == 0 {
+        stable_mask_mass(ctx.query, max_score, ctx.params)
+    } else {
+        0.0
+    };
     let mut key = ctx.params.first_visible_key(ctx.query) + ctx.tid;
     while key <= ctx.query {
         local +=
@@ -190,4 +198,29 @@ fn query_denom(
         key += TC_FORWARD_THREADS_PER_BLOCK;
     }
     block_reduce_sum(local, ctx.tid, reduce)
+}
+
+#[inline(always)]
+fn stable_mask_max(query: u32, params: &CausalAttentionParams) -> f32 {
+    if params.stable_mask_gamma > 0.0 && query + 1 < params.seq_len {
+        -((query + 1) as f32) * params.stable_mask_gamma
+    } else {
+        NEG_INFINITY
+    }
+}
+
+#[inline(always)]
+fn stable_mask_mass(query: u32, max_score: f32, params: &CausalAttentionParams) -> f32 {
+    let gamma = params.stable_mask_gamma;
+    let future_count = params.seq_len - (query + 1);
+    if gamma <= 0.0 || future_count == 0 {
+        return 0.0;
+    }
+
+    // StableMask assigns pseudo-logit -j*gamma to zero-indexed future key j.
+    // Sum the upper triangle analytically instead of materializing it.
+    let first_logit = -((query + 1) as f32) * gamma;
+    let ratio = exp_f32(-gamma);
+    let geometric_sum = (1.0 - exp_f32(-gamma * future_count as f32)) / (1.0 - ratio);
+    exp_f32(first_logit - max_score) * geometric_sum
 }

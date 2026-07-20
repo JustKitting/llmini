@@ -40,6 +40,7 @@ pub struct CausalAttentionTcArgs<'a, 'scratch, 'out> {
     pub attention_window: u32,
     pub partial_key_offset: bool,
     pub selective_attention: bool,
+    pub stable_mask_gamma: f32,
 }
 
 impl CausalAttentionTcArgs<'_, '_, '_> {
@@ -55,6 +56,7 @@ impl CausalAttentionTcArgs<'_, '_, '_> {
         )
         .with_attention_window(self.attention_window)
         .with_partial_key_offset(self.partial_key_offset)
+        .with_stable_mask_gamma(self.stable_mask_gamma)
     }
 }
 

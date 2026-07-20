@@ -131,6 +131,22 @@ pub fn selective_attention_enabled() -> bool {
     env_bool("TRAIN_SELECTIVE_ATTENTION", true)
 }
 
+pub fn stable_mask_gamma() -> f32 {
+    if !env_bool("TRAIN_STABLE_MASK", true) {
+        return 0.0;
+    }
+    let gamma = std::env::var("TRAIN_STABLE_MASK_GAMMA").map_or(0.7, |value| {
+        value
+            .parse::<f32>()
+            .expect("TRAIN_STABLE_MASK_GAMMA must be a number")
+    });
+    assert!(
+        gamma.is_finite() && gamma > 0.0,
+        "TRAIN_STABLE_MASK_GAMMA must be finite and positive"
+    );
+    gamma
+}
+
 pub fn uses_exclusive_self_attention(use_full_attention: bool) -> bool {
     exclusive_self_attention_enabled()
         && (use_full_attention || exclusive_self_attention_kda_enabled())
