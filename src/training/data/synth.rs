@@ -2,11 +2,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use synth_prep::synth::SHARDS_DIR;
-use synth_prep::{DATA_DIR, DEFAULT_TRAIN_SHARD_COUNT, SHARD_FILE_PREFIX, SHARD_SIZE};
+use synth_prep::{
+    DATA_DIR, DEFAULT_TRAIN_SHARD_COUNT, SHARD_FILE_PREFIX, SHARD_SIZE, TOKENIZATION_MARKER,
+};
 
 use crate::AppResult;
-
-const SYNTH_EOS_MARKER: &str = ".llama2_eos_boundaries";
 
 pub(super) fn train_shards() -> AppResult<Vec<PathBuf>> {
     let shards = shards_for_split("train")?
@@ -29,7 +29,7 @@ pub(super) fn first_val_shard() -> AppResult<PathBuf> {
 pub(super) fn ensure_shards() -> AppResult<()> {
     if train_shards().is_ok_and(|shards| shards.len() >= DEFAULT_TRAIN_SHARD_COUNT)
         && first_val_shard().is_ok()
-        && synth_eos_marker().exists()
+        && synth_tokenization_marker().exists()
     {
         return Ok(());
     }
@@ -67,8 +67,8 @@ fn is_full_synth_shard(path: &Path) -> bool {
         .is_ok_and(|metadata| metadata.len() == (SHARD_SIZE * 2) as u64)
 }
 
-fn synth_eos_marker() -> PathBuf {
-    synth_shard_dir().join(SYNTH_EOS_MARKER)
+fn synth_tokenization_marker() -> PathBuf {
+    synth_shard_dir().join(TOKENIZATION_MARKER)
 }
 
 fn clear_shards() -> AppResult<()> {
@@ -78,7 +78,7 @@ fn clear_shards() -> AppResult<()> {
     }
 
     for path in matching_entries(&dir, |file_name| {
-        is_bin_shard(file_name, SHARD_FILE_PREFIX) || file_name == SYNTH_EOS_MARKER
+        is_bin_shard(file_name, SHARD_FILE_PREFIX) || file_name == TOKENIZATION_MARKER
     })? {
         fs::remove_file(path)?;
     }

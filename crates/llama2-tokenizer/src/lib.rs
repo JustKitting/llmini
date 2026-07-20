@@ -6,26 +6,30 @@ use tokenizers::Tokenizer;
 
 pub type AppResult<T> = Result<T, Box<dyn Error>>;
 
-pub const TOKENIZER_NAME: &str = "llama2";
-pub const VOCAB_SIZE: usize = 32_000;
-pub const BOS_TOKEN: u32 = 1;
-pub const EOS_TOKEN: u32 = 2;
+include!(concat!(env!("OUT_DIR"), "/training_tokenizer_config.rs"));
 
-pub struct Llama2Tokenizer {
+// Compatibility name for model code that still refers to the historical
+// package constant. This is the padded model/output vocabulary, not
+// necessarily the number of token IDs emitted by the tokenizer.
+pub const VOCAB_SIZE: usize = MODEL_VOCAB_SIZE;
+
+pub struct TrainingTokenizer {
     tokenizer: Tokenizer,
 }
 
-impl Llama2Tokenizer {
+impl TrainingTokenizer {
     pub fn from_default_assets() -> AppResult<Self> {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/tokenizers/llama2");
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("assets/tokenizers")
+            .join(TOKENIZER_ASSET_SUBDIR);
         Self::from_file(root.join("tokenizer.json"))
     }
 
     pub fn from_file(path: impl AsRef<Path>) -> AppResult<Self> {
         let tokenizer = Tokenizer::from_file(path).map_err(tokenizer_error)?;
-        if tokenizer.get_vocab_size(false) != VOCAB_SIZE {
+        if tokenizer.get_vocab_size(false) != TOKENIZER_VOCAB_SIZE {
             return Err(format!(
-                "Llama 2 tokenizer vocab size is {}, expected {VOCAB_SIZE}",
+                "{TOKENIZER_NAME} tokenizer vocab size is {}, expected {TOKENIZER_VOCAB_SIZE}",
                 tokenizer.get_vocab_size(false)
             )
             .into());
@@ -34,24 +38,28 @@ impl Llama2Tokenizer {
     }
 
     pub fn encode(&self, text: &str) -> AppResult<Vec<u32>> {
-        self.encode_with_special_tokens(text, true)
+        let mut ids = Vec::with_capacity(DOCUMENT_PREFIX.len() + text.len() / 4);
+        ids.extend_from_slice(DOCUMENT_PREFIX);
+        ids.extend(self.encode_ordinary(text)?);
+        Ok(ids)
     }
 
     pub fn encode_ordinary(&self, text: &str) -> AppResult<Vec<u32>> {
-        self.encode_with_special_tokens(text, false)
-    }
-
-    fn encode_with_special_tokens(
-        &self,
-        text: &str,
-        add_special_tokens: bool,
-    ) -> AppResult<Vec<u32>> {
         Ok(self
             .tokenizer
-            .encode(text, add_special_tokens)
+            .encode(text, false)
             .map_err(tokenizer_error)?
             .get_ids()
             .to_vec())
+    }
+
+    pub fn encode_document(&self, text: &str) -> AppResult<Vec<u32>> {
+        let mut ids =
+            Vec::with_capacity(DOCUMENT_PREFIX.len() + text.len() / 4 + DOCUMENT_SUFFIX.len());
+        ids.extend_from_slice(DOCUMENT_PREFIX);
+        ids.extend(self.encode_ordinary(text)?);
+        ids.extend_from_slice(DOCUMENT_SUFFIX);
+        Ok(ids)
     }
 
     pub fn bos_token(&self) -> u32 {
@@ -70,6 +78,8 @@ impl Llama2Tokenizer {
     }
 }
 
+pub type Llama2Tokenizer = TrainingTokenizer;
+
 fn tokenizer_error(error: Box<dyn Error + Send + Sync>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, error.to_string())
 }
@@ -79,19 +89,33 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_assets_encode_like_llama2() -> AppResult<()> {
-        let tokenizer = Llama2Tokenizer::from_default_assets()?;
-        let text = "First Citizen:\nBefore we proceed any further, hear me speak.";
+    fn default_assets_match_selected_tokenizer() -> AppResult<()> {
+        let tokenizer = TrainingTokenizer::from_default_assets()?;
+        match TOKENIZER_NAME {
+            "llama2" => assert_eq!(
+                tokenizer.encode_ordinary(
+                    "First Citizen:\nBefore we proceed any further, hear me speak."
+                )?,
+                [
+                    3824, 21353, 19642, 29901, 13, 18743, 591, 8469, 738, 4340, 29892, 8293, 592,
+                    7726, 29889,
+                ]
+            ),
+            "mistral_v01" => {
+                assert_eq!(
+                    tokenizer.encode_ordinary("Hello, world!")?,
+                    [22557, 28725, 1526, 28808]
+                );
+            }
+            _ => unreachable!(),
+        }
         assert_eq!(
-            tokenizer.encode_ordinary(text)?,
-            [
-                3824, 21353, 19642, 29901, 13, 18743, 591, 8469, 738, 4340, 29892, 8293, 592, 7726,
-                29889,
-            ]
+            &tokenizer.encode("Tokenizer test")?[..DOCUMENT_PREFIX.len()],
+            DOCUMENT_PREFIX
         );
-        assert_eq!(tokenizer.encode(text)?[0], BOS_TOKEN);
-        assert_eq!(tokenizer.bos_token(), BOS_TOKEN);
-        assert_eq!(tokenizer.eos_token(), EOS_TOKEN);
+        let document = tokenizer.encode_document("Tokenizer test")?;
+        assert!(document.starts_with(DOCUMENT_PREFIX));
+        assert!(document.ends_with(DOCUMENT_SUFFIX));
         Ok(())
     }
 }

@@ -81,8 +81,13 @@ impl CudaTrainingStrategy {
         processor.process_train(LearnerEvent::EndEpoch(TRAIN_EPOCH));
         processor.process_valid(LearnerEvent::EndEpoch(TRAIN_EPOCH));
         println!(
-            "heldout_eval split=val val_loss={:.6} train_elapsed_s={:.3} eval_elapsed_s={:.3} completed_steps={completed_steps}",
-            final_eval.val_loss, train_elapsed_s, final_eval.eval_elapsed_s,
+            "heldout_eval split=val val_loss={:.6} val_bits_per_byte={:.6} val_target_tokens={} val_target_bytes={} train_elapsed_s={:.3} eval_elapsed_s={:.3} completed_steps={completed_steps}",
+            final_eval.val_loss,
+            final_eval.val_bits_per_byte,
+            final_eval.target_token_count,
+            final_eval.target_byte_count,
+            train_elapsed_s,
+            final_eval.eval_elapsed_s,
         );
         if let Some(summary) = crate::training::symexp_lin::scale_summary(&trainer)? {
             println!("{summary}");

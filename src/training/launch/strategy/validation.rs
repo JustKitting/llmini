@@ -19,10 +19,17 @@ pub(super) fn process_validation(
     let eval_start = Instant::now();
     trainer.materialize_evaluation_weights()?;
     let val_loss = trainer.eval_loss_windows(&validation.tokens, validation.window_count)?;
+    let target_token_count = validation.window_count * gpt2_nvfp4::GPT2_SEQ_LEN;
+    let val_bits_per_byte = f64::from(val_loss) * target_token_count as f64
+        / validation.target_byte_count as f64
+        / std::f64::consts::LN_2;
     let output = CudaValidOutput {
         val_loss,
+        val_bits_per_byte,
         eval_elapsed_s: eval_start.elapsed().as_secs_f64(),
         window_count: validation.window_count,
+        target_token_count,
+        target_byte_count: validation.target_byte_count,
         completed_steps,
     };
     Ok(process_valid_step(processor, step, output))

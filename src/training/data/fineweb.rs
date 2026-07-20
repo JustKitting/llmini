@@ -14,16 +14,24 @@ pub(super) fn train_shards() -> AppResult<Vec<PathBuf>> {
         .filter(|path| is_full_shard(path))
         .collect::<Vec<_>>();
     if shards.is_empty() {
-        return Err("no full FineWeb Llama-2 train shards found".into());
+        return Err(format!(
+            "no full FineWeb {} train shards found",
+            llama2_tokenizer::TOKENIZER_NAME
+        )
+        .into());
     }
     Ok(shards)
 }
 
 pub(super) fn first_val_shard() -> AppResult<PathBuf> {
-    shards_for_split("val")?
-        .into_iter()
-        .next()
-        .ok_or_else(|| format!("no FineWeb val shards found in {}", shard_dir().display()).into())
+    shards_for_split("val")?.into_iter().next().ok_or_else(|| {
+        format!(
+            "no FineWeb {} val shards found in {}",
+            llama2_tokenizer::TOKENIZER_NAME,
+            shard_dir().display()
+        )
+        .into()
+    })
 }
 
 pub(super) fn ensure_shards() -> AppResult<()> {

@@ -1,6 +1,6 @@
 use cuda_core::DeviceBuffer;
-use gpt2_nvfp4::{GPT2_BATCH_SIZE, GPT2_SEQ_LEN, GPT2_VOCAB_DIM};
-use llama2_tokenizer::Llama2Tokenizer;
+use gpt2_nvfp4::{GPT2_BATCH_SIZE, GPT2_SEQ_LEN};
+use llama2_tokenizer::{TOKENIZER_VOCAB_SIZE, TrainingTokenizer};
 use rust_kernels_cuda::logits::{LOGITS_TOP_K, LogitsTopKArgs};
 
 use super::{TokenBatch, Trainer};
@@ -24,7 +24,7 @@ impl Trainer {
         max_new_tokens: usize,
         config: SamplingConfig,
     ) -> AppResult<String> {
-        let tokenizer = Llama2Tokenizer::from_default_assets()?;
+        let tokenizer = TrainingTokenizer::from_default_assets()?;
         let mut tokens = tokenizer.encode(prompt)?;
         if tokens.is_empty() {
             tokens.push(tokenizer.bos_token());
@@ -48,7 +48,7 @@ impl Trainer {
                 out_tokens: &mut top_tokens_dev,
                 out_values: &mut top_logits_dev,
                 row,
-                vocab_size: GPT2_VOCAB_DIM,
+                vocab_size: TOKENIZER_VOCAB_SIZE as u32,
                 k: top_k as u32,
             })?;
             let top_tokens = top_tokens_dev.to_host_vec(stream.as_ref())?;

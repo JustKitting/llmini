@@ -16,7 +16,7 @@ use super::output::{RunOutput, build_run_info};
 use super::render::{BoxedMetricsRenderer, default_renderer};
 use super::strategy::CudaTrainingStrategy;
 use crate::AppResult;
-use crate::training::data::VALIDATION_WINDOWS;
+use crate::training::data::{VALIDATION_WINDOWS, validation_target_byte_count};
 use crate::training::{TokenDataLoader, debug_metrics};
 
 pub(crate) fn launch_from_env() -> AppResult {
@@ -31,18 +31,26 @@ pub(crate) fn launch_from_env() -> AppResult {
 
     let training_tokens = data.token_count();
     let validation_tokens = data.validation_tokens()?;
+    let validation_target_bytes = validation_target_byte_count(&validation_tokens)?;
 
     run_output.write_info(&build_run_info(&dataset, &config))?;
     println!(
         "training_tokens={} max_seconds={:.3} step_cap={}",
         training_tokens, config.max_seconds, config.step_cap
     );
+    println!(
+        "validation_tokens={} validation_target_bytes={validation_target_bytes}",
+        VALIDATION_WINDOWS * gpt2_nvfp4::GPT2_SEQ_LEN,
+    );
 
     let train_loader: Arc<dyn DataLoader<BurnBackend, CudaTrainInput>> =
         Arc::new(CudaTrainDataLoader::new(data, config.step_cap));
-    let valid_loader: Arc<dyn DataLoader<BurnInnerBackend, CudaValidInput>> = Arc::new(
-        CudaValidDataLoader::new(validation_tokens, VALIDATION_WINDOWS),
-    );
+    let valid_loader: Arc<dyn DataLoader<BurnInnerBackend, CudaValidInput>> =
+        Arc::new(CudaValidDataLoader::new(
+            validation_tokens,
+            VALIDATION_WINDOWS,
+            validation_target_bytes,
+        ));
     let strategy_result = Arc::new(Mutex::new(None));
     let strategy = Arc::new(CudaTrainingStrategy::new(
         dataset,

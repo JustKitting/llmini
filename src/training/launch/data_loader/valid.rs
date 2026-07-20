@@ -9,6 +9,7 @@ use super::super::{BurnInnerBackend, CudaValidInput};
 pub(in crate::training) struct CudaValidationInput {
     pub(in crate::training::launch) tokens: Arc<Vec<u16>>,
     pub(in crate::training::launch) window_count: usize,
+    pub(in crate::training::launch) target_byte_count: usize,
 }
 
 #[derive(Clone)]
@@ -17,11 +18,16 @@ pub(in crate::training::launch) struct CudaValidDataLoader {
 }
 
 impl CudaValidDataLoader {
-    pub(in crate::training::launch) fn new(tokens: Vec<u16>, window_count: usize) -> Self {
+    pub(in crate::training::launch) fn new(
+        tokens: Vec<u16>,
+        window_count: usize,
+        target_byte_count: usize,
+    ) -> Self {
         Self {
             input: CudaValidationInput {
                 tokens: Arc::new(tokens),
                 window_count,
+                target_byte_count,
             },
         }
     }

@@ -2,7 +2,7 @@ use std::fs::File;
 use std::path::Path;
 
 use arrow_array::{Array, LargeStringArray, RecordBatch, StringArray};
-use llama2_tokenizer::Llama2Tokenizer;
+use llama2_tokenizer::TrainingTokenizer;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
 use super::AppResult;
@@ -11,7 +11,7 @@ use super::tokenize::tokenize_doc;
 
 pub fn tokenize_parquet_file(
     path: &Path,
-    tokenizer: &Llama2Tokenizer,
+    tokenizer: &TrainingTokenizer,
     writer: &mut ShardWriter,
 ) -> AppResult<()> {
     let file = File::open(path)?;
@@ -32,7 +32,7 @@ pub fn tokenize_parquet_file(
 
 fn tokenize_synth_batch(
     batch: &RecordBatch,
-    tokenizer: &Llama2Tokenizer,
+    tokenizer: &TrainingTokenizer,
     writer: &mut ShardWriter,
 ) -> AppResult<()> {
     let sections = [

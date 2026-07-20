@@ -13,7 +13,26 @@ pub(in crate::training::launch) fn build_run_info(dataset: &str, config: &TrainC
     push_info(&mut info, "training_launcher", "burn");
     push_info(&mut info, "metric_logger", "burn_file");
     push_info(&mut info, "tokenizer", llama2_tokenizer::TOKENIZER_NAME);
-    push_info(&mut info, "vocab_size", llama2_tokenizer::VOCAB_SIZE);
+    push_info(
+        &mut info,
+        "tokenizer_vocab_size",
+        llama2_tokenizer::TOKENIZER_VOCAB_SIZE,
+    );
+    push_info(
+        &mut info,
+        "model_vocab_size",
+        llama2_tokenizer::MODEL_VOCAB_SIZE,
+    );
+    push_info(
+        &mut info,
+        "unused_model_vocab_rows",
+        llama2_tokenizer::MODEL_VOCAB_SIZE - llama2_tokenizer::TOKENIZER_VOCAB_SIZE,
+    );
+    push_info(
+        &mut info,
+        "document_boundaries",
+        llama2_tokenizer::DOCUMENT_BOUNDARIES,
+    );
     push_info(&mut info, "gpt2_seq_len", GPT2_SEQ_LEN);
     push_info(&mut info, "gpt2_batch_size", GPT2_BATCH_SIZE);
     push_info(&mut info, "gpt2_token_rows", GPT2_TOKEN_ROWS);

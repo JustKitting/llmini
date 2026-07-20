@@ -9,7 +9,7 @@ mod synth;
 mod tokens;
 mod validation;
 
-pub(in crate::training) use validation::VALIDATION_WINDOWS;
+pub(in crate::training) use validation::{VALIDATION_WINDOWS, validation_target_byte_count};
 
 pub struct TokenDataLoader {
     path: PathBuf,

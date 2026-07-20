@@ -1,22 +1,20 @@
-use llama2_tokenizer::Llama2Tokenizer;
+use llama2_tokenizer::TrainingTokenizer;
 
 use super::AppResult;
 use super::shards::ShardWriter;
 
 pub fn tokenize_doc(
     text: &str,
-    tokenizer: &Llama2Tokenizer,
+    tokenizer: &TrainingTokenizer,
     writer: &mut ShardWriter,
-) -> AppResult<()> {
-    let mut ids = Vec::with_capacity(2 + text.len() / 4);
-    ids.push(tokenizer.bos_token());
-    ids.extend(tokenizer.encode_ordinary(text)?);
-    ids.push(tokenizer.eos_token());
+) -> AppResult<usize> {
+    let ids = tokenizer.encode_document(text)?;
+    let token_count = ids.len();
 
     for id in ids {
         let token = u16::try_from(id)?;
         writer.push(token)?;
     }
 
-    Ok(())
+    Ok(token_count)
 }
