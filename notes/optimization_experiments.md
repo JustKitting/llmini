@@ -53,6 +53,96 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 
 ```text
 date: 2026-07-20
+commit: note-only rejection; all query-position temperature kernel, host,
+  test, environment, and metadata source removed before the clean
+  accepted-source rebuild
+experiment: fixed position-aware query temperature from Selective
+  Self-Attention (SSA), arXiv:2411.12892
+status: rejected_decisive_450s_tail_regression_after_matched_step_admission
+sources:
+  https://arxiv.org/abs/2411.12892
+  https://github.com/umich-sota/selective_attention
+research_scope:
+  SSA's final architecture applies token-aware and position-aware scalar
+  temperatures to queries and values. This experiment isolated the paper's
+  independently positive position-aware query ablation. The official GPT-2
+  pretraining implementation scales each causal query row by
+    1 + exp(-exp(beta)) * ln(n)
+  with beta initialized to 1.5. The resulting fixed coefficient
+  0.011314286380 was tested first; a narrow 0.5x/2x bracket was then resolved
+  before the sustained gate. This does not test or reject SSA's full
+  token-aware Q+V architecture.
+model_integrity:
+  The candidate retained the complete B4/S2048/L16/d2048/h32 model, all four
+  full-attention and twelve KDA blocks, every MLP, value-residual, NextLat,
+  embedding, and head path, the Mistral v0.1 tokenizer, FineWeb stream, and
+  approximately 1B parameter sizing. The temperature applied only to the four
+  softmax-attention blocks because the paper's multiplicative inverse
+  temperature is defined for softmax attention; no KDA block was removed or
+  bypassed.
+implementation:
+  The existing fused Q/K RMS-normalization gather multiplied each normalized
+  full-attention query by
+    1 + coefficient * ln(min(query_position + 1, attention_window)).
+  Using the actually visible causal length makes the paper's prefix-length
+  term consistent with this model's 1024-token sliding full-attention window.
+  The full-attention backward applied the exact chain rule to both the raw
+  query gradient and the learned QK-scale gradient. Coefficient zero provided
+  a same-binary parent control. No extra kernel launch, parameter, model
+  state, or activation buffer was introduced.
+correctness:
+  cargo fmt --all, cargo check --workspace, and git diff --check passed.
+  Exact candidate rebuild:
+    TMPDIR=$PWD/target/tmp TOKENIZER_VARIANT=mistral_v01 \
+      cargo oxide build --arch sm_120a
+  A focused generated-PTX GPU test passed the learned QK-scale finite
+  difference with the nonzero position coefficient, covering the modified
+  forward query scale and both backward chain-rule factors.
+30_second_health:
+  Candidate target/runs/20260720_104016Z_fineweb_30s:
+    85 updates, 30.231s, held-out CE 6.117568, BPB 2.084138, per-step
+    logging, finite, and no reported instability.
+exact_200_step_admission:
+  Paper-initialized candidate target/runs/20260720_104104Z_fineweb_180s:
+    200 updates, 71.959s, held-out CE 5.584464, BPB 1.902520.
+  Same-binary coefficient-zero control
+    target/runs/20260720_104228Z_fineweb_180s:
+    200 updates, 72.322s, held-out CE 5.602240, BPB 1.908576.
+  Candidate held-out CE was 0.3173% better and elapsed time was 0.5019%
+  lower. It won 125 of 151 samples from steps 50-200; mean loss was 0.2568%
+  better over steps 50-200 and 0.3730% better over steps 100-200. Both runs
+  had zero non-finite, grad-norm, loss-spike, and skipped-update counters.
+  This credible loss-by-step gain admitted the candidate to tuning and the
+  sustained gate.
+coefficient_resolution:
+  Half coefficient target/runs/20260720_104610Z_fineweb_180s:
+    200 updates, 72.416s, held-out CE 5.605052.
+  Double coefficient target/runs/20260720_104435Z_fineweb_180s:
+    200 updates, 72.136s, held-out CE 5.599535.
+  The official 1x initialization was decisively best among coefficient zero,
+  0.5x, 1x, and 2x, so it advanced unchanged.
+promotion_gate:
+  Candidate target/runs/20260720_104813Z_fineweb_450s:
+    1243 updates, 450.285s, held-out CE 4.369621,
+    BPB 1.488646, all stability counters clean.
+  Accepted Mistral baseline target/runs/20260720_081648Z_fineweb_450s:
+    1229 updates, 450.240s, held-out CE 4.317791938781738,
+    BPB 1.4709888296318596, all stability counters clean.
+  Candidate completed 1.1391% more updates and its observed time per update
+  was 1.1164% lower, but held-out CE and BPB were 1.2004% worse. The common
+  training trace rules out a single unlucky endpoint: candidate mean loss was
+  1.458% worse from steps 200-1200 and it lost 20 of 21 checkpoints. From
+  steps 600-1200 it was 1.668% worse and lost all 13 checkpoints.
+decision:
+  Reject the fixed position-aware query-temperature ablation. Its genuine
+  early matched-step gain reversed consistently after step 300 and became a
+  sustained late-training regression, so the faster observed cadence cannot
+  rescue fixed-time quality. Do not promote its source or coefficient. This
+  result does not reject the paper's full token-aware query-and-value method.
+```
+
+```text
+date: 2026-07-20
 commit: note-only rejection; all Cautious Muon kernel, host, metadata, and
   focused-test source removed before the clean accepted-source rebuild
 experiment: Cautious Muon from Cautious Optimizers
