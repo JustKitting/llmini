@@ -53,6 +53,127 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 
 ```text
 date: 2026-07-20
+commit: note-only rejection; all mHC-lite architecture, optimizer-state,
+  checkpoint, kernel, test, and metadata source removed before the clean
+  accepted-source rebuild
+experiment: exact four-stream mHC-lite residual architecture
+status: rejected_after_same_step_admission_and_large_optimization_pass; no_450s
+sources:
+  https://arxiv.org/abs/2601.05732
+  https://github.com/FFTYYY/mhc-lite
+  inspected official repository commit:
+    ea197752957e520063ae0e26a88c8061834c67fa
+research_scope:
+  mHC-lite replaces each ordinary residual branch with four persistent
+  residual streams. A normalized concatenation of those streams drives one
+  learned dynamic projection. Four sigmoid pre-branch coefficients select the
+  branch input, a softmax mixture over all 24 four-stream permutation matrices
+  gives a doubly stochastic residual mixing matrix, and four depth
+  coefficients inject the branch output. The official code trains under
+  bfloat16 autocast, uses RMSNorm in its mHC-lite implementation, and wraps
+  both attention and MLP residual branches.
+model_integrity:
+  The candidate retained the complete B4/S2048/L16/d2048/h32 model, all four
+  full-attention and twelve KDA blocks, every MLP and block-Top-K route,
+  value-residual, NextLat, embedding, and head path, the Mistral v0.1
+  tokenizer, FineWeb stream, and approximately 1B base-model sizing. It added
+  8,652,288 trainable parameters rather than deleting or bypassing existing
+  sections.
+implementation:
+  TRAIN_MHC_LITE=1 created four 2048-feature residual streams and wrapped both
+  attention and MLP in every one of the 16 blocks, for 32 mHC-lite modules.
+  Each module used RMSNorm across the complete 8192-feature stream state and
+  one 8192-by-32 NVFP4 dynamic projection for the four pre coefficients, 24
+  permutation logits, and four post coefficients. Static biases and the
+  official 0.01 dynamic scales reproduced the reference initialization.
+  Expand copied the embedding state into four streams; final reduction
+  averaged the streams. Complete analytical backward, Adam/AMUSE state for the
+  dynamic and control parameters, evaluation materialization, grad clipping,
+  checkpoint save/load, and run metadata were implemented.
+correctness:
+  Every executable state used the exact required rebuild:
+    TMPDIR=$PWD/target/tmp TOKENIZER_VARIANT=mistral_v01 \
+      cargo oxide build --arch sm_120a
+  The generated-PTX GPU reference covered expand/reduce, RMSNorm, coefficient
+  construction, forward pre/post routing, all coefficient and direct-stream
+  gradients, normalization backward, and control-parameter gradients.
+  The optimized 128-row padded TMA linear-backward path matched the established
+  projection kernel using identical quantized operands. Both fused
+  normalization-to-NVFP4 paths reproduced the former inverse RMS, row amax,
+  saved FP16 tape, NVFP4 scale bytes, and NVFP4 payload bytes exactly.
+initial_30_second_health:
+  The correctness-first candidate launched, remained finite, and produced
+  regular high-fidelity metrics. This health run was not used to reject a
+  structural implementation on fixed-time loss.
+exact_200_step_admission:
+  Candidate target/runs/20260720_115509Z_fineweb_240s:
+    200 updates, 109.385s, held-out CE 5.582269.
+  Matched disabled control target/runs/20260720_115713Z_fineweb_240s:
+    200 updates, 72.269s, held-out CE 5.598059.
+  The candidate's held-out CE was 0.282062% lower at identical optimizer
+  exposure. Its 51.3581% elapsed-time cost could not reject the structural
+  signal under the project rules, so the implementation advanced to extensive
+  profiling and optimization rather than directly to a 450-second gate.
+optimization_due_diligence:
+  Profiles began with
+    target/nsys/mhc_lite_unoptimized_200screen.nsys-rep.
+  The retained optimization work:
+    - fused the direct hyper-state gradient into the coefficient-gradient
+      pass, loading each four-stream input and output gradient once;
+    - fused gamma-gradient accumulation with the RMSNorm input-gradient pass
+      using 32-feature by 256-token tiles;
+    - used feature-major four-stream forward-post output;
+    - padded the 32-wide dynamic backward K dimension and dweight row count to
+      128 so both GEMMs use the exact SM120 TMA kernel, then copied only the
+      logical 32-row dweight prefix;
+    - fused backward reconstruction of normalized FP16 tape directly into
+      rowwise NVFP4 quantization, eliminating a 67-million-element FP32
+      materialization per module;
+    - fused forward RMSNorm directly into rowwise NVFP4 quantization,
+      eliminating the corresponding normalized FP32 materialization while
+      preserving all forward and backward values exactly.
+  The optimized profiles were:
+    target/nsys/mhc_lite_opt7_tma_both_10step.nsys-rep
+    target/nsys/mhc_lite_opt8_fused_reconstruct_quant_10step.nsys-rep
+  A clean ten-step diagnostic improved from 4.937s after the padded-TMA pass
+  to 4.723s after backward fusion and 4.609s after forward fusion. Relative to
+  the correctness-first 200-step average, the final 30-second cadence was
+  approximately 15.86% faster per update. The remaining dominant mHC work was
+  real four-stream routing and gradient traffic, not removable temporary
+  materialization.
+optimized_30_second_fixed_time_resolution:
+  Final candidate target/runs/20260720_124833Z_fineweb_30s:
+    66 updates, 30.373s, held-out CE 6.222920, BPB 2.120030,
+    TRAIN_LOG_INTERVAL=1, finite, and no reported instability.
+  Active accepted baseline target/runs/20260719_220730Z_fineweb_30s:
+    85 updates, 30.140s, held-out CE 5.966660.
+  The optimized candidate completed 22.3529% fewer updates and its held-out CE
+  was 4.2949% worse. Its observed 0.460197s/update remained 27.3567% slower
+  than the matched disabled control's 0.361345s/update. Recovering baseline
+  exposure would require another 28.7879% candidate throughput increase after
+  the large exact fusion pass.
+clean_parent_restore:
+  After removing all candidate source, the accepted parent was exactly rebuilt
+  and rerun at high logging fidelity:
+    target/runs/20260720_125211Z_fineweb_30s
+    85 updates, 30.278s, held-out CE 6.122289, BPB 2.085746,
+    finite, and no reported instability.
+  This fresh endpoint was noisier than the recorded active baseline, but the
+  candidate was still 1.6437% worse while completing 19 fewer updates. The
+  rejection therefore does not depend on the unusually favorable historical
+  baseline endpoint.
+decision:
+  Reject four-stream mHC-lite for this fixed-time single-GPU objective. It
+  produced a real but small same-step improvement, and therefore received the
+  required substantial implementation optimization, but the irreducible
+  four-stream traffic still overwhelms that convergence gain. Do not spend a
+  450-second gate on a candidate already 4.29% worse at the fixed-time health
+  endpoint. This rejects the method for the present budget and architecture;
+  it does not dispute the paper's long-horizon convergence results.
+```
+
+```text
+date: 2026-07-20
 commit: note-only rejection; all query-position temperature kernel, host,
   test, environment, and metadata source removed before the clean
   accepted-source rebuild
