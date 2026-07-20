@@ -53,6 +53,98 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 
 ```text
 date: 2026-07-20
+commit: note-only rejection; all Muon^p source, environment, and metadata
+  hooks removed before the clean parent rebuild
+experiment: Muon to Muon^p late-pretraining curriculum with the paper's
+  p=1/3 cubic spectral-power recurrence for the final 500 updates.
+status: rejected_matched_step_tail_curve; no_profile; no_450s
+sources:
+  https://arxiv.org/abs/2606.13867
+  https://github.com/ZIB-IOL/muon-p
+  inspected official repository commit:
+    cad26da1bbbcacf1a684ba7f4da7d1566b840d35
+rationale:
+  Muon^p reports that using fractional spectral powers from initialization is
+  worse than Muon for pretraining, but switching from Muon to p=1/3 for the
+  final 500 steps produces an immediate validation-loss drop across model
+  scales. This directly targets the desired late-training loss reduction
+  without resetting momentum or changing the intact model.
+scope_and_mapping:
+  FineWeb/Llama-2, B4/S2048, d2048, 32 heads, all 16 blocks, all twelve KDA
+  and four full-attention paths, every MLP, value residual, headwise gate,
+  Selective Attention, NextLat, Ember, SymExpLin, Hyperball/Muon-VS, objective,
+  tokenizer, and parameter count remained unchanged and trainable.
+  The local compatibility mapping preserved the accepted two-polar/one-sign
+  cadence and changed only existing polar steps after the switch. Hyperball
+  and NorMuon remained the outer update geometry. Hyperball already fixes
+  global update norm, so the paper's plain-Muon RMS graft would have
+  double-normalized this composition and was not added.
+implementation:
+  TRAIN_MUONP selected the fractional backend at
+  TRAIN_MUONP_START_STEP. For each normalized momentum matrix X, the
+  orientation scratch preserved fixed X while Y started at X and ran the
+  paper's six p=1/3 iterations with c=0.66:
+    Y <- Y - 0.66 * (Y Y^T Y - X).
+  The NVFP4 TMA implementation used two matrix multiplications per iteration,
+  ping-ponged the existing polar buffers, and recomputed each next-Y amax.
+  It allocated no new matrix-sized device buffer.
+correctness_and_health:
+  cargo fmt --all and cargo check --release passed.
+  Host optimizer tests passed.
+  The required exact rebuild passed:
+    TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a.
+  Forced-active two-step trace
+    target/runs/20260720_024759Z_fineweb_60s
+  completed all six iterations on two updates. Prepared X, every YY^T,
+  YY^T Y, and next-Y sample was finite and nonzero. This was diagnostic
+  evidence only.
+  The 30-second health run
+    target/runs/20260720_024822Z_fineweb_30s
+  switched at step 40, completed 85 updates in 30.409s, and remained finite
+  at held-out val_loss=6.044814. This endpoint was not used to accept or
+  reject the curriculum.
+fixed_1235_step_resolution:
+  The decisive pair used the same freshly rebuilt binary, default seed,
+  FineWeb order, tokenizer, intact model, objective, and 25-step logging.
+  It ran concurrently on the two identical RTX PRO 6000 Blackwell GPUs:
+    control TRAIN_MUONP=0,
+      target/runs/20260720_024944Z_fineweb_600s:
+      1235 completed steps, held-out val_loss=4.202157,
+      elapsed=450.355s.
+    candidate TRAIN_MUONP=1 TRAIN_MUONP_START_STEP=736,
+      target/runs/20260720_024953Z_fineweb_600s:
+      1235 completed steps, held-out val_loss=4.285172,
+      elapsed=476.669s.
+  Thus the candidate's same-step held-out loss was 1.975533% worse. Both runs
+  had the same single grad-norm-spike skip at logged step 350, well before
+  the switch, and zero non-finite or loss-spike skips.
+  Separate-device numerical drift was visible before activation, so the
+  transition-local curve was also measured. Over steps 650, 675, 700, and
+  725, candidate mean training loss was 4.542284966 versus 4.519134164,
+  0.512284% worse. Once p=1/3 activated, the candidate was worse at every
+  logged checkpoint from 750 through 1234. The complete post-switch sampled
+  mean was 4.325260140 versus 4.230908541, 2.230055% worse. The immediate and
+  sustained increase beyond the quantified pre-switch drift is the rejection
+  basis, not the shared skipped update or unequal device timing.
+decision:
+  Reject this Muon-to-Muon^1/3 final-500 compatibility curriculum. It produces
+  the opposite of the paper's late loss drop on the accepted
+  Hyperball/Muon-VS/NorMuon composition and supplies no same-step quality
+  signal for a fusion/profile pass. Do not spend a 450-second promotion gate.
+  A future test would need a materially different, paper-justified mapping,
+  such as replacing the entire tail optimizer cadence rather than retesting
+  this same polar-only composition.
+revert:
+  All candidate source and environment/metadata hooks were removed. The
+  accepted parent then passed the exact sm_120a rebuild. Post-restore
+    target/runs/20260720_030133Z_fineweb_60s
+  completed one real update and held-out evaluation with finite
+  val_loss=9.594816. This confirms only that the restored binary launches; it
+  is not selection or promotion evidence.
+```
+
+```text
+date: 2026-07-20
 commit: note-only rejection; all SpanNorm kernels, graph branches,
   initialization switches, environment flags, and metadata removed before the
   clean parent rebuild
