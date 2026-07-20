@@ -44,6 +44,7 @@ pub struct AttentionForwardArgs<'a, 'scratch> {
     pub qkv: &'scratch mut DeviceBuffer<f32>,
     pub value_residual: &'scratch mut DeviceBuffer<f32>,
     pub attention_log_sum_exp: &'scratch mut DeviceBuffer<f32>,
+    pub input_prequantized: bool,
     pub hidden: HiddenStateDevice<'a>,
     pub tape: Option<AttentionForwardTape<'scratch>>,
 }

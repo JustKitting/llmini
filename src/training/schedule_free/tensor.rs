@@ -1,17 +1,21 @@
 use cuda_core::{CudaStream, DeviceBuffer, DriverError};
+use rust_kernels_cuda::f32_matrix_ops::{F32Linear2Args, F32MatrixOpsModule};
 use rust_kernels_cuda::optimizer::{
     OptimizerModule, ScheduleFreeMaterializeArgs, ScheduleFreeMaterializePrecomputedArgs,
     SymExpLinScaleRefs,
 };
 
-use crate::upload::UploadedNvfp4;
+use crate::upload::{UploadedCanon, UploadedNvfp4};
 
 use super::super::optimizer::OptimizerScratch;
-use super::super::optimizer_state::{AdamState, MuonState, SymExpLinState, TokenEmbeddingState};
+use super::super::optimizer_state::{
+    AdamState, Fp32AdamState, MuonState, SymExpLinState, TokenEmbeddingState,
+};
 
 pub(super) struct Materializer<'a> {
     stream: &'a CudaStream,
     optimizer: &'a OptimizerModule,
+    f32_ops: &'a F32MatrixOpsModule,
     scratch: &'a mut OptimizerScratch,
     beta: f32,
     symexp_lin_beta: f32,
@@ -21,6 +25,7 @@ impl<'a> Materializer<'a> {
     pub(super) fn new(
         stream: &'a CudaStream,
         optimizer: &'a OptimizerModule,
+        f32_ops: &'a F32MatrixOpsModule,
         scratch: &'a mut OptimizerScratch,
         beta: f32,
         symexp_lin_beta: f32,
@@ -28,10 +33,33 @@ impl<'a> Materializer<'a> {
         Self {
             stream,
             optimizer,
+            f32_ops,
             scratch,
             beta,
             symexp_lin_beta,
         }
+    }
+
+    pub(super) fn fp32_adam(
+        &self,
+        tensor: &mut UploadedCanon,
+        state: &Fp32AdamState,
+    ) -> Result<(), DriverError> {
+        self.fp32_linear(
+            tensor,
+            &state.z_master,
+            &state.x_master,
+            1.0 - self.beta,
+            self.beta,
+        )
+    }
+
+    pub(super) fn fp32_master(
+        &self,
+        tensor: &mut UploadedCanon,
+        master: &DeviceBuffer<f32>,
+    ) -> Result<(), DriverError> {
+        self.fp32_linear(tensor, master, master, 1.0, 0.0)
     }
 
     pub(super) fn adam(
@@ -194,6 +222,26 @@ impl<'a> Materializer<'a> {
                 symexp_lin_beta,
                 symexp_lin_scales,
             })
+    }
+
+    fn fp32_linear(
+        &self,
+        tensor: &mut UploadedCanon,
+        a: &DeviceBuffer<f32>,
+        b: &DeviceBuffer<f32>,
+        a_scale: f32,
+        b_scale: f32,
+    ) -> Result<(), DriverError> {
+        let len = tensor.weight.len() as u32;
+        self.f32_ops.linear2(F32Linear2Args {
+            stream: self.stream,
+            a,
+            b,
+            out: &mut tensor.weight,
+            len,
+            a_scale,
+            b_scale,
+        })
     }
 
     fn scale_refs(state: &SymExpLinState) -> Option<SymExpLinScaleRefs<'_>> {

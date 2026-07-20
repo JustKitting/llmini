@@ -5,6 +5,8 @@ pub const GPT2_TOKEN_ROWS: usize = GPT2_BATCH_SIZE * GPT2_SEQ_LEN;
 pub const GPT2_CONTEXT_LEN: usize = GPT2_SEQ_LEN;
 
 pub const GPT2_LAYER_NORM_EPSILON: f32 = 1.0e-5;
+pub const GPT2_CANON_KERNEL_SIZE: usize = 4;
+pub const GPT2_CANON_WEIGHT_COUNT: usize = GPT2_N_EMBD * GPT2_CANON_KERNEL_SIZE;
 
 pub const GPT2_MLP: usize = 4 * GPT2_N_EMBD;
 pub const GPT2_MLP_ROUTE_TILE: usize = 128;
@@ -145,6 +147,10 @@ pub fn stable_mask_gamma() -> f32 {
         "TRAIN_STABLE_MASK_GAMMA must be finite and positive"
     );
     gamma
+}
+
+pub fn canon_ac_enabled() -> bool {
+    env_bool("TRAIN_CANON_AC", true)
 }
 
 pub fn uses_exclusive_self_attention(use_full_attention: bool) -> bool {

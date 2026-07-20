@@ -1,5 +1,6 @@
 use cuda_core::{CudaStream, DeviceBuffer};
 use rust_kernels_cuda::attention::AttentionModule;
+use rust_kernels_cuda::canon::CanonModule;
 use rust_kernels_cuda::f16_tc_matmul::F16TcMatmulModule;
 use rust_kernels_cuda::layer_norm_backward::LayerNormBackwardModule;
 use rust_kernels_cuda::residual::ResidualBackwardModule;
@@ -10,13 +11,16 @@ use crate::backward::{
     AttentionBackwardModules, AttentionBackwardSeeds, AttentionCProjScratch, AttentionCoreScratch,
     AttentionQkvScratch,
 };
-use crate::types::{AttentionProjectionTensors, BlockBackwardGrads, BlockForwardSaved};
+use crate::types::{
+    AttentionProjectionTensors, BlockBackwardGrads, BlockForwardSaved, CanonTensors,
+};
 
 #[derive(Clone, Copy)]
 pub struct BlockAttentionBackwardModules<'a> {
     pub residual: &'a ResidualBackwardModule,
     pub layer_norm: &'a LayerNormBackwardModule,
     pub attention: &'a AttentionModule,
+    pub canon: &'a CanonModule,
     pub f16_tc: &'a F16TcMatmulModule,
     pub linear: AttentionBackwardModules<'a>,
 }
@@ -60,6 +64,7 @@ pub struct BlockAttentionBackwardArgs<'a, 'scratch, 'out> {
     pub modules: BlockAttentionBackwardModules<'a>,
     pub saved: BlockForwardSaved<'a>,
     pub ln_1: LayerNormTensors<'a>,
+    pub canon_a: CanonTensors<'a>,
     pub projections: AttentionProjectionTensors<'a>,
     pub d_residual_after_attention: &'scratch DeviceBuffer<f32>,
     pub precomputed_d_residual_after_attention_amax_chunks: Option<u32>,

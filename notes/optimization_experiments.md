@@ -53,6 +53,148 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 
 ```text
 date: 2026-07-20
+commit: accepted source candidate; promoted after matched-step admission,
+  schedule-free audit/correction, implementation profiling/optimization, and
+  the required corrected 450-second gate
+experiment: Canon-AC residual causal convolutions after the attention and MLP
+  pre-normalizations
+status: accepted_450s; active_baseline
+sources:
+  https://arxiv.org/abs/2512.17351
+  https://physics.allen-zhu.com/part-4-architecture-design/part-4-2
+  https://github.com/facebookresearch/PhysicsLM4
+research_scope:
+  Canon layers add a learned per-channel, depthwise, causal four-tap
+  convolution as a residual transformation of the token sequence:
+    y_t = x_t + sum_{lag=0..3} w_lag * x_(t-lag).
+  The paper's controlled 1B/3B/8B pretraining comparisons consistently
+  improve likelihood, and its Canon-AC ablation is the smallest reported
+  placement that modifies both transformer branches. This experiment used
+  exactly A after the attention pre-norm and C after the MLP pre-norm. It did
+  not implement the more expensive B/D projection-internal placements.
+model_integrity:
+  The complete FineWeb/Mistral-v0.1 B4/S2048/L16/d2048/h32 model remained
+  active: all four softmax-attention and twelve KDA blocks, every MLP and
+  block-TopK route, value residual, NextLat, embedding/head, objective, and
+  accepted optimizer path were preserved. Canon adds 262144 trainable FP32
+  values, taking the model from 964376964 to 964639108 effective parameters
+  and from 984572160 to 984834304 allocated parameter slots. No section was
+  removed, bypassed, frozen, or reweighted.
+implementation:
+  TRAIN_CANON_AC controls the path and defaults to enabled. Each of the 16
+  blocks owns independent A and C four-tap weights initialized with the exact
+  Conv1d fan-in-4 default U[-0.5, 0.5]. Sequence boundaries are causal and
+  zero-padded independently for every one of the four batch sequences.
+  The retained forward kernel computes one complete FP32 Canon row in shared
+  memory, derives its row amax, and writes the exact established four-six
+  rowwise NVFP4 representation directly. QKV and MLP-up consume that
+  prequantized tensor, so Canon adds no global FP32 activation and does not
+  launch a second quantizer. Analytical reverse mode fuses the future-gradient
+  convolution for dinput with the four tap gradients.
+  Canon uses independent FP32 schedule-free Adam z_master, x_master, first,
+  and second buffers. Training materializes z + beta * (x - z), evaluation
+  materializes x, and the optimizer updates x; this matches the existing
+  schedule-free semantics rather than treating the averaged evaluation weight
+  as the training weight. Tap gradients participate in global clipping.
+  Weights appear in run metadata and are retained exactly in checkpoints.
+  Pre-Canon checkpoints load zero taps, preserving their former model function.
+audit_correction:
+  A pre-promotion audit found that the first Canon implementation updated
+  schedule-free x but accidentally materialized x for training instead of
+  z + beta * (x - z). Therefore every earlier Canon quality artifact from
+  target/runs/20260720_134903Z_fineweb_30s through
+  target/runs/20260720_141543Z_fineweb_30s, including the former
+  target/runs/20260720_140604Z_fineweb_450s baseline, is invalidated and is
+  not used for acceptance. It provided only the signal to correct, optimize,
+  and rerun the candidate. All acceptance evidence below uses corrected
+  schedule-free materialization.
+correctness:
+  Exact candidate rebuild:
+    TMPDIR=$PWD/target/tmp TOKENIZER_VARIANT=mistral_v01 \
+      cargo oxide build --arch sm_120a
+  Focused generated-PTX test canon_forward_and_backward_match_reference
+  passed at the production width d=2048. It independently checks two sequence
+  boundaries, FP32 forward values, all input gradients, and every tap gradient
+  reconstructed from the saved FP16 pre-norm residual plus NVFP4 norm
+  parameters. It also compares the fused forward/quantized output against an
+  independent Canon-forward then rowwise-quantize sequence: row amax and
+  global scales match exactly, and all packed FP4 values and four-six scale
+  bytes match byte-for-byte.
+  A model-only checkpoint was saved by
+  target/runs/20260720_145828Z_fineweb_120s and loaded by
+  target/runs/20260720_145840Z_fineweb_120s; the loaded model completed a
+  forward, backward, update, and held-out evaluation.
+  cargo fmt --all --check, git diff --check, cargo check --workspace, and
+  cargo test --workspace --lib all passed on the retained source.
+corrected_health_screen:
+  Candidate target/runs/20260720_142129Z_fineweb_30s and disabled same-binary
+  control target/runs/20260720_142207Z_fineweb_30s each completed 84 updates:
+    held-out CE: 6.114911 versus 6.114037.
+    elapsed:     30.192s versus 30.070s.
+  The fixed-time endpoint was effectively tied. Over the final 24 matched
+  training steps, Canon won 16 and reduced mean loss by 0.25229%. Both runs
+  were finite/nonzero with every skip counter zero, so the health screen
+  justified resolving the same-step signal at longer exact exposure.
+profile_and_optimization:
+  The original derivative-oriented tap-gradient kernel cost 420.792ms over
+  20 steps. Reorienting around source rows, partitioning the row reduction 16
+  ways, and fusing dinput reduced the complete retained backward family to
+  75.141ms over 20 steps.
+  The corrected pre-forward-fusion profile
+    target/nsys/canon_ac_corrected_candidate_20.nsys-rep
+  measured 7515.384ms total GPU-kernel time versus 7430.558ms for
+    target/nsys/canon_ac_corrected_control_20.nsys-rep,
+  an 84.826ms/20-step or 4.241ms/step overhead.
+  Final profiles:
+    target/nsys/canon_ac_fused_forward_candidate_20.nsys-rep
+    target/nsys/canon_ac_fused_forward_control_20.nsys-rep
+  measured 7413.343455ms versus 7346.276945ms total GPU-kernel time. Fusing
+  Canon with rowwise NVFP4 removed all 672 redundant quantizer launches and
+  reduced paired overhead to 67.066510ms/20 steps, 3.353326ms/step or 0.913%
+  of control GPU time. This is a quality candidate with added model math; no
+  claim that its remaining cost is below the 0.5% speed-work threshold is
+  made.
+corrected_matched_step_confirmation:
+  Final fused candidate target/runs/20260720_144619Z_fineweb_120s and disabled
+  control target/runs/20260720_144744Z_fineweb_120s each completed exactly
+  201 updates:
+    held-out CE:  5.549180 versus 5.573582, 0.437815% lower.
+    held-out BPB: 1.890499 versus 1.898812, 0.437800% lower.
+    elapsed:      72.459s versus 72.380s, 0.109146% slower.
+  Canon won 149/201 paired training losses. It won 50/50 at steps 100-149
+  with mean relative loss 0.439048% lower and 49/51 at steps 150-200 with
+  mean relative loss 0.467985% lower. Both runs logged all 201 samples as
+  finite/nonzero with zero skipped updates or spike guards.
+promotion_gate:
+  Corrected fused candidate target/runs/20260720_144949Z_fineweb_450s:
+    1230 updates, 450.178s, held-out CE 4.260629177093506,
+    BPB 1.4515145740154525, TRAIN_LOG_INTERVAL=1.
+  Active StableMask baseline target/runs/20260720_131543Z_fineweb_450s:
+    1246 updates, 450.322s, held-out CE 4.308202266693115,
+    BPB 1.4677218124336717.
+  Canon completed 1.284109% fewer updates and took 1.268420% more time per
+  step, yet improved fixed-time held-out CE and BPB by 1.104245%.
+  Every candidate sample was finite/nonzero, with zero non-finite skips. Canon
+  had seven grad-spike guards, two loss-spike guards, and eight skipped updates
+  versus eight, two, and nine in the baseline. Seven of Canon's eight skipped
+  steps were shared with the baseline, consistent with the existing
+  data-dependent guard pattern rather than a new numerical instability.
+final_default_check:
+  With TRAIN_CANON_AC unset, final-source run
+    target/runs/20260720_145924Z_fineweb_30s
+  reported canon_ac_enabled=true and completed 83 updates in 30.007s with
+  held-out CE 6.117346, BPB 2.084062, all 83 high-fidelity samples
+  finite/nonzero, and every skip counter zero.
+decision:
+  Accept exact Canon-AC and enable it by default. It preserves and slightly
+  enlarges the intact approximately 1B model, survives the schedule-free
+  implementation audit, reproduces a persistent corrected same-step
+  convergence gain after material kernel optimization, and lowers the
+  mandatory fixed-time held-out endpoint by 1.104245% despite fewer updates.
+```
+
+```text
+date: 2026-07-20
 commit: accepted source candidate; promoted after the required 30-second
   matched-step screen and 450-second held-out gate
 experiment: StableMask causal attention with analytically summed future
@@ -125,8 +267,9 @@ gamma_resolution:
 promotion_gate:
   Candidate target/runs/20260720_131543Z_fineweb_450s:
     1246 updates, 450.322s, held-out CE 4.308202266693115,
-    BPB 1.4677218124336717, TRAIN_LOG_INTERVAL=1, finite, and every skip
-    counter zero.
+    BPB 1.4677218124336717, TRAIN_LOG_INTERVAL=1, all samples finite/nonzero,
+    eight grad-spike guards, two loss-spike guards, nine skipped updates, and
+    zero non-finite skips.
   Accepted Mistral baseline target/runs/20260720_081648Z_fineweb_450s:
     1229 updates, 450.240s, held-out CE 4.317791938781738,
     BPB 1.4709888296318596, finite, and every skip counter zero.

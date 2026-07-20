@@ -8,6 +8,8 @@ pub mod atomic;
 pub mod attention;
 #[path = "utils/block_reduce.rs"]
 pub(crate) mod block_reduce;
+#[path = "gpt/canon.rs"]
+pub mod canon;
 #[path = "utils/device_ptr.rs"]
 pub(crate) mod device_ptr;
 #[path = "gpt/embedding.rs"]
@@ -79,8 +81,8 @@ pub mod warp_reduce;
 
 pub mod gpt {
     pub use crate::{
-        attention, embedding, layer_norm, layer_norm_backward, linear_backward, lm_head, logits,
-        loss, mlp, next_latent, optimizer, projection_postop, residual,
+        attention, canon, embedding, layer_norm, layer_norm_backward, linear_backward, lm_head,
+        logits, loss, mlp, next_latent, optimizer, projection_postop, residual,
     };
 }
 

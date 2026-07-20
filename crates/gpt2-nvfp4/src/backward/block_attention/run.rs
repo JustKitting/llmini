@@ -4,6 +4,7 @@ use rust_kernels_cuda::attention::{
     FinishValueResidualGradArgs, HeadwiseAttentionGateBackwardArgs,
     InitializeValueResidualGradArgs,
 };
+use rust_kernels_cuda::canon::CanonBackwardArgs;
 
 use super::types::BlockAttentionBackwardArgs;
 use crate::backward::{
@@ -29,6 +30,7 @@ pub fn attention_side_backward(
         modules,
         saved,
         ln_1,
+        canon_a,
         projections,
         d_residual_after_attention,
         precomputed_d_residual_after_attention_amax_chunks,
@@ -44,6 +46,7 @@ pub fn attention_side_backward(
     } = args;
     let BlockBackwardGrads {
         ln_1: mut ln_1_grads,
+        d_canon_a_weight,
         d_attn_qkv_weight,
         d_attn_qkv_bias,
         d_attn_qk_scale,
@@ -213,6 +216,27 @@ pub fn attention_side_backward(
         scratch: scratch.qkv,
         seeds: seeds.qkv,
     })?;
+    let d_ln_1_normalized = if crate::canon_ac_enabled() {
+        modules.canon.backward(CanonBackwardArgs {
+            stream,
+            residual_f16: saved.ln_1.residual,
+            mean: saved.ln_1.mean,
+            inv_std: saved.ln_1.inv_std,
+            norm_weight: ln_1.weight,
+            norm_bias: ln_1.bias,
+            canon_weight: canon_a.weight,
+            d_output: &*d_hidden,
+            d_input: &mut *d_qkv,
+            d_weight: d_canon_a_weight,
+            row_count: saved.row_count,
+            seq_len: saved.seq_len,
+            width: crate::GPT2_EMBEDDING_DIM,
+            norm_output_scale: crate::layer_norm_scale(block_index),
+        })?;
+        &*d_qkv
+    } else {
+        &*d_hidden
+    };
     if block_index == 0 {
         layer_norm_backward_add(Gpt2LayerNormBackwardAddArgs {
             stream,
@@ -220,7 +244,7 @@ pub fn attention_side_backward(
             weights: ln_1,
             saved: saved.ln_1,
             grads: ln_1_grads.reborrow(),
-            d_normalized: &*d_hidden,
+            d_normalized: d_ln_1_normalized,
             direct: d_residual_after_attention,
             d_residual: d_residual_in,
             output_scale: crate::layer_norm_scale(block_index),
@@ -233,7 +257,7 @@ pub fn attention_side_backward(
             weights: ln_1,
             saved: saved.ln_1,
             grads: ln_1_grads.reborrow(),
-            d_normalized: &*d_hidden,
+            d_normalized: d_ln_1_normalized,
             direct: d_residual_after_attention,
             d_residual: d_residual_in,
             chunk_amax: d_residual_in_chunk_amax,

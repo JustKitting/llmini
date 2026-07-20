@@ -95,6 +95,7 @@ fn run_block<'a, 'scratch, 'out>(
         modules: modules.mlp,
         saved: saved.blocks[block_index],
         ln_2: weights.block_ln_2[block_index],
+        canon_c: weights.block_canon_c[block_index],
         mlp_projections: weights.mlp[block_index],
         d_residual_out: &*d_residual,
         precomputed_d_residual_amax_chunks,
@@ -114,6 +115,7 @@ fn run_block<'a, 'scratch, 'out>(
         modules: modules.attention,
         saved: saved.blocks[block_index],
         ln_1: weights.block_ln_1[block_index],
+        canon_a: weights.block_canon_a[block_index],
         projections: weights.attention[block_index],
         d_residual_after_attention: &*d_residual_after_attention,
         precomputed_d_residual_after_attention_amax_chunks: Some(

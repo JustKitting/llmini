@@ -7,14 +7,18 @@ use rust_kernels_cuda::nvfp4::Nvfp4DeviceTensor;
 
 use crate::AppResult;
 
-use super::{UploadedLayerNorm, UploadedLinear, UploadedNvfp4, tensor::upload_nvfp4};
+use super::{
+    UploadedCanon, UploadedLayerNorm, UploadedLinear, UploadedNvfp4, tensor::upload_nvfp4,
+};
 
 pub struct UploadedBlock {
     pub ln_1: UploadedLayerNorm,
+    pub canon_a: UploadedCanon,
     pub attn_qkv: UploadedLinear,
     pub attn_qk_scale: UploadedNvfp4,
     pub attn_c_proj: UploadedLinear,
     pub ln_2: UploadedLayerNorm,
+    pub canon_c: UploadedCanon,
     pub mlp_up: UploadedLinear,
     pub mlp_down: UploadedLinear,
 }
@@ -23,10 +27,12 @@ impl UploadedBlock {
     pub(in crate::upload) fn new(stream: &CudaStream, block: &Gpt2BlockWeights) -> AppResult<Self> {
         Ok(Self {
             ln_1: UploadedLayerNorm::from_layer_norm(stream, &block.ln_1)?,
+            canon_a: UploadedCanon::new(stream, &block.canon_a)?,
             attn_qkv: UploadedLinear::from_linear(stream, &block.attn.c_attn)?,
             attn_qk_scale: upload_nvfp4(stream, &block.attn.qk_scale)?,
             attn_c_proj: UploadedLinear::from_linear(stream, &block.attn.c_proj)?,
             ln_2: UploadedLayerNorm::from_layer_norm(stream, &block.ln_2)?,
+            canon_c: UploadedCanon::new(stream, &block.canon_c)?,
             mlp_up: UploadedLinear::from_linear(stream, &block.mlp.c_fc)?,
             mlp_down: UploadedLinear::from_linear(stream, &block.mlp.c_proj)?,
         })

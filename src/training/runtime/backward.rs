@@ -27,12 +27,14 @@ impl Runtime {
                 residual: &self.residual,
                 layer_norm: &self.layer_norm_backward,
                 attention: &self.attention,
+                canon: &self.canon,
                 f16_tc: &self.f16_tc_matmul,
                 linear,
             },
             mlp: BlockMlpBackwardModules {
                 residual: &self.residual,
                 layer_norm: &self.layer_norm_backward,
+                canon: &self.canon,
                 mlp: MlpBackwardModules {
                     transpose: &self.transpose,
                     decode: &self.decode,

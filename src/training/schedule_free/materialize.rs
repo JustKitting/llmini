@@ -21,8 +21,14 @@ pub(in crate::training) fn materialize_training_weights(
     let symexp_lin_beta = super::super::symexp_lin::beta();
     let reuse_muon_amax = state.next_step() > 1
         && (symexp_lin_beta == 0.0 || super::super::symexp_lin::reuse_precomputed_amax());
-    let mut materializer =
-        Materializer::new(stream, &runtime.optimizer, scratch, beta, symexp_lin_beta);
+    let mut materializer = Materializer::new(
+        stream,
+        &runtime.optimizer,
+        &runtime.f32_ops,
+        scratch,
+        beta,
+        symexp_lin_beta,
+    );
 
     materializer.token_embedding(&mut uploaded.token_embedding, &state.token_embedding)?;
     if gpt2_nvfp4::exclusive_self_attention_enabled() {
@@ -66,6 +72,7 @@ pub(in crate::training) fn materialize_evaluation_weights(
     let mut materializer = Materializer::new(
         stream,
         &runtime.optimizer,
+        &runtime.f32_ops,
         scratch,
         0.0,
         super::super::symexp_lin::beta(),
@@ -132,6 +139,9 @@ fn materialize_block(
     reuse_muon_amax: bool,
 ) -> Result<(), DriverError> {
     materialize_layer_norm(materializer, &mut block.ln_1, &state.ln_1)?;
+    if gpt2_nvfp4::canon_ac_enabled() {
+        materializer.fp32_adam(&mut block.canon_a, &state.canon_a)?;
+    }
     materialize_linear(
         materializer,
         &mut block.attn_qkv,
@@ -148,6 +158,9 @@ fn materialize_block(
         reuse_muon_amax,
     )?;
     materialize_layer_norm(materializer, &mut block.ln_2, &state.ln_2)?;
+    if gpt2_nvfp4::canon_ac_enabled() {
+        materializer.fp32_adam(&mut block.canon_c, &state.canon_c)?;
+    }
     materialize_linear(
         materializer,
         &mut block.mlp_up,
@@ -211,12 +224,18 @@ fn materialize_evaluation_block(
     state: &BlockState,
 ) -> Result<(), DriverError> {
     materialize_evaluation_layer_norm(materializer, &mut block.ln_1, &state.ln_1)?;
+    if gpt2_nvfp4::canon_ac_enabled() {
+        materializer.fp32_master(&mut block.canon_a, &state.canon_a.x_master)?;
+    }
     materialize_evaluation_linear(materializer, &mut block.attn_qkv, &state.attn_qkv)?;
     if gpt2_nvfp4::uses_full_attention(block_index) {
         materializer.master(&mut block.attn_qk_scale, &state.attn_qk_scale.x_master)?;
     }
     materialize_evaluation_linear(materializer, &mut block.attn_c_proj, &state.attn_c_proj)?;
     materialize_evaluation_layer_norm(materializer, &mut block.ln_2, &state.ln_2)?;
+    if gpt2_nvfp4::canon_ac_enabled() {
+        materializer.fp32_master(&mut block.canon_c, &state.canon_c.x_master)?;
+    }
     materialize_evaluation_linear(materializer, &mut block.mlp_up, &state.mlp_up)?;
     materialize_evaluation_linear(materializer, &mut block.mlp_down, &state.mlp_down)
 }

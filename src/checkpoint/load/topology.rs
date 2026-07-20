@@ -3,10 +3,13 @@ use std::collections::HashMap;
 use cuda_core::CudaStream;
 use gpt2_nvfp4::{GPT2_N_LAYER, GPT2_XSA_ALPHA_STORAGE};
 
-use super::{super::format::CheckpointTensor, tensor::take_uploaded};
+use super::{
+    super::format::CheckpointTensor,
+    tensor::{take_uploaded, take_uploaded_fp32},
+};
 use crate::{
     AppResult,
-    upload::{UploadedBlock, UploadedModel, UploadedNextLat, UploadedPair},
+    upload::{UploadedBlock, UploadedCanon, UploadedModel, UploadedNextLat, UploadedPair},
 };
 
 pub(super) fn load_model(
@@ -48,6 +51,7 @@ fn load_blocks(
     for index in 0..GPT2_N_LAYER {
         blocks.push(UploadedBlock {
             ln_1: load_pair(stream, tensors, &format!("blocks.{index}.ln_1"))?,
+            canon_a: take_canon(stream, tensors, &format!("blocks.{index}.canon_a.weight"))?,
             attn_qkv: load_pair(stream, tensors, &format!("blocks.{index}.attn_qkv"))?,
             attn_qk_scale: take_uploaded(
                 stream,
@@ -56,11 +60,24 @@ fn load_blocks(
             )?,
             attn_c_proj: load_pair(stream, tensors, &format!("blocks.{index}.attn_c_proj"))?,
             ln_2: load_pair(stream, tensors, &format!("blocks.{index}.ln_2"))?,
+            canon_c: take_canon(stream, tensors, &format!("blocks.{index}.canon_c.weight"))?,
             mlp_up: load_pair(stream, tensors, &format!("blocks.{index}.mlp_up"))?,
             mlp_down: load_pair(stream, tensors, &format!("blocks.{index}.mlp_down"))?,
         });
     }
     Ok(blocks)
+}
+
+fn take_canon(
+    stream: &CudaStream,
+    tensors: &mut HashMap<String, CheckpointTensor>,
+    name: &str,
+) -> AppResult<UploadedCanon> {
+    if tensors.contains_key(name) {
+        take_uploaded_fp32(stream, tensors, name)
+    } else {
+        UploadedCanon::zero(stream)
+    }
 }
 
 fn load_pair(

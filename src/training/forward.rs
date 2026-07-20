@@ -28,6 +28,7 @@ impl Trainer {
                 inv_std: &mut buffers.inv_std,
             },
             attention_module: &self.runtime.attention,
+            canon_module: &self.runtime.canon,
             attention_tc_module: &self.runtime.f16_tc_matmul,
             quant_module: &self.runtime.quant,
             layer_norm_module: &self.runtime.layer_norm,
@@ -51,7 +52,9 @@ impl Trainer {
                 )
             }),
             block_ln_1: std::array::from_fn(|i| uploaded.blocks[i].ln_1.tensors()),
+            block_canon_a: std::array::from_fn(|i| uploaded.blocks[i].canon_a.tensors()),
             block_ln_2: std::array::from_fn(|i| uploaded.blocks[i].ln_2.tensors()),
+            block_canon_c: std::array::from_fn(|i| uploaded.blocks[i].canon_c.tensors()),
             mlp: std::array::from_fn(|i| uploaded.blocks[i].mlp_tensors()),
             ln_f: uploaded.ln_f.tensors(),
             attention_qkv: &mut buffers.qkv,

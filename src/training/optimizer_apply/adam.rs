@@ -1,7 +1,7 @@
 mod config;
 
 use cuda_core::{CudaStream, DeviceBuffer, DriverError};
-use rust_kernels_cuda::optimizer::{AdamWUpdateArgs, OptimizerModule};
+use rust_kernels_cuda::optimizer::{AdamWUpdateArgs, Fp32AdamWUpdateArgs, OptimizerModule};
 
 use crate::upload::UploadedNvfp4;
 
@@ -12,7 +12,7 @@ pub(super) use config::{
 };
 
 use super::super::optimizer::OptimizerScratch;
-use super::super::optimizer_state::AdamState;
+use super::super::optimizer_state::{AdamState, Fp32AdamState};
 use super::timed_ms;
 
 pub(super) struct AdamUpdate<'a, 'scratch> {
@@ -124,5 +124,33 @@ impl<'a, 'scratch> AdamUpdate<'a, 'scratch> {
         weight_decay: f32,
     ) -> Result<f64, DriverError> {
         timed_ms(|| self.update_with_weight_decay(tensor, grad, state, weight_decay))
+    }
+
+    pub(super) fn update_fp32_timed(
+        &mut self,
+        grad: &DeviceBuffer<f32>,
+        state: &mut Fp32AdamState,
+    ) -> Result<f64, DriverError> {
+        timed_ms(|| {
+            let len = state.x_master.len() as u32;
+            self.optimizer.apply_fp32_adamw_update(Fp32AdamWUpdateArgs {
+                stream: self.stream,
+                z_master: &mut state.z_master,
+                x_master: &mut state.x_master,
+                grad,
+                grad_scale: self.grad_scale,
+                first_moment: &mut state.first,
+                second_moment: &mut state.second,
+                len,
+                learning_rate: self.learning_rate,
+                weight_decay: ADAM_WEIGHT_DECAY,
+                beta1: ADAM_BETA1,
+                beta2: ADAM_BETA2,
+                beta1_correction: 1.0 - ADAM_BETA1.powi(self.step as i32),
+                beta2_correction: 1.0 - ADAM_BETA2.powi(self.step as i32),
+                eps: ADAM_EPS,
+                average_coefficient: self.average_coefficient,
+            })
+        })
     }
 }

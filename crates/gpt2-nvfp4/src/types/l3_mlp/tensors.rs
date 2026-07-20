@@ -51,6 +51,7 @@ pub struct MlpForwardArgs<'a, 'scratch> {
     pub quant_module: &'a Nvfp4QuantModule,
     pub scratch: MlpScratch<'scratch>,
     pub projections: MlpProjectionTensors<'a>,
+    pub input_prequantized: bool,
     pub hidden: HiddenStateDevice<'a>,
     pub tape: Option<MlpForwardTape<'scratch>>,
 }

@@ -1,4 +1,4 @@
-use gpt2_nvfp4::{GPT2_MLP, GPT2_N_EMBD, GPT2_QK_SCALE_STORAGE, GPT2_QKV};
+use gpt2_nvfp4::{GPT2_CANON_WEIGHT_COUNT, GPT2_MLP, GPT2_N_EMBD, GPT2_QK_SCALE_STORAGE, GPT2_QKV};
 
 use crate::training::grad_block::BlockGradBuffers;
 
@@ -11,8 +11,30 @@ pub(super) fn push_block_views<'a>(
 ) {
     let prefix = format!("blocks.{block_index}");
     push_layer_norm_views(rows, &format!("{prefix}.ln_1"), &block.ln_1);
+    if gpt2_nvfp4::canon_ac_enabled() {
+        push_prefixed_views(
+            rows,
+            &prefix,
+            &[(
+                "canon_a.weight",
+                &block.d_canon_a_weight,
+                GPT2_CANON_WEIGHT_COUNT,
+            )],
+        );
+    }
     push_attention_views(rows, &prefix, block_index, block);
     push_layer_norm_views(rows, &format!("{prefix}.ln_2"), &block.ln_2);
+    if gpt2_nvfp4::canon_ac_enabled() {
+        push_prefixed_views(
+            rows,
+            &prefix,
+            &[(
+                "canon_c.weight",
+                &block.d_canon_c_weight,
+                GPT2_CANON_WEIGHT_COUNT,
+            )],
+        );
+    }
     push_mlp_views(rows, &prefix, block);
 }
 

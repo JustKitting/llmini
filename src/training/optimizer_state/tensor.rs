@@ -4,7 +4,10 @@ use rust_kernels_cuda::nvfp4::Nvfp4DecodeModule;
 use rust_kernels_cuda::optimizer::{OptimizerModule, ember_column_partial_len};
 
 use super::device::{clone_device, decode_master};
-use crate::{training::device_buffer::zero, upload::UploadedNvfp4};
+use crate::{
+    training::device_buffer::zero,
+    upload::{UploadedCanon, UploadedNvfp4},
+};
 
 #[derive(Clone, Copy)]
 pub(super) struct StateInit<'a> {
@@ -35,6 +38,24 @@ pub(in crate::training) struct AdamState {
     pub(in crate::training) x_master: DeviceBuffer<f32>,
     pub(in crate::training) first: DeviceBuffer<f32>,
     pub(in crate::training) second: DeviceBuffer<f32>,
+}
+
+pub(in crate::training) struct Fp32AdamState {
+    pub(in crate::training) z_master: DeviceBuffer<f32>,
+    pub(in crate::training) x_master: DeviceBuffer<f32>,
+    pub(in crate::training) first: DeviceBuffer<f32>,
+    pub(in crate::training) second: DeviceBuffer<f32>,
+}
+
+impl Fp32AdamState {
+    pub(super) fn new(init: StateInit<'_>, tensor: &UploadedCanon) -> Result<Self, DriverError> {
+        Ok(Self {
+            z_master: clone_device(init.stream, &tensor.weight)?,
+            x_master: clone_device(init.stream, &tensor.weight)?,
+            first: zero(init.stream, tensor.weight.len())?,
+            second: zero(init.stream, tensor.weight.len())?,
+        })
+    }
 }
 
 impl AdamState {

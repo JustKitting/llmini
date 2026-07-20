@@ -165,6 +165,11 @@ pub(in crate::training::launch) fn build_run_info(dataset: &str, config: &TrainC
         "stable_mask_gamma",
         gpt2_nvfp4::stable_mask_gamma(),
     );
+    push_info(
+        &mut info,
+        "canon_ac_enabled",
+        gpt2_nvfp4::canon_ac_enabled(),
+    );
     push_info(&mut info, "step_cap", config.step_cap);
     push_info(&mut info, "log_interval", config.log_interval);
     push_info(&mut info, "max_seconds", config.max_seconds);
@@ -217,6 +222,7 @@ fn push_run_env(info: &mut String) {
         "TRAIN_XSA_KDA",
         "TRAIN_PARTIAL_KEY_OFFSET",
         "TRAIN_SELECTIVE_ATTENTION",
+        "TRAIN_CANON_AC",
         "TRAIN_NEXTLAT_LOSS_WEIGHT",
         "TRAIN_SKIP_UNSTABLE_UPDATES",
         "TRAIN_SKIP_ROLLING_INTERVAL",

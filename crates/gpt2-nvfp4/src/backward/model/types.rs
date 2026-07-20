@@ -8,8 +8,8 @@ use crate::backward::{
     FinalHeadBackwardSeeds, MlpBackwardScratch, MlpBackwardSeeds,
 };
 use crate::types::{
-    AttentionProjectionTensors, Gpt2BackwardGrads, Gpt2ForwardSaved, LayerNormTensors,
-    MlpProjectionTensors,
+    AttentionProjectionTensors, CanonTensors, Gpt2BackwardGrads, Gpt2ForwardSaved,
+    LayerNormTensors, MlpProjectionTensors,
 };
 use crate::{GPT2_N_LAYER, Gpt2Rng};
 
@@ -27,7 +27,9 @@ pub struct Gpt2BackwardWeights<'a> {
     pub lm_head_weight: Nvfp4DeviceTensor<'a>,
     pub ln_f: LayerNormTensors<'a>,
     pub block_ln_1: [LayerNormTensors<'a>; GPT2_N_LAYER],
+    pub block_canon_a: [CanonTensors<'a>; GPT2_N_LAYER],
     pub block_ln_2: [LayerNormTensors<'a>; GPT2_N_LAYER],
+    pub block_canon_c: [CanonTensors<'a>; GPT2_N_LAYER],
     pub attention: [AttentionProjectionTensors<'a>; GPT2_N_LAYER],
     pub mlp: [MlpProjectionTensors<'a>; GPT2_N_LAYER],
 }

@@ -60,6 +60,9 @@ pub(super) fn update_block(
     trace: &mut OptimizerTrace,
 ) -> Result<(), DriverError> {
     trace.adam_ms += update_layer_norm_timed(adam, &mut block.ln_1, &grad.ln_1, &mut state.ln_1)?;
+    if gpt2_nvfp4::canon_ac_enabled() {
+        trace.adam_ms += adam.update_fp32_timed(&grad.d_canon_a_weight, &mut state.canon_a)?;
+    }
     trace.adam_ms += adam.update_timed(
         &mut block.attn_qkv.bias,
         &grad.d_attn_qkv_bias,
@@ -78,6 +81,9 @@ pub(super) fn update_block(
         &mut state.attn_c_proj.bias,
     )?;
     trace.adam_ms += update_layer_norm_timed(adam, &mut block.ln_2, &grad.ln_2, &mut state.ln_2)?;
+    if gpt2_nvfp4::canon_ac_enabled() {
+        trace.adam_ms += adam.update_fp32_timed(&grad.d_canon_c_weight, &mut state.canon_c)?;
+    }
     trace.adam_ms += adam.update_timed(
         &mut block.mlp_up.bias,
         &grad.d_mlp_c_fc_bias,

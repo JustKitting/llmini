@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use cuda_core::{CudaContext, CudaStream};
 use rust_kernels_cuda::attention::AttentionModule;
+use rust_kernels_cuda::canon::CanonModule;
 use rust_kernels_cuda::embedding::EmbeddingModule;
 use rust_kernels_cuda::f16_tc_matmul::F16TcMatmulModule;
 use rust_kernels_cuda::f32_matrix_ops::F32MatrixOpsModule;
@@ -31,6 +32,7 @@ pub struct Runtime {
     pub stream: Arc<CudaStream>,
     pub embedding: EmbeddingModule,
     pub attention: AttentionModule,
+    pub canon: CanonModule,
     pub f16_tc_matmul: F16TcMatmulModule,
     pub f32_ops: F32MatrixOpsModule,
     pub quant: Nvfp4QuantModule,
@@ -60,6 +62,7 @@ impl Runtime {
             stream,
             embedding: EmbeddingModule::from_module(ptx.clone())?,
             attention: AttentionModule::from_module(ptx.clone())?,
+            canon: CanonModule::from_module(ptx.clone())?,
             f16_tc_matmul: F16TcMatmulModule::from_module(ptx.clone())?,
             f32_ops: F32MatrixOpsModule::from_module(ptx.clone())?,
             quant: Nvfp4QuantModule::from_module(ptx.clone())?,

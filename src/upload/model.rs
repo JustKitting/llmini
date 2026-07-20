@@ -35,7 +35,9 @@ impl UploadedModel {
             lm_head_weight: self.token_embedding.device(),
             ln_f: self.ln_f.tensors(),
             block_ln_1: std::array::from_fn(|i| self.blocks[i].ln_1.tensors()),
+            block_canon_a: std::array::from_fn(|i| self.blocks[i].canon_a.tensors()),
             block_ln_2: std::array::from_fn(|i| self.blocks[i].ln_2.tensors()),
+            block_canon_c: std::array::from_fn(|i| self.blocks[i].canon_c.tensors()),
             attention: std::array::from_fn(|i| {
                 self.blocks[i].attention_tensors(
                     self.xsa_alphas.device(),

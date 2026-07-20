@@ -50,6 +50,18 @@ fn write_block(
         ("mlp_down", &block.mlp_down),
     ];
     write_pairs(writer, stream, &prefix, pairs)?;
+    tensor::write_fp32(
+        writer,
+        stream,
+        &format!("{prefix}.canon_a.weight"),
+        &block.canon_a,
+    )?;
+    tensor::write_fp32(
+        writer,
+        stream,
+        &format!("{prefix}.canon_c.weight"),
+        &block.canon_c,
+    )?;
     tensor::write(
         writer,
         stream,

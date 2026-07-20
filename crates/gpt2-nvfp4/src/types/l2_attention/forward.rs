@@ -23,8 +23,11 @@ pub(super) fn forward<'a, 'scratch>(
     let dims = AttentionDims::new(args.use_full_attention);
     let hidden = args.hidden;
 
-    let input =
-        input_nvfp4.quantize_hidden_precomputed(args.quant_module, &hidden, dims.embedding_dim)?;
+    let input = if args.input_prequantized {
+        input_nvfp4.device()
+    } else {
+        input_nvfp4.quantize_hidden_precomputed(args.quant_module, &hidden, dims.embedding_dim)?
+    };
     if let Some(tape) = tape.as_mut() {
         tape.save_qkv_input(hidden.stream, input)?;
     }
