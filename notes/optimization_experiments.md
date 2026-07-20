@@ -53,6 +53,96 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 
 ```text
 date: 2026-07-20
+commit: note-only rejection; all GradPower kernel, host, environment, metadata,
+  and temporary test hooks removed before the clean parent rebuild
+experiment: GradPower/MuonPower elementwise signed-gradient powers p=1.1,
+  p=1.2, and p=1.4 before the accepted mixed Muon/Adam optimizer stack.
+status: rejected_fixed_step_curve; no_profile; no_450s
+sources:
+  https://arxiv.org/abs/2505.24275
+  ICML 2026 paper version 4
+rationale:
+  GradPower applies phi_p(g)=sign(g)*abs(g)^p after global clipping and before
+  the base optimizer. The paper reports lower terminal loss across dense and
+  MoE language models and directly reports that MuonPower p=1.2 beats tuned
+  Muon without changing its other hyperparameters. It also finds that the
+  optimal p decreases as batch size increases. The paper-default p=1.2 was
+  tested first; because the local batch is only four sequences versus the
+  paper's default 512, its tested p=1.4 was the justified high-noise follow-up.
+  After both were negative, p=1.1 resolved whether a useful interval existed
+  between identity and p=1.2.
+model_integrity:
+  FineWeb/Llama-2, B4/S2048, 8192 tokens per training iteration, d2048,
+  32 heads, all 16 blocks, all twelve KDA and four full-attention paths, every
+  MLP, value residual, headwise gate, Selective Attention, NextLat, Ember,
+  SymExpLin, Hyperball/Muon-VS, objective, tokenizer, parameter count, and
+  trainability remained unchanged. No model section was removed, resized,
+  frozen, bypassed, or reweighted.
+implementation:
+  TRAIN_GRAD_POWER enabled an in-place CUDA pass after the existing global
+  clip norm and skip decision and before optimizer state updates. It applied
+  the clipped signed power to every ordinary parameter-gradient buffer and to
+  the 67 matrices' learned SymExpLin scalar gradients, then passed unit
+  gradient scale to all downstream Adam, Ember, SymExpLin, and Muon paths.
+  The generated sm_120a device code used lg2.approx plus ex2.approx for
+  abs(g)^p, preserved exact signed zero, and left the disabled path's gradient
+  math unchanged.
+correctness_and_health:
+  The exact candidate rebuild passed:
+    TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a.
+  A dedicated generated-PTX CUDA target passed three tests covering the
+  existing global clip, clipping-before-power ordering, signed values, and
+  p=1.2 agreement with host powf from magnitudes 1e-8 through 16 at a
+  2e-5 relative tolerance. The temporary test target was removed with the
+  rejected source.
+  Same-seed, same-GPU, per-step-logged 30-second runs were health checks only:
+    control target/runs/20260720_031000Z_fineweb_30s:
+      85 finite updates, no skips, val_loss=5.959742, elapsed=30.227s.
+    p=1.2 target/runs/20260720_031036Z_fineweb_30s:
+      83 finite updates, no skips, val_loss=6.000279, elapsed=30.243s.
+  The unequal-step endpoints were not used to judge convergence.
+fixed_200_iteration_resolution:
+  All runs used the same freshly rebuilt binary, GPU 0, seed, FineWeb order,
+  tokenizer, intact model, objective, optimizer hyperparameters, and
+  TRAIN_LOG_INTERVAL=1:
+    identity control target/runs/20260720_031132Z_fineweb_300s:
+      200 updates, held-out val_loss=5.481231, elapsed=72.175s, no skips.
+    p=1.1 target/runs/20260720_031823Z_fineweb_300s:
+      200 updates, held-out val_loss=5.486513, 0.096365% worse;
+      elapsed=73.388s, 1.680637% slower, no skips.
+    p=1.2 target/runs/20260720_031253Z_fineweb_300s:
+      200 training iterations and 199 weight updates because one grad-norm
+      spike was skipped at sample 72; held-out val_loss=5.499587,
+      0.334888% worse; elapsed=73.725s, 2.147558% slower.
+    p=1.4 target/runs/20260720_031644Z_fineweb_300s:
+      200 updates, held-out val_loss=5.577140, 1.749771% worse;
+      elapsed=72.678s, 0.696917% slower, no skips.
+  All logged losses and gradient norms were finite. Relative to control, mean
+  training loss over all 200 samples was 0.346127% worse for p=1.1,
+  0.920020% worse for p=1.2, and 2.200005% worse for p=1.4. For p=1.1 the
+  25-sample-window deficits after the first window were +0.123%, +0.515%,
+  +0.673%, +0.606%, +0.387%, +0.337%, and +0.232%; it was lower on only
+  11 of those 175 samples. For p=1.4 it was above control on every sample
+  after step 25. The monotonic degradation from identity through p=1.4 is the
+  rejection basis, not the isolated p=1.2 skipped update.
+decision:
+  Reject GradPower on the accepted optimizer composition. Neither the paper
+  default, the paper-motivated smaller-batch exponent, nor the boundary point
+  produced a same-update loss improvement. The unfused pass therefore earns
+  neither implementation optimization nor a 450-second promotion gate.
+  Do not retest tiny exponents approaching p=1 without a materially different
+  paper-backed integration or optimizer composition; the measured trend
+  converges to the existing identity control from the wrong side.
+revert:
+  All candidate source and flags were removed. The accepted parent then passed
+    TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a.
+  Post-restore target/runs/20260720_032155Z_fineweb_60s completed one real
+  update and held-out evaluation with finite val_loss=9.595677. This confirms
+  only that the restored binary launches; it is not selection evidence.
+```
+
+```text
+date: 2026-07-20
 commit: note-only rejection; all Muon^p source, environment, and metadata
   hooks removed before the clean parent rebuild
 experiment: Muon to Muon^p late-pretraining curriculum with the paper's
