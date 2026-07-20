@@ -35127,3 +35127,86 @@ sources:
   https://huggingface.co/blog/microsoft/diff-attn-v2
   https://github.com/microsoft/unilm/blob/master/Diff-Transformer/Diff-Transformer-V2/multihead_flashdiffv2.py
 ```
+
+```text
+date: 2026-07-20
+commit: rejected working change after 3ec8c340
+experiment: SATFormer per-token, per-KV-head selective access to first-layer values.
+status: rejected_at_matched_step_screen
+research_basis:
+  SATFormer replaces a static ResFormer value-residual coefficient with a
+  context-dependent per-token, per-KV-head gate:
+    alpha_n = ReLU(W_alpha,n * normalized_hidden_n)
+    V'_n = V_n + alpha_n * V_1.
+  The paper reports better validation loss than ResFormer from 130M through
+  1.3B while retaining similar throughput. The official implementation applies
+  the gate after the first layer, uses a bias-free linear projection and ReLU,
+  and retains the raw first-layer value tensor as the shared source.
+model_integrity:
+  Preserved B4/S2048/L16/d2048/h32, all 16 blocks, all 12 KDA blocks, all four
+  global-attention blocks, complete MLPs, Canon-AC, XSA, StableMask, selective
+  attention, NextLat, and the accepted optimizer. The candidate replaced the
+  existing static last-six-layer value mix with selective access in every
+  layer after block zero; no layer or model pathway was deleted.
+implementation:
+  Fused each layer's bias-free SAT gate into otherwise unused aligned QKV rows
+  for both KDA and global attention. Added exact forward and reverse kernels:
+  the reverse leaves the current-layer dV unchanged, accumulates
+  alpha*dV into dV_1, and computes the ReLU-gated dot-product gradient for the
+  gate projection. Added explicit zeroing for the fused projection's bias rows
+  so they remain mathematically bias-free. The candidate used the local fused
+  QKV row initializer rather than PyTorch's exact continuous Kaiming-uniform
+  draw; its scale remains fan-in-safe but this screen does not isolate
+  initializer effects.
+correctness:
+  cargo fmt --all: pass.
+  cargo check --workspace: pass.
+  git diff --check: pass.
+  Required rebuild passed:
+    TMPDIR=$PWD/target/tmp TOKENIZER_VARIANT=mistral_v01
+      cargo oxide build --arch sm_120a
+  Focused generated-PTX GPU test passed for forward mixing, the ReLU dead zone,
+  gate gradients, accumulated first-value gradients, finish accumulation, and
+  bias-row clearing.
+  The broad block_attention_backward fixture remains stale on the accepted
+  parent because it still refers to removed Canon fields; it was not used as
+  evidence for or against this candidate.
+health_screen:
+  Exact candidate:
+    target/runs/20260720_171604Z_fineweb_60s
+    completed_steps=166, train_elapsed_s=60.285, val_loss=5.676152,
+    val_bits_per_byte=1.933756.
+  All 166 high-fidelity samples had Finite=1 and Nonzero=1. Update_skipped,
+  Skip_non_finite, Skip_loss_spike, and Skip_grad_norm_spike were zero at every
+  sample. This run was accidentally allowed 60 seconds because
+  TRAIN_MAX_STEPS is not the repository's step-cap variable; TRAIN_STEPS is.
+  It remained a valid launch/health run and established the exact matched-step
+  depth for the clean control.
+matched_step_resolution:
+  Fresh parent 3ec8c340 was rebuilt in an isolated clean worktree and capped
+  with TRAIN_STEPS=166:
+    target/runs/20260720_173953Z_fineweb_120s
+    completed_steps=166, train_elapsed_s=59.759, val_loss=5.671452,
+    val_bits_per_byte=1.932155.
+  Candidate versus matched control held-out CE was 5.676152 versus 5.671452:
+  0.0829% worse. Mean train CE across the same 166 batches was 6.422945290
+  versus 6.416729269: 0.0969% worse. Equal-depth training time was 0.88% worse.
+decision:
+  Reject before implementation optimization and before the 450-second gate.
+  The candidate was stable, but it supplied no loss-per-step improvement and
+  also reduced throughput, so it does not satisfy the agreed structural
+  candidate condition. This result rejects this exact integration under the
+  current short-budget optimizer and architecture; it does not contradict the
+  paper's long-token AdamW result or isolate the initializer difference.
+  Remove all candidate source, rebuild the accepted parent, and continue the
+  loss-focused research search.
+post_restore:
+  All candidate source and test changes were removed. The required
+  Mistral/sm_120a rebuild passed on the accepted parent source. Post-restore
+  diagnostic target/runs/20260720_174245Z_fineweb_60s completed one real
+  update with train_elapsed_s=0.382 and finite val_loss=9.956229. This one-step
+  result is launch evidence only, not promotion evidence.
+sources:
+  https://arxiv.org/html/2605.03953v2
+  https://github.com/SkyeGunasekaran/SATFormer
+```
