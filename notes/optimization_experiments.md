@@ -53,6 +53,83 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 
 ```text
 date: 2026-07-20
+commit: note-only rejection; all word-level T-Free and classic-token trigram
+  embedding source, kernels, tests, dependencies, build variants, and metadata
+  removed before the clean parent rebuild
+experiment: T-Free sparse character-trigram representations from
+  arXiv:2406.19223, including the paper's explicit suggestion to retain a
+  traditional tokenizer and trigramify its classic tokens.
+status: rejected_for_fixed_budget_likelihood; no_profile; no_450s
+sources:
+  https://arxiv.org/abs/2406.19223
+  https://github.com/Aleph-Alpha-Research/trigrams
+model_integrity:
+  Both implementations retained the B4/S2048/L16/d2048/h32 model, every
+  attention/MLP/value-residual path, NextLat, and the exact total parameter
+  count. The full word-level version split the existing 32K tied storage into
+  a 16K multi-label head and 16K sparse input table. The hybrid retained the
+  exact Mistral token stream, 32K tied categorical head, targets, CE objective,
+  validation bytes, and BPB, and composed only input and NextLat embeddings
+  from shared rows of that same table.
+full_word_implementation_and_correction:
+  An independent Rust/CUDA implementation performed word and punctuation
+  splitting, hashed byte-trigram sparse sums, multi-label weighted BCE,
+  inverse sparse embedding-gradient gather, packed FineWeb loading, and sparse
+  NextLat target embeddings. Host tests, the exact sm_120a rebuild, and GPU
+  references for sparse forward, sparse inverse gradient, target masks, and
+  weighted BCE passed.
+  The initial raw pattern BPB was invalid because weighted BCE with
+  pos_weight=300 shifts the optimum logit by ln(300). The implementation was
+  corrected to evaluate calibrated Bernoulli pattern NLL and its exact
+  zero-logit baseline. Raw T-Free pattern BPB is not directly comparable with
+  Mistral categorical BPB and was not used for the decision.
+full_word_fixed_200_step_resolution:
+  Corrected T-Free target/runs/20260720_092912Z_fineweb_180s:
+    200 updates, 71.077s, calibrated pattern BPB=67.728591,
+    calibrated zero-logit NLL ratio=0.782347, target bytes=37616.
+  Mistral control target/runs/20260720_091950Z_fineweb_180s:
+    200 updates, 71.962s, categorical BPB=1.906102,
+    zero-logit NLL ratio=0.539354, target bytes=34691.
+  Both were finite. The word-level representation covered more source bytes
+  per fixed position but removed only 21.8% of its calibrated starting NLL,
+  versus 46.1% for Mistral, so it had no matched-step likelihood signal.
+classic_token_hybrid:
+  The paper states that its compression can be combined with traditional
+  tokenizers by trigramifying classic tokens. The tested hybrid preserved every
+  Mistral token and target. Each decoded vocabulary piece received boundary
+  byte trigrams, ten deterministic hash rows per unique trigram, and two
+  lowercase-overlap hashes, matching the paper's k=10/K=2 scheme. The first
+  implementation used 1/sqrt(active_rows) aggregation because the table was
+  tied to the unchanged categorical head and therefore could not use a
+  separately scaled input initialization. Forward and atomic tied-gradient-add
+  GPU references passed.
+  Health target/runs/20260720_094255Z_fineweb_30s completed 85 updates in
+  30.330s, with finite val_loss=6.140258 and every logged skip counter zero.
+  Exact 200-update hybrid target/runs/20260720_094350Z_fineweb_180s versus the
+  same Mistral control target/runs/20260720_091950Z_fineweb_180s:
+    held-out CE: 5.654955 versus 5.594980, 1.072% worse.
+    BPB: 1.926535 versus 1.906102.
+    elapsed: 71.840s versus 71.962s.
+  Its training loss was worse at steps 25, 50, 75, 100, 125, 150, 175, and
+  199; it skipped three updates on the grad-norm guard while control skipped
+  none.
+paper_faithful_sum_screen:
+  Because the authors use unnormalized sum aggregation, the exact forward and
+  backward sum was rebuilt and its focused GPU references passed. Fixed
+  51-update target/runs/20260720_094818Z_fineweb_60s was finite with zero
+  skips, but step-50 loss was 6.924537659 versus control 6.896665573, 0.404%
+  worse. It never established a positive matched-step signal, so it did not
+  qualify for a longer run.
+decision:
+  Reject both exact local T-Free directions for this fixed-budget held-out
+  likelihood objective. Do not profile, optimize the first atomic scatter, or
+  run a 450-second gate without a loss-by-step improvement. This does not
+  reject the paper's reported fertility, multilingual transfer, embedding
+  compression, or downstream results under its much longer training regime.
+```
+
+```text
+date: 2026-07-20
 commit: note-only rejection; all Muon-NSR kernel, host, environment, metadata,
   and dedicated test hooks removed before the clean parent rebuild
 experiment: Muon-NSR pre-orthogonalization noise-to-signal modulation with
