@@ -35045,3 +35045,85 @@ decision:
   held-out evaluation with finite val_loss=10.168886; this one-step run is
   launch evidence only, not promotion evidence.
 ```
+
+```text
+date: 2026-07-20
+commit: rejected working change after sukysykk
+experiment: Exact Differential Transformer V2 on the four global-attention blocks.
+status: rejected_at_matched_step_screen
+research_basis:
+  Differential Transformer V1 reports lower language-modeling loss at matched
+  parameter count and training FLOPs by subtracting two softmax attention maps.
+  Microsoft's January 2026 V2 replaces the static lambda vectors and per-head
+  RMSNorm with a token-specific per-head sigmoid lambda, a second query
+  projection, and shared K/V:
+    A = softmax(Q1 K^T) - sigmoid(lambda(X)) softmax(Q2 K^T).
+  The official V2 implementation uses two query heads per paired head and
+  shared K/V. This was a high-leverage fit for the local layout because the KDA
+  allocation already reserves 8320 QKV rows while ordinary full attention uses
+  only 6272 padded rows.
+model_integrity:
+  Preserved B4/S2048/L16/d2048/h32, all 16 blocks, all 12 KDA blocks, all four
+  global-attention blocks, the complete MLPs, Canon-AC, XSA, StableMask,
+  selective attention, value residuals, and NextLat. The candidate used
+  previously allocated QKV rows for Q2 and lambda and did not change allocated
+  model parameter slots. It exposed 17047680 additional effective projection
+  weight/bias parameters across the four global blocks.
+implementation:
+  Added Q1/K/V/gate/Q2/lambda section offsets within the existing 8320-row QKV
+  tensor. Generalized the tensor-core causal attention forward/backward kernels
+  to explicit Q/K/V and selective-mask offsets, including correct accumulation
+  of shared K, V, and QK-scale gradients across the two backward passes.
+  Applied RoPE to Q2, retained the existing headwise gate and XSA after the
+  differential combination, and added exact lambda forward/backward kernels.
+  Candidate-only tapes saved both attention maps, both raw outputs, both
+  log-sum-exp tensors, and independent selective-attention masks.
+correctness:
+  cargo check --workspace: pass.
+  Required rebuild passed twice:
+    TMPDIR=$PWD/target/tmp TOKENIZER_VARIANT=mistral_v01
+      cargo oxide build --arch sm_120a
+  Focused generated-PTX GPU chain-rule test passed for the differential
+  combination, dA2, lambda gradient, and inactive-row zeroing.
+  Candidate one-step launch diagnostic:
+    target/runs/20260720_165415Z_fineweb_60s
+    completed_steps=1, train_elapsed_s=0.422, val_loss=10.492309.
+  This was launch-only evidence.
+health_screen:
+  Fresh rebuilt control, TRAIN_DIFF_ATTN_V2=0:
+    target/runs/20260720_165508Z_fineweb_30s
+    completed_steps=84, train_elapsed_s=30.237, val_loss=6.110910.
+  Exact candidate, TRAIN_DIFF_ATTN_V2=1:
+    target/runs/20260720_165556Z_fineweb_30s
+    completed_steps=75, train_elapsed_s=30.045, val_loss=6.164965.
+  All 75 candidate samples had Finite=1 and Nonzero=1. Update_skipped,
+  Skip_non_finite, Skip_loss_spike, and Skip_grad_norm_spike were zero at every
+  sample.
+matched_step_resolution:
+  Fresh rebuilt control capped at the candidate's exact 75 updates:
+    target/runs/20260720_165712Z_fineweb_60s
+    completed_steps=75, train_elapsed_s=27.165, val_loss=6.160862.
+  Candidate versus matched control held-out CE was 6.164965 versus 6.160862:
+  0.0666% worse. Mean train CE across the same 75 batches was 6.949937604
+  versus 6.941405156: 0.1229% worse. The candidate required 10.60% more
+  training time at equal depth and completed 10.71% fewer updates in the
+  nominal wall-clock screen.
+decision:
+  Reject before optimization and before the 450-second gate. The exact V2
+  architecture was stable but showed no loss-per-step improvement at matched
+  exposure, so the agreed structural-candidate rule does not justify profiling
+  or optimizing its additional QK/PV forward and backward work. Remove all
+  candidate source, rebuild the accepted parent, and continue the loss-focused
+  research search.
+post_restore:
+  All candidate source and test changes were removed. cargo fmt --all --check,
+  cargo check --workspace, and the required Mistral/sm_120a rebuild passed on
+  the accepted parent source. Post-restore diagnostic
+  target/runs/20260720_165944Z_fineweb_60s completed one real update with
+  train_elapsed_s=0.383 and finite val_loss=9.956143. This one-step result is
+  launch-only evidence.
+sources:
+  https://arxiv.org/html/2410.05258v2
+  https://huggingface.co/blog/microsoft/diff-attn-v2
+  https://github.com/microsoft/unilm/blob/master/Diff-Transformer/Diff-Transformer-V2/multihead_flashdiffv2.py
+```
