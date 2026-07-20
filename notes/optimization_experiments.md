@@ -53,6 +53,83 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 
 ```text
 date: 2026-07-20
+commit: note-only rejection; all Cautious Muon kernel, host, metadata, and
+  focused-test source removed before the clean accepted-source rebuild
+experiment: Cautious Muon from Cautious Optimizers
+status: rejected_decisive_450s_fixed_time_and_fixed_step_regression
+sources:
+  https://arxiv.org/abs/2411.16085
+  https://github.com/kyleliang919/C-Optim/blob/main/c_muon.py
+research_filter:
+  MiMuon (arXiv:2605.19619) was also inspected but not implemented. Its
+  published practical selector applies Muon when ||M_t||_F >= 0.005. At the
+  scale of this model's matrix gradients, that criterion is effectively always
+  true and therefore degenerates to the already-active Muon path; the paper's
+  theoretical minimum-singular-gap selector is not the practical algorithm
+  evaluated by its released recipe.
+model_integrity:
+  The candidate retained B4/S2048/L16/d2048/h32, all attention, MLP,
+  value-residual, NextLat, embedding, and head paths, the Mistral v0.1
+  tokenizer, FineWeb stream, and the approximately 1B parameter model.
+implementation:
+  On each of the accepted two polar-update steps, the fused momentum-prepare
+  pass zeroed an update coordinate when the updated first moment and current
+  gradient disagreed in sign, before the existing polar transform. This
+  matched the official C-Muon mask. The one-in-three sign-update path was left
+  unchanged.
+  The official 1/active_fraction positive rescaling was intentionally omitted:
+  the next operation normalizes the full matrix by its Frobenius norm, so that
+  scalar cancels exactly and an explicit reduction would not change the polar
+  input.
+correctness:
+  Exact candidate build:
+    TMPDIR=$PWD/target/tmp TOKENIZER_VARIANT=mistral_v01 \
+      cargo oxide build --arch sm_120a
+  cargo check --workspace --lib --bins and cargo fmt --all -- --check passed.
+  A focused GPU reference test passed normal Muon and Muon-VS, tall and wide
+  orientation, momentum recurrence, and disagreement masking. The older
+  monolithic optimizer test target remained blocked by unrelated stale
+  MuonTmaFinishArgs initializers and was not used as evidence.
+30_second_health:
+  Candidate target/runs/20260720_100559Z_fineweb_30s:
+    85 updates, 30.199s, held-out CE 6.132912, per-step logging, all sampled
+    stability counters clean.
+  Disabled same-binary control target/runs/20260720_100637Z_fineweb_30s:
+    84 updates, 30.084s, held-out CE 6.119285, per-step logging, all sampled
+    stability counters clean.
+  Across 83 common noninitial checkpoints, candidate won 26; mean candidate
+  delta was +0.302% worse. This established health only.
+exact_200_step_resolution:
+  Candidate target/runs/20260720_100818Z_fineweb_180s:
+    200 updates, 71.793s, held-out CE 5.619585, clean.
+  Disabled same-binary control target/runs/20260720_100939Z_fineweb_180s:
+    200 updates, 72.355s, held-out CE 5.598445, clean.
+  Candidate held-out CE was 0.3776% worse and mean common-checkpoint loss was
+  0.127% worse. Its steps 150-199 mean was 0.1003% better, which was a small
+  enough late reversal to justify one decisive 450-second gate for the paper's
+  proposed late-training benefit.
+promotion_gate:
+  Candidate target/runs/20260720_101231Z_fineweb_450s:
+    1244 updates, 450.066s, held-out CE 4.357549667358398,
+    BPB 1.4845335245724647, all sampled stability counters clean.
+  Accepted Mistral baseline target/runs/20260720_081648Z_fineweb_450s:
+    1229 updates, 450.240s, held-out CE 4.317791938781738,
+    BPB 1.4709888296318596, all sampled stability counters clean.
+  Despite completing 15 more updates, candidate held-out CE and BPB were
+  0.9208% worse. It lost 23 of 24 noninitial common checkpoints; mean
+  common-checkpoint loss was 0.5584% worse, and the steps 900-1200 mean was
+  0.3874% worse.
+decision:
+  Reject Cautious Muon in this optimizer. The extra completed steps are run
+  noise rather than a causal speed mechanism because the mask only adds work
+  inside an existing fused pass. More importantly, both fixed-step and
+  fixed-time likelihood regressed, including the late tail. All candidate
+  source was removed, then the accepted Mistral source passed cargo fmt,
+  git diff --check, and the exact clean sm_120a rebuild.
+```
+
+```text
+date: 2026-07-20
 commit: note-only rejection; all word-level T-Free and classic-token trigram
   embedding source, kernels, tests, dependencies, build variants, and metadata
   removed before the clean parent rebuild
