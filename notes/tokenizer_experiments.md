@@ -104,3 +104,53 @@ count, so tokenizer variants begin their training shard at slightly different
 raw-text offsets. The source parquet and distribution are the same, but this is
 a remaining confound. Require a fixed raw-document split before treating a
 similarly small tokenizer delta as conclusive in a downstream tokenizer study.
+
+## 2026-07-20: Exact T-FREE 8K hashed byte trigrams
+
+Source: <https://arxiv.org/abs/2406.19223> and the released
+<https://github.com/Aleph-Alpha/trigrams> implementation at commit
+`bc7c2ca598a0ad7d0afe20116cbd63a936d1a1fc`.
+
+This reran the earlier local word-trigram direction with the paper's selected
+1B representation and released mapping: exactly 8,000 features, ten unique
+MD5-mapped activations per byte trigram, and no lowercase-only activations.
+It used separate 8K input/output tables, weighted multi-label BCE, the released
+normalized-sigmoid dictionary decoder, a fixed 100,329-word dictionary, and
+an 8,704-wide MLP to preserve the approximately 1B parameter budget. Every
+accepted model section, including NextLat, remained active.
+
+The published `positive_weight=300` was suboptimal for this short 8K run.
+Identical 201-step tuning found a reproducible minimum at 75-100:
+
+```text
+weight 75:
+  run: target/runs/20260720_161023Z_fineweb_900s
+  elapsed_s: 77.884
+  released_decoder_bits_per_byte: 3.504237
+
+weight 100:
+  run: target/runs/20260720_161143Z_fineweb_900s
+  elapsed_s: 78.228
+  released_decoder_bits_per_byte: 3.503966
+
+weight 300:
+  run: target/runs/20260720_161303Z_fineweb_900s
+  elapsed_s: 78.269
+  released_decoder_bits_per_byte: 3.517562
+```
+
+Weight 100 improves T-FREE's own released decoder BPB by 0.386518% at matched
+exposure. It nevertheless does not beat the accepted Canon/Mistral 201-step
+BPB of 1.890499. The released decoder score is bounded and not numerically
+equivalent to categorical CE; a second calibrated Bernoulli dictionary
+distribution was also evaluated and was materially worse, so neither
+normalization supplied a cross-tokenizer quality win.
+
+The exact layout did produce a clear memory result: 41,989.188 MiB allocated
+versus 43,233.188 MiB for the clean Canon/Mistral parent, saving exactly
+1,244 MiB (2.877419%). It was also 7.961744% slower per update at 201 steps.
+
+Decision: reject this T-FREE integration for the fixed-time likelihood target,
+skip the 450-second gate, remove its source, and retain only the measurements.
+The detailed representation, kernels, correctness tests, evaluation caveats,
+and tuning sweep are recorded in `optimization_experiments.md`.

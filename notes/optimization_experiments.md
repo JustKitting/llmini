@@ -53,6 +53,176 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 
 ```text
 date: 2026-07-20
+commit: note-only rejection; T-FREE tokenizer, sparse-model, objective,
+  decoder, test, and data-path source removed before the accepted-source
+  rebuild
+experiment: Paper-faithful T-FREE hashed byte-trigram tokenizer study
+status: rejected_tokenizer_study_after_fixed_step_tuning; no_450s
+sources:
+  https://arxiv.org/abs/2406.19223
+  https://github.com/Aleph-Alpha/trigrams
+  inspected official repository commit:
+    bc7c2ca598a0ad7d0afe20116cbd63a936d1a1fc
+research_scope:
+  T-FREE replaces a trained subword tokenizer with corpus-independent hashed
+  byte-trigram features. Its 1B ablation selects v=8000 output features,
+  m=10 unique activations per trigram, and k=0 lowercase-only activations.
+  Every word position is represented by the sum of its active input rows and
+  trained with multi-label weighted BCE; generation scores a fixed word
+  dictionary from the output-feature sigmoid values. This is a tokenizer
+  study, so raw T-FREE BCE and Mistral categorical CE were never compared as
+  if they were the same loss.
+model_integrity:
+  The complete B4/S2048/L16/d2048/h32 model remained active: all four
+  softmax-attention and twelve KDA blocks, every MLP and block-Top-K route,
+  value residual, Canon-AC A/C layers, headwise attention gates, StableMask,
+  NextLat, and the accepted Hyperball/Muon-VS/AMUSE optimizer path received
+  real task gradients.
+  The former tied 32000-by-2048 interface became distinct 8000-row output and
+  input tables in one 16000-row allocation. Widening every MLP from 8192 to
+  8704 restored the parameter budget. Including the enlarged MLP-up biases,
+  this adds a net 794624 active parameters to the Canon parent:
+    effective 964639108 -> 965433732
+    allocated 984834304 -> 985628928.
+  No layer, attention/KDA block, MLP, value-residual path, or NextLat path was
+  removed, bypassed, frozen, or zero-weighted.
+representation_and_data:
+  The splitter follows the paper's word, digit, whitespace, no-whitespace,
+  newline, and factorial-whitespace conventions. The mapping matches the
+  released MD5 hash of trigram_id, slot, and collision nonce, with trigram IDs
+  encoded from the three bytes in little-endian order. Long alphanumeric
+  outliers are split losslessly at 32 bytes, consistent with the paper's
+  suggested length fallback.
+  FineWeb was prepared once into packed CSR offsets, u16 active IDs, and exact
+  decoded-byte counts. It preserved the accepted Mistral-token boundary
+  between validation and training documents. The train shard contains
+  25000000 word positions, 945718466 active IDs, and 111912646 decoded bytes;
+  validation contains 25000 positions, 995077 active IDs, and 117630 bytes.
+  A fixed decoder dictionary used the 100000 most frequent train words and
+  appended 329 held-out words solely to give every evaluated target support.
+  It contains 100329 words, 100313 distinct feature patterns, and explicit
+  multiplicities for pattern collisions. Reported dictionary likelihood is
+  therefore conditional on this declared dictionary and is mildly optimistic
+  from target-support insertion; it is not a universal open-vocabulary BPB.
+implementation:
+  Sparse forward sums every active input embedding row. A precomputed inverse
+  CSR gathers both ordinary embedding and NextLat target-embedding gradients
+  into the separate input rows without atomics. The 8000-way multi-hot target
+  mask drives weighted BCE, while the final linear backward still trains the
+  complete output table. Padding gradients are explicitly zero.
+  SM120 TMA requires N divisible by 128, whereas the paper uses exactly 8000
+  features. Forward and backward therefore compute 8064 columns while BCE,
+  target masks, and decoding use exactly 8000. The 64 padding columns overlap
+  otherwise-active input rows; their head gradient is zero and the subsequent
+  sparse input gather writes the real input gradient, so no parameter row is
+  made task-dead.
+  The parameter-neutral 8704-wide MLP has 68 feature tiles and retains the
+  established three-quarter block-Top-K rule (51 active tiles). The router and
+  all four routed TMA orientations were generalized from one to two u64
+  feature-mask words.
+evaluation:
+  Three distinct quantities were kept separate:
+    val_loss is the weighted BCE training objective and changes scale when
+      loss_scale or positive_weight changes.
+    val_pattern_bits_per_byte is calibrated independent Bernoulli pattern NLL.
+    val_tfree_decoder_bits_per_byte uses the released decoder: mean active
+      sigmoid score minus mean inactive sigmoid score, followed by a softmax
+      over the fixed dictionary with pattern multiplicities.
+  The last decoder distribution is the closest reproduction of released
+  generation behavior. Its untempered score lies in [-1,1], so its BPB is not
+  numerically interchangeable with categorical BPE CE despite being a
+  normalized dictionary distribution. The calibrated Bernoulli distribution
+  was retained as a second, stricter compression diagnostic.
+correctness:
+  cargo fmt --all --check, cargo check --workspace, and git diff --check:
+    pass.
+  Exact candidate rebuild:
+    TMPDIR=$PWD/target/tmp TOKENIZER_VARIANT=tfree8k_m10_k0 \
+      cargo oxide build --arch sm_120a
+    pass.
+  Default and T-FREE llama2-tokenizer suites: 6 passed each, including the
+  released Python MD5 vectors, sorted unique in-range patterns, paper split
+  examples, long-word fallback, and exact text/byte-count round trips.
+  Generated-PTX focused GPU tests:
+    loss: 3 passed, covering padded-stride weighted BCE, padding-gradient
+      zeroing, calibrated dictionary NLL, released-decoder NLL, pattern
+      multiplicities, and the existing categorical CE.
+    embedding: 1 passed, checking exact sparse row summation and input offset.
+    sparse_embedding_grad: 1 passed, checking the combined ordinary/NextLat
+      inverse gather and untouched output rows.
+    projection_tma: 3 focused tests passed, checking exact 68-feature-tile
+      Top-K mask construction/transposition and second-word handling in both
+      routed output-N and routed reduction-K GEMMs.
+  The broad all-target test build remains blocked by pre-existing stale test
+  initializers for Canon, QK-scale, MLP TMA, and SymExpLin arguments; no broad
+  all-target test claim is made.
+bringup_and_health:
+  After resolving the 8000-column TMA alignment and two-word router issues,
+  target/runs/20260720_155158Z_fineweb_900s completed a full forward,
+  backward, optimizer update, and all validation metrics. This one-step run
+  was launch evidence only.
+  target/runs/20260720_160241Z_fineweb_900s completed exactly 51 updates in
+  19.409s. All samples were finite/nonzero with every skip counter zero. The
+  weighted objective fell from 162.878067 to 122.234596 and the released
+  decoder BPB fell from 3.618474 at initialization to 3.533808.
+objective_tuning:
+  The released 7B configuration uses positive_weight=300 and loss_scale=100.
+  Fixed 51-step loss-scale screens at 5, 10, 20, 40, and 100 were effectively
+  flat on released-decoder BPB; 100 remained narrowly best, so it was retained.
+  Positive-weight screens at 25, 50, 75, 100, 125, 200, 300, 400, and 600
+  produced a reproducible basin around 75-100. At 51 steps, weight 100 reached
+  3.522013 decoder BPB versus 3.533808 for weight 300.
+  Fixed 201-step resolution:
+    weight 75, target/runs/20260720_161023Z_fineweb_900s:
+      77.884s, decoder BPB 3.504237.
+    weight 100, target/runs/20260720_161143Z_fineweb_900s:
+      78.228s, decoder BPB 3.503966.
+    weight 300, target/runs/20260720_161303Z_fineweb_900s:
+      78.269s, decoder BPB 3.517562.
+  Weight 100 improves the released decoder by 0.386518% versus the published
+  weight at identical updates, and weight 75 independently reproduces the
+  lower-weight basin.
+matched_tokenizer_study:
+  The tuned T-FREE candidate still supplies no tokenizer-independent
+  fixed-budget quality win. Its 201-step released-decoder BPB is 3.503966 and
+  its calibrated Bernoulli BPB is 43.553983. The accepted Canon/Mistral
+  201-step reference target/runs/20260720_144619Z_fineweb_120s has BPB
+  1.890499. The validation prefixes come from the same held-out FineWeb
+  document region but span 37616 and 34691 decoded bytes respectively, so the
+  comparison is not byte-identical; the gap is far too large for that small
+  prefix difference to reverse.
+  T-FREE also took 389.194ms/update versus Canon/Mistral's 360.493ms/update,
+  7.961744% slower, despite exposing slightly more decoded bytes per word
+  batch. Initial allocation with TRAIN_REPORT_MEMORY used 44028854272 bytes
+  (41989.188 MiB), versus 45333282816 bytes (43233.188 MiB) for the exactly
+  rebuilt Canon/Mistral parent in
+  target/runs/20260720_162102Z_fineweb_900s. The T-FREE layout therefore
+  saved exactly 1304428544 bytes (1244 MiB, 1.214844 GiB, 2.877419%). This is
+  a clear interface-memory result, but it does not rescue the quality screen.
+post_restore:
+  All T-FREE source was removed and the accepted parent was rebuilt exactly:
+    TMPDIR=$PWD/target/tmp TOKENIZER_VARIANT=mistral_v01 \
+      cargo oxide build --arch sm_120a
+    pass.
+  target/runs/20260720_162127Z_fineweb_900s then completed one real accepted
+  Canon/Mistral forward, backward, and optimizer update with loss 10.733534,
+  grad norm 3.843580, finite=1, nonzero=1, and every skip counter zero. Its
+  held-out CE was 9.956405 and BPB 3.391956. This is post-restore launch
+  evidence only, not acceptance or promotion evidence.
+decision:
+  Reject this exact T-FREE integration for the active fixed-time loss target.
+  The representation is stable, the lower BCE class weight is a real internal
+  improvement, and the interface offers a useful memory direction, but
+  neither normalized dictionary distribution approaches the accepted
+  tokenizer-independent BPB at matched exposure. Under the structural-method
+  rule this does not earn kernel profiling, further implementation
+  optimization, or a 450-second promotion gate. Remove all candidate source,
+  exactly rebuild the accepted Mistral/Canon parent, retain this record, and
+  continue loss-method research.
+```
+
+```text
+date: 2026-07-20
 commit: accepted source candidate; promoted after matched-step admission,
   schedule-free audit/correction, implementation profiling/optimization, and
   the required corrected 450-second gate
