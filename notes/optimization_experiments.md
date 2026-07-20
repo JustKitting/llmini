@@ -52,6 +52,126 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 ```
 
 ```text
+date: 2026-07-20
+commit: note-only rejection; all TIDE source, model-state, optimizer,
+  checkpoint, environment, diagnostics, and metadata hooks removed before the
+  clean rebuild
+experiment: TIDE-2E token-identity memory injected at every transformer layer.
+status: rejected_after_optimized_matched_step_admission_and_450s_gate
+sources:
+  https://arxiv.org/abs/2605.06216
+rationale:
+  TIDE (Token Identity Delivered Everywhere) computes K independent,
+  context-free token memories once per forward pass:
+    M_k(v) = RMSNorm(E_k[v]).
+  Every layer routes its post-attention normalized hidden state over those
+  memories plus a parameter-free null bank:
+    alpha^l = softmax(W_r^l * n_tilde^l)
+    m^l(v) = sum_k alpha_k^l * M_k(v)
+    h^l = h_tilde^l + FFN(n_tilde^l) + m^l(v).
+  The paper reports better data efficiency and downstream results than its
+  LLaMA baselines, including at the 1B scale. K=2 was selected as the smallest
+  paper configuration and therefore the least expensive credible test.
+scope:
+  The complete FineWeb/Llama-2 B4/S2048/L16/d2048/h32 model remained active:
+  all four full-attention and twelve KDA blocks, all 16 block-Top-K MLPs,
+  value residuals, NextLat, tokenizer, objective, Selective Attention, Ember,
+  and Hyperball/Muon-VS. TIDE added two independent 32000x2048 memory banks
+  and one 3x2048 router per layer: 131,170,304 active parameters, increasing
+  the effective count from 964,376,964 to 1,095,547,268. It did not replace,
+  freeze, bypass, or resize an existing model path.
+implementation_and_correctness:
+  TRAIN_TIDE defaulted on and provided a same-binary disabled control. The
+  two NVFP4 memory lookups and RMSNorms were computed once, then shared by all
+  layers. Every layer used an exact three-way softmax router and additive
+  fusion beside the existing MLP. Backward differentiated the additive
+  pathway, softmax router, memory RMSNorm, and sparse token-table rows.
+  Memory banks used Ember; routers used Adam. Global clipping, schedule-free
+  materialization, non-finite diagnostics, checkpoints, metadata, and
+  high-fidelity optimizer diagnostics all included the new parameters.
+  An explicit TRAIN_TRACE diagnostic verified finite, nonzero gradients and
+  updates in both 65,536,000-value banks and all 98,304 router values. Trace
+  and one-step runs were correctness diagnostics only, never selection
+  evidence.
+initial_exact_formula_results:
+  With independent random memory banks and the paper's unscaled additive
+  injection, candidate target/runs/20260720_000246Z_fineweb_30s completed 74
+  steps with val_loss=6.180616; disabled control
+  target/runs/20260720_000329Z_fineweb_30s completed 85 with
+  val_loss=5.959032. Step 50 was 6.580511 versus 6.406326, 2.72% worse.
+  The exact 201-step resolution was also worse:
+    candidate target/runs/20260720_000433Z_fineweb_300s:
+      val_loss=5.581436
+    control target/runs/20260720_000602Z_fineweb_300s:
+      val_loss=5.484346.
+  The candidate skipped one non-finite lm_head update during that first
+  randomly initialized resolution run; the later scaled and
+  function-preserving variants had no non-finite skips.
+  A local residual-depth scale 1/sqrt(layer+1) reduced the early disruption.
+  Its 30-second candidate target/runs/20260720_000908Z_fineweb_30s had step-50
+  loss 6.452081 versus control
+  target/runs/20260720_000950Z_fineweb_30s at 6.414965, 0.579% worse. At exactly
+  201 updates, candidate target/runs/20260720_001044Z_fineweb_300s was 0.882%
+  better at step 100, 0.118% better at step 150, effectively tied at step
+  200, and 0.689% worse on held-out validation. Those repeated common-step
+  gains triggered the required implementation optimization pass rather than
+  a speed-based rejection.
+profiling_and_optimization:
+  Nsight Systems report /tmp/tide_candidate.nsys-rep identified the original
+  serial router-gradient kernel at 3.061271 ms per layer invocation. It was
+  replaced with an exact two-stage token-tile reduction. In
+  /tmp/tide_candidate_tiled.nsys-rep, its partial and final reductions
+  averaged 0.102735 ms and 0.002746 ms, a 28.9x combined reduction and about
+  47 ms recovered per training step. The remaining TIDE layer backward and
+  forward kernels averaged 0.383601 ms and 0.144185 ms per layer.
+  After this optimization, candidate
+  target/runs/20260720_001529Z_fineweb_30s completed 82 steps versus disabled
+  control target/runs/20260720_001609Z_fineweb_30s at 84; step-50 loss remained
+  0.356% worse.
+function_preserving_admission:
+  The final candidate retained independent trainable banks but initialized
+  bank 1 as the exact NVFP4 sign-negation of bank 0 and initialized every
+  router to zero. Equal initial softmax weights therefore made the two memory
+  signals cancel while both banks and routers immediately received gradients
+  and could diverge. This preserved the accepted model's exact step-0
+  function instead of perturbing all 16 residual streams at initialization.
+  Candidate target/runs/20260720_001803Z_fineweb_30s and disabled control
+  target/runs/20260720_001840Z_fineweb_30s started at the identical
+  loss=10.750515938. The candidate completed 81 versus 84 steps:
+    step 50:  6.336242676 versus 6.427534580, 1.420325% lower.
+    held-out: 5.934418 versus 5.973883, 0.660626% lower.
+  Both runs were finite and this repeated same-step improvement admitted the
+  optimized candidate to a fresh 450-second gate.
+fresh_450s_gate:
+  Candidate target/runs/20260720_001948Z_fineweb_450s:
+    elapsed=450.355s, completed_steps=1187, val_loss=4.255933.
+  Disabled control target/runs/20260720_002726Z_fineweb_450s:
+    elapsed=450.192s, completed_steps=1227, val_loss=4.206111.
+  The candidate completed 3.259984% fewer updates and its held-out loss was
+  1.184515% higher. More importantly, this was not merely an exposure loss:
+  at common steps 50 through 350 the candidate minibatch loss was
+  0.187%-1.069% lower, but at every sampled common step from 400 through 1150
+  it was 0.280%-2.437% higher. Both runs had the same one grad-norm-spike
+  skip, no loss-spike or non-finite skip, and all logged samples were finite
+  and nonzero.
+decision:
+  Reject TIDE-2E for the current short training budget. Function-preserving
+  initialization exposed a real early loss-per-update gain and justified
+  optimizing the implementation, but the gain crossed decisively by step 400
+  and never returned over the remaining 16 common samples. Recovering the
+  final 3.26% step overhead therefore cannot repair the matched-step
+  convergence regression, and the fresh fixed-time held-out result is also
+  worse. This does not dispute the paper's much longer training results; it
+  rejects TIDE-2E for this fixed-budget optimizer/model composition.
+  All implementation was removed and the accepted parent passed
+  TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a. Post-restore
+  diagnostic target/runs/20260720_003716Z_fineweb_900s was manually stopped
+  after 216 updates; all five high-fidelity samples were finite/nonzero with
+  every skip counter zero, and held-out val_loss=5.444555. This diagnostic
+  confirms the restored binary, not candidate selection.
+```
+
+```text
 date: 2026-07-19
 commit: note-only rejection; all MONA-Lite source, optimizer-state,
   environment, logging, and focused-test hooks removed before the clean
