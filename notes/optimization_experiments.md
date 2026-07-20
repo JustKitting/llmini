@@ -53,6 +53,132 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 
 ```text
 date: 2026-07-20
+commit: note-only rejection; all nGPT/anGPT source, tensors, optimizer-state,
+  checkpoint, diagnostics, environment, and metadata hooks removed before the
+  clean rebuild
+experiment: Complete nGPT/FNGPT logit-scale correction and anGPT input-axis
+  bounded-weight adaptation.
+status: rejected_matched_step_curve; no_profile; no_450s
+sources:
+  https://arxiv.org/abs/2410.01131
+  https://github.com/NVIDIA/ngpt
+  inspected NVIDIA repository commit:
+    ed19eb232380d41a9d71024b58d2403937d8f2c9
+  https://arxiv.org/abs/2605.06067
+  https://github.com/anonymous452026/ngpt-nvfp4
+  inspected nGPT-NVFP4 repository commit:
+    6454f40bb73ecdddf9b414a80cff2219ed702298
+  https://arxiv.org/abs/2505.22014
+  https://github.com/automl/anGPT
+  inspected anGPT repository commit:
+    6d2e52bc51138b86c71bab53e2048d694478c04b
+rationale:
+  Close the material fidelity gaps left by earlier normalized-transformer
+  probes before rejecting the family for this optimizer/model composition.
+  In particular, nGPT requires a learned vocabulary logit scale, and anGPT
+  constrains every neuron's weights along the linear map's input dimension
+  rather than normalizing output projections along the residual dimension.
+  Structural admission remained lower loss at identical optimizer steps.
+  Initial implementation speed could not reject a same-step quality win.
+scope:
+  The full FineWeb/Llama-2 B4/S2048/L16/d2048/h32 model remained active:
+  all four full-attention and twelve KDA blocks, all 16 block-Top-K
+  ReLU-squared MLPs, value residuals, query-dependent headwise attention
+  gates, Selective Attention, NextLat, tokenizer, objective, Ember, and
+  Hyperball/Muon-VS. No layer, token stream, context, or objective was
+  removed or reduced.
+nGPT_implementation:
+  The candidate removed classic block/final norms only on TRAIN_NGPT, exactly
+  L2-normalized embeddings and residual states, exactly normalized attention
+  and MLP branch outputs, and used learned per-feature nonnegative spherical
+  residual interpolation after both branches. Reverse mode included every
+  normalization Jacobian and alpha derivative. Matrix masters were normalized
+  after initialization and every update on the nGPT paper's axes. FNGPT
+  optionally normalized attention output and the ReLU-squared activation.
+  Bias-free TMA projections, tapes, gradient clipping, schedule-free
+  materialization, checkpoints, load compatibility, diagnostics, and run
+  metadata all included the normalized path.
+logit_scale_bug_and_resolution:
+  The first complete-path bring-up omitted nGPT's learned per-vocabulary
+  scale s_z. With both hidden states and tied unembedding rows unit-normalized,
+  logits were bounded to [-1,1], imposing the best-case 32k-vocabulary
+  cross-entropy bound
+    log(1 + 31999*exp(-2)) = 8.37369082.
+  This was a candidate bug, not selection evidence. An exact column-wise s_z
+  forward/backward was then added, including its Adam no-decay state,
+  quantization, clipping, checkpoint, and diagnostic paths.
+  Before s_z, FNGPT run target/runs/20260720_011609Z_fineweb_30s completed 75
+  steps with val_loss=9.404543 and step-70 loss=9.175655. Disabling FNGPT
+  changed essentially nothing:
+    target/runs/20260720_012205Z_fineweb_30s
+    val_loss=9.395313, step-70 loss=9.176117.
+  Corrected FNGPT target/runs/20260720_012818Z_fineweb_30s completed 74 steps
+  with val_loss=8.038363 and step-70 loss=7.037301. The scale correction was
+  therefore necessary and materially effective.
+nGPT_schedule_check:
+  The active baseline file supplied an 83-step warmup, while both normalized
+  papers specify no warmup. Corrected no-warmup run
+  target/runs/20260720_012929Z_fineweb_30s reached val_loss=7.526694. It
+  improved early convergence but not the decisive late common sample:
+    step 70 no-warmup=7.045685 versus warmup=7.037301.
+  Both remained far behind same-seed control
+  target/runs/20260720_011657Z_fineweb_30s at step 70=5.590350.
+anGPT_implementation:
+  TRAIN_ANGPT retained exact branch-output normalization but replaced exact
+  post-LERP normalization with
+    ((1-alpha)*h + alpha*norm(branch))
+      / sqrt((1-alpha)^2 + alpha^2)
+  and implemented its exact reverse mode. Embedding lookup was not
+  runtime-normalized. Embedding rows and every transformer's linear neuron
+  were unit-normalized on initialization; after each optimizer update, the
+  same input-axis vectors were projected only when norm exceeded one.
+  Matrix weight decay and the nGPT-only learned MLP pre-activation vector were
+  disabled. The paper's sqrt(model_dim/head_dim) QKV factor and matching
+  backward chain rule were applied. The existing ReLU-squared MLP was retained
+  because a prior full 5504-wide SwiGLU normalized package had already failed
+  its common-step screen; this test isolated the previously missing parameter
+  bounds and corrected residual/logit geometry.
+correctness:
+  cargo fmt --all and cargo check: pass.
+  Candidate exact rebuild:
+    TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a: pass.
+  One-step target/runs/20260720_014533Z_fineweb_60s completed the intact graph
+  with finite held-out val_loss=10.365725. This was launch evidence only.
+health_and_matched_step_resolution:
+  anGPT target/runs/20260720_014556Z_fineweb_30s completed 71 finite updates
+  with val_loss=7.101439. At common samples against
+  target/runs/20260720_011657Z_fineweb_30s:
+    step 50: 7.238781 versus 6.407540, 12.972859% worse.
+    step 70: 6.467111 versus 5.590350, 15.683481% worse.
+  Because 30 seconds is health-only for structural changes, a bounded
+  fixed-step resolution was used rather than rejecting from that endpoint.
+  Candidate target/runs/20260720_014731Z_fineweb_300s completed exactly 200
+  updates and produced held-out val_loss=6.500751. Against the same-seed
+  disabled-parent control target/runs/20260720_000602Z_fineweb_300s:
+    step 50:  7.226848 versus 6.412261, 12.703578% worse.
+    step 100: 7.210735 versus 6.348901, 13.574540% worse.
+    step 150: 6.567957 versus 5.628130, 16.698742% worse.
+  The control's held-out val_loss after 201 updates was 5.484346; the
+  one-update endpoint difference is contextual only. The rejection follows
+  from the three exact common-step comparisons.
+decision:
+  Reject this corrected normalized-family adaptation. nGPT's s_z correction
+  and anGPT's input-axis bounds both improved their incomplete predecessors,
+  but neither produced a loss-per-step gain against the intact parent. The
+  12.7-16.7% deficit grows through the 200-step diagnostic, so kernel
+  optimization cannot make it an admissible quality candidate and no
+  450-second gate is justified. This result is specific to the tied-head,
+  ReLU-squared, Hyperball/Muon-VS composition; it does not dispute the papers'
+  all-Adam, long-token-budget results.
+  All candidate source was removed. The accepted parent then passed
+    TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a.
+  Post-restore target/runs/20260720_015150Z_fineweb_120s completed one real
+  update and held-out evaluation with finite val_loss=9.594919. This confirms
+  the restored binary only and is not promotion evidence.
+```
+
+```text
+date: 2026-07-20
 commit: note-only rejection; all TIDE source, model-state, optimizer,
   checkpoint, environment, diagnostics, and metadata hooks removed before the
   clean rebuild
