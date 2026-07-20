@@ -53,6 +53,124 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 
 ```text
 date: 2026-07-20
+commit: note-only rejection; all Muon-NSR kernel, host, environment, metadata,
+  and dedicated test hooks removed before the clean parent rebuild
+experiment: Muon-NSR pre-orthogonalization noise-to-signal modulation with
+  the paper's LLaMA variance-sensitivity coefficient gamma=1000.
+status: rejected_decisive_450s_tail_regression
+sources:
+  https://arxiv.org/abs/2601.14603
+  https://github.com/jingru-lee/Variance-Adaptive-Muon
+  inspected official repository commit:
+    75f78ad7dd56133c01696c9298fdc5f08182dbe0
+rationale:
+  The accepted optimizer already implements the paper's parameter-free
+  Muon-VS variant. Muon-NSR uses the same innovation-variance state but
+  replaces its polar input with an explicit noise-to-signal modulation:
+    M_tilde_nsr =
+      M_hat / (sqrt(M_hat^2 + gamma*Gamma_hat) + 1e-8).
+  The paper reports a 1.36x iteration reduction at target loss for LLaMA-1.2B.
+  Its nanoGPT experiments use gamma=10, while both LLaMA suites use
+  gamma=1000, including Suite A with beta=0.95 matching the active Muon
+  momentum. The LLaMA setting was therefore the paper-defined local test,
+  rather than an arbitrary alpha sweep.
+model_integrity:
+  FineWeb/Llama-2, B4/S2048, 8192 tokens per training iteration, d2048,
+  32 heads, all 16 blocks, all twelve KDA and four full-attention paths, every
+  MLP, value residual, headwise gate, Selective Attention, NextLat, Ember,
+  SymExpLin, Hyperball/AMUSE, objective, tokenizer, parameter count, and
+  trainability remained unchanged. No model section was removed, resized,
+  frozen, bypassed, or reweighted.
+implementation:
+  TRAIN_MUON_NSR selected the candidate in the same binary and
+  TRAIN_MUON_NSR_ALPHA defaulted to 1000. The existing BF16 Muon-VS
+  innovation-variance state and exact recurrence advanced unchanged on every
+  optimizer update. On the existing two-of-three polar steps only, the
+  extrapolated numerator M_hat used
+    sqrt(M_hat^2 + gamma*Gamma_hat) + 1e-8
+  instead of
+    sqrt(Gamma_hat) + 1e-8
+  before the unchanged Polar Express map. The one-of-three sign shortcut
+  retained the accepted sign(M_t) direction and state recurrence, so the
+  candidate did not repeat the previously rejected full-sign-lookahead
+  composition. It allocated no new parameter, activation, or optimizer state.
+correctness_and_health:
+  cargo fmt --all and cargo check: pass.
+  The host opt-in/default-alpha test passed.
+  The exact candidate rebuild passed:
+    TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a.
+  A dedicated generated-PTX CUDA target passed two tests. It matched an
+  independent FP32 reference for the exact NSR and existing VS recurrences,
+  BF16 persisted-state rounding, Nesterov numerator, both matrix orientations,
+  and split/cooperative prepare paths. The broad optimizer integration target
+  remained blocked by its pre-existing stale SymExpLin test initializers; no
+  passing claim is made for that target.
+  Diagnostic-only target/runs/20260720_033103Z_fineweb_60s completed one
+  intact finite update with held-out val_loss=9.531577.
+  The high-fidelity health run
+  target/runs/20260720_033112Z_fineweb_30s completed 85 updates in 30.209s
+  with held-out val_loss=5.965168. All 85 samples were finite/nonzero and
+  every skip counter was zero. Neither diagnostic was selection evidence.
+fixed_200_iteration_admission:
+  Same-binary, same-seed, sequential GPU-0 runs used the identical FineWeb
+  stream, tokenizer, intact model, objective, hyperparameters, and
+  TRAIN_LOG_INTERVAL=1:
+    Muon-VS control target/runs/20260720_033211Z_fineweb_300s:
+      200 updates, held-out val_loss=5.482763767, elapsed=71.917s.
+    Muon-NSR target/runs/20260720_033329Z_fineweb_300s:
+      200 updates, held-out val_loss=5.478006363, elapsed=72.805s.
+  NSR held-out loss was 0.086781% lower. Mean loss over all 200 training
+  samples was 0.107353% lower, and NSR was lower on 130 of 200 samples and
+  five of eight 25-sample windows. Both runs had zero skipped updates.
+  This small but coherent identical-update improvement was the sole admission
+  reason for profiling; the 1.234757% raw wall-time difference was not used to
+  reject the algorithm.
+profiling_due_diligence:
+  Paired 20-step reports:
+    target/nsys/muon_nsr_control_b4s2048_20_20260720T0336Z.nsys-rep
+    target/nsys/muon_nsr_candidate_b4s2048_20_20260720T0336Z.nsys-rep
+  Total GPU kernel time was 7386.136661ms for control and 7404.058238ms for
+  NSR, a 0.242638% whole-profile difference dominated by unrelated
+  clock-correlated families. The only changed family,
+  muon_tma_momentum_orient_kernel, was 161.184701ms versus 161.211986ms over
+  938 launches: 0.027285ms per profile or 0.001364ms per training step.
+  The direct in-place formula therefore had no measurable algorithmic cost,
+  and eliminating its complete measured delta could not approach the active
+  0.5% whole-step floor. No forbidden sub-threshold micro-optimization was
+  attempted; the admitted implementation proceeded unchanged.
+decisive_450_second_gate:
+  Muon-NSR target/runs/20260720_033738Z_fineweb_450s completed 1233 updates
+  in 450.010s with held-out val_loss=4.233880997.
+  The active baseline target/runs/20260719_220730Z_fineweb_450s completed
+  1235 updates in 450.026s with held-out val_loss=4.215252399.
+    NSR held-out loss: 0.441933% worse.
+    completed updates: two fewer, or 0.161943% fewer.
+    cadence: 364.972ms versus 364.394ms, 0.158645% slower.
+  More importantly, the common-step training curve invalidated the early
+  signal. NSR was lower at only four of 25 samples, became worse at step 400,
+  and remained worse through step 1200. Mean common-sample loss was 1.019285%
+  worse; the deficits were already 3.703041%, 4.943259%, and 2.481621% at
+  steps 400, 450, and 500, then remained positive throughout the tail.
+  Metrics stayed finite/nonzero and no non-finite or loss-spike skip occurred,
+  so this is a convergence regression rather than hidden numerical failure.
+decision:
+  Reject Muon-NSR gamma=1000 and retain parameter-free Muon-VS. The required
+  fixed-time gate is worse, and its sustained common-step reversal proves the
+  200-update benefit did not survive the relevant training tail. Do not spend
+  another gate on gamma=10 without new same-regime evidence: it is the
+  paper's GPT-2 setting, whereas both LLaMA suites use the tested gamma=1000,
+  and a stronger NSR perturbation has no surviving LLaMA-regime direction.
+revert:
+  All candidate source and flags were removed. The accepted parent then passed
+    TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a.
+  Post-restore target/runs/20260720_034717Z_fineweb_60s completed one real
+  update and held-out evaluation with finite val_loss=9.595081329. This
+  confirms only that the restored binary launches; it is not selection
+  evidence.
+```
+
+```text
+date: 2026-07-20
 commit: note-only rejection; all GradPower kernel, host, environment, metadata,
   and temporary test hooks removed before the clean parent rebuild
 experiment: GradPower/MuonPower elementwise signed-gradient powers p=1.1,
