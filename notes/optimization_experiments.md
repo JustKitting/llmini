@@ -53,6 +53,139 @@ heldout_eval split=val val_loss=... train_elapsed_s=... completed_steps=...
 
 ```text
 date: 2026-07-20
+commit: note-only rejection; all SpanNorm kernels, graph branches,
+  initialization switches, environment flags, and metadata removed before the
+  clean parent rebuild
+experiment: Paper-exact learned-affine SpanNorm topology with Scale Init and
+  ordinary-initialization ablation on the current accepted optimizer stack.
+status: rejected_fixed_step_curve; no_profile; no_450s
+sources:
+  https://arxiv.org/abs/2601.22580
+  ICML 2026 paper source version 2
+prior_result:
+  The 2026-07-18 ledger entry had already rejected the same macro-topology
+  after a 450-second run using a fixed identity-affine embedding norm,
+  ordinary 0.02 output initialization, and mathematically compensated 32x
+  static loss scaling. This re-audit closed two material fidelity differences:
+  it used a learned embedding LayerNorm and directly tested the paper's
+  1/sqrt(L) Scale Init on the now-evolved accepted optimizer/model stack. It
+  did not repeat the previous implementation unchanged.
+rationale:
+  SpanNorm retains both attention and FFN branches while changing their
+  residual topology:
+    Y_l = LN(MHA(X'_l) + X'_l)
+    X'_{l+1} = LN(FFN(Y_l) + X'_l).
+  For the first block, the paper separately normalizes the embedding only on
+  the MHA branch:
+    Y_1 = LN(MHA(LN(E)) + E).
+  The paper reports lower perplexity for 740M and 1.3B models and states that
+  output matrices W_O and W_2 require initialization scaled by 1/sqrt(L).
+  Admission remained a credible loss improvement at identical optimizer
+  steps. The 30-second endpoint was health evidence only.
+research_screen_before_implementation:
+  Progressive Residual Warmup (https://arxiv.org/abs/2603.05369, official
+  https://github.com/dandingsky/ProRes at
+  5253e0dea6cff62f69c8f7fe1cc3151ec572fab6) was not implemented because its
+  official code initializes every residual-branch alpha to zero and computes
+    hidden_states = residual + alpha * hidden_states.
+  At step zero this gives the suppressed branch zero parameter gradient,
+  conflicting with the requirement that every intact model section continue
+  training.
+  WISCA (https://arxiv.org/abs/2508.16676) was also screened but not
+  implemented. Its paper states that tensor-wise WISCA is nearly negligible
+  when classical MHA Q/K matrices have matched dimensions and initialization
+  statistics, as they do here; its larger effects target GQA, MoE, and LoRA.
+  Applying a channel-wise transform through the accepted nonlinear SymExpLin
+  master parameterization would additionally require a new exact
+  function-preserving optimizer-state transformation, so there was no
+  credible inexpensive local candidate.
+model_integrity:
+  FineWeb/Llama-2, B4/S2048, 8192 tokens/step, d2048, 32 heads, all 16 blocks,
+  all twelve KDA paths, all four full-attention paths, every block-Top-K
+  ReLU-squared MLP, value residual, query-dependent headwise gate, Selective
+  Attention, NextLat, Ember, Hyperball/Muon-VS, tokenizer, and objective
+  remained active and trainable. No layer, branch, context region, parameter
+  family, or loss term was removed, frozen, or resized.
+implementation:
+  TRAIN_SPANNORM selected a complete forward and backward graph.
+  The existing final learned LayerNorm was reused as the paper's one-time
+  embedding norm; block ln_1 became post-attention and block ln_2 became
+  post-FFN. Because the final block already exits normalized, this preserved
+  the exact 2L+1 learned normalization count without adding parameters or an
+  activation tape.
+  Attention c_proj emitted a standalone branch. A fused kernel normalized
+  residual+branch while preserving the original block input for the spanning
+  FFN residual and saved the exact summed FP16 input for reverse mode. The
+  analytical backward routed gradients through both normalization Jacobians,
+  both branch Jacobians, both direct residual paths, and the first embedding
+  normalization. NextLat consumed and differentiated the final normalized
+  state as before.
+  TRAIN_SCALE_INIT independently selected output-projection standard deviation
+  0.02/sqrt(16)=0.005 for attention W_O and MLP W_2. This enabled a direct
+  topology-versus-initialization ablation without changing any other tensor.
+correctness_and_health:
+  Candidate cargo fmt --all and
+    TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a
+  passed.
+  One-step target/runs/20260720_021534Z_fineweb_900s completed the full graph
+  and evaluation with finite val_loss=10.413486. This was launch evidence
+  only.
+  Same-seed, per-step-logged 30-second runs:
+    accepted control, target/runs/20260720_021547Z_fineweb_30s:
+      85 steps, val_loss=5.957045.
+    SpanNorm plus paper Scale Init,
+      target/runs/20260720_021633Z_fineweb_30s:
+      87 steps, val_loss=6.628906.
+    SpanNorm plus ordinary 0.02 initialization,
+      target/runs/20260720_021916Z_fineweb_30s:
+      87 steps, val_loss=6.646497.
+  Over common steps 66-85, mean training loss was 6.170838 for control,
+  6.882500 for scaled SpanNorm (+11.53%), and 6.924786 for ordinary-init
+  SpanNorm (+12.22%). Scale Init was therefore not the cause of the topology's
+  deficit. These runs established health and selected the paper-faithful
+  variant for a bounded fixed-step resolution; they did not reject it.
+fixed_200_step_resolution:
+  Control target/runs/20260720_022032Z_fineweb_300s and paper-faithful
+  candidate target/runs/20260720_022152Z_fineweb_300s used the same seed,
+  FineWeb windows, tokenizer, complete model, optimizer, TRAIN_LOG_INTERVAL=1,
+  and exactly 200 optimizer iterations. Candidate versus control:
+    step 25:  7.428683 versus 6.899863,  7.66% worse.
+    step 50:  7.022611 versus 6.314664, 11.21% worse.
+    step 75:  6.676025 versus 5.964116, 11.94% worse.
+    step 100: 6.617902 versus 5.873436, 12.68% worse.
+    step 125: 6.719590 versus 6.048605, 11.09% worse.
+    step 150: 6.570005 versus 5.803938, 13.20% worse.
+    step 175: 6.339893 versus 5.570237, 13.82% worse.
+    step 200: 7.422619 versus 6.383558, 16.28% worse.
+  Mean training loss over all 200 samples was 6.920113 versus 6.162283,
+  12.297882% worse. The steps 151-200 mean was 6.471153 versus 5.599243,
+  15.571916% worse. Candidate held-out val_loss was 7.201384 versus
+  5.480403, 31.402453% worse.
+  The candidate took 70.305s versus 71.817s, a 2.105351% elapsed-time
+  reduction. It had one grad-norm-spike update skip at step 200; that isolated
+  late spike is not the rejection basis. The candidate was already worse at
+  every listed checkpoint, and its 151-200 mean excludes any explanation
+  based on a single batch.
+decision:
+  Reject the learned-affine, paper-Scale-Init SpanNorm re-audit. Its exact
+  matched-step curve is persistently and materially worse despite a small
+  speed benefit, so it does not earn kernel profiling, implementation
+  optimization, or a 450-second gate. The ordinary-initialization ablation is
+  also worse and does not rescue the topology. Combined with the earlier
+  fixed-affine/static-loss-scale rejection, do not revisit SpanNorm on this
+  architecture unless a materially different residual formulation or
+  optimizer-specific derivation is identified.
+revert:
+  All candidate source was removed. The accepted parent then passed
+    TMPDIR=$PWD/target/tmp cargo oxide build --arch sm_120a.
+  Post-restore target/runs/20260720_022924Z_fineweb_900s completed one real
+  update and held-out evaluation with finite val_loss=9.595780. This confirms
+  only that the restored binary launches; it is not selection or promotion
+  evidence.
+```
+
+```text
+date: 2026-07-20
 commit: note-only rejection; all nGPT/anGPT source, tensors, optimizer-state,
   checkpoint, diagnostics, environment, and metadata hooks removed before the
   clean rebuild
