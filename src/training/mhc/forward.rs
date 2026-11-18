@@ -80,7 +80,9 @@ impl Mhc {
         } else {
             debug_assert_eq!(self.tape_units[slot], Some(index));
             let branch = self.units[index].branch.as_mut().expect("branch post map");
-            copy(s, h.residual, branch, (n * d) as usize)?;
+            // Keep this result for backward. The next pre map overwrites
+            // the recycled buffer before the next branch reads it.
+            std::mem::swap(h.residual, branch);
             let tape = &self.tapes[slot];
             post_mix(
                 self.post_reuse.as_ref(),

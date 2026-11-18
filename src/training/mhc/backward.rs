@@ -92,9 +92,11 @@ impl Mhc {
         let n = self.n;
         let d = GPT2_N_EMBD as u32;
         if index == BOUNDARIES {
+            // Dense dweight TMA overwrites the projection gradient. The
+            // shared backward setup clears SymExpLin scale accumulators.
             for unit in &self.units {
-                for (_, g) in unit.gradients() {
-                    zero(s, g)?;
+                for gradient in &unit.fg {
+                    zero(s, gradient)?;
                 }
             }
             let tape = &self.tapes[tape_slot(index)];
