@@ -16,7 +16,7 @@ pub(super) struct BlockUpdateArgs<'a> {
     pub stream: &'a CudaStream,
     pub optimizer: &'a OptimizerModule,
     pub uploaded: &'a mut UploadedModel,
-    pub grads: &'a BackwardBuffers,
+    pub grads: &'a mut BackwardBuffers,
     pub scratch: &'a mut OptimizerScratch,
     pub state: &'a mut OptimizerStateBuffers,
     pub step: u32,
@@ -39,7 +39,7 @@ pub(super) fn update_blocks(args: BlockUpdateArgs<'_>) -> Result<(), DriverError
             .uploaded
             .blocks
             .iter_mut()
-            .zip(args.grads.blocks.iter())
+            .zip(args.grads.blocks.iter_mut())
             .zip(args.state.blocks.iter_mut())
             .enumerate()
         {
@@ -55,43 +55,45 @@ pub(super) fn update_block(
     adam: &mut AdamUpdate<'_, '_>,
     block_index: usize,
     block: &mut UploadedBlock,
-    grad: &BlockGradBuffers,
+    grad: &mut BlockGradBuffers,
     state: &mut BlockState,
     trace: &mut OptimizerTrace,
 ) -> Result<(), DriverError> {
-    trace.adam_ms += update_layer_norm_timed(adam, &mut block.ln_1, &grad.ln_1, &mut state.ln_1)?;
+    trace.adam_ms +=
+        update_layer_norm_timed(adam, &mut block.ln_1, &mut grad.ln_1, &mut state.ln_1)?;
     if gpt2_nvfp4::canon_ac_enabled() {
         trace.adam_ms += adam.update_fp32_timed(&grad.d_canon_a_weight, &mut state.canon_a)?;
     }
     trace.adam_ms += adam.update_timed(
         &mut block.attn_qkv.bias,
-        &grad.d_attn_qkv_bias,
+        &mut grad.d_attn_qkv_bias,
         &mut state.attn_qkv.bias,
     )?;
     if gpt2_nvfp4::uses_full_attention(block_index) {
         trace.adam_ms += adam.update_timed(
             &mut block.attn_qk_scale,
-            &grad.d_attn_qk_scale,
+            &mut grad.d_attn_qk_scale,
             &mut state.attn_qk_scale,
         )?;
     }
     trace.adam_ms += adam.update_timed(
         &mut block.attn_c_proj.bias,
-        &grad.d_attn_c_proj_bias,
+        &mut grad.d_attn_c_proj_bias,
         &mut state.attn_c_proj.bias,
     )?;
-    trace.adam_ms += update_layer_norm_timed(adam, &mut block.ln_2, &grad.ln_2, &mut state.ln_2)?;
+    trace.adam_ms +=
+        update_layer_norm_timed(adam, &mut block.ln_2, &mut grad.ln_2, &mut state.ln_2)?;
     if gpt2_nvfp4::canon_ac_enabled() {
         trace.adam_ms += adam.update_fp32_timed(&grad.d_canon_c_weight, &mut state.canon_c)?;
     }
     trace.adam_ms += adam.update_timed(
         &mut block.mlp_up.bias,
-        &grad.d_mlp_c_fc_bias,
+        &mut grad.d_mlp_c_fc_bias,
         &mut state.mlp_up.bias,
     )?;
     trace.adam_ms += adam.update_timed(
         &mut block.mlp_down.bias,
-        &grad.d_mlp_c_proj_bias,
+        &mut grad.d_mlp_c_proj_bias,
         &mut state.mlp_down.bias,
     )?;
     Ok(())

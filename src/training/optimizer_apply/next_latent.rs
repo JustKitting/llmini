@@ -12,7 +12,7 @@ pub(super) struct NextLatUpdateArgs<'a> {
     pub stream: &'a CudaStream,
     pub optimizer: &'a OptimizerModule,
     pub weights: &'a mut UploadedNextLat,
-    pub grads: &'a NextLatGradBuffers,
+    pub grads: &'a mut NextLatGradBuffers,
     pub scratch: &'a mut OptimizerScratch,
     pub state: &'a mut NextLatState,
     pub step: u32,
@@ -45,27 +45,27 @@ pub(super) fn update_next_latent(args: NextLatUpdateArgs<'_>) -> Result<(), Driv
 
     adam.update(
         &mut weights.norm.weight,
-        &grads.d_norm_weight,
+        &mut grads.d_norm_weight,
         &mut state.norm.weight,
     )?;
     adam.update(
         &mut weights.norm.bias,
-        &grads.d_norm_bias,
+        &mut grads.d_norm_bias,
         &mut state.norm.bias,
     )?;
     adam.update(
         &mut weights.input_projection.bias,
-        &grads.d_input_projection_bias,
+        &mut grads.d_input_projection_bias,
         &mut state.input_projection.bias,
     )?;
     adam.update(
         &mut weights.transition.bias,
-        &grads.d_transition_bias,
+        &mut grads.d_transition_bias,
         &mut state.transition.bias,
     )?;
     adam.update(
         &mut weights.output_projection.bias,
-        &grads.d_output_projection_bias,
+        &mut grads.d_output_projection_bias,
         &mut state.output_projection.bias,
     )
 }

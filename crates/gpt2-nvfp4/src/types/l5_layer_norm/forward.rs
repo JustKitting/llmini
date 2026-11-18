@@ -1,6 +1,6 @@
 use cuda_core::{DeviceBuffer, DriverError};
 use rust_kernels_cuda::layer_norm::{
-    GptLayerNormArgs, GptLayerNormSaveResidualF16Args, LayerNormModule,
+    GptLayerNormArgs, GptLayerNormSaveResidualF16Args, GptLayerNormSaveXhatF16Args, LayerNormModule,
 };
 
 use super::args::{LayerNormForwardArgs, LayerNormTensors};
@@ -53,8 +53,11 @@ impl LayerNormWeights {
         tape: Option<&mut LayerNormTape<'_>>,
     ) -> Result<HiddenStateDevice<'a>, DriverError> {
         if let Some(tape) = tape {
-            let hidden = self.forward_save_residual_f16(args, &mut *tape.residual)?;
-            tape.save_stats(hidden.stream, hidden.mean, hidden.inv_std)?;
+            std::mem::swap(args.hidden.mean, tape.mean);
+            std::mem::swap(args.hidden.inv_std, tape.inv_std);
+            let hidden = self.forward_save_xhat_f16(args, &mut *tape.residual)?;
+            std::mem::swap(hidden.mean, tape.mean);
+            std::mem::swap(hidden.inv_std, tape.inv_std);
             Ok(hidden)
         } else {
             self.forward(args)
@@ -79,6 +82,33 @@ impl LayerNormWeights {
                 mean: &mut *hidden.mean,
                 inv_std: &mut *hidden.inv_std,
                 residual_f16,
+                row_count: hidden.row_count,
+                embedding_dim: GPT2_EMBEDDING_DIM,
+                epsilon: GPT2_LAYER_NORM_EPSILON,
+                output_scale: args.output_scale,
+            })?;
+
+        Ok(hidden)
+    }
+
+    pub fn forward_save_xhat_f16<'a>(
+        &self,
+        args: LayerNormForwardArgs<'a>,
+        xhat_f16: &mut DeviceBuffer<u16>,
+    ) -> Result<HiddenStateDevice<'a>, DriverError> {
+        let hidden = args.hidden;
+
+        args.module
+            .gpt_layer_norm_save_xhat_f16(GptLayerNormSaveXhatF16Args {
+                stream: hidden.stream,
+                residual: &mut *hidden.residual,
+                weight: args.tensors.weight,
+                bias: args.tensors.bias,
+                normalized: &mut *hidden.normalized,
+                normalized_amax: &mut *hidden.normalized_amax,
+                mean: &mut *hidden.mean,
+                inv_std: &mut *hidden.inv_std,
+                xhat_f16,
                 row_count: hidden.row_count,
                 embedding_dim: GPT2_EMBEDDING_DIM,
                 epsilon: GPT2_LAYER_NORM_EPSILON,

@@ -9,7 +9,7 @@ use crate::warp_reduce::thread_lane_warp;
 pub(super) const SPARSE_PROB_THREADS_PER_BLOCK: u32 = 256;
 const SPARSE_PROB_WARPS_PER_BLOCK: usize = (SPARSE_PROB_THREADS_PER_BLOCK / 32) as usize;
 const TILE_ELEMENTS: u32 = CTA_M * CTA_N;
-const U24_TO_UNIT_F32: f32 = 1.0 / 16_777_216.0;
+const U24_DRAW_COUNT: u32 = 1 << 24;
 
 pub(super) fn sparsify_attention_probs_f16_body(
     probs: &[u16],
@@ -56,9 +56,18 @@ pub(super) fn sparsify_attention_probs_f16_body(
         let q_unclamped = tile_budget * tile_mass / CTA_M as f32;
         let q = if q_unclamped < 1.0 { q_unclamped } else { 1.0 };
         let tile_index = (batch_head * tiles + query_tile) * tiles + key_tile;
-        let random =
-            (hash_u32(seed ^ tile_index.wrapping_mul(0x9e37_79b9)) >> 8) as f32 * U24_TO_UNIT_F32;
-        let scale = if q > 0.0 && random < q { 1.0 / q } else { 0.0 };
+        let random = hash_u32(seed ^ tile_index.wrapping_mul(0x9e37_79b9)) >> 8;
+        // The existing U24 lottery accepts ceil(q*2^24) equiprobable draws.
+        // Preserve its selected tiles, but weight by their actual probability;
+        // 1/q otherwise overweights masses below one draw interval.
+        let requested_draws = q * U24_DRAW_COUNT as f32;
+        let whole_draws = requested_draws as u32;
+        let accepted_draws = whole_draws + u32::from(requested_draws > whole_draws as f32);
+        let scale = if q > 0.0 && random < accepted_draws {
+            U24_DRAW_COUNT as f32 / accepted_draws as f32
+        } else {
+            0.0
+        };
         unsafe {
             *tile_scales.get_unchecked_mut(tile_index as usize) = scale;
         }

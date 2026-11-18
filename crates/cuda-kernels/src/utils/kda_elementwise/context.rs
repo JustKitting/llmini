@@ -3,7 +3,7 @@ use cuda_device::{thread, warp};
 use crate::attention::CausalAttentionParams;
 use crate::f16_tc_matmul::convert::cvt_f32_f16;
 use crate::float_ptx::fma_f32;
-use crate::kda_common::{KDA_MAX_HEAD_DIM, k_offset, kda_warp_norm, q_offset, qkv_index, silu};
+use crate::kda_common::{KDA_MAX_HEAD_DIM, k_offset, kda_warp_norm, q_offset, qkv_index, sigmoid};
 
 pub(crate) trait KdaQkvRead: Sized {
     fn read(values: &[Self], index: usize) -> f32;
@@ -53,8 +53,8 @@ pub(crate) fn kda_warp_ctx(threads_per_block: u32, params: &CausalAttentionParam
 pub(crate) struct KdaQkAct {
     pub(crate) raw_q: f32,
     pub(crate) raw_k: f32,
-    pub(crate) q_act: f32,
-    pub(crate) k_act: f32,
+    q_sigmoid: f32,
+    k_sigmoid: f32,
 }
 
 impl KdaQkAct {
@@ -62,9 +62,29 @@ impl KdaQkAct {
         Self {
             raw_q: 0.0,
             raw_k: 0.0,
-            q_act: 0.0,
-            k_act: 0.0,
+            q_sigmoid: 0.0,
+            k_sigmoid: 0.0,
         }
+    }
+
+    #[inline(always)]
+    pub(crate) fn q_act(self) -> f32 {
+        self.raw_q * self.q_sigmoid
+    }
+
+    #[inline(always)]
+    pub(crate) fn k_act(self) -> f32 {
+        self.raw_k * self.k_sigmoid
+    }
+
+    #[inline(always)]
+    pub(crate) fn q_silu_grad(self) -> f32 {
+        self.q_sigmoid * (1.0 + self.raw_q * (1.0 - self.q_sigmoid))
+    }
+
+    #[inline(always)]
+    pub(crate) fn k_silu_grad(self) -> f32 {
+        self.k_sigmoid * (1.0 + self.raw_k * (1.0 - self.k_sigmoid))
     }
 }
 
@@ -85,8 +105,13 @@ impl KdaQkNormAcc {
 
     #[inline(always)]
     pub(crate) fn add(&mut self, qk: KdaQkAct) {
-        self.q_sum = fma_f32(qk.q_act, qk.q_act, self.q_sum);
-        self.k_sum = fma_f32(qk.k_act, qk.k_act, self.k_sum);
+        self.add_values(qk.q_act(), qk.k_act());
+    }
+
+    #[inline(always)]
+    pub(crate) fn add_values(&mut self, q_act: f32, k_act: f32) {
+        self.q_sum = fma_f32(q_act, q_act, self.q_sum);
+        self.k_sum = fma_f32(k_act, k_act, self.k_sum);
     }
 
     #[inline(always)]
@@ -107,7 +132,7 @@ pub(crate) fn read_qk_act<T: KdaQkvRead>(
     KdaQkAct {
         raw_q,
         raw_k,
-        q_act: silu(raw_q),
-        k_act: silu(raw_k),
+        q_sigmoid: sigmoid(raw_q),
+        k_sigmoid: sigmoid(raw_k),
     }
 }

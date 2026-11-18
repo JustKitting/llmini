@@ -60,6 +60,7 @@ pub(super) fn muon_matrix_update_body(
     // Polar Express returns after a grid-wide sync; update can consume its result directly.
     update_master_chunks(
         polar_update,
+        state.grad as *mut f32,
         state.z_master,
         state.x_master,
         state.momentum,

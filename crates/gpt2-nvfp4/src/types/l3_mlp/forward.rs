@@ -8,63 +8,100 @@ use crate::types::HiddenStateDevice;
 pub(super) fn forward<'a, 'scratch>(
     args: MlpForwardArgs<'a, 'scratch>,
 ) -> Result<HiddenStateDevice<'a>, DriverError> {
+    forward_impl(args, true)
+}
+
+pub(super) fn forward_impl<'a, 'scratch>(
+    args: MlpForwardArgs<'a, 'scratch>,
+    add_residual: bool,
+) -> Result<HiddenStateDevice<'a>, DriverError> {
     let mut input_nvfp4 = args.scratch.input_nvfp4;
     let mut activation_nvfp4 = args.scratch.activation_nvfp4;
-    let mut tape = args.tape;
+    let (mut up_tape, mut down_tape, mut pre_activation, mut saved_routes) = match args.tape {
+        Some(tape) => (
+            Some(tape.up_input_nvfp4),
+            Some(tape.down_input_nvfp4),
+            Some(tape.pre_activation_f16),
+            Some(tape.route_masks),
+        ),
+        None => (None, None, None, None),
+    };
     let hidden = args.hidden;
 
-    let input = if args.input_prequantized {
-        input_nvfp4.device()
-    } else {
+    if !args.input_prequantized {
+        if let Some(tape) = up_tape.as_mut() {
+            tape.swap_storage(&mut input_nvfp4);
+        }
         input_nvfp4.quantize_hidden_precomputed(
             args.quant_module,
             &hidden,
             crate::GPT2_EMBEDDING_DIM,
-        )?
-    };
-    if let Some(tape) = tape.as_mut() {
-        tape.save_up_input(hidden.stream, input)?;
+        )?;
     }
+    if let Some(tape) = up_tape.as_mut() {
+        tape.swap_storage(&mut input_nvfp4);
+    }
+    let input = match up_tape.as_ref() {
+        Some(tape) => tape.saved(),
+        None => input_nvfp4.device(),
+    };
 
-    args.tma_scale_pack.pack(
-        hidden.stream,
-        input.scales,
-        args.scratch.tma_input_scale_packed,
-        hidden.row_count,
-        crate::GPT2_EMBEDDING_DIM,
-    )?;
-    args.tma_scale_pack.pack(
-        hidden.stream,
-        args.projections.up.weight_device.scales,
-        args.scratch.tma_weight_scale_packed,
-        crate::GPT2_MLP_DIM,
-        crate::GPT2_EMBEDDING_DIM,
-    )?;
-    args.tma_module.prepare_tma_nvfp4_device_scales_into(
-        hidden.stream,
-        input.bytes,
-        args.scratch.tma_input_scale_packed,
-        args.projections.up.weight_device.bytes,
-        args.scratch.tma_weight_scale_packed,
-        hidden.row_count,
-        crate::GPT2_EMBEDDING_DIM,
-        crate::GPT2_MLP_DIM,
-        args.scratch.tma_descriptors,
-    )?;
-    args.tma_module
-        .gemm_tma_nvfp4_rowwise_a_scale_relu2_compact(
+    if crate::GPT2_BOUNDED_SWIGLU {
+        super::weights::MlpWeights::project_paired(
+            args.tma_module,
             hidden.stream,
+            input,
+            args.projections.up,
             args.scratch.tma_descriptors,
-            tape.as_mut().map(|tape| &mut *tape.pre_activation_f16),
+            args.scratch.paired,
+            hidden.row_count,
+        )?;
+        if let Some(observer) = args.projection_observer {
+            observer.observe(
+                args.block_index,
+                hidden.stream,
+                args.scratch.paired,
+                hidden.row_count as usize * crate::GPT2_MLP_UP,
+                false,
+            )?;
+        }
+        args.module.bounded_forward(
+            hidden.stream,
+            args.scratch.paired,
             args.scratch.activation,
-            args.projections.up.bias,
+            hidden.row_count,
+            crate::GPT2_MLP_DIM,
+        )?;
+    } else {
+        args.tma_module.prepare_tma_nvfp4_csf_weight_into(
+            hidden.stream,
+            input.bytes,
+            input.scales,
+            args.projections.up.weight_device.bytes,
+            args.projections.up.weight_device.scales,
             hidden.row_count,
             crate::GPT2_EMBEDDING_DIM,
             crate::GPT2_MLP_DIM,
-            input.global_scales,
-            args.projections.up.weight_device.global_scale,
+            args.scratch.tma_descriptors,
         )?;
+        args.tma_module
+            .gemm_tma_nvfp4_rowwise_a_scale_relu2_compact(
+                hidden.stream,
+                args.scratch.tma_descriptors,
+                pre_activation.as_deref_mut(),
+                args.scratch.activation,
+                args.projections.up.bias,
+                hidden.row_count,
+                crate::GPT2_EMBEDDING_DIM,
+                crate::GPT2_MLP_DIM,
+                input.global_scales,
+                args.projections.up.weight_device.global_scale,
+            )?;
+    }
 
+    if let Some(tape) = down_tape.as_mut() {
+        tape.swap_storage(&mut activation_nvfp4);
+    }
     activation_nvfp4.quantize_row_amax(
         args.quant_module,
         hidden.stream,
@@ -74,13 +111,16 @@ pub(super) fn forward<'a, 'scratch>(
         crate::GPT2_MLP_DIM,
     )?;
 
-    let input = activation_nvfp4.device();
-    if let Some(tape) = tape.as_mut() {
-        tape.save_down_input(hidden.stream, input)?;
+    if let Some(tape) = down_tape.as_mut() {
+        tape.swap_storage(&mut activation_nvfp4);
     }
+    let input = match down_tape.as_ref() {
+        Some(tape) => tape.saved(),
+        None => activation_nvfp4.device(),
+    };
     let mut route_masks = if crate::uses_block_topk_mlp(args.block_index) {
-        Some(match tape.as_mut() {
-            Some(tape) => &mut *tape.route_masks,
+        Some(match saved_routes.as_mut() {
+            Some(routes) => &mut **routes,
             None => &mut *args.scratch.route_masks,
         })
     } else {
@@ -93,35 +133,32 @@ pub(super) fn forward<'a, 'scratch>(
             scores: &mut *args.scratch.route_scores,
             masks: route_masks,
             token_count: hidden.row_count,
+            seq_len: hidden.seq_len,
             feature_count: crate::GPT2_MLP_DIM,
         })?;
     }
 
-    args.tma_scale_pack.pack(
-        hidden.stream,
-        input.scales,
-        args.scratch.tma_wide_input_scale_packed,
-        hidden.row_count,
-        crate::GPT2_MLP_DIM,
-    )?;
-    args.tma_scale_pack.pack(
-        hidden.stream,
-        args.projections.down.weight_device.scales,
-        args.scratch.tma_weight_scale_packed,
-        crate::GPT2_EMBEDDING_DIM,
-        crate::GPT2_MLP_DIM,
-    )?;
-    args.tma_module.prepare_tma_nvfp4_device_scales_into(
+    args.tma_module.prepare_tma_nvfp4_csf_weight_into(
         hidden.stream,
         input.bytes,
-        args.scratch.tma_wide_input_scale_packed,
+        input.scales,
         args.projections.down.weight_device.bytes,
-        args.scratch.tma_weight_scale_packed,
+        args.projections.down.weight_device.scales,
         hidden.row_count,
         crate::GPT2_MLP_DIM,
         crate::GPT2_EMBEDDING_DIM,
         args.scratch.tma_descriptors,
     )?;
+    if !add_residual {
+        unsafe {
+            cuda_core::memory::memset_d8_async(
+                hidden.residual.cu_deviceptr(),
+                0,
+                hidden.row_count as usize * crate::GPT2_N_EMBD * 4,
+                hidden.stream.cu_stream(),
+            )?;
+        }
+    }
     args.tma_module.gemm_tma_nvfp4_rowwise_a_scale_residual(
         hidden.stream,
         args.scratch.tma_descriptors,
@@ -135,7 +172,7 @@ pub(super) fn forward<'a, 'scratch>(
         route_masks.as_deref().map(|masks| {
             Nvfp4GemmRoute::token_m_feature_k(
                 masks,
-                crate::GPT2_MLP_ROUTE_TOKEN_TILES as u32,
+                hidden.row_count / crate::GPT2_MLP_ROUTE_TILE as u32,
                 crate::GPT2_MLP_ROUTE_FEATURE_TILES as u32,
                 crate::GPT2_MLP_ROUTE_ACTIVE_FEATURE_TILES as u32,
             )

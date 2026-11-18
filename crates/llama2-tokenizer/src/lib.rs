@@ -3,6 +3,7 @@ use std::io;
 use std::path::Path;
 
 use tokenizers::Tokenizer;
+mod memory;
 
 pub type AppResult<T> = Result<T, Box<dyn Error>>;
 
@@ -70,6 +71,11 @@ impl TrainingTokenizer {
         EOS_TOKEN
     }
 
+    /// Static Engram addressing map; never changes the language-model tokens.
+    pub fn memory_id_map(&self) -> AppResult<Vec<u32>> {
+        memory::id_map(&self.tokenizer)
+    }
+
     pub fn decode(&self, ids: &[u32]) -> AppResult<String> {
         self.tokenizer
             .decode(ids, true)
@@ -119,3 +125,6 @@ mod tests {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod memory_map_tests;

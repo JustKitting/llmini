@@ -9,9 +9,11 @@ use super::{THREADS_PER_BLOCK, WARP_SUM_SLOTS};
 
 pub(super) fn grad_clip_scale_body(
     chunk_sums: &[f32],
+    extra_sums: &[f32],
     scale: &mut DisjointSlice<f32>,
     norm_out: &mut DisjointSlice<f32>,
     chunk_count: u32,
+    extra_sum_count: u32,
     max_norm: f32,
 ) {
     static mut WARP_SUMS: SharedArray<f32, WARP_SUM_SLOTS> = SharedArray::UNINIT;
@@ -23,6 +25,11 @@ pub(super) fn grad_clip_scale_body(
     while chunk < chunk_count {
         local += chunk_sums[chunk as usize];
         chunk += THREADS_PER_BLOCK;
+    }
+    let mut extra = thread;
+    while extra < extra_sum_count {
+        local += extra_sums[extra as usize];
+        extra += THREADS_PER_BLOCK;
     }
 
     let sum = unsafe { block_sum_shared_f32(&mut WARP_SUMS, local, lane, warp) };

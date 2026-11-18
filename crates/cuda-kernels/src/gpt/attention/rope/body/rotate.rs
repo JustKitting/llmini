@@ -2,7 +2,8 @@ use cuda_device::DisjointSlice;
 
 use super::super::ApplyRopeParams;
 use super::pair::{QkvPair, read_pair};
-use crate::float_ptx::{exp_f32, fma_f32, sincos_f32};
+use crate::float_ptx::fma_f32;
+use crate::position::{rotation_factors, stationary_dim};
 
 #[inline(always)]
 pub(super) fn rotate_section(
@@ -15,7 +16,10 @@ pub(super) fn rotate_section(
     params: &ApplyRopeParams,
 ) -> QkvPair {
     let pair = read_pair(qkv, batch, token, head, dim, section_offset, params);
-    let (sin, cos) = sincos_f32(token as f32 * rope_inv_freq(dim, params.head_dim));
+    if stationary_dim(dim, params.head_dim) {
+        return pair;
+    }
+    let (sin, cos) = rotation_factors(token, dim, params.head_dim);
     let rotated_even = fma_f32(-pair.odd, sin, pair.even * cos);
     let rotated_odd = fma_f32(pair.odd, cos, pair.even * sin);
 
@@ -31,9 +35,4 @@ pub(super) fn rotate_section(
         odd_index: pair.odd_index,
         odd: rotated_odd,
     }
-}
-
-#[inline(always)]
-fn rope_inv_freq(dim: u32, head_dim: u32) -> f32 {
-    exp_f32(-9.210_340_5 * dim as f32 / head_dim as f32)
 }

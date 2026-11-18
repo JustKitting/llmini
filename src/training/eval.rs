@@ -6,8 +6,29 @@ use crate::AppResult;
 
 impl Trainer {
     pub fn eval_loss(&mut self, batch: &TokenBatch) -> AppResult<f32> {
+        let losses = self.eval_token_losses(batch)?;
+        Ok(losses.iter().sum::<f32>() / losses.len() as f32)
+    }
+
+    pub(in crate::training) fn eval_token_losses(
+        &mut self,
+        batch: &TokenBatch,
+    ) -> AppResult<Vec<f32>> {
         self.forward_step(batch)?;
 
+        self.collect_token_losses(batch)
+    }
+
+    pub(in crate::training) fn eval_token_losses_for_passes(
+        &mut self,
+        batch: &TokenBatch,
+        passes: usize,
+    ) -> AppResult<Vec<f32>> {
+        self.forward_for_passes(batch, passes)?;
+        self.collect_token_losses(batch)
+    }
+
+    fn collect_token_losses(&mut self, batch: &TokenBatch) -> AppResult<Vec<f32>> {
         let stream = self.runtime.stream.as_ref();
         self.runtime.loss.cross_entropy(CrossEntropyArgs {
             stream,
@@ -21,8 +42,7 @@ impl Trainer {
         })?;
 
         let losses = self.buffers.backward.losses.to_host_vec(stream)?;
-        let active_losses = &losses[..batch.token_count];
-        Ok(active_losses.iter().sum::<f32>() / active_losses.len() as f32)
+        Ok(losses[..batch.token_count].to_vec())
     }
 
     pub fn eval_loss_windows(&mut self, windows: &[u16], window_count: usize) -> AppResult<f32> {

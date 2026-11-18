@@ -6,7 +6,7 @@ use crate::{
     upload::{UploadedCanon, UploadedNvfp4},
 };
 
-pub(super) fn write(
+pub(crate) fn write(
     writer: &mut CheckpointWriter<impl std::io::Write>,
     stream: &CudaStream,
     name: &str,
@@ -21,7 +21,7 @@ pub(super) fn write(
     )
 }
 
-pub(super) fn write_fp32(
+pub(crate) fn write_fp32(
     writer: &mut CheckpointWriter<impl std::io::Write>,
     stream: &CudaStream,
     name: &str,

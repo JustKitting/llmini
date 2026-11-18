@@ -85,7 +85,12 @@ impl LinearBackwardModule {
             stream: args.stream,
             e_h: scratch.e_h.rowwise(),
             weight_t_h: scratch.weight_t_h.device_scale_mma_weight(),
-            e_t_h: scratch.e_t_h.rowwise(),
+            // The paired transpose uses the same derived global scalar.
+            e_t_h: crate::nvfp4::Nvfp4RowwiseDeviceTensor::new(
+                &*scratch.e_t_h.bytes,
+                &*scratch.e_t_h.scales,
+                &*scratch.e_h.global_scale,
+            ),
             input_t_h: scratch.input_t_h.device_scale_mma_weight(),
             dinput: args.dinput,
             dweight: args.dweight,

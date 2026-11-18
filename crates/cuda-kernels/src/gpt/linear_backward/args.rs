@@ -10,7 +10,8 @@ use crate::nvfp4_tma_matmul::launcher::Nvfp4GemmRoute;
 pub use ms_eden::{
     LinearBackwardInputTranspose, LinearBackwardMsEdenArgs, LinearBackwardMsEdenScratch,
     LinearBackwardMsEdenScratchBuffers, LinearBackwardTmaScratch, LinearBackwardWeightTranspose,
-    MsEdenOperandScratch, MsEdenOperandScratchBuffer,
+    MsEdenOperandScratch, MsEdenOperandScratchBuffer, MsEdenTransposeScratch,
+    MsEdenTransposeScratchBuffer,
 };
 
 #[derive(Clone, Copy)]

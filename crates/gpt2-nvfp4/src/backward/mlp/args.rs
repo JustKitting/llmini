@@ -3,6 +3,9 @@ use rust_kernels_cuda::linear_backward::{LinearBackwardModule, LinearBackwardMsE
 use rust_kernels_cuda::mlp::MlpModule;
 use rust_kernels_cuda::nvfp4::Nvfp4DecodeModule;
 use rust_kernels_cuda::nvfp4_quant::Nvfp4QuantModule;
+use rust_kernels_cuda::nvfp4_tma_matmul::{
+    launcher::Nvfp4GemmModule, tma::TmaNvfp4DeviceScaleDescriptors,
+};
 use rust_kernels_cuda::transpose::TransposeModule;
 
 use crate::Gpt2Rng;
@@ -11,6 +14,7 @@ use crate::types::{BlockForwardSaved, MlpProjectionTensors};
 
 #[derive(Clone, Copy)]
 pub struct MlpBackwardModules<'a> {
+    pub tma: &'a Nvfp4GemmModule,
     pub transpose: &'a TransposeModule,
     pub decode: &'a Nvfp4DecodeModule,
     pub linear: &'a LinearBackwardModule,
@@ -19,6 +23,9 @@ pub struct MlpBackwardModules<'a> {
 }
 
 pub struct MlpBackwardScratch<'scratch> {
+    pub paired: &'scratch mut DeviceBuffer<f32>,
+    pub tma_descriptors: &'scratch mut TmaNvfp4DeviceScaleDescriptors,
+    pub projection_observer: Option<&'scratch dyn crate::MlpProjectionObserver>,
     pub down_linear: LinearBackwardMsEdenScratch<'scratch>,
     pub up_linear: LinearBackwardMsEdenScratch<'scratch>,
 }
@@ -26,6 +33,9 @@ pub struct MlpBackwardScratch<'scratch> {
 impl<'scratch> MlpBackwardScratch<'scratch> {
     pub fn reborrow(&mut self) -> MlpBackwardScratch<'_> {
         MlpBackwardScratch {
+            paired: &mut *self.paired,
+            tma_descriptors: &mut *self.tma_descriptors,
+            projection_observer: self.projection_observer,
             down_linear: reborrow_ms_eden(&mut self.down_linear),
             up_linear: reborrow_ms_eden(&mut self.up_linear),
         }

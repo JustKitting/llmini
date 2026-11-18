@@ -8,5 +8,6 @@ pub use call::{
 };
 pub use scratch::{
     LinearBackwardMsEdenScratch, LinearBackwardMsEdenScratchBuffers, LinearBackwardTmaScratch,
-    MsEdenOperandScratch, MsEdenOperandScratchBuffer,
+    MsEdenOperandScratch, MsEdenOperandScratchBuffer, MsEdenTransposeScratch,
+    MsEdenTransposeScratchBuffer,
 };

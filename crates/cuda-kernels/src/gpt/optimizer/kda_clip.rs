@@ -19,7 +19,7 @@ pub(super) mod module {
         qk_norm_max: &[f32],
         mut z_master: DisjointSlice<f32>,
         mut x_master: DisjointSlice<f32>,
-        mut momentum: DisjointSlice<f32>,
+        mut momentum: DisjointSlice<u16>,
         mut scores: DisjointSlice<f32>,
         row_count: u32,
         qkv_dim: u32,
@@ -97,10 +97,17 @@ pub(super) mod module {
             unsafe {
                 let z = z_master.get_unchecked_mut(master_index);
                 let x = x_master.get_unchecked_mut(master_index);
-                let m = momentum.get_unchecked_mut(master_index);
                 *z *= factor;
                 *x *= factor;
-                *m *= factor;
+                let m = crate::f16_tc_matmul::convert::load_bf16_global(
+                    momentum.as_mut_ptr(),
+                    master_index,
+                );
+                crate::f16_tc_matmul::convert::store_bf16_global(
+                    momentum.as_mut_ptr(),
+                    master_index,
+                    m * factor,
+                );
             }
             index += MATRIX_THREADS_PER_BLOCK;
         }

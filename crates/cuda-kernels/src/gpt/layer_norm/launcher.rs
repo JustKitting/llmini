@@ -38,6 +38,7 @@ macro_rules! gpt_layer_norm_args {
 }
 
 gpt_layer_norm_args!(GptLayerNormArgs);
+gpt_layer_norm_args!(GptLayerNormSaveXhatF16Args, xhat_f16: &'out mut DeviceBuffer<u16>);
 gpt_layer_norm_args!(GptLayerNormSaveResidualF16Args, residual_f16: &'out mut DeviceBuffer<u16>);
 
 pub struct LayerNormModule {
@@ -92,5 +93,12 @@ impl LayerNormModule {
         GptLayerNormSaveResidualF16Args<'_, '_>,
         gpt_layer_norm_save_residual_f16_kernel,
         residual_f16
+    );
+
+    gpt_layer_norm_launcher!(
+        gpt_layer_norm_save_xhat_f16,
+        GptLayerNormSaveXhatF16Args<'_, '_>,
+        gpt_layer_norm_save_xhat_f16_kernel,
+        xhat_f16
     );
 }

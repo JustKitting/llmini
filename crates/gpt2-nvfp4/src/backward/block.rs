@@ -4,7 +4,10 @@ use rust_kernels_cuda::canon::CanonModule;
 use rust_kernels_cuda::layer_norm_backward::LayerNormBackwardModule;
 use rust_kernels_cuda::residual::ResidualBackwardModule;
 
-use super::layer_norm::{Gpt2LayerNormBackwardAddAmaxArgs, layer_norm_backward_add_amax};
+use super::layer_norm::{
+    Gpt2LayerNormBackwardAddAmaxArgs, Gpt2LayerNormBackwardAmaxArgs, layer_norm_backward_add_amax,
+    layer_norm_backward_amax,
+};
 use super::mlp::{
     MlpBackwardArgs, MlpBackwardGrads, MlpBackwardModules, MlpBackwardScratch, MlpBackwardSeeds,
     backward as mlp_backward,
@@ -40,6 +43,17 @@ pub struct BlockMlpBackwardArgs<'a, 'scratch, 'out> {
 }
 
 pub fn mlp_side_backward(args: BlockMlpBackwardArgs<'_, '_, '_>) -> Result<u32, DriverError> {
+    mlp_side_backward_impl(args, true)
+}
+pub fn mlp_side_backward_branch(
+    args: BlockMlpBackwardArgs<'_, '_, '_>,
+) -> Result<u32, DriverError> {
+    mlp_side_backward_impl(args, false)
+}
+fn mlp_side_backward_impl(
+    args: BlockMlpBackwardArgs<'_, '_, '_>,
+    add_residual: bool,
+) -> Result<u32, DriverError> {
     let BlockMlpBackwardArgs {
         block_index,
         stream,
@@ -109,6 +123,19 @@ pub fn mlp_side_backward(args: BlockMlpBackwardArgs<'_, '_, '_>) -> Result<u32, 
         &*d_hidden
     };
 
+    if !add_residual {
+        return layer_norm_backward_amax(Gpt2LayerNormBackwardAmaxArgs {
+            stream,
+            module: modules.layer_norm,
+            weights: ln_2,
+            saved: saved.ln_2,
+            grads: ln_2_grads.reborrow(),
+            d_normalized: d_ln_2_normalized,
+            d_residual: d_residual_after_attention,
+            chunk_amax: d_residual_after_attention_chunk_amax,
+            output_scale: crate::layer_norm_scale(block_index),
+        });
+    }
     layer_norm_backward_add_amax(Gpt2LayerNormBackwardAddAmaxArgs {
         stream,
         module: modules.layer_norm,

@@ -8,7 +8,10 @@ use super::launch_grads::{
 };
 use super::launch_scores::{run_ds_scores, run_ds_scores_sparse, run_pair_scores};
 use super::matmul::AttentionTcMatmulContext;
-use super::selective::{SELECTIVE_BACKWARD_THREADS_PER_BLOCK, SELECTIVE_ROW_SUM_THREADS_PER_BLOCK};
+use super::selective::{
+    SELECTIVE_BACKWARD_KEYS_PER_BLOCK, SELECTIVE_BACKWARD_THREADS_PER_BLOCK,
+    SELECTIVE_ROW_SUM_THREADS_PER_BLOCK, SELECTIVE_TILE_ACTIVATE_THREADS_PER_BLOCK,
+};
 use super::sparse_probs::SPARSE_PROB_THREADS_PER_BLOCK;
 use super::types::CausalAttentionBackwardTcArgs;
 use crate::attention::AttentionModule;
@@ -178,7 +181,7 @@ impl AttentionModule {
                     kernels.selective_attention_backward_sparse_kernel(
                         stream,
                         grid_x_config(
-                            batch_size * seq_len.div_ceil(SELECTIVE_BACKWARD_THREADS_PER_BLOCK),
+                            batch_size * seq_len.div_ceil(SELECTIVE_BACKWARD_KEYS_PER_BLOCK),
                             SELECTIVE_BACKWARD_THREADS_PER_BLOCK,
                         ),
                         qkv,
@@ -192,7 +195,7 @@ impl AttentionModule {
                         stream,
                         linear_config(
                             batch_size * tiles * tiles,
-                            SELECTIVE_BACKWARD_THREADS_PER_BLOCK,
+                            SELECTIVE_TILE_ACTIVATE_THREADS_PER_BLOCK,
                         ),
                         &mut *scratch.p,
                         params,
@@ -244,7 +247,7 @@ impl AttentionModule {
                     kernels.selective_attention_backward_dense_kernel(
                         stream,
                         grid_x_config(
-                            batch_size * seq_len.div_ceil(SELECTIVE_BACKWARD_THREADS_PER_BLOCK),
+                            batch_size * seq_len.div_ceil(SELECTIVE_BACKWARD_KEYS_PER_BLOCK),
                             SELECTIVE_BACKWARD_THREADS_PER_BLOCK,
                         ),
                         qkv,

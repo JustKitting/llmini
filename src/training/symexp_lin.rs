@@ -1,12 +1,11 @@
-use cuda_core::{DeviceBuffer, DriverError};
+use cuda_core::DriverError;
 
 use super::Trainer;
-use super::grads::BackwardBuffers;
-use super::next_latent::NextLatGradBuffers;
-use super::optimizer_muon::{MuonPointerTables, apply_symexp_lin_chain_rule};
-use super::optimizer_state::{AdamState, OptimizerStateBuffers};
+use super::grad_clip::GradientClipBuffers;
+use super::optimizer_muon::MuonPointerTables;
 use super::runtime::Runtime;
 use crate::AppResult;
+use rust_kernels_cuda::nvfp4_tma_matmul::gradient::GemmGradientTransform;
 
 const DEFAULT_BETA: f32 = 12.5;
 
@@ -31,90 +30,46 @@ pub(super) fn reuse_precomputed_amax() -> bool {
     enabled() && super::env::env_bool("TRAIN_SYMEXP_LIN_REUSE_AMAX").unwrap_or(true)
 }
 
-pub(super) fn apply_gradient_chain_rule(
+pub(super) fn prepare_weight_gradients(
     runtime: &Runtime,
     tables: &MuonPointerTables,
-    grads: &mut BackwardBuffers,
-    next_latent_grads: &mut NextLatGradBuffers,
-    state: &OptimizerStateBuffers,
+    grad_clip: &GradientClipBuffers,
     schedule_beta: f32,
 ) -> Result<(), DriverError> {
     let beta = beta();
     if beta == 0.0 {
+        runtime
+            .linear
+            .set_weight_gradient_transforms(std::iter::empty());
         return Ok(());
     }
-
-    apply_symexp_lin_chain_rule(runtime, tables, schedule_beta, beta, learn_scales())?;
-
-    for (grad, state) in grads.blocks.iter_mut().zip(state.blocks.iter()) {
-        chain_bias(
-            runtime,
-            &mut grad.d_attn_qkv_bias,
-            &state.attn_qkv.bias,
-            schedule_beta,
-            beta,
-        )?;
-        chain_bias(
-            runtime,
-            &mut grad.d_attn_c_proj_bias,
-            &state.attn_c_proj.bias,
-            schedule_beta,
-            beta,
-        )?;
-        chain_bias(
-            runtime,
-            &mut grad.d_mlp_c_fc_bias,
-            &state.mlp_up.bias,
-            schedule_beta,
-            beta,
-        )?;
-        chain_bias(
-            runtime,
-            &mut grad.d_mlp_c_proj_bias,
-            &state.mlp_down.bias,
-            schedule_beta,
-            beta,
+    let learn_scales = learn_scales();
+    if learn_scales {
+        runtime.optimizer.symexp_lin_zero_scale_grads(
+            runtime.stream.as_ref(),
+            tables.symexp_lin_slots(),
+            tables.slot_count as u32,
         )?;
     }
-
-    chain_bias(
-        runtime,
-        &mut next_latent_grads.d_input_projection_bias,
-        &state.next_latent.input_projection.bias,
-        schedule_beta,
-        beta,
-    )?;
-    chain_bias(
-        runtime,
-        &mut next_latent_grads.d_transition_bias,
-        &state.next_latent.transition.bias,
-        schedule_beta,
-        beta,
-    )?;
-    chain_bias(
-        runtime,
-        &mut next_latent_grads.d_output_projection_bias,
-        &state.next_latent.output_projection.bias,
-        schedule_beta,
-        beta,
-    )
-}
-
-fn chain_bias(
-    runtime: &Runtime,
-    grad: &mut DeviceBuffer<f32>,
-    state: &AdamState,
-    schedule_beta: f32,
-    beta: f32,
-) -> Result<(), DriverError> {
-    runtime.optimizer.symexp_lin_chain_rule(
-        runtime.stream.as_ref(),
-        grad,
-        &state.z_master,
-        &state.x_master,
-        schedule_beta,
-        beta,
-    )
+    runtime.linear.set_weight_gradient_transforms(
+        tables
+            .all
+            .host_symexp_lin_slots
+            .iter()
+            .copied()
+            .enumerate()
+            .filter_map(|(slot, desc)| {
+                (desc.rows > 0 && desc.cols > 0).then(|| {
+                    let norm = grad_clip.matrix_sums.cu_deviceptr()
+                        + 4 * grad_clip.matrix_sum_offsets[slot] as u64;
+                    (
+                        desc.grad,
+                        GemmGradientTransform::new(desc, norm, schedule_beta, beta, learn_scales),
+                    )
+                })
+            }),
+    );
+    Ok(())
 }
 
 pub(super) fn scale_summary(trainer: &Trainer) -> AppResult<Option<String>> {
@@ -165,6 +120,19 @@ pub(super) fn scale_summary(trainer: &Trainer) -> AppResult<Option<String>> {
         .output_projection
         .weight_muon)?;
 
+    if let Some(engram) = &trainer.engram {
+        for state in engram.modules.iter().flat_map(|e| &e.projector_states) {
+            add(state)?;
+        }
+    }
+    if let Some(f) = &trainer.latent_feedback {
+        add(&f.state)?;
+    }
+    if let Some(mhc) = &trainer.mhc {
+        for unit in &mhc.units {
+            add(&unit.phi)?;
+        }
+    }
     let denominator = count as f64;
     Ok(Some(format!(
         "symexp_lin_scale_summary matrices={count} exponential_z_mean={:.6} exponential_x_mean={:.6} linear_z_mean={:.6} linear_x_mean={:.6} curvature_z_mean={:.6} curvature_x_mean={:.6}",

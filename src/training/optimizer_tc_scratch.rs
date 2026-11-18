@@ -50,7 +50,10 @@ impl MuonScratchBuffers {
             polar_chunks: DeviceBuffer::zeroed(
                 stream,
                 max2(
-                    grouped(2 * MUON_COOPERATIVE_BLOCKS),
+                    max2(
+                        grouped(2 * MUON_COOPERATIVE_BLOCKS),
+                        max_matrix_len().div_ceil(256),
+                    ),
                     2 * nvfp4_tensor_amax_chunks(max_matrix_len()),
                 ),
             )?,

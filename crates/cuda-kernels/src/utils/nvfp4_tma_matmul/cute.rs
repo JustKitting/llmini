@@ -366,6 +366,8 @@ impl Sm120ScaleLayout {
     pub const PAD_BYTE: u8 = 0x38;
     pub const BYTES_PER_MN_K_ATOM: u32 = Self::MN_BLOCK * Self::GROUPS_PER_K_ATOM;
     pub const TMA_ROW_BYTES: u32 = Self::TMA_WIDTH_U16 * 2;
+    pub const TMA_SWIZZLE_ROW_BYTES: u32 = 64;
+    pub const TMA_SWIZZLE_ROW_FACTOR: u32 = Self::TMA_SWIZZLE_ROW_BYTES / Self::TMA_ROW_BYTES;
 
     #[inline(always)]
     pub const fn k_groups(k_dim: u32) -> u32 {
@@ -439,8 +441,8 @@ impl Sm120ScaleLayout {
 
         (k_atom * mn_blocks * Self::BYTES_PER_MN_K_ATOM
             + mn_block * Self::BYTES_PER_MN_K_ATOM
-            + mn_fast * Self::TMA_ROW_BYTES
-            + mn_slow * Self::GROUPS_PER_K_ATOM
+            + mn_slow * Self::MN_FAST * Self::GROUPS_PER_K_ATOM
+            + mn_fast * Self::GROUPS_PER_K_ATOM
             + k_in_atom) as usize
     }
 
@@ -452,18 +454,22 @@ impl Sm120ScaleLayout {
         k_dim: u32,
     ) -> usize {
         let k_atoms = Self::k_atoms(k_dim);
+        let k_atom = k_group / Self::GROUPS_PER_K_ATOM;
+        let k_in_atom = k_group % Self::GROUPS_PER_K_ATOM;
+
+        Self::block_major_u32_word_offset(mn, k_atom, k_atoms) * core::mem::size_of::<u32>()
+            + k_in_atom as usize
+    }
+
+    #[inline(always)]
+    pub const fn block_major_u32_word_offset(mn: u32, k_atom: u32, k_atoms: u32) -> usize {
         let mn_block = mn / Self::MN_BLOCK;
         let mn_in_block = mn - mn_block * Self::MN_BLOCK;
         let mn_fast = mn_in_block % Self::MN_FAST;
         let mn_slow = mn_in_block / Self::MN_FAST;
-        let k_atom = k_group / Self::GROUPS_PER_K_ATOM;
-        let k_in_atom = k_group % Self::GROUPS_PER_K_ATOM;
 
-        (mn_block * k_atoms * Self::BYTES_PER_MN_K_ATOM
-            + k_atom * Self::BYTES_PER_MN_K_ATOM
-            + mn_fast * Self::TMA_ROW_BYTES
-            + mn_slow * Self::GROUPS_PER_K_ATOM
-            + k_in_atom) as usize
+        ((mn_block * k_atoms + k_atom) * Self::MN_BLOCK + mn_slow * Self::MN_FAST + mn_fast)
+            as usize
     }
 
     #[inline(always)]

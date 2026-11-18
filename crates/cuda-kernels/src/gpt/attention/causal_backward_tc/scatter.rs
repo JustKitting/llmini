@@ -7,8 +7,9 @@ use crate::attention::layout::{
 };
 use crate::block_reduce::block_sum_shared_f32;
 use crate::f16_tc_matmul::convert::cvt_f32_f16;
-use crate::float_ptx::{abs_f32, exp_f32, fma_f32, max_f32, sincos_f32};
+use crate::float_ptx::{abs_f32, fma_f32, max_f32};
 use crate::nvfp4::nvfp4_value;
+use crate::position::{rotation_factors, stationary_dim};
 use crate::warp_reduce::warp_sum_f32;
 
 pub(super) fn scatter_body(
@@ -310,15 +311,13 @@ fn key_input_grad(
 
 #[inline(always)]
 fn rope_raw_grad(token: u32, dim: u32, grad_dim: f32, grad_pair: f32, head_dim: u32) -> f32 {
-    let (sin, cos) = sincos_f32(token as f32 * rope_inv_freq(dim, head_dim));
+    if stationary_dim(dim, head_dim) {
+        return grad_dim;
+    }
+    let (sin, cos) = rotation_factors(token, dim, head_dim);
     if dim & 1 == 0 {
         fma_f32(grad_pair, sin, grad_dim * cos)
     } else {
         fma_f32(-grad_pair, sin, grad_dim * cos)
     }
-}
-
-#[inline(always)]
-fn rope_inv_freq(dim: u32, head_dim: u32) -> f32 {
-    exp_f32(-9.210_340_5 * (dim & !1) as f32 / head_dim as f32)
 }

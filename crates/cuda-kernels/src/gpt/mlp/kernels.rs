@@ -9,16 +9,15 @@ use crate::mma::{
     nvfp4_projection_cta_kernel_body_at_aligned_row_pair, nvfp4_projection_cta_relu2_kernel_body,
     nvfp4_projection_cta_relu2_kernel_body_at_aligned_row_pair,
 };
-use crate::nvfp4::nvfp4_values2;
 use crate::warp_reduce::thread_lane_warp;
 
 pub(super) const RELU2_THREADS_PER_BLOCK: u32 = 256;
 pub(super) const RELU2_VALUES_PER_BLOCK: u32 = 8 * RELU2_THREADS_PER_BLOCK;
 const RELU2_WARPS_PER_BLOCK: usize = (RELU2_THREADS_PER_BLOCK / 32) as usize;
 pub(super) const BLOCK_TOPK_TILE: u32 = 128;
-pub(super) const BLOCK_TOPK_FEATURE_TILES: u32 = 64;
-pub(super) const BLOCK_TOPK_TOKEN_TILES: u32 = 64;
-pub(super) const BLOCK_TOPK_ACTIVE_FEATURE_TILES: u32 = 48;
+pub(super) const BLOCK_TOPK_FEATURE_TILES: u32 = super::config::FEATURE_TILES;
+pub(super) const BLOCK_TOPK_TOKEN_TILES: u32 = 128;
+pub(super) const BLOCK_TOPK_ACTIVE_FEATURE_TILES: u32 = super::config::ACTIVE_FEATURE_TILES;
 pub(super) const BLOCK_TOPK_SCORE_THREADS: u32 = 256;
 pub(super) const BLOCK_TOPK_MASK_THREADS: u32 = 1024;
 const BLOCK_TOPK_SCORE_WARPS: usize = (BLOCK_TOPK_SCORE_THREADS / 32) as usize;
@@ -155,6 +154,7 @@ mod module {
         activation_global_scales: &[f32],
         mut scores: DisjointSlice<f32>,
         token_count: u32,
+        seq_len: u32,
         feature_count: u32,
     ) {
         static mut SUM: SharedArray<f32, BLOCK_TOPK_SCORE_WARPS> = SharedArray::UNINIT;
@@ -167,25 +167,45 @@ mod module {
             return;
         }
 
+        // Routing a tile from its own activations exposes future tokens to
+        // earlier positions. Use the preceding tile within the same sequence;
+        // its first tile can depend only on the sequence's first input token.
+        let sequence_start = (token_tile * BLOCK_TOPK_TILE) % seq_len == 0;
+        let source_tile = if sequence_start {
+            token_tile
+        } else {
+            token_tile - 1
+        };
         let (thread_id, lane, warp_in_block) = thread_lane_warp();
-        let mut pair = thread_id;
-        let pairs_per_tile = BLOCK_TOPK_TILE * BLOCK_TOPK_TILE / 2;
-        let mut local_sum = 0.0_f32;
-        while pair < pairs_per_tile {
-            let local = pair * 2;
-            let local_row = local / BLOCK_TOPK_TILE;
-            let local_col = local - local_row * BLOCK_TOPK_TILE;
-            let row = token_tile * BLOCK_TOPK_TILE + local_row;
-            let col = feature_tile * BLOCK_TOPK_TILE + local_col;
-            let index = (row * feature_count + col) as usize;
-            let (lo, hi) = nvfp4_values2(
+        let mut octet = thread_id;
+        let source_rows = if sequence_start { 1 } else { BLOCK_TOPK_TILE };
+        let octets_per_tile = source_rows * BLOCK_TOPK_TILE / 8;
+        let mut local_sum = 0.0f32;
+        while octet < octets_per_tile {
+            let local = octet * 8;
+            let row = source_tile * BLOCK_TOPK_TILE + local / BLOCK_TOPK_TILE;
+            let col = feature_tile * BLOCK_TOPK_TILE + local % BLOCK_TOPK_TILE;
+            let halves = crate::nvfp4::nvfp4_rowwise_halves8(
                 activation_bytes,
                 activation_scales,
-                activation_global_scales[row as usize],
-                index,
+                feature_count,
+                row,
+                col,
             );
-            local_sum += max_f32(lo, 0.0) + max_f32(hi, 0.0);
-            pair += BLOCK_TOPK_SCORE_THREADS;
+            let global = activation_global_scales[row as usize];
+            macro_rules! value {
+                ($i:expr) => {
+                    max_f32(
+                        crate::nvfp4_cast::f16_value((halves >> ($i * 16)) as u16) * global,
+                        0.0,
+                    )
+                };
+            }
+            local_sum += value!(0) + value!(1);
+            local_sum += value!(2) + value!(3);
+            local_sum += value!(4) + value!(5);
+            local_sum += value!(6) + value!(7);
+            octet += BLOCK_TOPK_SCORE_THREADS;
         }
 
         let tile_sum = unsafe { block_sum_shared_f32(&mut SUM, local_sum, lane, warp_in_block) };
@@ -216,8 +236,16 @@ mod module {
             let score_base = token_tile * feature_tiles;
             let low_feature = lane;
             let high_feature = lane + 32;
-            let low_score = scores[(score_base + low_feature) as usize];
-            let high_score = scores[(score_base + high_feature) as usize];
+            let low_score = if low_feature < feature_tiles {
+                scores[(score_base + low_feature) as usize]
+            } else {
+                f32::NEG_INFINITY
+            };
+            let high_score = if high_feature < feature_tiles {
+                scores[(score_base + high_feature) as usize]
+            } else {
+                f32::NEG_INFINITY
+            };
             let mut low_rank = 0_u32;
             let mut high_rank = 0_u32;
             let mut source_lane = 0_u32;
@@ -236,8 +264,14 @@ mod module {
                 source_lane += 1;
             }
 
-            let low_mask = warp::ballot_sync(FULL_WARP_MASK, low_rank < active_feature_tiles);
-            let high_mask = warp::ballot_sync(FULL_WARP_MASK, high_rank < active_feature_tiles);
+            let low_mask = warp::ballot_sync(
+                FULL_WARP_MASK,
+                low_feature < feature_tiles && low_rank < active_feature_tiles,
+            );
+            let high_mask = warp::ballot_sync(
+                FULL_WARP_MASK,
+                high_feature < feature_tiles && high_rank < active_feature_tiles,
+            );
             if lane == 0 {
                 let mask = low_mask as u64 | ((high_mask as u64) << 32);
                 unsafe {
@@ -250,13 +284,18 @@ mod module {
 
         thread::sync_threads();
 
-        if thread_id < feature_tiles {
+        let words = token_tiles.div_ceil(64);
+        if thread_id < feature_tiles * words {
+            let feature = thread_id / words;
+            let word = thread_id % words;
+            let start = word * 64;
+            let end = (start + 64).min(token_tiles);
             let mut feature_mask = 0_u64;
-            let mut token = 0_u32;
-            while token < token_tiles {
+            let mut token = start;
+            while token < end {
                 let token_mask = unsafe { TOKEN_MASKS[token as usize] };
-                if token_mask & (1_u64 << thread_id) != 0 {
-                    feature_mask |= 1_u64 << token;
+                if token_mask & (1_u64 << feature) != 0 {
+                    feature_mask |= 1_u64 << (token - start);
                 }
                 token += 1;
             }

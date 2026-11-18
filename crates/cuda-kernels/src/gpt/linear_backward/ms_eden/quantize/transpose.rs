@@ -39,7 +39,7 @@ impl<'a> QuantizeContext<'a> {
                         input: weight,
                         out_fp4: &mut *operand.bytes,
                         out_scales: &mut *operand.scales,
-                        out_global_scales: &mut *operand.global_scales,
+
                         out_chunk_amax: &mut *operand.chunk_amax,
                         out_global_scale: &mut *operand.global_scale,
                         source_rows: self.output_dim,
@@ -80,7 +80,7 @@ impl<'a> QuantizeContext<'a> {
                         input: input_t,
                         out_fp4: &mut *operand.bytes,
                         out_scales: &mut *operand.scales,
-                        out_global_scales: &mut *operand.global_scales,
+
                         out_chunk_amax: &mut *operand.chunk_amax,
                         out_global_scale: &mut *operand.global_scale,
                         source_rows: self.token_count,

@@ -24,7 +24,22 @@ impl OptimizerModule {
         &self,
         mut args: AdamWUpdateArgs<'_>,
     ) -> Result<(), DriverError> {
-        self.apply_adamw_update_master(&mut args)
+        self.apply_adamw_update_master_and_schedule_amax(&mut args)
+    }
+
+    pub fn zero_f32_pointer_table(
+        &self,
+        stream: &cuda_core::CudaStream,
+        pointers: &cuda_core::DeviceBuffer<u64>,
+        pointer_count: u32,
+    ) -> Result<(), DriverError> {
+        assert!(pointers.len() >= pointer_count as usize);
+        self.apply.adam.zero_f32_pointer_table_kernel(
+            stream,
+            linear_config(pointer_count, APPLY_THREADS_PER_BLOCK),
+            pointers,
+            pointer_count,
+        )
     }
 
     pub fn apply_fp32_adamw_update(
@@ -80,6 +95,41 @@ impl OptimizerModule {
             args.beta2_correction,
             args.eps,
             args.average_coefficient,
+            args.len,
+        )
+    }
+
+    fn apply_adamw_update_master_and_schedule_amax(
+        &self,
+        args: &mut AdamWUpdateArgs<'_>,
+    ) -> Result<(), DriverError> {
+        assert_eq!(args.len % 16, 0);
+        assert!(args.z_master.len() >= args.len as usize);
+        assert!(args.x_master.len() >= args.len as usize);
+        assert!(args.grad.len() >= args.len as usize);
+        assert!(args.first_moment.len() >= args.len as usize);
+        assert!(args.second_moment.len() >= args.len as usize);
+        assert!(!args.amax.is_empty());
+
+        self.apply.adam.fp32_adamw_update_schedule_amax_kernel(
+            args.stream,
+            linear_config(args.len, APPLY_THREADS_PER_BLOCK),
+            &mut *args.z_master,
+            &mut *args.x_master,
+            args.grad,
+            args.grad_scale,
+            &mut *args.first_moment,
+            &mut *args.second_moment,
+            &*args.amax,
+            args.learning_rate,
+            args.weight_decay,
+            args.beta1,
+            args.beta2,
+            args.beta1_correction,
+            args.beta2_correction,
+            args.eps,
+            args.average_coefficient,
+            args.schedule_beta,
             args.len,
         )
     }

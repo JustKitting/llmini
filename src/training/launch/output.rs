@@ -18,7 +18,12 @@ pub(super) struct RunOutput {
 
 impl RunOutput {
     pub(super) fn new(dataset: &str, label: &str) -> AppResult<Self> {
-        let dir = default_run_dir(dataset, label);
+        let dir = env_nonempty("TRAIN_RUN_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| default_run_dir(dataset, label));
+        if dir.exists() && fs::read_dir(&dir)?.next().is_some() {
+            return Err(format!("run output directory is not empty: {}", dir.display()).into());
+        }
         fs::create_dir_all(&dir)?;
         Ok(Self { dir })
     }

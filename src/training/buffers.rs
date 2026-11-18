@@ -64,7 +64,8 @@ impl TrainBuffers {
             &next_latent_grads,
             &optimizer_state,
         )?;
-        let grad_clip = GradientClipBuffers::new(stream, &backward, &next_latent_grads)?;
+        let grad_clip =
+            GradientClipBuffers::new(stream, &backward, &next_latent_grads, &muon_tables)?;
 
         Ok(Self {
             residual: zero(stream, HiddenState::LEN)?,

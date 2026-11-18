@@ -4,7 +4,6 @@ use crate::attention::CausalAttentionParams;
 
 pub(crate) const KDA_MAX_HEAD_DIM: usize = 64;
 pub(crate) const KDA_STATE_ELEMS: usize = KDA_MAX_HEAD_DIM * KDA_MAX_HEAD_DIM;
-pub(crate) const KDA_MATRIX_ELEMS: usize = KDA_MAX_HEAD_DIM * KDA_MAX_HEAD_DIM;
 pub(crate) const KDA_DENOM_EPS: f32 = 1.0e-6;
 
 #[inline(always)]
@@ -30,11 +29,6 @@ pub(crate) fn chunk_count(params: &CausalAttentionParams) -> u32 {
 #[inline(always)]
 pub(crate) fn chunk_end_token(chunk: u32, params: &CausalAttentionParams) -> u32 {
     params.seq_len.min((chunk + 1) * params.chunk_size) - 1
-}
-
-#[inline(always)]
-pub(crate) fn chunk_g_last_elems(params: &CausalAttentionParams) -> u32 {
-    batch_head(params) * chunk_count(params) * params.head_dim
 }
 
 #[inline(always)]

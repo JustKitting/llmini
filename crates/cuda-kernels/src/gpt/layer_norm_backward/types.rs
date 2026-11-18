@@ -214,4 +214,121 @@ impl LayerNormBackwardModule {
         LayerNormBackwardParamF32Args<'_, '_>,
         layer_norm_backward_params_f32_kernel
     );
+
+    pub fn backward_input_amax_xhat_f16(
+        &self,
+        args: LayerNormBackwardInputAmaxArgs<'_, '_>,
+    ) -> Result<u32, DriverError> {
+        assert_eq!(
+            args.embedding_dim as usize,
+            crate::nvfp4_quant::NVFP4_TENSOR_AMAX_VALUES_PER_BLOCK
+        );
+        assert!(args.chunk_amax.len() >= args.row_count as usize);
+        self.module.layer_norm_backward_input_amax_xhat_f16_kernel(
+            args.stream,
+            grid_x_config(args.row_count, THREADS_PER_BLOCK),
+            args.residual,
+            args.d_normalized,
+            args.mean,
+            args.inv_std,
+            args.weight.bytes,
+            args.weight.scales,
+            args.weight.global_scale,
+            args.d_residual,
+            args.chunk_amax,
+            args.output_scale,
+            args.row_count,
+            args.embedding_dim,
+        )?;
+        Ok(args.row_count)
+    }
+    pub fn backward_input_add_xhat_f16(
+        &self,
+        args: LayerNormBackwardInputAddArgs<'_, '_>,
+    ) -> Result<(), DriverError> {
+        self.module.layer_norm_backward_input_add_xhat_f16_kernel(
+            args.stream,
+            grid_x_config(args.row_count, THREADS_PER_BLOCK),
+            args.residual,
+            args.d_normalized,
+            args.mean,
+            args.inv_std,
+            args.weight.bytes,
+            args.weight.scales,
+            args.weight.global_scale,
+            args.direct,
+            args.d_residual,
+            args.output_scale,
+            args.row_count,
+            args.embedding_dim,
+        )
+    }
+    pub fn backward_input_add_amax_xhat_f16(
+        &self,
+        args: LayerNormBackwardInputAddAmaxArgs<'_, '_>,
+    ) -> Result<u32, DriverError> {
+        assert_eq!(
+            args.embedding_dim as usize,
+            crate::nvfp4_quant::NVFP4_TENSOR_AMAX_VALUES_PER_BLOCK
+        );
+        assert!(args.chunk_amax.len() >= args.row_count as usize);
+        self.module
+            .layer_norm_backward_input_add_amax_xhat_f16_kernel(
+                args.stream,
+                grid_x_config(args.row_count, THREADS_PER_BLOCK),
+                args.residual,
+                args.d_normalized,
+                args.mean,
+                args.inv_std,
+                args.weight.bytes,
+                args.weight.scales,
+                args.weight.global_scale,
+                args.direct,
+                args.d_residual,
+                args.chunk_amax,
+                args.output_scale,
+                args.row_count,
+                args.embedding_dim,
+            )?;
+        Ok(args.row_count)
+    }
+    pub fn backward_params_xhat_f16(
+        &self,
+        args: LayerNormBackwardParamArgs<'_, '_>,
+    ) -> Result<(), DriverError> {
+        // The tiled row partitions atomically accumulate into each column.
+        // Match the original launcher's fresh-gradient contract on every call.
+        for output in [&*args.d_weight, &*args.d_bias] {
+            unsafe {
+                memory::memset_d8_async(
+                    output.cu_deviceptr(),
+                    0,
+                    args.embedding_dim as usize * std::mem::size_of::<f32>(),
+                    args.stream.cu_stream(),
+                )?;
+            }
+        }
+        self.param_module
+            .layer_norm_backward_params_tiled_xhat_f16_kernel(
+                args.stream,
+                grid_x_config(
+                    args.embedding_dim.div_ceil(PARAM_TILE_COLS) * PARAM_ROW_PARTITIONS,
+                    PARAM_THREADS_PER_BLOCK,
+                ),
+                args.residual,
+                args.d_normalized,
+                args.mean,
+                args.inv_std,
+                args.d_weight,
+                args.d_bias,
+                args.output_scale,
+                args.row_count,
+                args.embedding_dim,
+            )
+    }
+    backward_input_launcher!(
+        backward_input_xhat_f16,
+        LayerNormBackwardInputArgs<'_, '_>,
+        layer_norm_backward_input_xhat_f16_kernel
+    );
 }

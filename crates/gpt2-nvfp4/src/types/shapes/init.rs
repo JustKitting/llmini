@@ -14,6 +14,16 @@ pub(crate) trait Nvfp4ShapeInit: Nvfp4Shape + Sized {
         Nvfp4Tensor::new(bytes, scales, global_scale)
     }
 
+    fn reference_normal_tensor(rng: &mut InitRng, global_scale: f32) -> Nvfp4Tensor<Self> {
+        let mut bytes = Self::zero_bytes();
+        let mut scales = Self::zero_scales();
+        for byte in bytes.as_mut() {
+            *byte = pack_e2m1_pair(normal_e2m1(rng), normal_e2m1(rng));
+        }
+        fill_neutral_scales(scales.as_mut());
+        Nvfp4Tensor::new(bytes, scales, global_scale)
+    }
+
     fn zero_tensor() -> Nvfp4Tensor<Self> {
         let bytes = Self::zero_bytes();
         let mut scales = Self::zero_scales();
@@ -59,6 +69,37 @@ fn smooth_e2m1(rng: &mut InitRng) -> u8 {
         E2M1_POS_MIN
     } else {
         E2M1_NEG_MIN
+    }
+}
+
+fn normal_e2m1(rng: &mut InitRng) -> u8 {
+    // P(|Z| < midpoint) for Z~N(0,1), multiplied by2^31 and floored.
+    // E2M1 magnitudes are0,.5,1,1.5,2,3,4,6; midpoint ties have zero
+    // continuous probability. Only packed FP4 codes are materialized.
+    const CDF: [u32; 7] = [
+        423_940_440,
+        1_174_126_581,
+        1_693_721_325,
+        1_975_430_879,
+        2_120_813_338,
+        2_146_484_513,
+        2_147_482_416,
+    ];
+    // next_u8 and next_u32 each advance InitRng once. Keeping one draw per
+    // weight preserves the subsequent non-MLP initialization RNG sequence.
+    let draw = rng.next_u32();
+    let ticket = draw & 0x7fff_ffff;
+    let mut magnitude = 7u8;
+    for (index, upper) in CDF.into_iter().enumerate() {
+        if ticket < upper {
+            magnitude = index as u8;
+            break;
+        }
+    }
+    if magnitude == 0 {
+        0
+    } else {
+        magnitude | ((draw >> 28) as u8 & 8)
     }
 }
 

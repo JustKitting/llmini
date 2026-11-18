@@ -21,6 +21,20 @@ mod shape;
 
 use scratch::{TcForwardScratchBuffers, TcScratchBuffers};
 
+// Use the production CSF vector header while preserving the fixture's exact
+// original FP4 values and unit local scales. The padded tail is never read by
+// these shapes, but must be a complete native vector allocation.
+fn canonical_qk_scale_storage(
+    stream: &cuda_core::CudaStream,
+    packed: u8,
+) -> Result<(DeviceBuffer<u8>, DeviceBuffer<u8>), cuda_core::DriverError> {
+    let scales = rust_kernels_cuda::nvfp4::csf::encode_host(&[0x38_u8; 8], 1, 128);
+    Ok((
+        DeviceBuffer::from_host(stream, &[packed; 64])?,
+        DeviceBuffer::from_host(stream, &scales)?,
+    ))
+}
+
 #[ignore = "requires generated sm_120a PTX"]
 #[test]
 fn selective_attention_backward_matches_finite_difference_and_dense_sparse_paths()
@@ -44,8 +58,7 @@ fn selective_attention_backward_matches_finite_difference_and_dense_sparse_paths
     let mut qkv_tape = DeviceBuffer::from_host(&stream, &qkv_tape_values)?;
     let d_out = DeviceBuffer::from_host(&stream, &d_out_values)?;
 
-    let qk_scale_bytes = DeviceBuffer::from_host(&stream, &[0_u8; 8])?;
-    let qk_scale_scales = DeviceBuffer::from_host(&stream, &[0x38_u8])?;
+    let (qk_scale_bytes, qk_scale_scales) = canonical_qk_scale_storage(&stream, 0_u8)?;
     let qk_scale_global_scale = DeviceBuffer::from_host(&stream, &[1.0_f32])?;
     let qk_scale =
         Nvfp4DeviceTensor::new(&qk_scale_bytes, &qk_scale_scales, &qk_scale_global_scale);
@@ -208,8 +221,7 @@ fn stable_mask_forward_and_backward_match_reference() -> Result<(), Box<dyn Erro
     let (qkv_f16, qkv_rounded) = f16::saved_f16(&stream, &tc, &qkv_values)?;
     let d_out = DeviceBuffer::from_host(&stream, &d_out_values)?;
 
-    let qk_scale_bytes = DeviceBuffer::from_host(&stream, &[0_u8; 8])?;
-    let qk_scale_scales = DeviceBuffer::from_host(&stream, &[0x38_u8])?;
+    let (qk_scale_bytes, qk_scale_scales) = canonical_qk_scale_storage(&stream, 0_u8)?;
     let qk_scale_global_scale = DeviceBuffer::from_host(&stream, &[1.0_f32])?;
     let qk_scale =
         Nvfp4DeviceTensor::new(&qk_scale_bytes, &qk_scale_scales, &qk_scale_global_scale);
@@ -401,8 +413,7 @@ fn qknorm_backward_matches_scale_finite_difference() -> Result<(), Box<dyn Error
     let (qkv_f16, qkv_rounded) = f16::saved_f16(&stream, &tc, &qkv_values)?;
     let d_out = DeviceBuffer::from_host(&stream, &d_out_values)?;
 
-    let qk_scale_bytes = DeviceBuffer::from_host(&stream, &[0x02_u8; 8])?;
-    let qk_scale_scales = DeviceBuffer::from_host(&stream, &[0x38_u8])?;
+    let (qk_scale_bytes, qk_scale_scales) = canonical_qk_scale_storage(&stream, 0x02_u8)?;
     let qk_scale_global_scale = DeviceBuffer::from_host(&stream, &[SCALE])?;
     let qk_scale =
         Nvfp4DeviceTensor::new(&qk_scale_bytes, &qk_scale_scales, &qk_scale_global_scale);
@@ -604,8 +615,7 @@ fn partial_key_offset_backward_matches_key_finite_differences() -> Result<(), Bo
     let (qkv_f16, qkv_rounded) = f16::saved_f16(&stream, &tc, &qkv_values)?;
     let d_out = DeviceBuffer::from_host(&stream, &d_out_values)?;
 
-    let qk_scale_bytes = DeviceBuffer::from_host(&stream, &[0x02_u8; 8])?;
-    let qk_scale_scales = DeviceBuffer::from_host(&stream, &[0x38_u8])?;
+    let (qk_scale_bytes, qk_scale_scales) = canonical_qk_scale_storage(&stream, 0x02_u8)?;
     let qk_scale_global_scale = DeviceBuffer::from_host(&stream, &[SCALE])?;
     let qk_scale =
         Nvfp4DeviceTensor::new(&qk_scale_bytes, &qk_scale_scales, &qk_scale_global_scale);
@@ -773,8 +783,7 @@ fn materialized_tc_backward_matches_reference() -> Result<(), Box<dyn Error>> {
     let mut tc_qk_norm_max = DeviceBuffer::<f32>::zeroed(&stream, 2 * shape::HEADS)?;
     let mut tc_grad = DeviceBuffer::<f32>::zeroed(&stream, shape::TOKEN_COUNT * shape::QKV_DIM)?;
     let mut tc_grad_chunk_amax = DeviceBuffer::<f32>::zeroed(&stream, 3 * shape::TOKEN_COUNT)?;
-    let qk_scale_bytes = DeviceBuffer::from_host(&stream, &[0_u8; 8])?;
-    let qk_scale_scales = DeviceBuffer::from_host(&stream, &[0x38_u8])?;
+    let (qk_scale_bytes, qk_scale_scales) = canonical_qk_scale_storage(&stream, 0_u8)?;
     let qk_scale_global_scale = DeviceBuffer::from_host(&stream, &[1.0_f32])?;
     let qk_scale =
         Nvfp4DeviceTensor::new(&qk_scale_bytes, &qk_scale_scales, &qk_scale_global_scale);
@@ -947,6 +956,92 @@ fn materialized_tc_backward_matches_reference() -> Result<(), Box<dyn Error>> {
 
 #[ignore = "requires generated sm_120a PTX"]
 #[test]
+fn sparse_tile_minimum_mass_uses_actual_draw_probability() -> Result<(), Box<dyn Error>> {
+    const SEQ: usize = 64;
+    const HEAD_DIM: usize = 64;
+    const QKV_DIM: usize = 3 * HEAD_DIM;
+    const DRAW_COUNT: u32 = 1 << 24;
+
+    let (_, stream, ptx) = common::cuda_test_context()?;
+    let attention = AttentionModule::from_module(ptx.clone())?;
+    let tc = F16TcMatmulModule::from_module(ptx)?;
+    // One represented probability at FP16's smallest positive value. With
+    // budget12 and64 query rows, requested inclusion is3*2^-28. The U24
+    // lottery accepts exactly its zero draw, so actual inclusion is2^-24.
+    let mut probability_bits = vec![0_u16; SEQ * SEQ];
+    probability_bits[0] = 1;
+    let probabilities = DeviceBuffer::from_host(&stream, &probability_bits)?;
+    let qkv = DeviceBuffer::<u16>::zeroed(&stream, SEQ * QKV_DIM)?;
+    let attention_out = DeviceBuffer::<u16>::zeroed(&stream, SEQ * HEAD_DIM)?;
+    let d_out = DeviceBuffer::<f32>::zeroed(&stream, SEQ * HEAD_DIM)?;
+    let log_sum_exp = DeviceBuffer::<f32>::zeroed(&stream, SEQ)?;
+    let mut softmax_d = DeviceBuffer::<f32>::zeroed(&stream, SEQ)?;
+    let mut qk_norm_max = DeviceBuffer::<f32>::zeroed(&stream, 2)?;
+    let mut d_qkv = DeviceBuffer::<f32>::zeroed(&stream, SEQ * QKV_DIM)?;
+    let mut d_qkv_chunk_amax = DeviceBuffer::<f32>::zeroed(&stream, 3 * SEQ)?;
+    let (qk_scale_bytes, qk_scale_scales) = canonical_qk_scale_storage(&stream, 0)?;
+    let qk_scale_global_scale = DeviceBuffer::from_host(&stream, &[1.0_f32])?;
+    let mut d_qk_scale = DeviceBuffer::<f32>::zeroed(&stream, 16)?;
+    let mut scratch = TcScratchBuffers::new_for_shape(&stream, 1, SEQ, HEAD_DIM)?;
+    attention.causal_attention_backward_tc(CausalAttentionBackwardTcArgs {
+        reuse_forward_probs: true,
+        forward_probs_f16: Some(&probabilities),
+        stream: &stream,
+        tc_module: &tc,
+        qkv: &qkv,
+        attention_out: &attention_out,
+        kda_v_new: None,
+        kda_akk_inv: None,
+        kda_w: None,
+        kda_aqk: None,
+        d_out: &d_out,
+        qk_scale: Nvfp4DeviceTensor::new(&qk_scale_bytes, &qk_scale_scales, &qk_scale_global_scale),
+        log_sum_exp: &log_sum_exp,
+        softmax_d: &mut softmax_d,
+        qk_norm_max: &mut qk_norm_max,
+        d_qkv: &mut d_qkv,
+        d_qkv_chunk_amax: &mut d_qkv_chunk_amax,
+        d_qk_scale: &mut d_qk_scale,
+        accumulate_value_grad: false,
+        scratch: scratch.args(),
+        row_count: SEQ as u32,
+        seq_len: SEQ as u32,
+        batch_size: 1,
+        embedding_dim: HEAD_DIM as u32,
+        qkv_dim: QKV_DIM as u32,
+        head_count: 1,
+        head_dim: HEAD_DIM as u32,
+        attention_window: SEQ as u32,
+        partial_key_offset: false,
+        selective_attention: false,
+        qk_norm_offset: 0,
+        backward_mask_seed: 0, // hash(0)==0 retains the only nonempty tile.
+        backward_tile_budget: 12.0,
+    })?;
+    let scale = scratch.p().to_host_vec(&stream)?[0];
+    assert_eq!(scale.to_bits(), (DRAW_COUNT as f32).to_bits());
+    assert!(d_qkv.to_host_vec(&stream)?.iter().all(|&g| g == 0.0));
+    Ok(())
+}
+
+// Count accepted U24 draws by monotone search through the original float
+// comparison, independently of the production cutoff calculation.
+fn accepted_u24_draws(q: f32) -> u32 {
+    const DRAW_COUNT: u32 = 1 << 24;
+    let (mut lo, mut hi) = (0, DRAW_COUNT);
+    while lo < hi {
+        let mid = lo + (hi - lo) / 2;
+        if (mid as f32) / (DRAW_COUNT as f32) < q {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    lo
+}
+
+#[ignore = "requires generated sm_120a PTX"]
+#[test]
 fn sparse_tile_map_matches_probability_mass_and_seed() -> Result<(), Box<dyn Error>> {
     const SEQ: usize = 1024;
     const HEADS: usize = 1;
@@ -979,8 +1074,7 @@ fn sparse_tile_map_matches_probability_mass_and_seed() -> Result<(), Box<dyn Err
     let mut qk_norm_max = DeviceBuffer::<f32>::zeroed(&stream, 2 * HEADS)?;
     let mut d_qkv = DeviceBuffer::<f32>::zeroed(&stream, SEQ * QKV_DIM)?;
     let mut d_qkv_chunk_amax = DeviceBuffer::<f32>::zeroed(&stream, 3 * SEQ)?;
-    let qk_scale_bytes = DeviceBuffer::from_host(&stream, &[0_u8; 8])?;
-    let qk_scale_scales = DeviceBuffer::from_host(&stream, &[0x38_u8])?;
+    let (qk_scale_bytes, qk_scale_scales) = canonical_qk_scale_storage(&stream, 0_u8)?;
     let qk_scale_global_scale = DeviceBuffer::from_host(&stream, &[1.0_f32])?;
     let qk_scale =
         Nvfp4DeviceTensor::new(&qk_scale_bytes, &qk_scale_scales, &qk_scale_global_scale);
@@ -1044,7 +1138,12 @@ fn sparse_tile_map_matches_probability_mass_and_seed() -> Result<(), Box<dyn Err
             let random = (hash_u32(SEED ^ (tile_index as u32).wrapping_mul(0x9e37_79b9)) >> 8)
                 as f32
                 / 16_777_216.0;
-            let expected = if q > 0.0 && random < q { 1.0 / q } else { 0.0 };
+            let accepted_draws = accepted_u24_draws(q);
+            let expected = if q > 0.0 && random < q {
+                16_777_216.0 / accepted_draws as f32
+            } else {
+                0.0
+            };
             let actual = actual_scales[tile_index];
             let tolerance = expected.abs() * 1.0e-4 + 1.0e-6;
             assert!(
@@ -1222,8 +1321,7 @@ fn stable_mask_forward_loss(
     gamma: f32,
 ) -> Result<f32, Box<dyn Error>> {
     let embedding = head_count * head_dim;
-    let qk_scale_bytes = DeviceBuffer::from_host(stream, &[0_u8; 8])?;
-    let qk_scale_scales = DeviceBuffer::from_host(stream, &[0x38_u8])?;
+    let (qk_scale_bytes, qk_scale_scales) = canonical_qk_scale_storage(stream, 0_u8)?;
     let qk_scale_global_scale = DeviceBuffer::from_host(stream, &[1.0_f32])?;
     let qk_scale =
         Nvfp4DeviceTensor::new(&qk_scale_bytes, &qk_scale_scales, &qk_scale_global_scale);
@@ -1280,8 +1378,7 @@ fn selective_forward_loss(
     head_dim: usize,
 ) -> Result<f32, Box<dyn Error>> {
     let embedding = head_count * head_dim;
-    let qk_scale_bytes = DeviceBuffer::from_host(stream, &[0_u8; 8])?;
-    let qk_scale_scales = DeviceBuffer::from_host(stream, &[0x38_u8])?;
+    let (qk_scale_bytes, qk_scale_scales) = canonical_qk_scale_storage(stream, 0_u8)?;
     let qk_scale_global_scale = DeviceBuffer::from_host(stream, &[1.0_f32])?;
     let qk_scale =
         Nvfp4DeviceTensor::new(&qk_scale_bytes, &qk_scale_scales, &qk_scale_global_scale);
@@ -1340,8 +1437,7 @@ fn qknorm_forward_loss(
     partial_key_offset: bool,
 ) -> Result<f32, Box<dyn Error>> {
     let embedding = head_count * head_dim;
-    let qk_scale_bytes = DeviceBuffer::from_host(stream, &[0x02_u8; 8])?;
-    let qk_scale_scales = DeviceBuffer::from_host(stream, &[0x38_u8])?;
+    let (qk_scale_bytes, qk_scale_scales) = canonical_qk_scale_storage(stream, 0x02_u8)?;
     let qk_scale_global_scale = DeviceBuffer::from_host(stream, &[scale])?;
     let qk_scale =
         Nvfp4DeviceTensor::new(&qk_scale_bytes, &qk_scale_scales, &qk_scale_global_scale);

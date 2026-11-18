@@ -14,17 +14,27 @@ use super::{
 
 impl TokenDataLoader {
     pub fn from_training_dataset() -> AppResult<(String, Self)> {
-        let dataset = training_dataset();
-        let loader = match dataset.as_str() {
+        Self::from_dataset(&training_dataset())
+    }
+
+    /// Read the existing native validation prefix without preparing training data.
+    pub(in crate::training) fn fineweb_validation_tokens() -> AppResult<Vec<u16>> {
+        let path = fineweb::first_val_shard()?;
+        let tokens = tokens::read_u16_tokens(&path)?;
+        super::validation::validation_windows(&path, &tokens, 0)
+    }
+
+    pub fn from_dataset(dataset: &str) -> AppResult<(String, Self)> {
+        let loader = match dataset {
             DATASET_FINEWEB => Self::from_fineweb(),
             DATASET_SYNTH => Self::from_synth(),
             DATASET_SHAKESPEARE => Self::from_shakespeare(),
             dataset => Err(format!(
-                "unknown TRAIN_DATASET={dataset}; expected fineweb, synth, or shakespeare"
+                "unknown training dataset {dataset}; expected fineweb, synth, or shakespeare"
             )
             .into()),
         }?;
-        Ok((dataset, loader))
+        Ok((dataset.to_owned(), loader))
     }
 
     pub fn from_fineweb() -> AppResult<Self> {

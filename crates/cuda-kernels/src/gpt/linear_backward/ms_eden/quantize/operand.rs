@@ -37,7 +37,7 @@ pub(super) fn quantize_operand(
                 x: args.x,
                 out_fp4: operand.bytes,
                 out_scales: operand.scales,
-                out_global_scales: operand.global_scales,
+
                 out_chunk_amax: operand.chunk_amax,
                 global_scale: &*operand.global_scale,
                 row_count: args.row_count,
@@ -56,7 +56,7 @@ pub(super) fn quantize_operand(
             x: args.x,
             out_fp4: operand.bytes,
             out_scales: operand.scales,
-            out_global_scales: operand.global_scales,
+
             out_chunk_amax: operand.chunk_amax,
             out_global_scale: operand.global_scale,
             row_count: args.row_count,

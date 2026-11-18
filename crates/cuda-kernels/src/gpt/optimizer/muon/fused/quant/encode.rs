@@ -54,9 +54,7 @@ fn encode_group(
         lane_in_group,
     );
     unsafe {
-        if lane_in_group == 0 {
-            *out_scales.add(group as usize) = scale_bits;
-        }
+        crate::nvfp4::csf::store_warp(out_scales, group as usize, scale_bits);
         store_four_six_payload_word(out_fp4, base as usize, lane_in_group, payload_word);
     }
 }

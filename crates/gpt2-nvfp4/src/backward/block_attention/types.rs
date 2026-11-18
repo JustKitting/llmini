@@ -17,6 +17,9 @@ use crate::types::{
 
 #[derive(Clone, Copy)]
 pub struct BlockAttentionBackwardModules<'a> {
+    pub value_rms: &'a rust_kernels_cuda::value_rms::ValueRmsModule,
+    pub tma: &'a rust_kernels_cuda::nvfp4_tma_matmul::launcher::Nvfp4GemmModule,
+    pub pad: &'a rust_kernels_cuda::nvfp4_tma_matmul::pad::TmaMatrixPadModule,
     pub residual: &'a ResidualBackwardModule,
     pub layer_norm: &'a LayerNormBackwardModule,
     pub attention: &'a AttentionModule,
@@ -26,6 +29,7 @@ pub struct BlockAttentionBackwardModules<'a> {
 }
 
 pub struct BlockAttentionBackwardScratch<'scratch> {
+    pub value_rms: ValueRmsBackwardScratch<'scratch>,
     pub c_proj: AttentionCProjScratch<'scratch>,
     pub core: AttentionCoreScratch<'scratch>,
     pub qkv: AttentionQkvScratch<'scratch>,
@@ -34,9 +38,30 @@ pub struct BlockAttentionBackwardScratch<'scratch> {
 impl<'scratch> BlockAttentionBackwardScratch<'scratch> {
     pub fn reborrow(&mut self) -> BlockAttentionBackwardScratch<'_> {
         BlockAttentionBackwardScratch {
+            value_rms: self.value_rms.reborrow(),
             c_proj: self.c_proj.reborrow(),
             core: self.core.reborrow(),
             qkv: self.qkv.reborrow(),
+        }
+    }
+}
+
+pub struct ValueRmsBackwardScratch<'a> {
+    pub qkv: &'a mut DeviceBuffer<f32>,
+    pub padded_weight: &'a mut DeviceBuffer<u8>,
+    pub descriptors:
+        &'a mut rust_kernels_cuda::nvfp4_tma_matmul::tma::TmaNvfp4DeviceScaleDescriptors,
+    pub raw_first_value: &'a DeviceBuffer<f32>,
+    pub observer: Option<&'a dyn crate::ValueProjectionObserver>,
+}
+impl ValueRmsBackwardScratch<'_> {
+    pub fn reborrow(&mut self) -> ValueRmsBackwardScratch<'_> {
+        ValueRmsBackwardScratch {
+            qkv: self.qkv,
+            padded_weight: self.padded_weight,
+            descriptors: self.descriptors,
+            raw_first_value: self.raw_first_value,
+            observer: self.observer,
         }
     }
 }

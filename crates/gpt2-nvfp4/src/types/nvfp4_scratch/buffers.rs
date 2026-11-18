@@ -19,7 +19,10 @@ impl RowwiseNvfp4Buffers {
     ) -> Result<Self, DriverError> {
         Ok(Self {
             bytes: DeviceBuffer::zeroed(stream, elements / 2)?,
-            scales: DeviceBuffer::zeroed(stream, elements / 16)?,
+            scales: DeviceBuffer::zeroed(
+                stream,
+                rust_kernels_cuda::nvfp4::csf::rowwise_encoded_len(row_count, elements / row_count),
+            )?,
             global_scales: DeviceBuffer::zeroed(stream, row_count)?,
         })
     }

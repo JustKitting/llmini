@@ -6,27 +6,24 @@ use std::path::Path;
 use cuda_core::CudaStream;
 use gpt2_nvfp4::GPT2_N_LAYER;
 
-mod tensor;
+mod reuse;
+pub(crate) mod tensor;
 mod topology;
+
+pub(crate) use reuse::prepare_reload;
 
 use super::{format::CheckpointReader, schema};
 use crate::AppResult;
 use crate::upload::UploadedModel;
 
-pub fn load_uploaded_model(stream: &CudaStream, path: &Path) -> AppResult<UploadedModel> {
+fn read_tensors(path: &Path) -> AppResult<(u32, HashMap<String, super::format::CheckpointTensor>)> {
     let file = File::open(path)?;
     let mut reader = CheckpointReader::new(BufReader::new(file));
     let tensor_count = reader.read_header()?;
     let expected_tensor_count = schema::tensor_count(GPT2_N_LAYER);
-    let pre_canon_tensor_count = schema::pre_canon_tensor_count(GPT2_N_LAYER);
-    let legacy_tensor_count = pre_canon_tensor_count - 1;
-    if tensor_count != expected_tensor_count
-        && tensor_count != pre_canon_tensor_count
-        && tensor_count != legacy_tensor_count
-    {
+    if !schema::supported_tensor_count(GPT2_N_LAYER, tensor_count) {
         return Err(format!(
-            "checkpoint has {tensor_count} tensors; expected {expected_tensor_count} \
-             (or pre-Canon counts {pre_canon_tensor_count}/{legacy_tensor_count})",
+            "checkpoint has {tensor_count} tensors; expected {expected_tensor_count}"
         )
         .into());
     }
@@ -39,5 +36,79 @@ pub fn load_uploaded_model(stream: &CudaStream, path: &Path) -> AppResult<Upload
         }
     }
 
-    topology::load_model(stream, &mut tensors)
+    super::activation_quant::take_and_validate(&mut tensors)?;
+    super::mlp::take_and_validate(&mut tensors)?;
+    super::value_rms::take_and_validate(&mut tensors)?;
+    super::kda_backward::take_and_validate(&mut tensors)?;
+    super::stationary_rope::take_and_validate(&mut tensors)?;
+    if gpt2_nvfp4::GPT2_REQUIRES_ENGRAM_MHC
+        && !(tensors.contains_key("mhc.config")
+            && tensors.contains_key("engram.layers")
+            && !tensors.contains_key("latent_feedback.config"))
+    {
+        return Err(
+            "composite full-credit checkpoint requires the complete Engram/mHC graph".into(),
+        );
+    }
+    if ((gpt2_nvfp4::GPT2_VALUE_RMS && !gpt2_nvfp4::GPT2_VALUE_RMS_ENGRAM_MHC)
+        || (gpt2_nvfp4::GPT2_STATIONARY_ROPE && !gpt2_nvfp4::GPT2_STATIONARY_ROPE_ENGRAM_MHC))
+        && [
+            "mhc.config",
+            "engram.config",
+            "engram.layers",
+            "latent_feedback.config",
+        ]
+        .iter()
+        .any(|key| tensors.contains_key(*key))
+    {
+        return Err(
+            "this numerical/backward checkpoint must encode its separate native trial".into(),
+        );
+    }
+    if gpt2_nvfp4::GPT2_KDA_FULL_STATE_BACKWARD
+        && [
+            "mhc.config",
+            "engram.config",
+            "engram.layers",
+            "latent_feedback.config",
+        ]
+        .iter()
+        .any(|key| tensors.contains_key(*key))
+        && !(tensors.contains_key("mhc.config")
+            && (tensors.contains_key("engram.config") || tensors.contains_key("engram.layers"))
+            && !tensors.contains_key("latent_feedback.config"))
+    {
+        return Err(
+            "full-credit auxiliary checkpoint requires the complete Engram/mHC graph".into(),
+        );
+    }
+    Ok((tensor_count, tensors))
+}
+
+pub fn load_uploaded_model(stream: &CudaStream, path: &Path) -> AppResult<UploadedModel> {
+    let (tensor_count, mut tensors) = read_tensors(path)?;
+    let expected_tensor_count = schema::tensor_count(GPT2_N_LAYER);
+    let mut model = topology::load_model(stream, &mut tensors)?;
+    if tensors.contains_key("mhc.config") {
+        model.mhc = Some(super::mhc::load(stream, &mut tensors)?);
+    }
+    if tensors.contains_key("engram.config") || tensors.contains_key("engram.layers") {
+        model.engram = Some(super::engram::load(stream, &mut tensors)?);
+    }
+    if tensor_count == expected_tensor_count + 2 + super::activation_quant::extra_tensors() {
+        model.latent_feedback = Some(super::latent_feedback::load(stream, &mut tensors)?);
+    }
+    if !tensors.is_empty() {
+        return Err("checkpoint has unrecognized tensors".into());
+    }
+    if model.mhc.is_some() && model.latent_feedback.is_some() {
+        return Err("unsupported mixed mHC checkpoint graph".into());
+    }
+    if let Some(e) = &model.engram {
+        let expected = if model.mhc.is_some() { 4 } else { 1 };
+        if e.streams() != Some(expected) {
+            return Err("Engram checkpoint stream graph is incompatible with its backbone".into());
+        }
+    }
+    Ok(model)
 }

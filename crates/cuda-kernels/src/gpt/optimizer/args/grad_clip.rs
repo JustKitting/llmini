@@ -5,9 +5,11 @@ pub struct GradientClipArgs<'a> {
     pub chunk_ptrs: &'a DeviceBuffer<u64>,
     pub chunk_lens: &'a DeviceBuffer<u32>,
     pub chunk_sums: &'a mut DeviceBuffer<f32>,
+    pub extra_sums: &'a DeviceBuffer<f32>,
     pub scale: &'a mut DeviceBuffer<f32>,
     pub norm: &'a mut DeviceBuffer<f32>,
     pub chunk_count: u32,
+    pub extra_sum_count: u32,
     pub max_norm: f32,
     pub apply: bool,
 }

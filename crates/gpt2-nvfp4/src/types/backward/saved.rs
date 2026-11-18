@@ -26,10 +26,10 @@ pub struct BlockForwardSaved<'a> {
     pub attention_out: &'a DeviceBuffer<u16>,
     pub headwise_gate_input: Option<&'a DeviceBuffer<u16>>,
     pub attention_probs: Option<&'a DeviceBuffer<u16>>,
-    pub kda_v_new: Option<&'a DeviceBuffer<f32>>,
-    pub kda_akk_inv: Option<&'a DeviceBuffer<f32>>,
-    pub kda_w: Option<&'a DeviceBuffer<f32>>,
-    pub kda_aqk: Option<&'a DeviceBuffer<f32>>,
+    pub kda_v_new: Option<&'a DeviceBuffer<u16>>,
+    pub kda_akk_inv: Option<&'a DeviceBuffer<u16>>,
+    pub kda_w: Option<&'a DeviceBuffer<u16>>,
+    pub kda_aqk: Option<&'a DeviceBuffer<u16>>,
     pub attention_log_sum_exp: &'a DeviceBuffer<f32>,
     pub c_proj_input_nvfp4: Nvfp4RowwiseDeviceTensor<'a>,
     pub ln_2: LayerNormSaved<'a>,
@@ -42,6 +42,7 @@ pub struct BlockForwardSaved<'a> {
 #[derive(Clone, Copy)]
 pub struct LayerNormSaved<'a> {
     pub row_count: u32,
+    /// Standardized input xhat, consumed by the explicit xhat kernels.
     pub residual: &'a DeviceBuffer<u16>,
     pub mean: &'a DeviceBuffer<f32>,
     pub inv_std: &'a DeviceBuffer<f32>,

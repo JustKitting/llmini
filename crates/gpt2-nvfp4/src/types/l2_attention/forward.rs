@@ -3,9 +3,6 @@ use rust_kernels_cuda::attention::{
     ApplyRopeArgs, CaptureValueResidualArgs, CausalAttentionTcArgs,
     ExclusiveSelfAttentionForwardArgs, HeadwiseAttentionGateForwardArgs, MixValueResidualArgs,
 };
-use rust_kernels_cuda::nvfp4_tma_matmul::{
-    pad::U4RowPadArgs, scale_layout::sm120_scale_padded_mn_extent,
-};
 
 use super::tensors::AttentionForwardArgs;
 use crate::types::HiddenStateDevice;
@@ -18,74 +15,44 @@ use crate::{
 pub(super) fn forward<'a, 'scratch>(
     args: AttentionForwardArgs<'a, 'scratch>,
 ) -> Result<HiddenStateDevice<'a>, DriverError> {
+    forward_impl(args, true)
+}
+
+pub(super) fn forward_impl<'a, 'scratch>(
+    args: AttentionForwardArgs<'a, 'scratch>,
+    add_residual: bool,
+) -> Result<HiddenStateDevice<'a>, DriverError> {
     let mut input_nvfp4 = args.input_nvfp4;
     let mut tape = args.tape;
     let dims = AttentionDims::new(args.use_full_attention);
     let hidden = args.hidden;
 
-    let input = if args.input_prequantized {
-        input_nvfp4.device()
-    } else {
-        input_nvfp4.quantize_hidden_precomputed(args.quant_module, &hidden, dims.embedding_dim)?
-    };
+    if !args.input_prequantized {
+        if let Some(tape) = tape.as_mut() {
+            tape.qkv_input_nvfp4.swap_storage(&mut input_nvfp4);
+        }
+        input_nvfp4.quantize_hidden_precomputed(args.quant_module, &hidden, dims.embedding_dim)?;
+    }
     if let Some(tape) = tape.as_mut() {
-        tape.save_qkv_input(hidden.stream, input)?;
+        tape.qkv_input_nvfp4.swap_storage(&mut input_nvfp4);
     }
-
-    let padded_qkv_dim = sm120_scale_padded_mn_extent(dims.qkv_dim as usize) as u32;
-    args.tma_scale_pack.pack(
-        hidden.stream,
-        input.scales,
-        args.tma_input_scale_packed,
-        hidden.row_count,
-        dims.embedding_dim,
-    )?;
-    args.tma_scale_pack.pack(
-        hidden.stream,
-        args.projections.qkv_weight_device.scales,
-        args.tma_weight_scale_packed,
-        dims.qkv_dim,
-        dims.embedding_dim,
-    )?;
-    if padded_qkv_dim != dims.qkv_dim {
-        args.tma_pad.pad_u4_rows(U4RowPadArgs {
-            stream: hidden.stream,
-            input: args.projections.qkv_weight_device.bytes,
-            output: args.tma_weight_bytes_padded,
-            rows: dims.qkv_dim,
-            padded_rows: padded_qkv_dim,
-            cols_u4: dims.embedding_dim,
-        })?;
-    }
-    let qkv_weight_bytes = if padded_qkv_dim == dims.qkv_dim {
-        args.projections.qkv_weight_device.bytes
-    } else {
-        &*args.tma_weight_bytes_padded
+    let input = match tape.as_ref() {
+        Some(tape) => tape.qkv_input_nvfp4.saved(),
+        None => input_nvfp4.device(),
     };
-    args.tma_module.prepare_tma_nvfp4_device_scales_into(
+
+    super::project_attention_qkv(
         hidden.stream,
-        input.bytes,
-        args.tma_input_scale_packed,
-        qkv_weight_bytes,
-        args.tma_weight_scale_packed,
-        hidden.row_count,
-        dims.embedding_dim,
-        padded_qkv_dim,
+        args.tma_module,
+        args.tma_pad,
         args.tma_descriptors,
+        args.tma_weight_bytes_padded,
+        input,
+        args.projections,
+        args.qkv,
+        hidden.row_count,
+        dims,
     )?;
-    args.tma_module
-        .gemm_tma_nvfp4_rowwise_a_scale_affine_padded_output(
-            hidden.stream,
-            args.tma_descriptors,
-            args.qkv,
-            args.projections.qkv_bias,
-            hidden.row_count,
-            dims.embedding_dim,
-            dims.qkv_dim,
-            padded_qkv_dim,
-            input.global_scales,
-            args.projections.qkv_weight_device.global_scale,
-        )?;
 
     if args.block_index == 0 {
         args.module
@@ -106,6 +73,28 @@ pub(super) fn forward<'a, 'scratch>(
             embedding_dim: dims.embedding_dim,
             qkv_dim: dims.qkv_dim,
         })?;
+    }
+
+    if let Some(observer) = args.value_projection_observer {
+        observer.observe(
+            args.block_index,
+            hidden.stream,
+            args.qkv,
+            hidden.row_count as usize,
+            dims.embedding_dim as usize,
+            dims.qkv_dim as usize,
+            false,
+        )?;
+    }
+    if crate::GPT2_VALUE_RMS {
+        args.value_rms.forward(
+            hidden.stream,
+            args.qkv,
+            hidden.row_count,
+            dims.embedding_dim,
+            dims.qkv_dim,
+            !args.use_full_attention,
+        )?;
     }
 
     if args.use_full_attention {
@@ -222,7 +211,7 @@ pub(super) fn forward<'a, 'scratch>(
                 gate_offset: attention_headwise_gate_offset(args.use_full_attention) as u32,
                 alpha_offset: args.projections.xsa_alpha_offset,
                 apply_headwise_gate: attention_headwise_gate_enabled(),
-                kda_value_activation: !args.use_full_attention,
+                kda_value_activation: !args.use_full_attention && !crate::GPT2_VALUE_RMS,
             })?;
     } else if attention_headwise_gate_enabled() {
         let (qkv_f16, raw_out_f16) = match tape.as_mut() {
@@ -256,6 +245,9 @@ pub(super) fn forward<'a, 'scratch>(
             })?;
     }
 
+    if let Some(tape) = tape.as_mut() {
+        tape.c_proj_input_nvfp4.swap_storage(&mut input_nvfp4);
+    }
     input_nvfp4.quantize_row_amax(
         args.quant_module,
         hidden.stream,
@@ -265,36 +257,37 @@ pub(super) fn forward<'a, 'scratch>(
         dims.embedding_dim,
     )?;
 
-    let input = input_nvfp4.device();
     if let Some(tape) = tape.as_mut() {
-        tape.save_c_proj_input(hidden.stream, input)?;
+        tape.c_proj_input_nvfp4.swap_storage(&mut input_nvfp4);
     }
+    let input = match tape.as_ref() {
+        Some(tape) => tape.c_proj_input_nvfp4.saved(),
+        None => input_nvfp4.device(),
+    };
 
-    args.tma_scale_pack.pack(
-        hidden.stream,
-        input.scales,
-        args.tma_input_scale_packed,
-        hidden.row_count,
-        dims.embedding_dim,
-    )?;
-    args.tma_scale_pack.pack(
-        hidden.stream,
-        args.projections.c_proj_weight_device.scales,
-        args.tma_weight_scale_packed,
-        dims.embedding_dim,
-        dims.embedding_dim,
-    )?;
-    args.tma_module.prepare_tma_nvfp4_device_scales_into(
+    args.tma_module.prepare_tma_nvfp4_csf_weight_into(
         hidden.stream,
         input.bytes,
-        args.tma_input_scale_packed,
+        input.scales,
         args.projections.c_proj_weight_device.bytes,
-        args.tma_weight_scale_packed,
+        args.projections.c_proj_weight_device.scales,
         hidden.row_count,
         dims.embedding_dim,
         dims.embedding_dim,
         args.tma_descriptors,
     )?;
+    if !add_residual {
+        // Inputs/tapes are already saved; emit only the branch result through
+        // the same NVFP4 GEMM with a zero addend, without residual cancellation.
+        unsafe {
+            cuda_core::memory::memset_d8_async(
+                hidden.residual.cu_deviceptr(),
+                0,
+                (hidden.row_count * dims.embedding_dim) as usize * 4,
+                hidden.stream.cu_stream(),
+            )?;
+        }
+    }
     args.tma_module.gemm_tma_nvfp4_rowwise_a_scale_residual(
         hidden.stream,
         args.tma_descriptors,

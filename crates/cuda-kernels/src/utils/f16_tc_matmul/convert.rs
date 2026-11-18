@@ -58,6 +58,20 @@ pub(crate) fn load_f16x2_global_bits(src: *const u16, index: usize) -> u32 {
 }
 
 #[inline(always)]
+pub(crate) fn load_f16_global_bits(src: *const u16, index: usize) -> u16 {
+    let bits: u16;
+    unsafe {
+        ptx_asm!(
+            "ld.global.u16 %0, [%1];",
+            out("=h") bits,
+            in("l") src.add(index) as u64,
+            options(register_only),
+        );
+    }
+    bits
+}
+
+#[inline(always)]
 pub(crate) fn load_f16_global_bits_read_only(src: *const u16, index: usize) -> u16 {
     let bits: u16;
     unsafe {
@@ -83,15 +97,6 @@ pub(crate) fn load_f16x2_global_bits_read_only(src: *const u16, index: usize) ->
         );
     }
     packed
-}
-
-#[inline(always)]
-pub(crate) fn load_f16x2_global(src: *const u16, index: usize) -> (f32, f32) {
-    let packed = load_f16x2_global_bits(src, index);
-    (
-        cvt_f32_f16(packed as u16),
-        cvt_f32_f16((packed >> 16) as u16),
-    )
 }
 
 #[inline(always)]

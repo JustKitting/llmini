@@ -10,6 +10,7 @@ use super::kernels;
 use crate::launch::{grid_x_config, linear_config};
 
 const F32_OPS_THREADS_PER_BLOCK: u32 = 64;
+const F32_ELEMENTWISE_THREADS_PER_BLOCK: u32 = 512;
 
 pub struct F32MatrixOpsModule {
     module: kernels::module::LoadedModule,
@@ -29,7 +30,7 @@ impl F32MatrixOpsModule {
 
         self.module.f32_linear2_kernel(
             args.stream,
-            linear_config(args.len, F32_OPS_THREADS_PER_BLOCK),
+            linear_config(args.len, F32_ELEMENTWISE_THREADS_PER_BLOCK),
             args.a,
             args.b,
             args.out,
@@ -46,7 +47,7 @@ impl F32MatrixOpsModule {
 
         self.module.f32_linear3_in_place_kernel(
             args.stream,
-            linear_config(args.len, F32_OPS_THREADS_PER_BLOCK),
+            linear_config(args.len, F32_ELEMENTWISE_THREADS_PER_BLOCK),
             args.a,
             args.b,
             args.c_out,
@@ -68,7 +69,7 @@ impl F32MatrixOpsModule {
 
         self.module.f32_linear3_sqrt_bound_a_in_place_kernel(
             args.stream,
-            linear_config(args.len, F32_OPS_THREADS_PER_BLOCK),
+            linear_config(args.len, F32_ELEMENTWISE_THREADS_PER_BLOCK),
             args.a,
             args.b,
             args.c_out,
@@ -147,7 +148,7 @@ impl F32MatrixOpsModule {
 
         self.module.f32_add_scaled_identity_kernel(
             args.stream,
-            linear_config(len, F32_OPS_THREADS_PER_BLOCK),
+            linear_config(len, F32_ELEMENTWISE_THREADS_PER_BLOCK),
             args.src,
             args.out,
             args.dim,
@@ -164,7 +165,7 @@ impl F32MatrixOpsModule {
 
         self.module.f32_scale_in_place_by_sqrt_amax_bound_kernel(
             args.stream,
-            linear_config(args.len, F32_OPS_THREADS_PER_BLOCK),
+            linear_config(args.len, F32_ELEMENTWISE_THREADS_PER_BLOCK),
             args.x,
             args.amax,
             args.len,
@@ -180,7 +181,7 @@ impl F32MatrixOpsModule {
 
         self.module.f32_scale_in_place_by_amax_bound_kernel(
             args.stream,
-            linear_config(args.len, F32_OPS_THREADS_PER_BLOCK),
+            linear_config(args.len, F32_ELEMENTWISE_THREADS_PER_BLOCK),
             args.x,
             args.amax,
             args.len,

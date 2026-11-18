@@ -9,9 +9,9 @@ use rust_kernels_cuda::canon::CanonBackwardArgs;
 use super::types::BlockAttentionBackwardArgs;
 use crate::backward::{
     AttentionCProjBackwardArgs, AttentionCoreBackwardArgs, AttentionQkvBackwardArgs,
-    Gpt2LayerNormBackwardAddAmaxArgs, Gpt2LayerNormBackwardAddArgs, attention_c_proj_backward,
-    causal_attention_backward, layer_norm_backward_add, layer_norm_backward_add_amax,
-    qkv_projection_backward,
+    Gpt2LayerNormBackwardAddAmaxArgs, Gpt2LayerNormBackwardAddArgs, Gpt2LayerNormBackwardAmaxArgs,
+    attention_c_proj_backward, causal_attention_backward, layer_norm_backward_add,
+    layer_norm_backward_add_amax, layer_norm_backward_amax, qkv_projection_backward,
 };
 use crate::types::BlockBackwardGrads;
 use crate::{
@@ -21,6 +21,17 @@ use crate::{
 
 pub fn attention_side_backward(
     args: BlockAttentionBackwardArgs<'_, '_, '_>,
+) -> Result<Option<u32>, DriverError> {
+    attention_side_backward_impl(args, true)
+}
+pub fn attention_side_backward_branch(
+    args: BlockAttentionBackwardArgs<'_, '_, '_>,
+) -> Result<Option<u32>, DriverError> {
+    attention_side_backward_impl(args, false)
+}
+fn attention_side_backward_impl(
+    args: BlockAttentionBackwardArgs<'_, '_, '_>,
+    add_residual: bool,
 ) -> Result<Option<u32>, DriverError> {
     let BlockAttentionBackwardArgs {
         block_index,
@@ -74,7 +85,7 @@ pub fn attention_side_backward(
         4 * saved.row_count
     };
     let use_xsa = uses_exclusive_self_attention(use_full_attention);
-    if use_xsa {
+    let xsa_amax_chunks = if use_xsa {
         let raw_out = if use_full_attention {
             saved.attention_out
         } else {
@@ -83,13 +94,14 @@ pub fn attention_side_backward(
                 .expect("KDA XSA requires a saved raw-output tape")
         };
         let dims = AttentionDims::new(use_full_attention);
-        modules.attention.exclusive_self_attention_backward(
+        Some(modules.attention.exclusive_self_attention_backward(
             ExclusiveSelfAttentionBackwardArgs {
                 stream,
                 qkv_f16: saved.qkv,
                 raw_out_f16: raw_out,
                 d_out: &mut *d_hidden,
                 d_qkv: &mut *d_qkv,
+                d_qkv_chunk_amax: &mut *scratch.qkv.linear.e_h.chunk_amax,
                 d_xsa_alphas,
                 xsa_alphas: projections.xsa_alphas,
                 row_count: saved.row_count,
@@ -99,11 +111,12 @@ pub fn attention_side_backward(
                 head_dim: dims.head_dim,
                 value_offset: 2 * dims.embedding_dim,
                 gate_offset: attention_headwise_gate_offset(use_full_attention) as u32,
+                gate_amax_offset,
                 alpha_offset: projections.xsa_alpha_offset,
                 apply_headwise_gate: attention_headwise_gate_enabled(),
-                kda_value_activation: !use_full_attention,
+                kda_value_activation: !use_full_attention && !crate::GPT2_VALUE_RMS,
             },
-        )?;
+        )?)
     } else if attention_headwise_gate_enabled() {
         let raw_out = if use_full_attention {
             saved.attention_out
@@ -130,7 +143,10 @@ pub fn attention_side_backward(
                 head_dim: dims.head_dim,
                 gate_offset: attention_headwise_gate_offset(use_full_attention) as u32,
             })?;
-    }
+        None
+    } else {
+        None
+    };
     let d_qkv_amax_chunks = causal_attention_backward(AttentionCoreBackwardArgs {
         block_index,
         use_full_attention,
@@ -148,7 +164,7 @@ pub fn attention_side_backward(
         scratch: scratch.core,
         backward_mask_seed: seeds.qkv.attention_mask_seed(),
     })?;
-    if !use_xsa && attention_headwise_gate_enabled() {
+    if use_xsa || attention_headwise_gate_enabled() {
         assert_eq!(
             d_qkv_amax_chunks,
             Some(gate_amax_offset),
@@ -156,6 +172,64 @@ pub fn attention_side_backward(
         );
     }
     let dims = AttentionDims::new(use_full_attention);
+    if crate::GPT2_VALUE_RMS {
+        let raw = scratch.value_rms;
+        crate::project_attention_qkv(
+            stream,
+            modules.tma,
+            modules.pad,
+            raw.descriptors,
+            raw.padded_weight,
+            saved.qkv_input_nvfp4,
+            projections,
+            raw.qkv,
+            saved.row_count,
+            dims,
+        )?;
+        if uses_value_residual(block_index) {
+            modules.attention.mix_value_residual(
+                rust_kernels_cuda::attention::MixValueResidualArgs {
+                    stream,
+                    qkv: raw.qkv,
+                    first_value: raw.raw_first_value,
+                    row_count: saved.row_count,
+                    embedding_dim: dims.embedding_dim,
+                    qkv_dim: dims.qkv_dim,
+                },
+            )?;
+        }
+        if let Some(observer) = raw.observer {
+            observer.observe(
+                block_index,
+                stream,
+                raw.qkv,
+                saved.row_count as usize,
+                dims.embedding_dim as usize,
+                dims.qkv_dim as usize,
+                true,
+            )?;
+            observer.represented_point(
+                block_index,
+                stream,
+                raw.qkv,
+                saved.qkv,
+                saved.row_count as usize,
+                dims.embedding_dim as usize,
+                dims.qkv_dim as usize,
+                !use_full_attention,
+            )?;
+        }
+        // Core and XSA have both contributed in normalized-V coordinates.
+        modules.value_rms.backward(
+            stream,
+            raw.qkv,
+            d_qkv,
+            saved.row_count,
+            dims.embedding_dim,
+            dims.qkv_dim,
+            !use_full_attention,
+        )?;
+    }
     let routes_value_residual = uses_value_residual(block_index);
     if routes_value_residual && block_index == GPT2_N_LAYER - 1 {
         modules
@@ -201,10 +275,17 @@ pub fn attention_side_backward(
         d_ln_1_normalized: &mut *d_hidden,
         d_attn_qkv_weight,
         d_attn_qkv_bias,
-        // Only a routed value residual changes dQKV after the attention core.
-        // Unrouted blocks can reuse the exact amax that core already produced.
-        precomputed_d_qkv_amax_chunks: if use_xsa || block_index == 0 || routes_value_residual {
+        // RMS and fixed sharing change dQKV after the core's amax measurement.
+        precomputed_d_qkv_amax_chunks: if crate::GPT2_VALUE_RMS
+            || block_index == 0
+            || routes_value_residual
+        {
             None
+        } else if let Some(xsa_amax_chunks) = xsa_amax_chunks {
+            Some(
+                d_qkv_amax_chunks.expect("attention core must report gradient amax chunks")
+                    + xsa_amax_chunks,
+            )
         } else if attention_headwise_gate_enabled() {
             Some(
                 d_qkv_amax_chunks.expect("attention core must report gradient amax chunks")
@@ -237,6 +318,21 @@ pub fn attention_side_backward(
     } else {
         &*d_hidden
     };
+    if !add_residual {
+        return Ok(Some(layer_norm_backward_amax(
+            Gpt2LayerNormBackwardAmaxArgs {
+                stream,
+                module: modules.layer_norm,
+                weights: ln_1,
+                saved: saved.ln_1,
+                grads: ln_1_grads.reborrow(),
+                d_normalized: d_ln_1_normalized,
+                d_residual: d_residual_in,
+                chunk_amax: d_residual_in_chunk_amax,
+                output_scale: crate::layer_norm_scale(block_index),
+            },
+        )?));
+    }
     if block_index == 0 {
         layer_norm_backward_add(Gpt2LayerNormBackwardAddArgs {
             stream,

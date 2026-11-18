@@ -4,13 +4,41 @@ use rust_kernels_cuda::f16_tc_matmul::F16TcMatmulModule;
 use rust_kernels_cuda::mma::Nvfp4FourSixMmaWeightTensor;
 use rust_kernels_cuda::nvfp4::Nvfp4DeviceTensor;
 use rust_kernels_cuda::nvfp4_quant::Nvfp4QuantModule;
-use rust_kernels_cuda::nvfp4_tma_matmul::{
-    launcher::Nvfp4GemmModule, pad::TmaMatrixPadModule, scale_pack::Sm120ScalePackModule,
-    tma::TmaNvfp4DeviceScaleDescriptors,
-};
+use rust_kernels_cuda::nvfp4_tma_matmul::launcher::Nvfp4GemmModule;
+use rust_kernels_cuda::nvfp4_tma_matmul::pad::TmaMatrixPadModule;
+use rust_kernels_cuda::nvfp4_tma_matmul::tma::TmaNvfp4DeviceScaleDescriptors;
 
 use super::tape::AttentionForwardTape;
 use crate::types::{HiddenStateDevice, HiddenStateNvfp4};
+
+/// Optional independent native mixed-value replay observer. Production uses None.
+pub trait ValueProjectionObserver {
+    fn observe(
+        &self,
+        block: usize,
+        stream: &cuda_core::CudaStream,
+        qkv: &DeviceBuffer<f32>,
+        rows: usize,
+        width: usize,
+        stride: usize,
+        recomputed: bool,
+    ) -> Result<(), cuda_core::DriverError>;
+
+    /// Zero-update verification hook; production observers are absent.
+    fn represented_point(
+        &self,
+        _block: usize,
+        _stream: &cuda_core::CudaStream,
+        _raw: &DeviceBuffer<f32>,
+        _stored: &DeviceBuffer<u16>,
+        _rows: usize,
+        _width: usize,
+        _stride: usize,
+        _kda: bool,
+    ) -> Result<(), cuda_core::DriverError> {
+        Ok(())
+    }
+}
 
 #[derive(Clone, Copy)]
 pub struct AttentionProjectionTensors<'a> {
@@ -26,19 +54,18 @@ pub struct AttentionProjectionTensors<'a> {
 }
 
 pub struct AttentionForwardArgs<'a, 'scratch> {
+    pub value_rms: &'a rust_kernels_cuda::value_rms::ValueRmsModule,
+    pub value_projection_observer: Option<&'a dyn ValueProjectionObserver>,
     pub block_index: usize,
     pub use_full_attention: bool,
     pub module: &'a AttentionModule,
     pub tc_module: &'a F16TcMatmulModule,
     pub tma_module: &'a Nvfp4GemmModule,
-    pub tma_scale_pack: &'a Sm120ScalePackModule,
     pub tma_pad: &'a TmaMatrixPadModule,
     pub quant_module: &'a Nvfp4QuantModule,
     pub input_nvfp4: HiddenStateNvfp4<'scratch>,
     pub tc_scratch: CausalAttentionTcScratch<'scratch>,
     pub tma_descriptors: &'scratch mut TmaNvfp4DeviceScaleDescriptors,
-    pub tma_input_scale_packed: &'scratch mut DeviceBuffer<u8>,
-    pub tma_weight_scale_packed: &'scratch mut DeviceBuffer<u8>,
     pub tma_weight_bytes_padded: &'scratch mut DeviceBuffer<u8>,
     pub projections: AttentionProjectionTensors<'a>,
     pub qkv: &'scratch mut DeviceBuffer<f32>,

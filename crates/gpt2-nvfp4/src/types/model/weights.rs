@@ -45,4 +45,12 @@ impl Gpt2Weights {
     ) -> Result<HiddenStateDevice<'a>, DriverError> {
         forward::forward(self, args)
     }
+
+    pub fn forward_with_hook<'a>(
+        &self,
+        args: Gpt2ForwardArgs<'a>,
+        hook: &mut dyn FnMut(usize, &mut HiddenStateDevice<'_>) -> Result<(), DriverError>,
+    ) -> Result<HiddenStateDevice<'a>, DriverError> {
+        forward::forward_with_hook(self, args, hook)
+    }
 }

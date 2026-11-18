@@ -1,3 +1,4 @@
+use crate::nvfp4_tma_matmul::launcher::Nvfp4GemmModule;
 use std::sync::Arc;
 
 use cuda_core::{CudaModule, CudaStream, DeviceBuffer, DeviceCopy, DriverError};
@@ -7,10 +8,7 @@ use crate::mma::{
     NVFP4_PROJECTION_CTA_THREADS, Nvfp4FourSixMmaWeightTensor, projection_cta_launch_grid_dim,
 };
 use crate::nvfp4::{Nvfp4DeviceTensor, Nvfp4RowwiseDeviceTensor};
-use crate::nvfp4_tma_matmul::{
-    launcher::Nvfp4GemmModule, scale_pack::Sm120ScalePackModule,
-    tma::TmaNvfp4DeviceScaleDescriptors,
-};
+use crate::nvfp4_tma_matmul::tma::TmaNvfp4DeviceScaleDescriptors;
 
 #[path = "lm_head/kernels.rs"]
 mod kernels;
@@ -39,12 +37,9 @@ pub struct LmHeadArgs<'a, 'out> {
 pub struct LmHeadTmaArgs<'a, 'scratch, 'out> {
     pub stream: &'a CudaStream,
     pub tma: &'a Nvfp4GemmModule,
-    pub scale_pack: &'a Sm120ScalePackModule,
     pub descriptors: &'scratch mut TmaNvfp4DeviceScaleDescriptors,
-    pub input_scale_packed: &'scratch mut DeviceBuffer<u8>,
     pub input: Nvfp4RowwiseDeviceTensor<'a>,
     pub weight: Nvfp4DeviceTensor<'a>,
-    pub weight_scale_packed: &'scratch mut DeviceBuffer<u8>,
     pub logits: &'out mut DeviceBuffer<f32>,
     pub token_count: u32,
     pub input_dim: u32,
@@ -86,26 +81,12 @@ impl LmHeadModule {
     }
 
     pub fn logits_tma(&self, args: LmHeadTmaArgs<'_, '_, '_>) -> Result<(), DriverError> {
-        args.scale_pack.pack(
-            args.stream,
-            args.input.scales,
-            args.input_scale_packed,
-            args.token_count,
-            args.input_dim,
-        )?;
-        args.scale_pack.pack(
-            args.stream,
-            args.weight.scales,
-            args.weight_scale_packed,
-            args.vocab_size,
-            args.input_dim,
-        )?;
-        args.tma.prepare_tma_nvfp4_device_scales_into(
+        args.tma.prepare_tma_nvfp4_csf_weight_into(
             args.stream,
             args.input.bytes,
-            args.input_scale_packed,
+            args.input.scales,
             args.weight.bytes,
-            args.weight_scale_packed,
+            args.weight.scales,
             args.token_count,
             args.input_dim,
             args.vocab_size,

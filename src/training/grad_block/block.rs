@@ -1,7 +1,7 @@
 use cuda_core::{CudaStream, DeviceBuffer, DriverError};
 use gpt2_nvfp4::{
-    BlockBackwardGrads, GPT2_CANON_WEIGHT_COUNT, GPT2_MLP, GPT2_N_EMBD, GPT2_QK_SCALE_STORAGE,
-    GPT2_QKV,
+    BlockBackwardGrads, GPT2_CANON_WEIGHT_COUNT, GPT2_MLP, GPT2_MLP_UP, GPT2_N_EMBD,
+    GPT2_QK_SCALE_STORAGE, GPT2_QKV,
 };
 
 use super::LayerNormGradBuffers;
@@ -35,8 +35,8 @@ impl BlockGradBuffers {
             d_attn_qk_scale: zero(stream, GPT2_QK_SCALE_STORAGE)?,
             d_attn_c_proj_weight: zero(stream, GPT2_N_EMBD * GPT2_N_EMBD)?,
             d_attn_c_proj_bias: zero(stream, GPT2_N_EMBD)?,
-            d_mlp_c_fc_weight: zero(stream, GPT2_N_EMBD * GPT2_MLP)?,
-            d_mlp_c_fc_bias: zero(stream, GPT2_MLP)?,
+            d_mlp_c_fc_weight: zero(stream, GPT2_N_EMBD * GPT2_MLP_UP)?,
+            d_mlp_c_fc_bias: zero(stream, GPT2_MLP_UP)?,
             d_mlp_c_proj_weight: zero(stream, GPT2_MLP * GPT2_N_EMBD)?,
             d_mlp_c_proj_bias: zero(stream, GPT2_N_EMBD)?,
         })

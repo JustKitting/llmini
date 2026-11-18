@@ -6,13 +6,13 @@ use cuda_core::{CudaModule, CudaStream, DeviceBuffer, DriverError, memory};
 use cuda_device::{DisjointSlice, SharedArray, cuda_module, kernel, thread, warp};
 
 use crate::atomic::atomic_add_f32;
-use crate::block_reduce::block_max_shared_f32_for_warps;
+use crate::block_reduce::block_max_pair_shared_f32;
 use crate::float_ptx::{abs_f32, max_f32};
 use crate::launch::{grid_x_config, linear_config};
 use crate::layer_norm_utils::{f16_column, nvfp4_column};
 use crate::nvfp4::Nvfp4DeviceTensor;
 use crate::nvfp4_quant::kernels::four_six::helpers::{
-    GROUP_SIZE, GROUP_THREADS, four_six_global_scale, four_six_lane, six_grid_group_scale,
+    GROUP_SIZE, GROUP_THREADS, activation_grid_group_scale, four_six_global_scale, four_six_lane,
     store_four_six_payload_word,
 };
 use crate::warp_reduce::thread_lane_warp;
@@ -22,8 +22,18 @@ const WARP_SIZE: u32 = 32;
 const WARPS_PER_BLOCK: u32 = THREADS_PER_BLOCK / WARP_SIZE;
 const CANON_KERNEL_SIZE: u32 = 4;
 const WEIGHT_ROW_PARTITIONS: u32 = 16;
-const WEIGHT_ROW_STRIDE: u32 = WARPS_PER_BLOCK * WEIGHT_ROW_PARTITIONS;
+const WEIGHT_ROWS_PER_WARP: u32 = 8;
+const WEIGHT_ROWS_PER_PARTITION: u32 = WARPS_PER_BLOCK * WEIGHT_ROWS_PER_WARP;
+const WEIGHT_ROW_STRIDE: u32 = WEIGHT_ROWS_PER_PARTITION * WEIGHT_ROW_PARTITIONS;
 const CANON_QUANT_MAX_WIDTH: usize = 2048;
+const CANON_QUANT_ROWS_PER_BLOCK: u32 = 2;
+const CANON_QUANT_ROW_STRIDE: usize = CANON_QUANT_MAX_WIDTH + CANON_QUANT_MAX_WIDTH / GROUP_SIZE;
+const CANON_QUANT_ROWS_ELEMS: usize = CANON_QUANT_ROWS_PER_BLOCK as usize * CANON_QUANT_ROW_STRIDE;
+
+#[inline(always)]
+fn canon_quant_shared_index(col: usize) -> usize {
+    col + col / GROUP_SIZE
+}
 
 pub struct CanonForwardArgs<'a, 'out> {
     pub stream: &'a CudaStream,
@@ -102,7 +112,13 @@ impl CanonModule {
         assert!(args.weight.len() >= (args.width * CANON_KERNEL_SIZE) as usize);
         assert!(args.amax.len() >= args.row_count as usize);
         assert!(args.out_fp4.len() >= element_count as usize / 2);
-        assert!(args.out_scales.len() >= element_count as usize / GROUP_SIZE);
+        assert!(
+            args.out_scales.len()
+                >= crate::nvfp4::csf::rowwise_encoded_len(
+                    args.row_count as usize,
+                    args.width as usize
+                )
+        );
         assert!(args.out_global_scale.len() >= args.row_count as usize);
         assert!(args.seq_len > 0);
         assert_eq!(args.row_count % args.seq_len, 0);
@@ -111,7 +127,10 @@ impl CanonModule {
 
         self.module.canon_forward_quantized_f32_kernel(
             args.stream,
-            grid_x_config(args.row_count, THREADS_PER_BLOCK),
+            grid_x_config(
+                args.row_count.div_ceil(CANON_QUANT_ROWS_PER_BLOCK),
+                THREADS_PER_BLOCK,
+            ),
             args.input,
             args.weight,
             args.amax,
@@ -184,8 +203,10 @@ mod kernels {
         SharedArray::UNINIT;
     static mut WEIGHT_3_PARTIALS: SharedArray<f32, { THREADS_PER_BLOCK as usize }> =
         SharedArray::UNINIT;
-    static mut CANON_QUANT_ROW: SharedArray<f32, CANON_QUANT_MAX_WIDTH> = SharedArray::UNINIT;
-    static mut CANON_QUANT_AMAX: SharedArray<f32, { WARPS_PER_BLOCK as usize }> =
+    static mut CANON_QUANT_ROWS: SharedArray<f32, CANON_QUANT_ROWS_ELEMS> = SharedArray::UNINIT;
+    static mut CANON_QUANT_AMAX_0: SharedArray<f32, { WARPS_PER_BLOCK as usize }> =
+        SharedArray::UNINIT;
+    static mut CANON_QUANT_AMAX_1: SharedArray<f32, { WARPS_PER_BLOCK as usize }> =
         SharedArray::UNINIT;
 
     #[kernel]
@@ -236,50 +257,100 @@ mod kernels {
         seq_len: u32,
         width: u32,
     ) {
-        let row = thread::blockIdx_x();
+        let row_0 = thread::blockIdx_x() * CANON_QUANT_ROWS_PER_BLOCK;
+        let row_1 = row_0 + 1;
         let (thread_id, lane, warp_in_block) = thread_lane_warp();
-        if row >= row_count {
+        if row_0 >= row_count {
             return;
         }
 
-        let position = row % seq_len;
-        let row_base = row as usize * width as usize;
-        let mut local_amax = 0.0f32;
+        let has_row_1 = row_1 < row_count;
+        let position_0 = row_0 % seq_len;
+        let position_1 = row_1 % seq_len;
+        let row_base_0 = row_0 as usize * width as usize;
+        let row_base_1 = row_1 as usize * width as usize;
+        let mut local_amax_0 = 0.0f32;
+        let mut local_amax_1 = 0.0f32;
         let mut col = thread_id;
         while col < width {
             let weight_base = col as usize * CANON_KERNEL_SIZE as usize;
-            let mut value = input[row_base + col as usize];
-            let mut lag = 0;
-            while lag < CANON_KERNEL_SIZE {
-                if lag <= position {
-                    let source_row = row - lag;
-                    value += weight[weight_base + lag as usize]
-                        * input[source_row as usize * width as usize + col as usize];
-                }
-                lag += 1;
+            let weight_0 = weight[weight_base];
+            let weight_1 = weight[weight_base + 1];
+            let weight_2 = weight[weight_base + 2];
+            let weight_3 = weight[weight_base + 3];
+            let col_usize = col as usize;
+            let input_0 = input[row_base_0 + col_usize];
+            let mut value_0 = input_0;
+            value_0 += weight_0 * input_0;
+
+            let input_m1 = if position_0 >= 1 {
+                input[row_base_0 - width as usize + col_usize]
+            } else {
+                0.0
+            };
+            if position_0 >= 1 {
+                value_0 += weight_1 * input_m1;
             }
+            let input_m2 = if position_0 >= 2 {
+                input[row_base_0 - 2 * width as usize + col_usize]
+            } else {
+                0.0
+            };
+            if position_0 >= 2 {
+                value_0 += weight_2 * input_m2;
+            }
+            if position_0 >= 3 {
+                let input_m3 = input[row_base_0 - 3 * width as usize + col_usize];
+                value_0 += weight_3 * input_m3;
+            }
+
+            let shared_col = canon_quant_shared_index(col_usize);
             unsafe {
-                CANON_QUANT_ROW[col as usize] = value;
+                CANON_QUANT_ROWS[shared_col] = value_0;
             }
-            local_amax = max_f32(local_amax, abs_f32(value));
+            local_amax_0 = max_f32(local_amax_0, abs_f32(value_0));
+
+            if has_row_1 {
+                let input_1 = input[row_base_1 + col_usize];
+                let mut value_1 = input_1;
+                value_1 += weight_0 * input_1;
+                if position_1 >= 1 {
+                    value_1 += weight_1 * input_0;
+                }
+                if position_1 >= 2 {
+                    value_1 += weight_2 * input_m1;
+                }
+                if position_1 >= 3 {
+                    value_1 += weight_3 * input_m2;
+                }
+                unsafe {
+                    CANON_QUANT_ROWS[CANON_QUANT_ROW_STRIDE + shared_col] = value_1;
+                }
+                local_amax_1 = max_f32(local_amax_1, abs_f32(value_1));
+            }
             col += THREADS_PER_BLOCK;
         }
 
-        let tensor_amax = unsafe {
-            block_max_shared_f32_for_warps(
-                &mut CANON_QUANT_AMAX,
-                WARPS_PER_BLOCK,
-                local_amax,
+        let (tensor_amax_0, tensor_amax_1) = unsafe {
+            block_max_pair_shared_f32(
+                &mut CANON_QUANT_AMAX_0,
+                &mut CANON_QUANT_AMAX_1,
+                local_amax_0,
+                local_amax_1,
                 lane,
                 warp_in_block,
-                0.0,
             )
         };
-        let global_scale = four_six_global_scale(tensor_amax, 1.0);
+        let global_scale_0 = four_six_global_scale(tensor_amax_0, 1.0);
+        let global_scale_1 = four_six_global_scale(tensor_amax_1, 1.0);
         if thread_id == 0 {
             unsafe {
-                *amax.get_unchecked_mut(row as usize) = tensor_amax;
-                *out_global_scale.get_unchecked_mut(row as usize) = global_scale;
+                *amax.get_unchecked_mut(row_0 as usize) = tensor_amax_0;
+                *out_global_scale.get_unchecked_mut(row_0 as usize) = global_scale_0;
+                if has_row_1 {
+                    *amax.get_unchecked_mut(row_1 as usize) = tensor_amax_1;
+                    *out_global_scale.get_unchecked_mut(row_1 as usize) = global_scale_1;
+                }
             }
         }
 
@@ -290,37 +361,84 @@ mod kernels {
         while group_in_row < groups_per_row {
             let local_base = group_in_row as usize * GROUP_SIZE;
             let lane_base = local_base + 4 * lane_in_group;
-            let (value_0, value_1, value_2, value_3) = unsafe {
+            let shared_lane_base = canon_quant_shared_index(lane_base);
+            let (value_00, value_01, value_02, value_03) = unsafe {
                 (
-                    CANON_QUANT_ROW[lane_base],
-                    CANON_QUANT_ROW[lane_base + 1],
-                    CANON_QUANT_ROW[lane_base + 2],
-                    CANON_QUANT_ROW[lane_base + 3],
+                    CANON_QUANT_ROWS[shared_lane_base],
+                    CANON_QUANT_ROWS[shared_lane_base + 1],
+                    CANON_QUANT_ROWS[shared_lane_base + 2],
+                    CANON_QUANT_ROWS[shared_lane_base + 3],
                 )
             };
-            let (scale_bits, payload_word) = six_grid_group_scale(
-                value_0,
-                value_1,
-                value_2,
-                value_3,
-                global_scale,
+            let (scale_bits_0, payload_word_0) = activation_grid_group_scale(
+                value_00,
+                value_01,
+                value_02,
+                value_03,
+                global_scale_0,
                 1.0,
                 group_mask,
                 group_leader,
                 lane_in_group,
             );
-            let group = row * groups_per_row + group_in_row;
-            let output_base = group as usize * GROUP_SIZE;
+            let group_0 = row_0 * groups_per_row + group_in_row;
+            let output_base_0 = group_0 as usize * GROUP_SIZE;
             unsafe {
-                if lane_in_group == 0 {
-                    *out_scales.get_unchecked_mut(group as usize) = scale_bits;
-                }
+                crate::nvfp4::csf::store_row_warp(
+                    out_scales.as_mut_ptr(),
+                    row_count,
+                    width.div_ceil(128) * 128,
+                    row_0,
+                    group_in_row,
+                    scale_bits_0,
+                );
                 store_four_six_payload_word(
                     out_fp4.as_mut_ptr(),
-                    output_base,
+                    output_base_0,
                     lane_in_group,
-                    payload_word,
+                    payload_word_0,
                 );
+            }
+
+            if has_row_1 {
+                let row_1_base = CANON_QUANT_ROW_STRIDE + shared_lane_base;
+                let (value_10, value_11, value_12, value_13) = unsafe {
+                    (
+                        CANON_QUANT_ROWS[row_1_base],
+                        CANON_QUANT_ROWS[row_1_base + 1],
+                        CANON_QUANT_ROWS[row_1_base + 2],
+                        CANON_QUANT_ROWS[row_1_base + 3],
+                    )
+                };
+                let (scale_bits_1, payload_word_1) = activation_grid_group_scale(
+                    value_10,
+                    value_11,
+                    value_12,
+                    value_13,
+                    global_scale_1,
+                    1.0,
+                    group_mask,
+                    group_leader,
+                    lane_in_group,
+                );
+                let group_1 = row_1 * groups_per_row + group_in_row;
+                let output_base_1 = group_1 as usize * GROUP_SIZE;
+                unsafe {
+                    crate::nvfp4::csf::store_row_warp(
+                        out_scales.as_mut_ptr(),
+                        row_count,
+                        width.div_ceil(128) * 128,
+                        row_1,
+                        group_in_row,
+                        scale_bits_1,
+                    );
+                    store_four_six_payload_word(
+                        out_fp4.as_mut_ptr(),
+                        output_base_1,
+                        lane_in_group,
+                        payload_word_1,
+                    );
+                }
             }
             group_in_row += groups_per_block;
         }
@@ -379,52 +497,77 @@ mod kernels {
             let canon_weight_1 = canon_weight[canon_weight_base + 1];
             let canon_weight_2 = canon_weight[canon_weight_base + 2];
             let canon_weight_3 = canon_weight[canon_weight_base + 3];
-            let mut source_row = partition * WARPS_PER_BLOCK + warp_in_block;
-            while source_row < row_count {
-                let source_base = source_row as usize * width as usize;
-                let residual = f16_column(residual_f16, source_base, col, width);
-                let row_mean = warp::shuffle_f32(
-                    if lane == 0 {
-                        mean[source_row as usize]
+            let mut source_group =
+                partition * WEIGHT_ROWS_PER_PARTITION + warp_in_block * WEIGHT_ROWS_PER_WARP;
+            while source_group < row_count {
+                let mut d_0 = d_output[(source_group * width + col) as usize];
+                let mut d_1 = if source_group + 1 < row_count {
+                    d_output[((source_group + 1) * width + col) as usize]
+                } else {
+                    0.0
+                };
+                let mut d_2 = if source_group + 2 < row_count {
+                    d_output[((source_group + 2) * width + col) as usize]
+                } else {
+                    0.0
+                };
+                let mut row_in_group = 0;
+                while row_in_group < WEIGHT_ROWS_PER_WARP {
+                    let source_row = source_group + row_in_group;
+                    if source_row >= row_count {
+                        break;
+                    }
+                    let source_base = source_row as usize * width as usize;
+                    let residual = f16_column(residual_f16, source_base, col, width);
+                    let row_mean = warp::shuffle_f32(
+                        if lane == 0 {
+                            mean[source_row as usize]
+                        } else {
+                            0.0
+                        },
+                        0,
+                    );
+                    let row_inv_std = warp::shuffle_f32(
+                        if lane == 0 {
+                            inv_std[source_row as usize]
+                        } else {
+                            0.0
+                        },
+                        0,
+                    );
+                    let normalized = ((residual - row_mean) * row_inv_std * norm_gamma + norm_beta)
+                        * norm_output_scale;
+                    let d_3_row = source_row + 3;
+                    let d_3 = if d_3_row < row_count {
+                        d_output[(d_3_row * width + col) as usize]
                     } else {
                         0.0
-                    },
-                    0,
-                );
-                let row_inv_std = warp::shuffle_f32(
-                    if lane == 0 {
-                        inv_std[source_row as usize]
-                    } else {
-                        0.0
-                    },
-                    0,
-                );
-                let normalized = ((residual - row_mean) * row_inv_std * norm_gamma + norm_beta)
-                    * norm_output_scale;
-                let d_base = source_base + col as usize;
-                let d_0 = d_output[d_base];
-                let mut input_grad = d_0 + canon_weight_0 * d_0;
-                grad_0 += d_0 * normalized;
-                let position = source_row % seq_len;
-                if position + 1 < seq_len {
-                    let d_1 = d_output[d_base + width as usize];
-                    input_grad += canon_weight_1 * d_1;
-                    grad_1 += d_1 * normalized;
+                    };
+                    let d_base = source_base + col as usize;
+                    let mut input_grad = d_0 + canon_weight_0 * d_0;
+                    grad_0 += d_0 * normalized;
+                    let position = source_row % seq_len;
+                    if position + 1 < seq_len {
+                        input_grad += canon_weight_1 * d_1;
+                        grad_1 += d_1 * normalized;
+                    }
+                    if position + 2 < seq_len {
+                        input_grad += canon_weight_2 * d_2;
+                        grad_2 += d_2 * normalized;
+                    }
+                    if position + 3 < seq_len {
+                        input_grad += canon_weight_3 * d_3;
+                        grad_3 += d_3 * normalized;
+                    }
+                    unsafe {
+                        *d_input.get_unchecked_mut(d_base) = input_grad;
+                    }
+                    d_0 = d_1;
+                    d_1 = d_2;
+                    d_2 = d_3;
+                    row_in_group += 1;
                 }
-                if position + 2 < seq_len {
-                    let d_2 = d_output[d_base + 2 * width as usize];
-                    input_grad += canon_weight_2 * d_2;
-                    grad_2 += d_2 * normalized;
-                }
-                if position + 3 < seq_len {
-                    let d_3 = d_output[d_base + 3 * width as usize];
-                    input_grad += canon_weight_3 * d_3;
-                    grad_3 += d_3 * normalized;
-                }
-                unsafe {
-                    *d_input.get_unchecked_mut(d_base) = input_grad;
-                }
-                source_row += WEIGHT_ROW_STRIDE;
+                source_group += WEIGHT_ROW_STRIDE;
             }
         }
 

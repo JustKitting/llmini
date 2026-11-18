@@ -20,10 +20,11 @@ pub use canon::{CanonTensors, CanonWeights};
 pub use l1_embeddings::{EmbeddingWeights, HiddenStateDevice, TokenEmbeddingArgs};
 pub use l2_attention::{
     AttentionForwardArgs, AttentionForwardTape, AttentionProjectionTensors, AttentionWeights,
+    ValueProjectionObserver, project_attention_qkv,
 };
 pub use l3_mlp::{
-    MlpDownTensors, MlpForwardArgs, MlpForwardTape, MlpProjectionTensors, MlpScratch, MlpUpTensors,
-    MlpWeights,
+    MlpDownTensors, MlpForwardArgs, MlpForwardTape, MlpProjectionObserver, MlpProjectionTensors,
+    MlpScratch, MlpUpTensors, MlpWeights,
 };
 pub use l4_block::{BlockForwardArgs, Gpt2BlockWeights};
 pub use l5_layer_norm::{LayerNormForwardArgs, LayerNormTensors, LayerNormWeights};

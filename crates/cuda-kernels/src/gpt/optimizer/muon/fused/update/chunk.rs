@@ -7,9 +7,10 @@ use super::one::{UpdateAmax, update_one};
 
 struct UpdateChunk {
     u: *const f32,
+    schedule_values: *mut f32,
     z_master: *mut f32,
     x_master: *mut f32,
-    momentum: *mut f32,
+    momentum: *mut u16,
     variance: *mut u16,
     rows: u32,
     cols: u32,
@@ -33,6 +34,7 @@ impl UpdateChunk {
     fn at(&self, mul: u32) -> UpdateAmax {
         update_one(
             self.u,
+            self.schedule_values,
             self.z_master,
             self.x_master,
             self.momentum,
@@ -59,9 +61,10 @@ impl UpdateChunk {
 #[expect(clippy::too_many_arguments, reason = "CUDA ABI uses explicit buffers")]
 pub(super) fn update_eight_amax(
     u: *const f32,
+    schedule_values: *mut f32,
     z_master: *mut f32,
     x_master: *mut f32,
-    momentum: *mut f32,
+    momentum: *mut u16,
     variance: *mut u16,
     rows: u32,
     cols: u32,
@@ -82,6 +85,7 @@ pub(super) fn update_eight_amax(
 ) -> UpdateAmax {
     let chunk = UpdateChunk {
         u,
+        schedule_values,
         z_master,
         x_master,
         momentum,

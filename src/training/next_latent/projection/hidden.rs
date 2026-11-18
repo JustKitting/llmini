@@ -12,10 +12,7 @@ pub(in crate::training::next_latent) fn projection_gelu1(
     project_affine_tma(
         args.stream,
         args.tma,
-        args.tma_scale_pack,
         &mut args.buffers.tma_descriptors,
-        &mut args.buffers.tma_input_scale_packed,
-        &mut args.buffers.tma_weight_scale_packed,
         args.buffers.input_quant.rowwise(),
         args.weights.input_projection.weight.device(),
         args.weights.input_projection.bias.device(),
@@ -45,10 +42,7 @@ pub(in crate::training::next_latent) fn projection_gelu2(
     project_affine_tma(
         args.stream,
         args.tma,
-        args.tma_scale_pack,
         &mut args.buffers.tma_descriptors,
-        &mut args.buffers.tma_input_scale_packed,
-        &mut args.buffers.tma_weight_scale_packed,
         args.buffers.act1_quant.rowwise(),
         args.weights.transition.weight.device(),
         args.weights.transition.bias.device(),

@@ -10,6 +10,16 @@ mod views;
 pub(in crate::training) use scan::first_non_finite_gradient;
 use views::parameter_gradient_views;
 
+pub(super) fn named_parameter_ranges(
+    grads: &BackwardBuffers,
+    next_latent: &NextLatGradBuffers,
+) -> Vec<(String, u64, usize)> {
+    parameter_gradient_views(grads, next_latent)
+        .into_iter()
+        .map(|view| (view.name, view.buffer.cu_deviceptr(), view.len))
+        .collect()
+}
+
 #[derive(Clone, Copy)]
 pub(super) struct HostGradPtr {
     pub(super) ptr: u64,

@@ -11,6 +11,25 @@ pub struct Gpt2 {
 }
 
 impl Gpt2 {
+    pub fn forward_with_boundaries<'a>(
+        &self,
+        args: Gpt2ForwardArgs<'a>,
+        hook: &mut dyn FnMut(usize, &mut HiddenStateDevice<'_>) -> Result<(), DriverError>,
+        readout: bool,
+        boundary: &mut dyn FnMut(
+            usize,
+            bool,
+            &mut HiddenStateDevice<'_>,
+        ) -> Result<bool, DriverError>,
+    ) -> Result<HiddenStateDevice<'a>, DriverError> {
+        super::forward::forward_with_boundaries(
+            self.weights().expect("Gpt2 must be initialized"),
+            args,
+            hook,
+            readout,
+            boundary,
+        )
+    }
     pub const fn new() -> Self {
         Self { weights: None }
     }
@@ -48,5 +67,29 @@ impl Gpt2 {
         self.weights()
             .expect("Gpt2::init must be called before forward")
             .forward(args)
+    }
+
+    pub fn forward_with_hook<'a>(
+        &self,
+        args: Gpt2ForwardArgs<'a>,
+        hook: &mut dyn FnMut(usize, &mut HiddenStateDevice<'_>) -> Result<(), DriverError>,
+    ) -> Result<HiddenStateDevice<'a>, DriverError> {
+        self.weights()
+            .expect("Gpt2 must be initialized")
+            .forward_with_hook(args, hook)
+    }
+
+    /// Run embeddings and every block without final normalization/head (detached preliminary pass).
+    pub fn forward_hidden_with_hook<'a>(
+        &self,
+        args: Gpt2ForwardArgs<'a>,
+        hook: &mut dyn FnMut(usize, &mut HiddenStateDevice<'_>) -> Result<(), DriverError>,
+    ) -> Result<HiddenStateDevice<'a>, DriverError> {
+        super::forward::forward_impl(
+            self.weights().expect("Gpt2 must be initialized"),
+            args,
+            hook,
+            false,
+        )
     }
 }

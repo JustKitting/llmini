@@ -1,7 +1,5 @@
 use cuda_core::DeviceBuffer;
 
-use crate::nvfp4_cast::{e2m1_value, e2m1_values, e4m3_value};
-
 #[derive(Clone, Copy)]
 pub struct Nvfp4DeviceTensor<'a> {
     pub bytes: &'a DeviceBuffer<u8>,
@@ -45,38 +43,122 @@ impl<'a> Nvfp4RowwiseDeviceTensor<'a> {
 }
 
 #[inline(always)]
-pub fn nvfp4_value(bytes: &[u8], scales: &[u8], global_scale: f32, index: usize) -> f32 {
-    let byte = bytes[index / 2];
-    let payload = if index & 1 == 0 {
-        byte & 0x0f
+pub fn nvfp4_value(bytes: &[u8], scales: &[u8], global: f32, index: usize) -> f32 {
+    let pair = crate::nvfp4_cast::scaled_e2m1_half2(
+        bytes[index / 2],
+        super::csf::scale_at(scales, index / 16),
+    );
+    let h = if index & 1 == 0 {
+        pair as u16
     } else {
-        byte >> 4
+        (pair >> 16) as u16
     };
-
-    e2m1_value(payload) * e4m3_value(scales[index / 16] as u16) * global_scale
+    crate::nvfp4_cast::f16_value(h) * global
 }
 
 #[inline(always)]
-pub fn nvfp4_values2(
-    bytes: &[u8],
-    scales: &[u8],
-    global_scale: f32,
-    even_index: usize,
-) -> (f32, f32) {
-    let (lo, hi) = e2m1_values(bytes[even_index / 2]);
-    let scale = e4m3_value(scales[even_index / 16] as u16);
-    (lo * scale * global_scale, hi * scale * global_scale)
+pub fn nvfp4_vector_value(bytes: &[u8], scales: &[u8], global: f32, index: usize) -> f32 {
+    let pair = crate::nvfp4_cast::scaled_e2m1_half2(
+        bytes[index / 2],
+        super::csf::vector_scale_at(scales, index / 16),
+    );
+    let h = if index & 1 == 0 {
+        pair as u16
+    } else {
+        (pair >> 16) as u16
+    };
+    crate::nvfp4_cast::f16_value(h) * global
+}
+
+#[inline(always)]
+pub fn nvfp4_values2(bytes: &[u8], scales: &[u8], global: f32, index: usize) -> (f32, f32) {
+    let pair = crate::nvfp4_cast::scaled_e2m1_half2(
+        bytes[index / 2],
+        super::csf::scale_at(scales, index / 16),
+    );
+    (
+        crate::nvfp4_cast::f16_value(pair as u16) * global,
+        crate::nvfp4_cast::f16_value((pair >> 16) as u16) * global,
+    )
+}
+
+#[inline(always)]
+pub fn nvfp4_vector_values2(bytes: &[u8], scales: &[u8], global: f32, index: usize) -> (f32, f32) {
+    let pair = crate::nvfp4_cast::scaled_e2m1_half2(
+        bytes[index / 2],
+        super::csf::vector_scale_at(scales, index / 16),
+    );
+    (
+        crate::nvfp4_cast::f16_value(pair as u16) * global,
+        crate::nvfp4_cast::f16_value((pair >> 16) as u16) * global,
+    )
 }
 
 #[inline(always)]
 pub fn nvfp4_rowwise_value(
     bytes: &[u8],
     scales: &[u8],
-    global_scales: &[f32],
+    globals: &[f32],
     row_len: usize,
     row: usize,
     col: usize,
 ) -> f32 {
     let index = row * row_len + col;
-    nvfp4_value(bytes, scales, global_scales[row], index)
+    let pair = crate::nvfp4_cast::scaled_e2m1_half2(bytes[index / 2], unsafe {
+        super::csf::matrix_scale_at_data(
+            scales.as_ptr(),
+            globals.len() as u32,
+            row_len.div_ceil(128) as u32 * 128,
+            row as u32,
+            (col / 16) as u32,
+        )
+    });
+    let h = if index & 1 == 0 {
+        pair as u16
+    } else {
+        (pair >> 16) as u16
+    };
+    crate::nvfp4_cast::f16_value(h) * globals[row]
+}
+
+#[inline(always)]
+pub fn nvfp4_rowwise_halves8(
+    bytes: &[u8],
+    scales: &[u8],
+    row_len: u32,
+    row: u32,
+    col: u32,
+) -> u128 {
+    let index = (row * row_len + col) as usize;
+    let scale = unsafe {
+        super::csf::matrix_scale_at_data(
+            scales.as_ptr(),
+            0,
+            row_len.div_ceil(128) * 128,
+            row,
+            col / 16,
+        )
+    };
+    let packed: u32;
+    unsafe {
+        cuda_device::ptx_asm!("ld.global.nc.u32 %0,[%1];",out("=r")packed,in("l")bytes.as_ptr().add(index/2)as u64,clobber("memory"));
+    }
+    crate::nvfp4_cast::scaled_e2m1_half8(packed, scale)
+}
+
+/// Four adjacent values share their stored FP8 scale and packed conversion.
+#[inline(always)]
+pub fn nvfp4_vector_values4(bytes: &[u8], scales: &[u8], global: f32, index: usize) -> [f32; 4] {
+    let bits: u16;
+    unsafe {
+        cuda_device::ptx_asm!("ld.global.nc.u16 %0,[%1];",out("=h")bits,in("l")bytes.as_ptr().add(index/2)as u64,options(register_only));
+    }
+    let halves =
+        crate::nvfp4_cast::scaled_e2m1_half4(bits, super::csf::vector_scale_at(scales, index / 16));
+    [
+        crate::nvfp4_cast::f16_value(halves as u16) * global,
+        crate::nvfp4_cast::f16_value((halves >> 16) as u16) * global,
+        crate::nvfp4_cast::f16_value((halves >> 32) as u16) * global,
+        crate::nvfp4_cast::f16_value((halves >> 48) as u16) * global,
+    ]
 }

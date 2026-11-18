@@ -82,7 +82,7 @@ fn store_relu2_one(
         let offset = row as usize * args.params.output_dim as usize + col as usize;
         unsafe {
             *pre_activation.get_unchecked_mut(offset) = pre;
-            *out.get_unchecked_mut(offset) = relu * relu;
+            *out.get_unchecked_mut(offset) = crate::activation::centered_relu2_from_positive(relu);
         }
     }
 }

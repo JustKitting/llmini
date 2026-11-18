@@ -80,6 +80,11 @@ pub fn half_warp_max_nonnegative_f32(value: f32, mask: u32) -> f32 {
 }
 
 #[inline(always)]
+pub fn eighth_warp_max_nonnegative_f32(value: f32, mask: u32) -> f32 {
+    f32::from_bits(redux_max_u32(value.to_bits(), mask))
+}
+
+#[inline(always)]
 fn redux_max_u32(value: u32, mask: u32) -> u32 {
     let result: u32;
     unsafe {

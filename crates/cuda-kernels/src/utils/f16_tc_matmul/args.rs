@@ -14,5 +14,10 @@ pub use base::{
 };
 pub use f32::{
     F16TcMatmulF32ATransposedHalfRhsArgs, F16TcMatmulF32ATransposedRhsArgs, F16TcMatmulF32Args,
-    F16TcMatmulF32HalfRhsArgs, F16TcMatmulF32RhsArgs, F16TcMatmulF32WindowArgs,
+    F16TcMatmulF32CausalHalfOutArgs, F16TcMatmulF32HalfArgs, F16TcMatmulF32HalfRhsArgs,
+    F16TcMatmulF32RhsArgs, F16TcMatmulF32WindowArgs, F16TcMatmulHalfAF32RhsArgs,
+    F16TcMatmulHalfAF32RhsHalfOutArgs, F16TcMatmulHalfATransposedDualRhsArgs,
+    F16TcMatmulHalfATransposedF32RhsArgs,
 };
+
+pub use f32::{F16TcMatmulHalfCausalHalfOutArgs, F16TcMatmulKdaInverseArgs, F16TcMatmulKdaWuArgs};

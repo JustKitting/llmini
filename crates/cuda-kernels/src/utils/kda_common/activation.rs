@@ -4,7 +4,26 @@ use crate::warp_reduce::warp_sum_f32;
 
 use super::shape::KDA_DENOM_EPS;
 
-const KDA_DECAY_EXP_LIMIT: f32 = 3.0;
+pub(crate) const KDA_DECAY_EXP_LIMIT: f32 = 3.0;
+
+// The separate value-RMS graph already applied SiLU before head normalization.
+// Beta remains outside that normalization in every preparation/replay path.
+#[inline(always)]
+pub(crate) fn value_activation(x: f32) -> f32 {
+    if crate::value_rms::config::VALUE_RMS {
+        x
+    } else {
+        silu(x)
+    }
+}
+#[inline(always)]
+pub(crate) fn value_activation_grad(x: f32) -> f32 {
+    if crate::value_rms::config::VALUE_RMS {
+        1.0
+    } else {
+        silu_grad(x)
+    }
+}
 
 #[inline(always)]
 pub(crate) fn silu(x: f32) -> f32 {
@@ -54,6 +73,13 @@ pub(crate) fn kda_decay_exp(x: f32) -> f32 {
         x => x,
     };
     exp_f32(x)
+}
+
+/// The forward clamp is locally constant outside this interval. At either
+/// boundary retain the existing branch's one-sided active convention.
+#[inline(always)]
+pub(crate) fn kda_decay_exp_active(x: f32) -> bool {
+    x >= -KDA_DECAY_EXP_LIMIT && x <= KDA_DECAY_EXP_LIMIT
 }
 
 #[inline(always)]

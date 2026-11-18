@@ -10,11 +10,15 @@ use super::timed_ms;
 pub(super) fn update_layer_norm_timed(
     adam: &mut AdamUpdate<'_, '_>,
     layer_norm: &mut UploadedLayerNorm,
-    grads: &LayerNormGradBuffers,
+    grads: &mut LayerNormGradBuffers,
     state: &mut LayerNormState,
 ) -> Result<f64, DriverError> {
     timed_ms(|| {
-        adam.update(&mut layer_norm.weight, &grads.d_weight, &mut state.weight)?;
-        adam.update(&mut layer_norm.bias, &grads.d_bias, &mut state.bias)
+        adam.update(
+            &mut layer_norm.weight,
+            &mut grads.d_weight,
+            &mut state.weight,
+        )?;
+        adam.update(&mut layer_norm.bias, &mut grads.d_bias, &mut state.bias)
     })
 }

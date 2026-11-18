@@ -28,3 +28,29 @@ pub(super) fn cta_matmul_f32_accumulate_body(
         acc3
     );
 }
+
+pub(super) fn cta_matmul_half_accumulate_body(
+    a: &[u16],
+    b_t: &[u16],
+    mut out: DisjointSlice<f32>,
+    a_tile: &mut CtaATile,
+    b_tile: &mut CtaBTile,
+    dims: CtaMatmulDims,
+) {
+    let Some(tile) = super::cta_tile::active_tile(dims.batch_count) else {
+        return;
+    };
+    cta_accumulate_k_loop4!(tile, a_tile, b_tile, dims.k, k_base, [acc0, acc1, acc2, acc3]; {
+        super::cta_stage::stage_tiles(a, b_t, a_tile, b_tile, tile, dims, k_base);
+    });
+    cta_store4!(
+        super::cta_store_accumulate::store,
+        tile,
+        &mut out,
+        dims,
+        acc0,
+        acc1,
+        acc2,
+        acc3
+    );
+}

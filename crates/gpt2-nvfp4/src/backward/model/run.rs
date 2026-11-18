@@ -9,6 +9,25 @@ use crate::types::Gpt2BackwardGrads;
 use rust_kernels_cuda::residual::ResidualGradAccumulateArgs;
 
 pub fn backward(args: Gpt2BackwardArgs<'_, '_, '_>) -> Result<(), DriverError> {
+    backward_with_hook(args, &mut |_, _| Ok(false))
+}
+
+pub fn backward_with_hook(
+    args: Gpt2BackwardArgs<'_, '_, '_>,
+    hook: &mut dyn FnMut(usize, &mut cuda_core::DeviceBuffer<f32>) -> Result<bool, DriverError>,
+) -> Result<(), DriverError> {
+    backward_with_boundaries(args, hook, &mut |_, _, _| Ok(false))
+}
+
+pub fn backward_with_boundaries(
+    args: Gpt2BackwardArgs<'_, '_, '_>,
+    hook: &mut dyn FnMut(usize, &mut cuda_core::DeviceBuffer<f32>) -> Result<bool, DriverError>,
+    boundary: &mut dyn FnMut(
+        usize,
+        bool,
+        &mut cuda_core::DeviceBuffer<f32>,
+    ) -> Result<bool, DriverError>,
+) -> Result<(), DriverError> {
     let Gpt2BackwardArgs {
         stream,
         modules,
@@ -72,22 +91,31 @@ pub fn backward(args: Gpt2BackwardArgs<'_, '_, '_>) -> Result<(), DriverError> {
             chunk_amax: &mut *mlp_scratch.down_linear.e_h.chunk_amax,
             output_scale: 1.0,
         })?;
-    run_blocks(BlocksBackwardRun {
-        stream,
-        modules,
-        saved,
-        weights,
-        blocks: &mut blocks,
-        d_xsa_alphas,
-        d_embedding_residual,
-        d_residual_after_attention,
-        d_hidden,
-        d_qkv,
-        d_value_residual,
-        d_mlp_up,
-        attention_scratch: &mut attention_scratch,
-        mlp_scratch: &mut mlp_scratch,
-        initial_d_residual_amax_chunks: d_embedding_residual_amax_chunks,
-        seeds,
-    })
+    let head_changed = boundary(crate::GPT2_N_LAYER * 2, true, d_embedding_residual)?;
+    run_blocks(
+        BlocksBackwardRun {
+            stream,
+            modules,
+            saved,
+            weights,
+            blocks: &mut blocks,
+            d_xsa_alphas,
+            d_embedding_residual,
+            d_residual_after_attention,
+            d_hidden,
+            d_qkv,
+            d_value_residual,
+            d_mlp_up,
+            attention_scratch: &mut attention_scratch,
+            mlp_scratch: &mut mlp_scratch,
+            initial_d_residual_amax_chunks: if head_changed {
+                None
+            } else {
+                Some(d_embedding_residual_amax_chunks)
+            },
+            seeds,
+        },
+        hook,
+        boundary,
+    )
 }

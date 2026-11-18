@@ -20,12 +20,18 @@ pub(super) struct HostPtrs {
     pub(super) symexp_exponential_z: u64,
     pub(super) symexp_exponential_x: u64,
     pub(super) symexp_exponential_grad: u64,
+    pub(super) symexp_exponential_first: u64,
+    pub(super) symexp_exponential_second: u64,
     pub(super) symexp_linear_z: u64,
     pub(super) symexp_linear_x: u64,
     pub(super) symexp_linear_grad: u64,
+    pub(super) symexp_linear_first: u64,
+    pub(super) symexp_linear_second: u64,
     pub(super) symexp_curvature_z: u64,
     pub(super) symexp_curvature_x: u64,
     pub(super) symexp_curvature_grad: u64,
+    pub(super) symexp_curvature_first: u64,
+    pub(super) symexp_curvature_second: u64,
 }
 
 impl HostPtrs {
@@ -57,20 +63,30 @@ impl HostPtrs {
             exponential_z: self.symexp_exponential_z,
             exponential_x: self.symexp_exponential_x,
             exponential_grad: self.symexp_exponential_grad,
+            exponential_first: self.symexp_exponential_first,
+            exponential_second: self.symexp_exponential_second,
             linear_z: self.symexp_linear_z,
             linear_x: self.symexp_linear_x,
             linear_grad: self.symexp_linear_grad,
+            linear_first: self.symexp_linear_first,
+            linear_second: self.symexp_linear_second,
             curvature_z: self.symexp_curvature_z,
             curvature_x: self.symexp_curvature_x,
             curvature_grad: self.symexp_curvature_grad,
+            curvature_first: self.symexp_curvature_first,
+            curvature_second: self.symexp_curvature_second,
             rows: self.rows,
             cols: self.cols,
         }
     }
 
-    pub(super) fn shape(mut self, rows: usize, cols: usize) -> Self {
-        self.rows = rows as u32;
-        self.cols = cols as u32;
+    pub(super) fn shape(mut self, input_dim: usize, output_dim: usize) -> Self {
+        // Affine payloads, dW and decoded masters all retain contiguous input
+        // features within each output. The polar kernels interpret row-major
+        // matrices; exchanging dimensions without transposing the data would
+        // reshape a rectangular parameter instead of orthogonalizing it.
+        self.rows = output_dim as u32;
+        self.cols = input_dim as u32;
         self
     }
 

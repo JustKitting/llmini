@@ -4,7 +4,7 @@ use super::HostPtrs;
 
 pub(super) struct MuonPaddingBuffers {
     grad: DeviceBuffer<f32>,
-    momentum: DeviceBuffer<f32>,
+    momentum: DeviceBuffer<u16>,
     variance: DeviceBuffer<u16>,
     second_momentum: DeviceBuffer<f32>,
     z_master: DeviceBuffer<f32>,
@@ -51,12 +51,18 @@ impl MuonPaddingBuffers {
             symexp_exponential_z: 0,
             symexp_exponential_x: 0,
             symexp_exponential_grad: 0,
+            symexp_exponential_first: 0,
+            symexp_exponential_second: 0,
             symexp_linear_z: 0,
             symexp_linear_x: 0,
             symexp_linear_grad: 0,
+            symexp_linear_first: 0,
+            symexp_linear_second: 0,
             symexp_curvature_z: 0,
             symexp_curvature_x: 0,
             symexp_curvature_grad: 0,
+            symexp_curvature_first: 0,
+            symexp_curvature_second: 0,
         }
     }
 }

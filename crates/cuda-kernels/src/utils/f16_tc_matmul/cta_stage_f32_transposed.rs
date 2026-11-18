@@ -75,6 +75,16 @@ fn stage_a_transposed(
     }
 }
 
+pub(super) fn stage_half_rhs_only(
+    rhs: &[u16],
+    b_tile: &mut super::CtaBTile,
+    tile: CtaTile,
+    dims: CtaMatmulDims,
+    k_base: u32,
+) {
+    stage_half_rhs(rhs, b_tile, tile, dims.n, dims.k, k_base);
+}
+
 fn stage_a_transposed_lower(
     a: &[f32],
     a_tile: &mut super::CtaATile,
@@ -116,3 +126,51 @@ cta_stage_transposed_rhs_fn!(
     load_f16_global_bits_read_only,
     |lo, hi| lo as u32 | ((hi as u32) << 16)
 );
+
+pub(super) fn stage_tiles_half_a_transposed_f32_rhs(
+    a: &[u16],
+    rhs: &[f32],
+    a_tile: &mut super::CtaATile,
+    b_tile: &mut super::CtaBTile,
+    tile: CtaTile,
+    dims: CtaMatmulDims,
+    k_base: u32,
+) {
+    stage_half_a_transposed(a, a_tile, tile, dims, k_base);
+    stage_rhs(rhs, b_tile, tile, dims.n, dims.k, k_base);
+}
+
+pub(super) fn stage_half_a_transposed(
+    a: &[u16],
+    a_tile: &mut super::CtaATile,
+    tile: CtaTile,
+    dims: CtaMatmulDims,
+    k_base: u32,
+) {
+    let mut pair = thread::threadIdx_x() * 2;
+    while pair < CTA_A_ELEMS as u32 {
+        let (row, col) = stage_coords(pair, tile.row_base, k_base);
+        let lo = if row < dims.m && col < dims.k {
+            load_f16_global_bits_read_only(
+                a.as_ptr(),
+                ((tile.batch * dims.k + col) * dims.m + row) as usize,
+            )
+        } else {
+            0
+        };
+        let hi = if row < dims.m && col + 1 < dims.k {
+            load_f16_global_bits_read_only(
+                a.as_ptr(),
+                ((tile.batch * dims.k + col + 1) * dims.m + row) as usize,
+            )
+        } else {
+            0
+        };
+        store_f16x2_shared(
+            a_tile.as_mut_ptr(),
+            pair as usize,
+            u32::from(lo) | (u32::from(hi) << 16),
+        );
+        pair += thread::blockDim_x() * 2;
+    }
+}

@@ -16,11 +16,13 @@ mod shape;
 pub use args::{
     MsEdenDeviceScaleQuantArgs, MsEdenPairDeviceScaleQuantArgs, MsEdenQuantArgs,
     MsEdenTransposeDeviceScaleQuantArgs, Nvfp4QuantArgs, Nvfp4QuantPaddedArgs,
-    Nvfp4QuantPairTransposeExactArgs, Nvfp4QuantRowwiseArgs, Nvfp4QuantRowwiseDerivedAmaxArgs,
-    Nvfp4QuantTransposePaddedArgs, Nvfp4TransposeMsEdenDeviceScaleQuantArgs,
-    QuartetBackwardMsEdenDeviceScaleQuantArgs, QuartetBackwardMsEdenQuantArgs, RowAmaxArgs,
-    RowwiseNvfp4TransposeMsEdenDeviceScaleQuantArgs, TensorAmaxArgs,
+    Nvfp4QuantPairTransposeExactArgs, Nvfp4QuantPairTransposePaddedArgs, Nvfp4QuantRowwiseArgs,
+    Nvfp4QuantRowwiseDerivedAmaxArgs, Nvfp4QuantTransposePaddedArgs,
+    Nvfp4TransposeMsEdenDeviceScaleQuantArgs, QuartetBackwardMsEdenDeviceScaleQuantArgs,
+    QuartetBackwardMsEdenQuantArgs, RowAmaxArgs, RowwiseNvfp4TransposeMsEdenDeviceScaleQuantArgs,
+    TensorAmaxArgs,
 };
+pub use config::ACTIVATION_MAE_FOUR_SIX;
 pub use launcher::Nvfp4QuantModule;
 
 pub const NVFP4_TENSOR_AMAX_VALUES_PER_BLOCK: usize =

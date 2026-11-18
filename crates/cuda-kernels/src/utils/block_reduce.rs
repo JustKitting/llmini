@@ -71,6 +71,88 @@ pub(crate) fn block_sum_shared_f32_for_warps<const WARPS: usize>(
 }
 
 #[inline(always)]
+pub(crate) fn block_sum_quad_leader_f32<const WARPS: usize>(
+    first_storage: &mut SharedArray<f32, WARPS>,
+    second_storage: &mut SharedArray<f32, WARPS>,
+    third_storage: &mut SharedArray<f32, WARPS>,
+    fourth_storage: &mut SharedArray<f32, WARPS>,
+    first_local: f32,
+    second_local: f32,
+    third_local: f32,
+    fourth_local: f32,
+    lane: u32,
+    warp: u32,
+) -> Option<(f32, f32, f32, f32)> {
+    block_sum_quad_leader_f32_for_warps(
+        first_storage,
+        second_storage,
+        third_storage,
+        fourth_storage,
+        WARPS as u32,
+        first_local,
+        second_local,
+        third_local,
+        fourth_local,
+        lane,
+        warp,
+    )
+}
+
+#[inline(always)]
+pub(crate) fn block_sum_quad_leader_f32_for_warps<const WARPS: usize>(
+    first_storage: &mut SharedArray<f32, WARPS>,
+    second_storage: &mut SharedArray<f32, WARPS>,
+    third_storage: &mut SharedArray<f32, WARPS>,
+    fourth_storage: &mut SharedArray<f32, WARPS>,
+    active_warps: u32,
+    first_local: f32,
+    second_local: f32,
+    third_local: f32,
+    fourth_local: f32,
+    lane: u32,
+    warp: u32,
+) -> Option<(f32, f32, f32, f32)> {
+    let first_warp = warp_sum_f32(first_local);
+    let second_warp = warp_sum_f32(second_local);
+    let third_warp = warp_sum_f32(third_local);
+    let fourth_warp = warp_sum_f32(fourth_local);
+    if lane == 0 {
+        unsafe {
+            first_storage[warp as usize] = first_warp;
+            second_storage[warp as usize] = second_warp;
+            third_storage[warp as usize] = third_warp;
+            fourth_storage[warp as usize] = fourth_warp;
+        }
+    }
+    cuda_device::thread::sync_threads();
+
+    if warp != 0 {
+        return None;
+    }
+    let (first_partial, second_partial, third_partial, fourth_partial) = if lane < active_warps {
+        unsafe {
+            (
+                first_storage[lane as usize],
+                second_storage[lane as usize],
+                third_storage[lane as usize],
+                fourth_storage[lane as usize],
+            )
+        }
+    } else {
+        (0.0, 0.0, 0.0, 0.0)
+    };
+    let first_block = warp_sum_f32(first_partial);
+    let second_block = warp_sum_f32(second_partial);
+    let third_block = warp_sum_f32(third_partial);
+    let fourth_block = warp_sum_f32(fourth_partial);
+    if lane == 0 {
+        Some((first_block, second_block, third_block, fourth_block))
+    } else {
+        None
+    }
+}
+
+#[inline(always)]
 pub(crate) fn block_max_shared_f32_for_warps<const WARPS: usize>(
     storage: &mut SharedArray<f32, WARPS>,
     active_warps: u32,

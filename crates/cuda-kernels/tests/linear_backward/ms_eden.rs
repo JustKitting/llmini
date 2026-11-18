@@ -6,7 +6,10 @@ use rust_kernels_cuda::linear_backward::{
 use rust_kernels_cuda::nvfp4_quant::Nvfp4QuantModule;
 
 use super::common;
-use super::{INPUT_DIM, OUTPUT_DIM, TOKEN_COUNT, TOLERANCE, TestResult};
+use super::{TOLERANCE, TestResult};
+const INPUT_DIM: usize = 128;
+const OUTPUT_DIM: usize = 128;
+const TOKEN_COUNT: usize = 128;
 
 #[ignore = "requires generated sm_120a PTX"]
 #[test]

@@ -3,10 +3,8 @@ use rust_kernels_cuda::layer_norm::LayerNormModule;
 use rust_kernels_cuda::lm_head::{LmHeadModule, LmHeadTmaArgs};
 use rust_kernels_cuda::nvfp4::Nvfp4DeviceTensor;
 use rust_kernels_cuda::nvfp4_quant::Nvfp4QuantModule;
-use rust_kernels_cuda::nvfp4_tma_matmul::{
-    launcher::Nvfp4GemmModule, scale_pack::Sm120ScalePackModule,
-    tma::TmaNvfp4DeviceScaleDescriptors,
-};
+use rust_kernels_cuda::nvfp4_tma_matmul::launcher::Nvfp4GemmModule;
+use rust_kernels_cuda::nvfp4_tma_matmul::tma::TmaNvfp4DeviceScaleDescriptors;
 
 use crate::types::{
     Gpt2ForwardTape, HiddenStateDevice, HiddenStateNvfp4, LayerNormTensors, LayerNormWeights,
@@ -18,13 +16,10 @@ pub(super) struct FinalForwardArgs<'a, 'w> {
     pub quant_module: &'a Nvfp4QuantModule,
     pub lm_head_module: &'a LmHeadModule,
     pub lm_head_tma_module: &'a Nvfp4GemmModule,
-    pub lm_head_tma_scale_pack: &'a Sm120ScalePackModule,
     pub lm_head_tma_descriptors: &'a mut TmaNvfp4DeviceScaleDescriptors,
-    pub lm_head_input_scale_packed: &'a mut DeviceBuffer<u8>,
     pub ln_f: LayerNormTensors<'a>,
     pub hidden_nvfp4: HiddenStateNvfp4<'a>,
     pub lm_head_weight_device: Nvfp4DeviceTensor<'a>,
-    pub lm_head_weight_scale_packed: &'a mut DeviceBuffer<u8>,
     pub logits: &'a mut DeviceBuffer<f32>,
     pub tape: Option<Gpt2ForwardTape<'a>>,
     pub hidden: HiddenStateDevice<'a>,
@@ -41,24 +36,28 @@ pub(super) fn finish_forward<'a>(
         .ln_f_weights
         .forward_with_tape(ln_f, tape.as_mut().map(|tape| &mut tape.final_norm))?;
 
-    let input = hidden_nvfp4.quantize_hidden_precomputed(
+    if let Some(tape) = tape.as_mut() {
+        tape.lm_head_input_nvfp4.swap_storage(&mut hidden_nvfp4);
+    }
+    hidden_nvfp4.quantize_hidden_precomputed(
         args.quant_module,
         &hidden,
         crate::GPT2_EMBEDDING_DIM,
     )?;
     if let Some(tape) = tape.as_mut() {
-        tape.lm_head_input_nvfp4.save(hidden.stream, input)?;
+        tape.lm_head_input_nvfp4.swap_storage(&mut hidden_nvfp4);
     }
+    let input = match tape.as_ref() {
+        Some(tape) => tape.lm_head_input_nvfp4.saved(),
+        None => hidden_nvfp4.device(),
+    };
 
     args.lm_head_module.logits_tma(LmHeadTmaArgs {
         stream: hidden.stream,
         tma: args.lm_head_tma_module,
-        scale_pack: args.lm_head_tma_scale_pack,
         descriptors: args.lm_head_tma_descriptors,
-        input_scale_packed: args.lm_head_input_scale_packed,
         input,
         weight: args.lm_head_weight_device,
-        weight_scale_packed: args.lm_head_weight_scale_packed,
         logits: &mut *args.logits,
         token_count: hidden.row_count,
         input_dim: crate::GPT2_EMBEDDING_DIM,

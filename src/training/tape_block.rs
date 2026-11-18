@@ -1,8 +1,8 @@
 use cuda_core::{CudaStream, DeviceBuffer, DriverError};
 use gpt2_nvfp4::{
-    AttentionLogSumExp, BlockForwardSaved, BlockForwardTape, GPT2_BATCH_SIZE, GPT2_MLP_ROUTE_MASKS,
-    GPT2_N_HEAD, GPT2_N_LAYER, GPT2_SEQ_LEN, HiddenState, MlpActivation, QkvActivation,
     attention_headwise_gate_enabled, uses_exclusive_self_attention, uses_full_attention,
+    AttentionLogSumExp, BlockForwardSaved, BlockForwardTape, HiddenState, MlpActivation,
+    QkvActivation, GPT2_BATCH_SIZE, GPT2_MLP_ROUTE_MASKS, GPT2_N_HEAD, GPT2_N_LAYER, GPT2_SEQ_LEN,
 };
 
 use super::device_buffer::zero;
@@ -15,10 +15,10 @@ pub struct BlockTapeBuffers {
     attention_out: DeviceBuffer<u16>,
     headwise_gate_input: Option<DeviceBuffer<u16>>,
     attention_probs: Option<DeviceBuffer<u16>>,
-    kda_v_new: Option<DeviceBuffer<f32>>,
-    kda_akk_inv: Option<DeviceBuffer<f32>>,
-    kda_w: Option<DeviceBuffer<f32>>,
-    kda_aqk: Option<DeviceBuffer<f32>>,
+    kda_v_new: Option<DeviceBuffer<u16>>,
+    kda_akk_inv: Option<DeviceBuffer<u16>>,
+    kda_w: Option<DeviceBuffer<u16>>,
+    kda_aqk: Option<DeviceBuffer<u16>>,
     attention_log_sum_exp: DeviceBuffer<f32>,
     c_proj_input: RowwiseTapeBuffers,
     ln_2: LayerNormTapeBuffers,
@@ -75,7 +75,17 @@ impl BlockTapeBuffers {
             c_proj_input: RowwiseTapeBuffers::gpt2_rows(stream, HiddenState::LEN)?,
             ln_2: LayerNormTapeBuffers::new(stream)?,
             mlp_up_input: RowwiseTapeBuffers::gpt2_rows(stream, HiddenState::LEN)?,
-            mlp_up: zero(stream, MlpActivation::LEN)?,
+            // Bounded SwiGLU recomputes the original paired affine accumulator,
+            // then rounds its nonlinear inputs to FP16 in registers. It does
+            // not retain or consume a higher-precision preactivation tape.
+            mlp_up: zero(
+                stream,
+                if gpt2_nvfp4::GPT2_BOUNDED_SWIGLU {
+                    1
+                } else {
+                    MlpActivation::LEN
+                },
+            )?,
             mlp_down_input: RowwiseTapeBuffers::gpt2_rows(stream, MlpActivation::LEN)?,
             mlp_route_masks: zero(stream, GPT2_MLP_ROUTE_MASKS)?,
         })

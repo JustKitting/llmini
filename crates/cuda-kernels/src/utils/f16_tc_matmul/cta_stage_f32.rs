@@ -163,3 +163,45 @@ cta_stage_transposed_rhs_fn!(
     load_f16_global_bits_read_only,
     |lo, hi| lo as u32 | ((hi as u32) << 16)
 );
+
+pub(super) fn stage_tiles_f32_half_b_t(
+    a: &[f32],
+    b_t: &[u16],
+    a_tile: &mut super::CtaATile,
+    b_tile: &mut super::CtaBTile,
+    tile: CtaTile,
+    dims: CtaMatmulDims,
+    k_base: u32,
+) {
+    stage_a(a, a_tile, tile, dims.m, dims.k, k_base);
+    super::cta_stage::stage_matrix_tile::<true, CTA_B_ELEMS>(
+        b_t,
+        b_tile,
+        tile,
+        tile.col_base,
+        dims.n,
+        dims.k,
+        k_base,
+    );
+}
+
+pub(super) fn stage_tiles_half_a_f32_rhs(
+    a: &[u16],
+    rhs: &[f32],
+    a_tile: &mut super::CtaATile,
+    b_tile: &mut super::CtaBTile,
+    tile: CtaTile,
+    dims: CtaMatmulDims,
+    k_base: u32,
+) {
+    super::cta_stage::stage_matrix_tile::<true, CTA_A_ELEMS>(
+        a,
+        a_tile,
+        tile,
+        tile.row_base,
+        dims.m,
+        dims.k,
+        k_base,
+    );
+    stage_rhs_transposed(rhs, b_tile, tile, dims.n, dims.k, k_base);
+}

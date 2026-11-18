@@ -31,4 +31,15 @@ impl<W: Nvfp4Shape, B: Nvfp4Shape> LinearWeights<W, B> {
             bias: B::zero_tensor(),
         }
     }
+
+    pub(crate) fn init_reference_normal(rng: &mut InitRng, weight_scale: f32) -> Self
+    where
+        W: Nvfp4ShapeInit,
+        B: Nvfp4ShapeInit,
+    {
+        Self {
+            weight: W::reference_normal_tensor(rng, weight_scale),
+            bias: B::zero_tensor(),
+        }
+    }
 }

@@ -83,3 +83,73 @@ fn store_one<const CHECK_BOUNDS: bool>(
         }
     }
 }
+
+#[inline(always)]
+pub(super) fn store_half(
+    acc: [f32; 4],
+    tile: CtaTile,
+    warp_n: u32,
+    out: &mut DisjointSlice<u16>,
+    rows: u32,
+    cols: u32,
+) {
+    store_half_impl::<false>(acc, tile, warp_n, out, rows, cols);
+}
+#[inline(always)]
+pub(super) fn store_half_lower(
+    acc: [f32; 4],
+    tile: CtaTile,
+    warp_n: u32,
+    out: &mut DisjointSlice<u16>,
+    rows: u32,
+    cols: u32,
+) {
+    store_half_impl::<true>(acc, tile, warp_n, out, rows, cols);
+}
+#[inline(always)]
+fn store_half_impl<const LOWER: bool>(
+    acc: [f32; 4],
+    tile: CtaTile,
+    warp_n: u32,
+    out: &mut DisjointSlice<u16>,
+    rows: u32,
+    cols: u32,
+) {
+    let mut frag = 0;
+    while frag < 4 {
+        let (row0, col0) = tile.accumulator_coords(warp_n, frag);
+        let (row1, col1) = tile.accumulator_coords(warp_n, frag + 1);
+        let lo = if !LOWER || row0 >= col0 {
+            acc[frag]
+        } else {
+            0.0
+        };
+        let hi = if !LOWER || row1 >= col1 {
+            acc[frag + 1]
+        } else {
+            0.0
+        };
+        if row0 < rows && row1 == row0 && col1 == col0 + 1 && col1 < cols {
+            let index = ((tile.batch * rows + row0) * cols + col0) as usize;
+            super::convert::store_f16x2_global(
+                out.as_mut_ptr(),
+                index,
+                cuda_device::convert::cvt_f16x2_f32(lo, hi),
+            );
+        } else {
+            if row0 < rows && col0 < cols {
+                unsafe {
+                    *out.get_unchecked_mut(((tile.batch * rows + row0) * cols + col0) as usize) =
+                        super::convert::cvt_rn_f16_f32(lo);
+                }
+            }
+            if row1 < rows && col1 < cols {
+                unsafe {
+                    *out.get_unchecked_mut(((tile.batch * rows + row1) * cols + col1) as usize) =
+                        super::convert::cvt_rn_f16_f32(hi);
+                }
+            }
+        }
+        frag += 2;
+    }
+}

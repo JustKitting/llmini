@@ -11,10 +11,11 @@ mod common;
 
 const ROWS: usize = 2;
 const HEADS: usize = 2;
-const HEAD_DIM: usize = 4;
+const HEAD_DIM: usize = 64;
 const EMBEDDING: usize = HEADS * HEAD_DIM;
-const QKV_DIM: usize = 30;
-const GATE_OFFSET: usize = 24;
+const GATE_OFFSET: usize = 3 * EMBEDDING;
+const QKV_DIM: usize = GATE_OFFSET + HEADS + 4;
+const TEST_SCALE: f32 = 4.0 / HEAD_DIM as f32;
 
 #[ignore = "requires generated sm_120a PTX"]
 #[test]
@@ -135,17 +136,21 @@ fn run_xsa_case(kda_value_activation: bool) -> Result<(), Box<dyn Error>> {
         for head in 0..HEADS {
             for dim in 0..HEAD_DIM {
                 let value_index = row * QKV_DIM + 2 * EMBEDDING + head * HEAD_DIM + dim;
-                qkv[value_index] = -1.0 + 0.1875 * (row * EMBEDDING + head * HEAD_DIM + dim) as f32;
+                qkv[value_index] =
+                    -1.0 + 0.1875 * TEST_SCALE * (row * EMBEDDING + head * HEAD_DIM + dim) as f32;
             }
             qkv[row * QKV_DIM + GATE_OFFSET + head] = gate_logits[row][head];
         }
     }
     let raw: Vec<f32> = (0..ROWS * EMBEDDING)
-        .map(|index| -0.875 + index as f32 * 0.125)
+        .map(|index| -0.875 + index as f32 * 0.125 * TEST_SCALE)
         .collect();
     let alpha_raw = [0.25_f32, -0.25_f32];
     let alpha_bytes = DeviceBuffer::from_host(&stream, &[0xa2, 0, 0, 0, 0, 0, 0, 0])?;
-    let alpha_scales = DeviceBuffer::from_host(&stream, &[common::nvfp4::E4M3_ONE])?;
+    let alpha_scales = DeviceBuffer::from_host(
+        &stream,
+        &rust_kernels_cuda::nvfp4::csf::encode_host(&[common::nvfp4::E4M3_ONE], 1, 128),
+    )?;
     let alpha_global_scale = DeviceBuffer::from_host(&stream, &[0.25_f32])?;
     let alpha_device = Nvfp4DeviceTensor::new(&alpha_bytes, &alpha_scales, &alpha_global_scale);
 
@@ -203,38 +208,46 @@ fn run_xsa_case(kda_value_activation: bool) -> Result<(), Box<dyn Error>> {
     }
 
     let upstream: Vec<f32> = (0..ROWS * EMBEDDING)
-        .map(|index| -0.25 + index as f32 * 0.0625)
+        .map(|index| -0.25 + index as f32 * 0.0625 * TEST_SCALE)
         .collect();
     let mut d_out = DeviceBuffer::from_host(&stream, &upstream)?;
     let sentinel = -17.0_f32;
     let mut d_qkv = DeviceBuffer::from_host(&stream, &vec![sentinel; ROWS * QKV_DIM])?;
+    let gate_amax_offset = 3_u32;
+    let mut d_qkv_chunk_amax = DeviceBuffer::from_host(&stream, &[-1.0_f32; 16])?;
     let mut d_alphas = DeviceBuffer::<f32>::zeroed(&stream, 16)?;
-    module.exclusive_self_attention_backward(ExclusiveSelfAttentionBackwardArgs {
-        stream: &stream,
-        qkv_f16: &qkv_f16,
-        raw_out_f16: &raw_f16,
-        d_out: &mut d_out,
-        d_qkv: &mut d_qkv,
-        d_xsa_alphas: &mut d_alphas,
-        xsa_alphas: alpha_device,
-        row_count: ROWS as u32,
-        embedding_dim: EMBEDDING as u32,
-        qkv_dim: QKV_DIM as u32,
-        head_count: HEADS as u32,
-        head_dim: HEAD_DIM as u32,
-        value_offset: (2 * EMBEDDING) as u32,
-        gate_offset: GATE_OFFSET as u32,
-        alpha_offset: 0,
-        apply_headwise_gate: true,
-        kda_value_activation,
-    })?;
+    let xsa_amax_chunks =
+        module.exclusive_self_attention_backward(ExclusiveSelfAttentionBackwardArgs {
+            stream: &stream,
+            qkv_f16: &qkv_f16,
+            raw_out_f16: &raw_f16,
+            d_out: &mut d_out,
+            d_qkv: &mut d_qkv,
+            d_qkv_chunk_amax: &mut d_qkv_chunk_amax,
+            d_xsa_alphas: &mut d_alphas,
+            xsa_alphas: alpha_device,
+            row_count: ROWS as u32,
+            embedding_dim: EMBEDDING as u32,
+            qkv_dim: QKV_DIM as u32,
+            head_count: HEADS as u32,
+            head_dim: HEAD_DIM as u32,
+            value_offset: (2 * EMBEDDING) as u32,
+            gate_offset: GATE_OFFSET as u32,
+            gate_amax_offset,
+            alpha_offset: 0,
+            apply_headwise_gate: true,
+            kda_value_activation,
+        })?;
+    assert_eq!(xsa_amax_chunks, HEADS as u32);
 
     let saved_qkv = qkv_f16.to_host_vec(&stream)?;
     let saved_raw = raw_f16.to_host_vec(&stream)?;
     let transformed_grad = d_out.to_host_vec(&stream)?;
     let pre_d_qkv = d_qkv.to_host_vec(&stream)?;
+    let d_qkv_chunk_amax = d_qkv_chunk_amax.to_host_vec(&stream)?;
     let d_alphas = d_alphas.to_host_vec(&stream)?;
     let mut expected_alpha_grad = [0.0_f32; HEADS];
+    let mut expected_gate_amax = [0.0_f32; HEADS];
     let mut expected_direct_value_grad = vec![0.0_f32; ROWS * QKV_DIM];
     for row in 0..ROWS {
         for head in 0..HEADS {
@@ -272,11 +285,9 @@ fn run_xsa_case(kda_value_activation: bool) -> Result<(), Box<dyn Error>> {
             let gate_dot = (0..HEAD_DIM)
                 .map(|dim| upstream[hidden_base + dim] * exclusive[dim])
                 .sum::<f32>();
-            common::assert_close(
-                pre_d_qkv[gate_index],
-                gate_dot * gate * (1.0 - gate),
-                2.0e-4,
-            );
+            let gate_grad = gate_dot * gate * (1.0 - gate);
+            common::assert_close(pre_d_qkv[gate_index], gate_grad, 2.0e-4);
+            expected_gate_amax[head] = expected_gate_amax[head].max(gate_grad.abs());
             expected_alpha_grad[head] += -(1.0 - a * a) * projection * grad_projection;
             for dim in 0..HEAD_DIM {
                 let hidden_index = hidden_base + dim;
@@ -307,6 +318,11 @@ fn run_xsa_case(kda_value_activation: bool) -> Result<(), Box<dyn Error>> {
     }
     for head in 0..HEADS {
         common::assert_close(d_alphas[head], expected_alpha_grad[head], 3.0e-4);
+        common::assert_close(
+            d_qkv_chunk_amax[gate_amax_offset as usize + head],
+            expected_gate_amax[head],
+            2.0e-4,
+        );
     }
 
     Ok(())

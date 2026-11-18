@@ -16,7 +16,7 @@ use reference::{
     assert_row_amax, reference_layer_norm, reference_layer_norm_rows, sample_row_0, sample_row_1,
 };
 
-const GPT_EMBEDDING_DIM: usize = 4096;
+const GPT_EMBEDDING_DIM: usize = 2048;
 
 #[ignore = "requires generated sm_120a PTX"]
 #[test]
@@ -74,9 +74,23 @@ fn gpt_layer_norm_matches_reference() -> Result<(), Box<dyn Error>> {
 
     let x_dev = DeviceBuffer::from_host(&stream, &x)?;
     let weight_bytes_dev = DeviceBuffer::from_host(&stream, &one_pair_bytes(GPT_EMBEDDING_DIM))?;
-    let weight_scales_dev = DeviceBuffer::from_host(&stream, &one_scales(GPT_EMBEDDING_DIM))?;
+    let weight_scales_dev = DeviceBuffer::from_host(
+        &stream,
+        &rust_kernels_cuda::nvfp4::csf::encode_host(
+            &one_scales(GPT_EMBEDDING_DIM),
+            1,
+            (GPT_EMBEDDING_DIM).max(128).next_power_of_two(),
+        ),
+    )?;
     let bias_bytes_dev = DeviceBuffer::from_host(&stream, &bias_bytes)?;
-    let bias_scales_dev = DeviceBuffer::from_host(&stream, &one_scales(GPT_EMBEDDING_DIM))?;
+    let bias_scales_dev = DeviceBuffer::from_host(
+        &stream,
+        &rust_kernels_cuda::nvfp4::csf::encode_host(
+            &one_scales(GPT_EMBEDDING_DIM),
+            1,
+            (GPT_EMBEDDING_DIM).max(128).next_power_of_two(),
+        ),
+    )?;
     let weight_global_scale_dev = DeviceBuffer::from_host(&stream, &[1.0_f32])?;
     let bias_global_scale_dev = DeviceBuffer::from_host(&stream, &[1.0_f32])?;
     let mut out_dev = DeviceBuffer::<f32>::zeroed(&stream, x.len())?;

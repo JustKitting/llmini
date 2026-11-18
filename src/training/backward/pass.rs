@@ -1,4 +1,5 @@
-use gpt2_nvfp4::{Gpt2BackwardArgs, Gpt2BackwardSeeds, gpt2_backward};
+use gpt2_nvfp4::gpt2_backward_with_boundaries;
+use gpt2_nvfp4::{Gpt2BackwardArgs, Gpt2BackwardSeeds};
 use rust_kernels_cuda::residual::ResidualGradAccumulateArgs;
 
 use crate::training::next_latent::{
@@ -11,6 +12,15 @@ use crate::{
 
 impl Trainer {
     pub(super) fn enqueue_backward(&mut self, batch: &TokenBatch) -> AppResult {
+        self.buffers.optimizer_state.invalidate_scheduled_values();
+        super::super::symexp_lin::prepare_weight_gradients(
+            &self.runtime,
+            &self.buffers.muon_tables,
+            &self.buffers.grad_clip,
+            super::super::learning_rate::schedule_free_beta(
+                self.buffers.optimizer_state.next_step(),
+            ),
+        )?;
         let stream = self.runtime.stream.as_ref();
         {
             let saved = self.buffers.tape.saved(
@@ -22,10 +32,29 @@ impl Trainer {
             );
             let weights = self.uploaded.backward_weights();
             let backward = self.buffers.backward.parts();
+            let mlp_projection_observer: Option<&dyn gpt2_nvfp4::MlpProjectionObserver> = None;
+            #[cfg(test)]
+            let mlp_projection_observer = self
+                .bounded_projection_audit
+                .as_ref()
+                .map(|a| a as &dyn gpt2_nvfp4::MlpProjectionObserver);
             let scratch = self.buffers.scratch.scratch(
                 &mut self.buffers.normalized,
                 &mut self.buffers.value_residual,
                 &mut self.buffers.mlp_act,
+                mlp_projection_observer,
+                {
+                    #[cfg(test)]
+                    {
+                        self.value_projection_audit
+                            .as_ref()
+                            .map(|a| a as &dyn gpt2_nvfp4::ValueProjectionObserver)
+                    }
+                    #[cfg(not(test))]
+                    {
+                        None
+                    }
+                },
             );
 
             next_latent_backward(NextLatBackwardArgs {
@@ -42,19 +71,57 @@ impl Trainer {
                 seeds: NextLatBackwardSeeds::from_rng(&mut self.rng),
             })?;
 
-            gpt2_backward(Gpt2BackwardArgs {
-                stream,
-                modules: self.runtime.backward_modules(),
-                saved,
-                weights,
-                targets: &batch.targets,
-                losses: backward.losses,
-                extra_final_normalized_grad: Some(&self.buffers.next_latent_grads.d_current_states),
-                d_lm_head_weight: backward.d_lm_head_weight,
-                grads: backward.grads,
-                scratch,
-                seeds: Gpt2BackwardSeeds::from_rng(&mut self.rng),
-            })?;
+            let engram = &mut self.engram;
+            let engram_weights = &self.uploaded.engram;
+            let runtime = &self.runtime;
+            let mhc = std::cell::RefCell::new(&mut self.mhc);
+            let mhc_weights = &self.uploaded.mhc;
+            gpt2_backward_with_boundaries(
+                Gpt2BackwardArgs {
+                    stream,
+                    modules: self.runtime.backward_modules(),
+                    saved,
+                    weights,
+                    targets: &batch.targets,
+                    losses: backward.losses,
+                    extra_final_normalized_grad: Some(
+                        &self.buffers.next_latent_grads.d_current_states,
+                    ),
+                    d_lm_head_weight: backward.d_lm_head_weight,
+                    grads: backward.grads,
+                    scratch,
+                    seeds: Gpt2BackwardSeeds::from_rng(&mut self.rng),
+                },
+                &mut |index, gradient| {
+                    if let (Some(e), Some(w)) = (engram.as_mut(), engram_weights.as_ref()) {
+                        if w.streams() == Some(4) {
+                            let mut state = mhc.borrow_mut();
+                            let m = state.as_mut().expect("validated four-stream backbone");
+                            e.backward_at(index, runtime, w, &mut m.current)?;
+                            // The authoritative four-stream gradient was
+                            // updated in place. The base ND scratch is stale.
+                            return Ok(false);
+                        }
+                        return e.backward_at(index, runtime, w, gradient);
+                    }
+                    Ok(false)
+                },
+                &mut |index, before, gradient| {
+                    let mut state = mhc.borrow_mut();
+                    if let (Some(m), Some(w)) = (state.as_mut(), mhc_weights.as_ref()) {
+                        m.backward_boundary(index, before, runtime, w, gradient)
+                    } else {
+                        Ok(false)
+                    }
+                },
+            )?;
+        }
+        if let (Some(f), Some(w)) = (&mut self.latent_feedback, &self.uploaded.latent_feedback) {
+            f.backward(
+                &self.runtime,
+                w,
+                &self.buffers.backward.d_embedding_residual,
+            )?;
         }
         self.runtime
             .residual

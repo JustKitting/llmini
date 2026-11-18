@@ -10,7 +10,7 @@ use crate::{
 };
 
 #[derive(Clone, Copy)]
-pub(super) struct StateInit<'a> {
+pub(in crate::training) struct StateInit<'a> {
     stream: &'a CudaStream,
     decode: &'a Nvfp4DecodeModule,
     optimizer: &'a OptimizerModule,
@@ -18,7 +18,7 @@ pub(super) struct StateInit<'a> {
 }
 
 impl<'a> StateInit<'a> {
-    pub(super) fn new(
+    pub(in crate::training) fn new(
         stream: &'a CudaStream,
         decode: &'a Nvfp4DecodeModule,
         optimizer: &'a OptimizerModule,
@@ -38,6 +38,7 @@ pub(in crate::training) struct AdamState {
     pub(in crate::training) x_master: DeviceBuffer<f32>,
     pub(in crate::training) first: DeviceBuffer<f32>,
     pub(in crate::training) second: DeviceBuffer<f32>,
+    pub(in crate::training) schedule_amax: DeviceBuffer<f32>,
 }
 
 pub(in crate::training) struct Fp32AdamState {
@@ -48,7 +49,7 @@ pub(in crate::training) struct Fp32AdamState {
 }
 
 impl Fp32AdamState {
-    pub(super) fn new(init: StateInit<'_>, tensor: &UploadedCanon) -> Result<Self, DriverError> {
+    pub(in crate::training) fn new(init: StateInit<'_>, tensor: &UploadedCanon) -> Result<Self, DriverError> {
         Ok(Self {
             z_master: clone_device(init.stream, &tensor.weight)?,
             x_master: clone_device(init.stream, &tensor.weight)?,
@@ -59,36 +60,21 @@ impl Fp32AdamState {
 }
 
 impl AdamState {
-    pub(super) fn new(init: StateInit<'_>, tensor: &UploadedNvfp4) -> Result<Self, DriverError> {
-        Self::new_inner(init, tensor, false)
-    }
-
-    pub(super) fn new_symexp_lin(
-        init: StateInit<'_>,
-        tensor: &UploadedNvfp4,
-    ) -> Result<Self, DriverError> {
-        Self::new_inner(init, tensor, true)
-    }
-
-    fn new_inner(
-        init: StateInit<'_>,
-        tensor: &UploadedNvfp4,
-        reparameterize: bool,
-    ) -> Result<Self, DriverError> {
-        let mut master = decode_master(init.stream, init.decode, tensor)?;
-        if reparameterize && init.symexp_lin_beta > 0.0 {
-            init.optimizer.symexp_lin_congruent_inverse_in_place(
-                init.stream,
-                &mut master,
-                init.symexp_lin_beta,
-            )?;
-        }
+    pub(in crate::training) fn new(init: StateInit<'_>, tensor: &UploadedNvfp4) -> Result<Self, DriverError> {
+        // Biases are additive parameters. Exponentiating their Adam masters can
+        // overflow the FP16 QKV tape while every optimizer state stays finite.
+        let master = decode_master(init.stream, init.decode, tensor)?;
         Ok(Self {
             z_master: clone_device(init.stream, &master)?,
             x_master: master,
             first: zero(init.stream, tensor.len)?,
             second: zero(init.stream, tensor.len)?,
+            schedule_amax: zero(init.stream, 1)?,
         })
+    }
+
+    pub(in crate::training) fn schedule_amax_ptr(&self) -> u64 {
+        self.schedule_amax.cu_deviceptr()
     }
 }
 
@@ -126,6 +112,12 @@ impl TokenEmbeddingState {
             Self::Ember(_) => None,
         }
     }
+
+    pub(in crate::training) fn push_schedule_amax_ptr(&self, pointers: &mut Vec<u64>) {
+        if let Self::Adam(state) = self {
+            pointers.push(state.schedule_amax_ptr());
+        }
+    }
 }
 
 pub(in crate::training) struct EmberState {
@@ -157,7 +149,7 @@ impl EmberState {
 pub(in crate::training) struct MuonState {
     pub(in crate::training) z_master: DeviceBuffer<f32>,
     pub(in crate::training) x_master: DeviceBuffer<f32>,
-    pub(in crate::training) momentum: DeviceBuffer<f32>,
+    pub(in crate::training) momentum: DeviceBuffer<u16>,
     pub(in crate::training) variance: DeviceBuffer<u16>,
     pub(in crate::training) second_momentum: DeviceBuffer<f32>,
     pub(in crate::training) schedule_amax: DeviceBuffer<f32>,
@@ -165,7 +157,32 @@ pub(in crate::training) struct MuonState {
 }
 
 impl MuonState {
-    pub(super) fn new(
+    /// Unused projection storage is zero in the gradient/scheduled-value cache.
+    /// Keep its masters zero too, so reconstructing weights after evaluation
+    /// cannot resurrect initialized values outside the trainable projection.
+    pub(super) fn zero_inactive_tail(
+        &self,
+        init: StateInit<'_>,
+        active_len: usize,
+    ) -> Result<(), DriverError> {
+        assert!(active_len <= self.z_master.len());
+        let bytes = (self.z_master.len() - active_len) * std::mem::size_of::<f32>();
+        if bytes != 0 {
+            for master in [&self.z_master, &self.x_master] {
+                unsafe {
+                    cuda_core::memory::memset_d8_async(
+                        master.cu_deviceptr() + (active_len * std::mem::size_of::<f32>()) as u64,
+                        0,
+                        bytes,
+                        init.stream.cu_stream(),
+                    )?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub(in crate::training) fn new(
         init: StateInit<'_>,
         tensor: &UploadedNvfp4,
         normuon_neurons: usize,

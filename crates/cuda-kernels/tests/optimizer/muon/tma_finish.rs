@@ -1,17 +1,24 @@
 use std::error::Error;
 
-use cuda_core::DeviceBuffer;
+use cuda_core::{CudaStream, DeviceBuffer, DriverError};
 use rust_kernels_cuda::optimizer::{
     MUON_COOPERATIVE_BLOCKS, MuonSlotDescriptor, MuonTmaFinishArgs, MuonTmaHyperballFinishArgs,
-    MuonTmaSignUpdateArgs, OptimizerModule,
+    MuonTmaSignUpdateArgs, OptimizerModule, SymExpLinSlotDescriptor,
 };
 
+use super::buffers::{zero_scale_values, zero_scales};
 use crate::common;
 
 const ROWS: usize = 32;
 const COLS: usize = 32;
 const LEN: usize = ROWS * COLS;
 const SCHEDULE_BETA: f32 = 0.4;
+
+fn disabled_symexp_slots(
+    stream: &CudaStream,
+) -> Result<DeviceBuffer<SymExpLinSlotDescriptor>, DriverError> {
+    DeviceBuffer::from_host(stream, &[SymExpLinSlotDescriptor::default()])
+}
 
 pub fn run_schedule_amax_case() -> Result<(), Box<dyn Error>> {
     let (_, stream, module) = common::cuda_test_module(OptimizerModule::from_module)?;
@@ -24,13 +31,13 @@ pub fn run_schedule_amax_case() -> Result<(), Box<dyn Error>> {
         .fold(0.0_f32, f32::max);
 
     let grad = DeviceBuffer::<f32>::zeroed(&stream, LEN)?;
-    let momentum = DeviceBuffer::<f32>::zeroed(&stream, LEN)?;
+    let momentum = DeviceBuffer::<u16>::zeroed(&stream, LEN)?;
     let second_momentum = DeviceBuffer::<f32>::zeroed(&stream, COLS)?;
     let z_master = DeviceBuffer::from_host(&stream, &z)?;
     let x_master = DeviceBuffer::from_host(&stream, &x)?;
     let schedule_amax = DeviceBuffer::<f32>::zeroed(&stream, 1)?;
     let bytes = DeviceBuffer::<u8>::zeroed(&stream, LEN / 2)?;
-    let scales = DeviceBuffer::<u8>::zeroed(&stream, LEN / 16)?;
+    let scales = zero_scales(&stream, LEN)?;
     let global_scale = DeviceBuffer::<f32>::zeroed(&stream, 1)?;
     let descriptor = MuonSlotDescriptor {
         grad: grad.cu_deviceptr(),
@@ -50,6 +57,7 @@ pub fn run_schedule_amax_case() -> Result<(), Box<dyn Error>> {
         qk_clip_head_dim: 0,
     };
     let slots = DeviceBuffer::from_host(&stream, &[descriptor])?;
+    let symexp_lin_slots = disabled_symexp_slots(&stream)?;
     let polar_update = DeviceBuffer::<f32>::zeroed(&stream, LEN)?;
     let polar_bound_amax = DeviceBuffer::<f32>::zeroed(&stream, 1)?;
     let mut polar_chunks = DeviceBuffer::<f32>::zeroed(&stream, 2 * MUON_COOPERATIVE_BLOCKS)?;
@@ -60,6 +68,7 @@ pub fn run_schedule_amax_case() -> Result<(), Box<dyn Error>> {
     module.muon_tma_finish_update(MuonTmaFinishArgs {
         stream: &stream,
         slots: &slots,
+        symexp_lin_slots: &symexp_lin_slots,
         polar_update: &polar_update,
         polar_bound_amax: &polar_bound_amax,
         polar_chunks: &mut polar_chunks,
@@ -68,11 +77,14 @@ pub fn run_schedule_amax_case() -> Result<(), Box<dyn Error>> {
         qk_clip_factors: &qk_clip_factors,
         slot_index: 0,
         matrix_len: LEN as u32,
+        matrix_rows: ROWS as u32,
+        matrix_cols: COLS as u32,
         polar_cols: COLS as u32,
         learning_rate: 0.0,
         weight_decay: 0.0,
         average_coefficient: 0.0,
         schedule_beta: SCHEDULE_BETA,
+        symexp_lin_beta: 0.0,
         apply_polar_sqrt_bound: 0,
     })?;
 
@@ -87,27 +99,46 @@ pub fn run_schedule_amax_case() -> Result<(), Box<dyn Error>> {
 }
 
 pub fn run_qk_clip_case() -> Result<(), Box<dyn Error>> {
-    const CLIP_ROWS: usize = 2048;
-    const CLIP_COLS: usize = 64;
-    const CLIP_LEN: usize = CLIP_ROWS * CLIP_COLS;
+    run_qk_clip_shape(2048, 64, false)?;
+    run_qk_clip_shape(2048, 6272, false)
+}
+
+pub fn run_hyperball_qk_clip_case() -> Result<(), Box<dyn Error>> {
+    run_qk_clip_shape(64, 256, true)?;
+    run_qk_clip_shape(2048, 64, true)?;
+    run_qk_clip_shape(2048, 6272, true)
+}
+
+fn run_qk_clip_shape(
+    input_dim: usize,
+    output_dim: usize,
+    hyperball: bool,
+) -> Result<(), Box<dyn Error>> {
+    let clip_len = input_dim * output_dim;
+    let polar_cols = input_dim.max(output_dim);
     const HEAD_DIM: usize = 32;
     let (_, stream, module) = common::cuda_test_module(OptimizerModule::from_module)?;
-    let z = vec![1.0_f32; CLIP_LEN];
-    let x = vec![2.0_f32; CLIP_LEN];
-    let momentum_values = vec![3.0_f32; CLIP_LEN];
-    let grad = DeviceBuffer::<f32>::zeroed(&stream, CLIP_LEN)?;
-    let momentum = DeviceBuffer::from_host(&stream, &momentum_values)?;
-    let second_momentum = DeviceBuffer::<f32>::zeroed(&stream, CLIP_ROWS)?;
+    let z = vec![1.0_f32; clip_len];
+    let x = vec![2.0_f32; clip_len];
+    let momentum_values = vec![3.0_f32; clip_len];
+    let grad = DeviceBuffer::<f32>::zeroed(&stream, clip_len)?;
+    let momentum_bits = common::f32_slice_to_bf16_bits(&momentum_values);
+    let momentum_values = common::bf16_bits_slice_to_f32(&momentum_bits);
+    let momentum = DeviceBuffer::from_host(&stream, &momentum_bits)?;
+    let variance_values = vec![4.0_f32; clip_len];
+    let variance =
+        DeviceBuffer::from_host(&stream, &common::f32_slice_to_bf16_bits(&variance_values))?;
+    let second_momentum = DeviceBuffer::<f32>::zeroed(&stream, polar_cols)?;
     let z_master = DeviceBuffer::from_host(&stream, &z)?;
     let x_master = DeviceBuffer::from_host(&stream, &x)?;
     let schedule_amax = DeviceBuffer::<f32>::zeroed(&stream, 1)?;
-    let bytes = DeviceBuffer::<u8>::zeroed(&stream, CLIP_LEN / 2)?;
-    let scales = DeviceBuffer::<u8>::zeroed(&stream, CLIP_LEN / 16)?;
+    let bytes = DeviceBuffer::<u8>::zeroed(&stream, clip_len / 2)?;
+    let scales = zero_scales(&stream, clip_len)?;
     let global_scale = DeviceBuffer::<f32>::zeroed(&stream, 1)?;
     let descriptor = MuonSlotDescriptor {
         grad: grad.cu_deviceptr(),
         momentum: momentum.cu_deviceptr(),
-        variance: 0,
+        variance: variance.cu_deviceptr(),
         second_momentum: second_momentum.cu_deviceptr(),
         z_master: z_master.cu_deviceptr(),
         x_master: x_master.cu_deviceptr(),
@@ -115,23 +146,29 @@ pub fn run_qk_clip_case() -> Result<(), Box<dyn Error>> {
         bytes: bytes.cu_deviceptr(),
         scales: scales.cu_deviceptr(),
         global_scale: global_scale.cu_deviceptr(),
-        rows: CLIP_ROWS as u32,
-        cols: CLIP_COLS as u32,
+        rows: output_dim as u32,
+        cols: input_dim as u32,
         learning_rate_multiplier: 1.0,
         qk_clip_factor_offset: 0,
         qk_clip_head_dim: HEAD_DIM as u32,
     };
     let slots = DeviceBuffer::from_host(&stream, &[descriptor])?;
-    let polar_update = DeviceBuffer::<f32>::zeroed(&stream, CLIP_LEN)?;
+    let symexp_lin_slots = disabled_symexp_slots(&stream)?;
+    let polar_update = DeviceBuffer::<f32>::zeroed(&stream, clip_len)?;
     let polar_bound_amax = DeviceBuffer::<f32>::zeroed(&stream, 1)?;
-    let mut polar_chunks = DeviceBuffer::<f32>::zeroed(&stream, 2 * CLIP_COLS)?;
-    let mut normuon_factors = DeviceBuffer::<f32>::zeroed(&stream, CLIP_ROWS)?;
-    let mut normuon_chunks = DeviceBuffer::<f32>::zeroed(&stream, 2 * CLIP_ROWS)?;
-    let qk_clip_factors = DeviceBuffer::from_host(&stream, &[0.5_f32, 0.25_f32])?;
+    let mut polar_chunks = DeviceBuffer::<f32>::zeroed(&stream, 2 * clip_len.div_ceil(2048))?;
+    let mut normuon_factors = DeviceBuffer::<f32>::zeroed(&stream, polar_cols)?;
+    let mut normuon_chunks = DeviceBuffer::<f32>::zeroed(&stream, 2 * polar_cols)?;
+    let mut hyperball_chunks = DeviceBuffer::<f32>::zeroed(&stream, 2 * polar_cols)?;
+    let head_factors: Vec<f32> = (0..input_dim / HEAD_DIM)
+        .map(|head| if head % 2 == 0 { 0.5 } else { 0.25 })
+        .collect();
+    let qk_clip_factors = DeviceBuffer::from_host(&stream, &head_factors)?;
 
-    module.muon_tma_finish_update_deferred_quantization(MuonTmaFinishArgs {
+    let finish = MuonTmaFinishArgs {
         stream: &stream,
         slots: &slots,
+        symexp_lin_slots: &symexp_lin_slots,
         polar_update: &polar_update,
         polar_bound_amax: &polar_bound_amax,
         polar_chunks: &mut polar_chunks,
@@ -139,33 +176,64 @@ pub fn run_qk_clip_case() -> Result<(), Box<dyn Error>> {
         normuon_chunks: &mut normuon_chunks,
         qk_clip_factors: &qk_clip_factors,
         slot_index: 0,
-        matrix_len: CLIP_LEN as u32,
-        polar_cols: CLIP_ROWS as u32,
+        matrix_len: clip_len as u32,
+        matrix_rows: output_dim as u32,
+        matrix_cols: input_dim as u32,
+        polar_cols: polar_cols as u32,
         learning_rate: 0.0,
         weight_decay: 0.0,
         average_coefficient: 0.0,
         schedule_beta: SCHEDULE_BETA,
+        symexp_lin_beta: 0.0,
         apply_polar_sqrt_bound: 0,
-    })?;
+    };
+    if hyperball {
+        module.muon_tma_finish_hyperball_update_deferred_quantization(
+            MuonTmaHyperballFinishArgs {
+                finish,
+                hyperball_chunks: &mut hyperball_chunks,
+                use_schedule_free: true,
+            },
+        )?;
+    } else {
+        module.muon_tma_finish_update_deferred_quantization(finish)?;
+    }
 
     let mut expected_z = z;
     let mut expected_x = x;
     let mut expected_momentum = momentum_values;
-    for col in 0..CLIP_COLS {
-        let factor = if col < HEAD_DIM { 0.5 } else { 0.25 };
-        for index in col * CLIP_ROWS..(col + 1) * CLIP_ROWS {
+    let mut expected_variance = variance_values;
+    for col in 0..output_dim {
+        let factor = if col >= 2 * input_dim {
+            1.0
+        } else if (col % input_dim / HEAD_DIM) % 2 == 0 {
+            0.5
+        } else {
+            0.25
+        };
+        for index in col * input_dim..(col + 1) * input_dim {
             expected_z[index] *= factor;
             expected_x[index] *= factor;
             expected_momentum[index] *= factor;
+            expected_variance[index] *= factor * factor;
         }
     }
     assert_eq!(z_master.to_host_vec(&stream)?, expected_z);
     assert_eq!(x_master.to_host_vec(&stream)?, expected_x);
-    assert_eq!(momentum.to_host_vec(&stream)?, expected_momentum);
     assert_eq!(
-        schedule_amax.to_host_vec(&stream)?[0],
-        0.5 * (1.0 + SCHEDULE_BETA)
+        momentum.to_host_vec(&stream)?,
+        common::f32_slice_to_bf16_bits(&expected_momentum)
     );
+    assert_eq!(
+        variance.to_host_vec(&stream)?,
+        common::f32_slice_to_bf16_bits(&expected_variance)
+    );
+    let expected_amax = expected_z
+        .iter()
+        .zip(&expected_x)
+        .map(|(&z, &x)| (z + SCHEDULE_BETA * (x - z)).abs())
+        .fold(0.0_f32, f32::max);
+    assert_eq!(schedule_amax.to_host_vec(&stream)?[0], expected_amax);
     Ok(())
 }
 
@@ -207,13 +275,13 @@ pub fn run_normuon_variance_case() -> Result<(), Box<dyn Error>> {
     let expected_scale = (raw_sumsq / scaled_sumsq.max(1.0e-10)).sqrt();
 
     let grad = DeviceBuffer::<f32>::zeroed(&stream, NORM_LEN)?;
-    let momentum = DeviceBuffer::<f32>::zeroed(&stream, NORM_LEN)?;
+    let momentum = DeviceBuffer::<u16>::zeroed(&stream, NORM_LEN)?;
     let second_momentum = DeviceBuffer::from_host(&stream, &old_second)?;
     let z_master = DeviceBuffer::<f32>::zeroed(&stream, NORM_LEN)?;
     let x_master = DeviceBuffer::<f32>::zeroed(&stream, NORM_LEN)?;
     let schedule_amax = DeviceBuffer::<f32>::zeroed(&stream, 1)?;
     let bytes = DeviceBuffer::<u8>::zeroed(&stream, NORM_LEN / 2)?;
-    let scales = DeviceBuffer::<u8>::zeroed(&stream, NORM_LEN / 16)?;
+    let scales = zero_scales(&stream, NORM_LEN)?;
     let global_scale = DeviceBuffer::<f32>::zeroed(&stream, 1)?;
     let descriptor = MuonSlotDescriptor {
         grad: grad.cu_deviceptr(),
@@ -233,6 +301,7 @@ pub fn run_normuon_variance_case() -> Result<(), Box<dyn Error>> {
         qk_clip_head_dim: 0,
     };
     let slots = DeviceBuffer::from_host(&stream, &[descriptor])?;
+    let symexp_lin_slots = disabled_symexp_slots(&stream)?;
     let polar_update = DeviceBuffer::from_host(&stream, &update)?;
     let polar_bound_amax = DeviceBuffer::<f32>::zeroed(&stream, 1)?;
     let mut polar_chunks = DeviceBuffer::<f32>::zeroed(&stream, 2 * MUON_COOPERATIVE_BLOCKS)?;
@@ -243,6 +312,7 @@ pub fn run_normuon_variance_case() -> Result<(), Box<dyn Error>> {
     module.muon_tma_finish_update_deferred_quantization(MuonTmaFinishArgs {
         stream: &stream,
         slots: &slots,
+        symexp_lin_slots: &symexp_lin_slots,
         polar_update: &polar_update,
         polar_bound_amax: &polar_bound_amax,
         polar_chunks: &mut polar_chunks,
@@ -251,11 +321,14 @@ pub fn run_normuon_variance_case() -> Result<(), Box<dyn Error>> {
         qk_clip_factors: &qk_clip_factors,
         slot_index: 0,
         matrix_len: NORM_LEN as u32,
+        matrix_rows: NORM_ROWS as u32,
+        matrix_cols: NORM_COLS as u32,
         polar_cols: NORM_COLS as u32,
         learning_rate: LEARNING_RATE,
         weight_decay: 0.0,
         average_coefficient: 1.0,
         schedule_beta: SCHEDULE_BETA,
+        symexp_lin_beta: 0.0,
         apply_polar_sqrt_bound: 0,
     })?;
 
@@ -371,13 +444,13 @@ pub fn run_hyperball_update_case() -> Result<(), Box<dyn Error>> {
         .fold(0.0_f32, f32::max);
 
     let grad = DeviceBuffer::<f32>::zeroed(&stream, LEN)?;
-    let momentum = DeviceBuffer::<f32>::zeroed(&stream, LEN)?;
+    let momentum = DeviceBuffer::<u16>::zeroed(&stream, LEN)?;
     let second_momentum = DeviceBuffer::from_host(&stream, &old_second)?;
     let z_master = DeviceBuffer::from_host(&stream, &z_values)?;
     let x_master = DeviceBuffer::from_host(&stream, &x_values)?;
     let schedule_amax = DeviceBuffer::<f32>::zeroed(&stream, 1)?;
     let bytes = DeviceBuffer::<u8>::zeroed(&stream, LEN / 2)?;
-    let scales = DeviceBuffer::<u8>::zeroed(&stream, LEN / 16)?;
+    let scales = zero_scales(&stream, LEN)?;
     let global_scale = DeviceBuffer::<f32>::zeroed(&stream, 1)?;
     let descriptor = MuonSlotDescriptor {
         grad: grad.cu_deviceptr(),
@@ -397,6 +470,7 @@ pub fn run_hyperball_update_case() -> Result<(), Box<dyn Error>> {
         qk_clip_head_dim: 0,
     };
     let slots = DeviceBuffer::from_host(&stream, &[descriptor])?;
+    let symexp_lin_slots = disabled_symexp_slots(&stream)?;
     let polar_update = DeviceBuffer::from_host(&stream, &update)?;
     let polar_bound_amax = DeviceBuffer::<f32>::zeroed(&stream, 1)?;
     let mut polar_chunks = DeviceBuffer::<f32>::zeroed(&stream, 2 * MUON_COOPERATIVE_BLOCKS)?;
@@ -409,6 +483,7 @@ pub fn run_hyperball_update_case() -> Result<(), Box<dyn Error>> {
         finish: MuonTmaFinishArgs {
             stream: &stream,
             slots: &slots,
+            symexp_lin_slots: &symexp_lin_slots,
             polar_update: &polar_update,
             polar_bound_amax: &polar_bound_amax,
             polar_chunks: &mut polar_chunks,
@@ -417,11 +492,14 @@ pub fn run_hyperball_update_case() -> Result<(), Box<dyn Error>> {
             qk_clip_factors: &qk_clip_factors,
             slot_index: 0,
             matrix_len: LEN as u32,
+            matrix_rows: ROWS as u32,
+            matrix_cols: COLS as u32,
             polar_cols: COLS as u32,
             learning_rate: LEARNING_RATE,
             weight_decay: 0.0,
             average_coefficient: AVERAGE_COEFFICIENT,
             schedule_beta: SCHEDULE_BETA,
+            symexp_lin_beta: 0.0,
             apply_polar_sqrt_bound: 0,
         },
         hyperball_chunks: &mut hyperball_chunks,
@@ -444,7 +522,7 @@ pub fn run_hyperball_update_case() -> Result<(), Box<dyn Error>> {
     assert!((normuon_chunks.to_host_vec(&stream)?[1] - update_norm).abs() <= update_norm * 3.0e-5);
     assert!((schedule_amax.to_host_vec(&stream)?[0] - expected_schedule_amax).abs() <= 3.0e-5);
     assert!(bytes.to_host_vec(&stream)?.iter().all(|&value| value == 0));
-    assert!(scales.to_host_vec(&stream)?.iter().all(|&value| value == 0));
+    assert_eq!(scales.to_host_vec(&stream)?, zero_scale_values(LEN));
     Ok(())
 }
 
@@ -520,13 +598,13 @@ fn run_hyperball_shape(
     let expected_z: Vec<_> = candidate.iter().map(|value| value * projection).collect();
 
     let grad = DeviceBuffer::<f32>::zeroed(stream, len)?;
-    let momentum = DeviceBuffer::<f32>::zeroed(stream, len)?;
+    let momentum = DeviceBuffer::<u16>::zeroed(stream, len)?;
     let second_momentum = DeviceBuffer::from_host(stream, &old_second)?;
     let z_master = DeviceBuffer::from_host(stream, &z_values)?;
     let x_master = DeviceBuffer::<f32>::zeroed(stream, len)?;
     let schedule_amax = DeviceBuffer::<f32>::zeroed(stream, 1)?;
     let bytes = DeviceBuffer::<u8>::zeroed(stream, len / 2)?;
-    let scales = DeviceBuffer::<u8>::zeroed(stream, len / 16)?;
+    let scales = zero_scales(stream, len)?;
     let global_scale = DeviceBuffer::<f32>::zeroed(stream, 1)?;
     let descriptor = MuonSlotDescriptor {
         grad: grad.cu_deviceptr(),
@@ -546,6 +624,7 @@ fn run_hyperball_shape(
         qk_clip_head_dim: 0,
     };
     let slots = DeviceBuffer::from_host(stream, &[descriptor])?;
+    let symexp_lin_slots = disabled_symexp_slots(stream)?;
     let polar_update = DeviceBuffer::from_host(stream, &update)?;
     let polar_bound_amax = DeviceBuffer::<f32>::zeroed(stream, 1)?;
     let mut polar_chunks = DeviceBuffer::<f32>::zeroed(stream, 2 * MUON_COOPERATIVE_BLOCKS)?;
@@ -558,6 +637,7 @@ fn run_hyperball_shape(
         finish: MuonTmaFinishArgs {
             stream,
             slots: &slots,
+            symexp_lin_slots: &symexp_lin_slots,
             polar_update: &polar_update,
             polar_bound_amax: &polar_bound_amax,
             polar_chunks: &mut polar_chunks,
@@ -566,11 +646,14 @@ fn run_hyperball_shape(
             qk_clip_factors: &qk_clip_factors,
             slot_index: 0,
             matrix_len: len as u32,
+            matrix_rows: rows as u32,
+            matrix_cols: cols as u32,
             polar_cols: polar_cols as u32,
             learning_rate: LEARNING_RATE,
             weight_decay: 0.0,
             average_coefficient: 1.0,
             schedule_beta: SCHEDULE_BETA,
+            symexp_lin_beta: 0.0,
             apply_polar_sqrt_bound: 0,
         },
         hyperball_chunks: &mut hyperball_chunks,
@@ -634,14 +717,16 @@ fn run_sign_update(variance_adaptive: bool) -> Result<(), Box<dyn Error>> {
         .collect();
 
     let grad = DeviceBuffer::from_host(&stream, &grad_values)?;
-    let momentum = DeviceBuffer::from_host(&stream, &momentum_values)?;
+    let momentum_bits = common::f32_slice_to_bf16_bits(&momentum_values);
+    let momentum_values = common::bf16_bits_slice_to_f32(&momentum_bits);
+    let momentum = DeviceBuffer::from_host(&stream, &momentum_bits)?;
     let variance = DeviceBuffer::from_host(&stream, &variance_bits)?;
     let second_momentum = DeviceBuffer::from_host(&stream, &second_values)?;
     let z_master = DeviceBuffer::from_host(&stream, &z_values)?;
     let x_master = DeviceBuffer::from_host(&stream, &x_values)?;
     let schedule_amax = DeviceBuffer::<f32>::zeroed(&stream, 1)?;
     let bytes = DeviceBuffer::<u8>::zeroed(&stream, SIGN_LEN / 2)?;
-    let scales = DeviceBuffer::<u8>::zeroed(&stream, SIGN_LEN / 16)?;
+    let scales = zero_scales(&stream, SIGN_LEN)?;
     let global_scale = DeviceBuffer::<f32>::zeroed(&stream, 1)?;
     let descriptor = MuonSlotDescriptor {
         grad: grad.cu_deviceptr(),
@@ -661,12 +746,14 @@ fn run_sign_update(variance_adaptive: bool) -> Result<(), Box<dyn Error>> {
         qk_clip_head_dim: 0,
     };
     let slots = DeviceBuffer::from_host(&stream, &[descriptor])?;
+    let symexp_lin_slots = disabled_symexp_slots(&stream)?;
     let mut update_chunks = DeviceBuffer::<f32>::zeroed(&stream, 2)?;
     let qk_clip_factors = DeviceBuffer::from_host(&stream, &[1.0_f32])?;
 
     module.muon_tma_sign_update_deferred_quantization(MuonTmaSignUpdateArgs {
         stream: &stream,
         slots: &slots,
+        symexp_lin_slots: &symexp_lin_slots,
         update_chunks: &mut update_chunks,
         qk_clip_factors: &qk_clip_factors,
         slot_index: 0,
@@ -678,6 +765,7 @@ fn run_sign_update(variance_adaptive: bool) -> Result<(), Box<dyn Error>> {
         weight_decay: WEIGHT_DECAY,
         average_coefficient: AVERAGE_COEFFICIENT,
         schedule_beta: SCHEDULE_BETA,
+        symexp_lin_beta: 0.0,
     })?;
 
     let effective_lr = LEARNING_RATE * LR_MULTIPLIER;
@@ -710,14 +798,14 @@ fn run_sign_update(variance_adaptive: bool) -> Result<(), Box<dyn Error>> {
         };
         let next_z = z_values[index] * decay - effective_lr * sign;
         let next_x = x_values[index] + AVERAGE_COEFFICIENT * (next_z - x_values[index]);
-        expected_momentum.push(next_momentum);
+        expected_momentum.push(common::f32_to_bf16_bits(next_momentum));
         expected_z.push(next_z);
         expected_x.push(next_x);
         expected_schedule_amax =
             expected_schedule_amax.max((next_z + SCHEDULE_BETA * (next_x - next_z)).abs());
     }
 
-    common::assert_slice_close(&momentum.to_host_vec(&stream)?, &expected_momentum, 1.0e-6);
+    assert_eq!(momentum.to_host_vec(&stream)?, expected_momentum);
     common::assert_slice_close(
         &common::bf16_bits_slice_to_f32(&variance.to_host_vec(&stream)?),
         &expected_variance,
@@ -728,13 +816,13 @@ fn run_sign_update(variance_adaptive: bool) -> Result<(), Box<dyn Error>> {
     assert_eq!(second_momentum.to_host_vec(&stream)?, second_values);
     assert!((schedule_amax.to_host_vec(&stream)?[0] - expected_schedule_amax).abs() <= 1.0e-6);
     assert!(bytes.to_host_vec(&stream)?.iter().all(|&value| value == 0));
-    assert!(scales.to_host_vec(&stream)?.iter().all(|&value| value == 0));
+    assert_eq!(scales.to_host_vec(&stream)?, zero_scale_values(SIGN_LEN));
     Ok(())
 }
 
 pub fn run_sign_qk_clip_case() -> Result<(), Box<dyn Error>> {
     const CLIP_ROWS: usize = 2048;
-    const CLIP_COLS: usize = 64;
+    const CLIP_COLS: usize = 6272;
     const CLIP_LEN: usize = CLIP_ROWS * CLIP_COLS;
     const HEAD_DIM: usize = 32;
     const MU: f32 = 0.9;
@@ -747,13 +835,15 @@ pub fn run_sign_qk_clip_case() -> Result<(), Box<dyn Error>> {
     let z_values = vec![1.0_f32; CLIP_LEN];
     let x_values = vec![2.0_f32; CLIP_LEN];
     let grad = DeviceBuffer::from_host(&stream, &grad_values)?;
-    let momentum = DeviceBuffer::from_host(&stream, &momentum_values)?;
+    let momentum_bits = common::f32_slice_to_bf16_bits(&momentum_values);
+    let momentum_values = common::bf16_bits_slice_to_f32(&momentum_bits);
+    let momentum = DeviceBuffer::from_host(&stream, &momentum_bits)?;
     let second_momentum = DeviceBuffer::<f32>::zeroed(&stream, CLIP_ROWS)?;
     let z_master = DeviceBuffer::from_host(&stream, &z_values)?;
     let x_master = DeviceBuffer::from_host(&stream, &x_values)?;
     let schedule_amax = DeviceBuffer::<f32>::zeroed(&stream, 1)?;
     let bytes = DeviceBuffer::<u8>::zeroed(&stream, CLIP_LEN / 2)?;
-    let scales = DeviceBuffer::<u8>::zeroed(&stream, CLIP_LEN / 16)?;
+    let scales = zero_scales(&stream, CLIP_LEN)?;
     let global_scale = DeviceBuffer::<f32>::zeroed(&stream, 1)?;
     let descriptor = MuonSlotDescriptor {
         grad: grad.cu_deviceptr(),
@@ -766,19 +856,24 @@ pub fn run_sign_qk_clip_case() -> Result<(), Box<dyn Error>> {
         bytes: bytes.cu_deviceptr(),
         scales: scales.cu_deviceptr(),
         global_scale: global_scale.cu_deviceptr(),
-        rows: CLIP_ROWS as u32,
-        cols: CLIP_COLS as u32,
+        rows: CLIP_COLS as u32,
+        cols: CLIP_ROWS as u32,
         learning_rate_multiplier: 1.0,
         qk_clip_factor_offset: 0,
         qk_clip_head_dim: HEAD_DIM as u32,
     };
     let slots = DeviceBuffer::from_host(&stream, &[descriptor])?;
+    let symexp_lin_slots = disabled_symexp_slots(&stream)?;
     let mut update_chunks = DeviceBuffer::<f32>::zeroed(&stream, 2 * CLIP_COLS)?;
-    let qk_clip_factors = DeviceBuffer::from_host(&stream, &[0.5_f32, 0.25_f32])?;
+    let head_factors: Vec<f32> = (0..CLIP_ROWS / HEAD_DIM)
+        .map(|head| if head % 2 == 0 { 0.5 } else { 0.25 })
+        .collect();
+    let qk_clip_factors = DeviceBuffer::from_host(&stream, &head_factors)?;
 
     module.muon_tma_sign_update_deferred_quantization(MuonTmaSignUpdateArgs {
         stream: &stream,
         slots: &slots,
+        symexp_lin_slots: &symexp_lin_slots,
         update_chunks: &mut update_chunks,
         qk_clip_factors: &qk_clip_factors,
         slot_index: 0,
@@ -790,6 +885,7 @@ pub fn run_sign_qk_clip_case() -> Result<(), Box<dyn Error>> {
         weight_decay: 0.0,
         average_coefficient: AVERAGE_COEFFICIENT,
         schedule_beta: SCHEDULE_BETA,
+        symexp_lin_beta: 0.0,
     })?;
 
     let next_momentum = MU * 0.5 + (1.0 - MU);
@@ -800,7 +896,13 @@ pub fn run_sign_qk_clip_case() -> Result<(), Box<dyn Error>> {
     let mut expected_x = vec![0.0_f32; CLIP_LEN];
     let mut expected_schedule_amax = 0.0_f32;
     for col in 0..CLIP_COLS {
-        let factor = if col < HEAD_DIM { 0.5 } else { 0.25 };
+        let factor = if col >= 2 * CLIP_ROWS {
+            1.0
+        } else if (col % CLIP_ROWS / HEAD_DIM) % 2 == 0 {
+            0.5
+        } else {
+            0.25
+        };
         for index in col * CLIP_ROWS..(col + 1) * CLIP_ROWS {
             expected_momentum[index] = next_momentum * factor;
             expected_z[index] = next_z * factor;
@@ -810,7 +912,10 @@ pub fn run_sign_qk_clip_case() -> Result<(), Box<dyn Error>> {
             );
         }
     }
-    common::assert_slice_close(&momentum.to_host_vec(&stream)?, &expected_momentum, 1.0e-7);
+    assert_eq!(
+        momentum.to_host_vec(&stream)?,
+        common::f32_slice_to_bf16_bits(&expected_momentum)
+    );
     common::assert_slice_close(&z_master.to_host_vec(&stream)?, &expected_z, 1.0e-7);
     common::assert_slice_close(&x_master.to_host_vec(&stream)?, &expected_x, 1.0e-7);
     assert!((schedule_amax.to_host_vec(&stream)?[0] - expected_schedule_amax).abs() <= 1.0e-7);
@@ -850,13 +955,13 @@ fn run_finish(
         .map(|i| ((i * 73 % 257) as f32 - 128.0) / 211.0)
         .collect();
     let grad = DeviceBuffer::<f32>::zeroed(stream, LEN)?;
-    let momentum = DeviceBuffer::<f32>::zeroed(stream, LEN)?;
+    let momentum = DeviceBuffer::<u16>::zeroed(stream, LEN)?;
     let second_momentum = DeviceBuffer::<f32>::zeroed(stream, COLS)?;
     let z_master = DeviceBuffer::from_host(stream, &z)?;
     let x_master = DeviceBuffer::from_host(stream, &x)?;
     let schedule_amax = DeviceBuffer::<f32>::zeroed(stream, 1)?;
     let bytes = DeviceBuffer::<u8>::zeroed(stream, LEN / 2)?;
-    let scales = DeviceBuffer::<u8>::zeroed(stream, LEN / 16)?;
+    let scales = zero_scales(stream, LEN)?;
     let global_scale = DeviceBuffer::<f32>::zeroed(stream, 1)?;
     let descriptor = MuonSlotDescriptor {
         grad: grad.cu_deviceptr(),
@@ -876,6 +981,7 @@ fn run_finish(
         qk_clip_head_dim: 0,
     };
     let slots = DeviceBuffer::from_host(stream, &[descriptor])?;
+    let symexp_lin_slots = disabled_symexp_slots(stream)?;
     let polar_update = DeviceBuffer::from_host(stream, &update)?;
     let polar_bound_amax = DeviceBuffer::from_host(stream, &[4.0_f32])?;
     let mut polar_chunks = DeviceBuffer::<f32>::zeroed(stream, 2 * MUON_COOPERATIVE_BLOCKS)?;
@@ -885,6 +991,7 @@ fn run_finish(
     let args = MuonTmaFinishArgs {
         stream,
         slots: &slots,
+        symexp_lin_slots: &symexp_lin_slots,
         polar_update: &polar_update,
         polar_bound_amax: &polar_bound_amax,
         polar_chunks: &mut polar_chunks,
@@ -893,11 +1000,14 @@ fn run_finish(
         qk_clip_factors: &qk_clip_factors,
         slot_index: 0,
         matrix_len: LEN as u32,
+        matrix_rows: ROWS as u32,
+        matrix_cols: COLS as u32,
         polar_cols: COLS as u32,
         learning_rate: 0.03,
         weight_decay: 0.1,
         average_coefficient: 0.2,
         schedule_beta: SCHEDULE_BETA,
+        symexp_lin_beta: 0.0,
         apply_polar_sqrt_bound: 1,
     };
     if cooperative {

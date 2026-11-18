@@ -12,5 +12,6 @@ mod kernels;
 #[path = "layer_norm/launcher.rs"]
 mod launcher;
 pub use launcher::{
-    GptLayerNormArgs, GptLayerNormSaveResidualF16Args, LayerNormArgs, LayerNormModule,
+    GptLayerNormArgs, GptLayerNormSaveResidualF16Args, GptLayerNormSaveXhatF16Args, LayerNormArgs,
+    LayerNormModule,
 };

@@ -31,12 +31,22 @@ pub(super) mod module {
     #[kernel]
     pub fn grad_clip_scale_kernel(
         chunk_sums: &[f32],
+        extra_sums: &[f32],
         mut scale: DisjointSlice<f32>,
         mut norm_out: DisjointSlice<f32>,
         chunk_count: u32,
+        extra_sum_count: u32,
         max_norm: f32,
     ) {
-        grad_clip_scale_body(chunk_sums, &mut scale, &mut norm_out, chunk_count, max_norm);
+        grad_clip_scale_body(
+            chunk_sums,
+            extra_sums,
+            &mut scale,
+            &mut norm_out,
+            chunk_count,
+            extra_sum_count,
+            max_norm,
+        );
     }
 
     #[kernel]

@@ -9,7 +9,7 @@ pub const SLOT_COUNT: usize = MUON_MATRIX_PHASES;
 
 pub struct Slots {
     pub grads: Vec<DeviceBuffer<f32>>,
-    pub momentums: Vec<DeviceBuffer<f32>>,
+    pub momentums: Vec<DeviceBuffer<u16>>,
     pub z_masters: Vec<DeviceBuffer<f32>>,
     pub x_masters: Vec<DeviceBuffer<f32>>,
     pub schedule_amaxes: Vec<DeviceBuffer<f32>>,
@@ -32,12 +32,14 @@ impl Slots {
         let len = grad.len();
         Ok(Self {
             grads: slot_buffers(stream, grad)?,
-            momentums: zero_slot_buffers::<f32>(stream, len)?,
+            momentums: zero_slot_buffers::<u16>(stream, len)?,
             z_masters: fill_slot_buffers(stream, 1.0, len)?,
             x_masters: fill_slot_buffers(stream, 1.0, len)?,
             schedule_amaxes: zero_slot_buffers::<f32>(stream, 1)?,
             bytes: zero_slot_buffers::<u8>(stream, len / 2)?,
-            scales: zero_slot_buffers::<u8>(stream, len / 16)?,
+            scales: (0..SLOT_COUNT)
+                .map(|_| zero_scales(stream, len))
+                .collect::<Result<_, _>>()?,
             global_scales: zero_slot_buffers::<f32>(stream, 1)?,
         })
     }
@@ -126,4 +128,15 @@ where
     (0..SLOT_COUNT)
         .map(|_| DeviceBuffer::<T>::zeroed(stream, len).map_err(Into::into))
         .collect()
+}
+
+// The optimizer quantizer treats a tensor as a flat stream of FP4 groups.
+// Give the fixtures complete CSF tiles and their required geometry header.
+pub fn zero_scale_values(len: usize) -> Vec<u8> {
+    assert_eq!(len % 128, 0);
+    rust_kernels_cuda::nvfp4::csf::encode_host(&vec![0; len / 16], len / 128, 128)
+}
+
+pub fn zero_scales(stream: &CudaStream, len: usize) -> Result<DeviceBuffer<u8>, Box<dyn Error>> {
+    Ok(DeviceBuffer::from_host(stream, &zero_scale_values(len))?)
 }

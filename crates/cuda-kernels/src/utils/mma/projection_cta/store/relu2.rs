@@ -85,7 +85,7 @@ fn store_one(
         let offset = row as usize * args.params.output_dim as usize + col as usize;
         unsafe {
             *args.pre_activation.get_unchecked_mut(offset) = pre;
-            *args.out.get_unchecked_mut(offset) = relu * relu;
+            *args.out.get_unchecked_mut(offset) = crate::activation::centered_relu2_from_positive(relu);
         }
     }
 }
@@ -115,7 +115,7 @@ fn store_pair_aligned(
     unsafe {
         *args.pre_activation.get_unchecked_mut(offset) = pre0;
         *args.pre_activation.get_unchecked_mut(offset + 1) = pre1;
-        *args.out.get_unchecked_mut(offset) = relu0 * relu0;
-        *args.out.get_unchecked_mut(offset + 1) = relu1 * relu1;
+        *args.out.get_unchecked_mut(offset) = crate::activation::centered_relu2_from_positive(relu0);
+        *args.out.get_unchecked_mut(offset + 1) = crate::activation::centered_relu2_from_positive(relu1);
     }
 }

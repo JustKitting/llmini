@@ -68,7 +68,7 @@ impl<'a, 'scratch> AdamUpdate<'a, 'scratch> {
     pub(super) fn update(
         &mut self,
         tensor: &mut UploadedNvfp4,
-        grad: &DeviceBuffer<f32>,
+        grad: &mut DeviceBuffer<f32>,
         state: &mut AdamState,
     ) -> Result<(), DriverError> {
         self.update_with_weight_decay(tensor, grad, state, ADAM_WEIGHT_DECAY)
@@ -77,7 +77,7 @@ impl<'a, 'scratch> AdamUpdate<'a, 'scratch> {
     pub(super) fn update_with_weight_decay(
         &mut self,
         tensor: &mut UploadedNvfp4,
-        grad: &DeviceBuffer<f32>,
+        grad: &mut DeviceBuffer<f32>,
         state: &mut AdamState,
         weight_decay: f32,
     ) -> Result<(), DriverError> {
@@ -93,7 +93,7 @@ impl<'a, 'scratch> AdamUpdate<'a, 'scratch> {
                 grad_scale: self.grad_scale,
                 first_moment: &mut state.first,
                 second_moment: &mut state.second,
-                amax: &mut self.scratch.amax,
+                amax: &mut state.schedule_amax,
                 chunk_amax: &mut self.scratch.chunk_amax,
                 len: tensor.len as u32,
                 learning_rate: self.learning_rate,
@@ -104,13 +104,14 @@ impl<'a, 'scratch> AdamUpdate<'a, 'scratch> {
                 beta2_correction: 1.0 - ADAM_BETA2.powi(self.step as i32),
                 eps: ADAM_EPS,
                 average_coefficient: self.average_coefficient,
+                schedule_beta: super::super::learning_rate::schedule_free_beta(self.step + 1),
             })
     }
 
     pub(super) fn update_timed(
         &mut self,
         tensor: &mut UploadedNvfp4,
-        grad: &DeviceBuffer<f32>,
+        grad: &mut DeviceBuffer<f32>,
         state: &mut AdamState,
     ) -> Result<f64, DriverError> {
         timed_ms(|| self.update(tensor, grad, state))
@@ -119,7 +120,7 @@ impl<'a, 'scratch> AdamUpdate<'a, 'scratch> {
     pub(super) fn update_timed_with_weight_decay(
         &mut self,
         tensor: &mut UploadedNvfp4,
-        grad: &DeviceBuffer<f32>,
+        grad: &mut DeviceBuffer<f32>,
         state: &mut AdamState,
         weight_decay: f32,
     ) -> Result<f64, DriverError> {

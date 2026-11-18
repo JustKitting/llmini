@@ -1,7 +1,7 @@
 use cuda_core::DriverError;
 
 use super::gather::TC_FORWARD_THREADS_PER_BLOCK;
-use super::selective::{SELECTIVE_APPLY_THREADS_PER_BLOCK, SELECTIVE_ATTENTION_THREADS_PER_BLOCK};
+use super::selective::{SELECTIVE_ATTENTION_KEYS_PER_BLOCK, SELECTIVE_ATTENTION_THREADS_PER_BLOCK};
 use super::types::CausalAttentionTcArgs;
 use crate::attention::AttentionModule;
 use crate::f16_tc_matmul::{
@@ -86,7 +86,7 @@ impl AttentionModule {
                 "selective attention requires one packed f32 mask per visible score"
             );
             let config = grid_x_config(
-                args.batch_size * args.seq_len.div_ceil(SELECTIVE_ATTENTION_THREADS_PER_BLOCK),
+                args.batch_size * args.seq_len.div_ceil(SELECTIVE_ATTENTION_KEYS_PER_BLOCK),
                 SELECTIVE_ATTENTION_THREADS_PER_BLOCK,
             );
             if let Some(selection_mask_tape) = selection_mask_tape {
@@ -117,29 +117,35 @@ impl AttentionModule {
                         params,
                     )?;
             }
+        }
+        let softmax_config = launch_config(
+            (args.seq_len, args.head_count, args.batch_size),
+            TC_FORWARD_THREADS_PER_BLOCK,
+        );
+        if args.selective_attention {
             self.causal_attention_tc
                 .base
-                .apply_selective_attention_mask_kernel(
+                .attention_softmax_selective_forward_f16_kernel(
                     args.stream,
-                    linear_config(packed_mask_elements, SELECTIVE_APPLY_THREADS_PER_BLOCK),
-                    &mut *scratch.scores,
+                    softmax_config,
+                    &*scratch.scores,
                     &*scratch.probs,
+                    &mut *probs_half,
+                    args.log_sum_exp,
+                    params,
+                )?;
+        } else {
+            self.causal_attention_tc
+                .base
+                .attention_softmax_forward_f16_kernel(
+                    args.stream,
+                    softmax_config,
+                    &*scratch.scores,
+                    &mut *probs_half,
+                    args.log_sum_exp,
                     params,
                 )?;
         }
-        self.causal_attention_tc
-            .base
-            .attention_softmax_forward_f16_kernel(
-                args.stream,
-                launch_config(
-                    (args.seq_len, args.head_count, args.batch_size),
-                    TC_FORWARD_THREADS_PER_BLOCK,
-                ),
-                &*scratch.scores,
-                &mut *probs_half,
-                args.log_sum_exp,
-                params,
-            )?;
         if params.attention_window == args.seq_len {
             args.tc_module
                 .batched_matmul_half_rhs_lower_a(F16TcMatmulHalfRhsArgs {

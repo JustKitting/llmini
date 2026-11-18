@@ -5,7 +5,7 @@ use cuda_device::SharedArray;
 #[derive(Clone, Copy)]
 pub(super) struct MuonMatrixState {
     pub grad: *const f32,
-    pub momentum: *mut f32,
+    pub momentum: *mut u16,
     pub z_master: *mut f32,
     pub x_master: *mut f32,
     pub schedule_amax: *mut f32,

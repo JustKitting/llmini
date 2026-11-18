@@ -99,33 +99,23 @@ impl LinearBackwardModule {
     ) -> Result<Option<u32>, DriverError> {
         let dinput_k = nvfp4_tc_matmul_padded_k(args.output_dim);
         let dweight_k = nvfp4_tc_matmul_padded_k(args.token_count);
-
-        let dinput_chunk_count = if tma_shape_aligned(args.token_count, dinput_k, args.input_dim) {
-            self.tma_scale_pack.pack(
-                args.stream,
-                args.e_h.scales,
-                tma.e_h_scales,
-                args.token_count,
-                dinput_k,
-            )?;
-            self.tma_scale_pack.pack(
-                args.stream,
-                args.weight_t_h.scales,
-                tma.weight_t_h_scales,
-                args.input_dim,
-                dinput_k,
-            )?;
-            self.tma.prepare_tma_nvfp4_device_scales_into(
-                args.stream,
-                args.e_h.bytes,
-                &*tma.e_h_scales,
-                args.weight_t_h.bytes,
-                &*tma.weight_t_h_scales,
-                args.token_count,
-                dinput_k,
-                args.input_dim,
-                tma.descriptors,
-            )?;
+        let dinput_tma = tma_shape_aligned(args.token_count, dinput_k, args.input_dim);
+        let dweight_tma = tma_shape_aligned(args.output_dim, dweight_k, args.input_dim);
+        if !dinput_tma || !dweight_tma {
+            return Err(DriverError(cudaError_enum_CUDA_ERROR_INVALID_VALUE));
+        }
+        self.tma.prepare_tma_nvfp4_csf_scales_into(
+            args.stream,
+            args.e_h.bytes,
+            args.e_h.scales,
+            args.weight_t_h.bytes,
+            args.weight_t_h.scales,
+            args.token_count,
+            dinput_k,
+            args.input_dim,
+            tma.descriptors,
+        )?;
+        let dinput_chunk_count =
             if let Some((pre_activation, output_chunk_amax)) = relu2_backward_f16 {
                 Some(
                     self.tma
@@ -145,7 +135,7 @@ impl LinearBackwardModule {
                 )
             } else {
                 self.tma
-                    .gemm_tma_nvfp4_rowwise_a_scale_and_global_scale_buffer(
+                    .gemm_tma_nvfp4_rowwise_a_scale_and_global_scale_buffer_csf(
                         args.stream,
                         &*tma.descriptors,
                         args.dinput,
@@ -157,58 +147,52 @@ impl LinearBackwardModule {
                         route.map(LinearBackwardRoute::dinput),
                     )?;
                 None
-            }
-        } else {
-            if relu2_backward_f16.is_some() || route.is_some() {
-                return Err(DriverError(cudaError_enum_CUDA_ERROR_INVALID_VALUE));
-            }
-            device_scale_projection!(self, args, e_h, weight_t_h, dinput, rows: args.token_count, k: dinput_k)?;
-            None
-        };
-
-        if tma_shape_aligned(args.output_dim, dweight_k, args.input_dim) {
-            self.tma_scale_pack.pack(
-                args.stream,
-                args.e_t_h.scales,
-                tma.e_t_h_scales,
-                args.output_dim,
-                dweight_k,
-            )?;
-            self.tma_scale_pack.pack(
-                args.stream,
-                args.input_t_h.scales,
-                tma.input_t_h_scales,
-                args.input_dim,
-                dweight_k,
-            )?;
-            self.tma.prepare_tma_nvfp4_device_scales_into(
+            };
+        if dweight_tma {
+            self.tma.prepare_tma_nvfp4_csf_scales_into(
                 args.stream,
                 args.e_t_h.bytes,
-                &*tma.e_t_h_scales,
+                args.e_t_h.scales,
                 args.input_t_h.bytes,
-                &*tma.input_t_h_scales,
+                args.input_t_h.scales,
                 args.output_dim,
                 dweight_k,
                 args.input_dim,
                 tma.descriptors,
             )?;
-            self.tma
-                .gemm_tma_nvfp4_rowwise_a_scale_and_global_scale_buffer(
-                    args.stream,
-                    &*tma.descriptors,
-                    args.dweight,
-                    args.output_dim,
-                    dweight_k,
-                    args.input_dim,
-                    args.e_t_h.global_scales,
-                    args.input_t_h.global_scale,
-                    route.map(LinearBackwardRoute::dweight),
-                )?;
-        } else {
-            if route.is_some() {
-                return Err(DriverError(cudaError_enum_CUDA_ERROR_INVALID_VALUE));
+            let transform = self
+                .weight_gradient_transforms
+                .borrow()
+                .get(&args.dweight.cu_deviceptr())
+                .copied();
+            if let Some(transform) = transform {
+                self.tma
+                    .gemm_tma_nvfp4_rowwise_a_scale_and_global_scale_buffer_csf_gradient(
+                        args.stream,
+                        &*tma.descriptors,
+                        args.dweight,
+                        args.output_dim,
+                        dweight_k,
+                        args.input_dim,
+                        args.e_t_h.global_scales,
+                        args.input_t_h.global_scale,
+                        route.map(LinearBackwardRoute::dweight),
+                        transform,
+                    )?;
+            } else {
+                self.tma
+                    .gemm_tma_nvfp4_rowwise_a_scale_and_global_scale_buffer_csf(
+                        args.stream,
+                        &*tma.descriptors,
+                        args.dweight,
+                        args.output_dim,
+                        dweight_k,
+                        args.input_dim,
+                        args.e_t_h.global_scales,
+                        args.input_t_h.global_scale,
+                        route.map(LinearBackwardRoute::dweight),
+                    )?;
             }
-            device_scale_projection!(self, args, e_t_h, input_t_h, dweight, rows: args.output_dim, k: dweight_k)?;
         }
         Ok(dinput_chunk_count)
     }

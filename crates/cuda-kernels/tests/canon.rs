@@ -57,7 +57,10 @@ fn canon_forward_and_backward_match_reference() -> Result<(), Box<dyn Error>> {
 
     let mut reference_amax_dev = DeviceBuffer::<f32>::zeroed(&stream, ROWS)?;
     let mut reference_fp4_dev = DeviceBuffer::<u8>::zeroed(&stream, input.len() / 2)?;
-    let mut reference_scales_dev = DeviceBuffer::<u8>::zeroed(&stream, input.len() / 16)?;
+    let mut reference_scales_dev = DeviceBuffer::<u8>::zeroed(
+        &stream,
+        rust_kernels_cuda::nvfp4::csf::rowwise_encoded_len(ROWS, WIDTH),
+    )?;
     let mut reference_global_scale_dev = DeviceBuffer::<f32>::zeroed(&stream, ROWS)?;
     quant_module.fp32_to_nvfp4_four_six_rowwise_derived_amax(Nvfp4QuantRowwiseDerivedAmaxArgs {
         stream: &stream,
@@ -72,7 +75,10 @@ fn canon_forward_and_backward_match_reference() -> Result<(), Box<dyn Error>> {
 
     let mut fused_amax_dev = DeviceBuffer::<f32>::zeroed(&stream, ROWS)?;
     let mut fused_fp4_dev = DeviceBuffer::<u8>::zeroed(&stream, input.len() / 2)?;
-    let mut fused_scales_dev = DeviceBuffer::<u8>::zeroed(&stream, input.len() / 16)?;
+    let mut fused_scales_dev = DeviceBuffer::<u8>::zeroed(
+        &stream,
+        rust_kernels_cuda::nvfp4::csf::rowwise_encoded_len(ROWS, WIDTH),
+    )?;
     let mut fused_global_scale_dev = DeviceBuffer::<f32>::zeroed(&stream, ROWS)?;
     module.forward_quantized(CanonQuantizeArgs {
         stream: &stream,
@@ -121,9 +127,15 @@ fn canon_forward_and_backward_match_reference() -> Result<(), Box<dyn Error>> {
     let inv_std_dev = DeviceBuffer::from_host(&stream, &vec![1.0f32; ROWS])?;
     let norm_weight_bytes =
         DeviceBuffer::from_host(&stream, &common::nvfp4::one_pair_bytes(WIDTH))?;
-    let norm_weight_scales = DeviceBuffer::from_host(&stream, &common::nvfp4::one_scales(WIDTH))?;
+    let norm_weight_scales = DeviceBuffer::from_host(
+        &stream,
+        &rust_kernels_cuda::nvfp4::csf::encode_host(&common::nvfp4::one_scales(WIDTH), 1, WIDTH),
+    )?;
     let norm_bias_bytes = DeviceBuffer::from_host(&stream, &vec![0u8; WIDTH / 2])?;
-    let norm_bias_scales = DeviceBuffer::from_host(&stream, &common::nvfp4::one_scales(WIDTH))?;
+    let norm_bias_scales = DeviceBuffer::from_host(
+        &stream,
+        &rust_kernels_cuda::nvfp4::csf::encode_host(&common::nvfp4::one_scales(WIDTH), 1, WIDTH),
+    )?;
     let global_scale = DeviceBuffer::from_host(&stream, &[1.0f32])?;
     let d_output_dev = DeviceBuffer::from_host(&stream, &d_output)?;
     let mut d_input_dev = DeviceBuffer::<f32>::zeroed(&stream, input.len())?;
