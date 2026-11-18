@@ -1,8 +1,10 @@
 //! Native CUDA forward/backward on saved averaged weights, with zero updates.
+use super::next_latent::NextLatBackwardSeeds;
 use super::{TokenDataLoader, Trainer, data::VALIDATION_WINDOWS};
 use crate::{AppResult, reference_validation};
+use gpt2_nvfp4::{Gpt2BackwardSeeds, Gpt2Rng};
 use serde_json::{Value, json};
-use std::{fs, path::Path};
+use std::{fs, num::NonZeroU32, path::Path};
 
 #[cfg(test)]
 mod tests;
@@ -16,6 +18,7 @@ pub(super) fn run(
     replay_record: Option<&Path>,
     shard: Option<&Path>,
     token_offset: Option<usize>,
+    rng_attempt: Option<NonZeroU32>,
 ) -> AppResult {
     let selected = match (shard, token_offset) {
         (None, None) => None,
@@ -27,7 +30,8 @@ pub(super) fn run(
         )?),
         _ => return Err("gradient shard and token offset must be provided together".into()),
     };
-    let result = inspect_checkpoint_with_replay(checkpoint, replay_record, selected.as_ref())?;
+    let result =
+        inspect_checkpoint_with_replay(checkpoint, replay_record, selected.as_ref(), rng_attempt)?;
     let output = output.map(Path::to_path_buf).unwrap_or_else(|| {
         checkpoint
             .parent()
@@ -53,12 +57,22 @@ pub(super) fn run(
 
 #[cfg(test)]
 fn inspect_checkpoint(checkpoint: &Path) -> AppResult<Value> {
-    inspect_checkpoint_with_replay(checkpoint, None, None)
+    inspect_checkpoint_with_replay(checkpoint, None, None, None)
 }
+
+fn advance_base_backward_rng(rng: &mut Gpt2Rng, attempt: NonZeroU32) {
+    // Each attempted backward consumes these draws, including a rejected update.
+    rng.advance_repeated(attempt.get() - 1, |rng| {
+        NextLatBackwardSeeds::from_rng(rng);
+        Gpt2BackwardSeeds::from_rng(rng);
+    });
+}
+
 fn inspect_checkpoint_with_replay(
     checkpoint: &Path,
     replay_record: Option<&Path>,
     selected: Option<&window::InputWindow>,
+    rng_attempt: Option<NonZeroU32>,
 ) -> AppResult<Value> {
     let sha = reference_validation::sha256(checkpoint)?;
     let validation = TokenDataLoader::fineweb_validation_tokens()?;
@@ -90,6 +104,9 @@ fn inspect_checkpoint_with_replay(
     let probe_ce =
         probe_before.iter().map(|&v| f64::from(v)).sum::<f64>() / probe_before.len() as f64;
     trainer.forward_step(batch)?;
+    if let Some(attempt) = rng_attempt {
+        advance_base_backward_rng(&mut trainer.rng, attempt);
+    }
     trainer.enqueue_numeric_probe_backward(batch)?;
     // Match the normal update's tied input/output-embedding accumulation, without applying it.
     super::optimizer_apply::add_embedding_lookup_grad(
@@ -150,6 +167,7 @@ fn inspect_checkpoint_with_replay(
         "checkpoint_unchanged":sha==after_sha,"model":"native approximately1B B8/S2048/L16/d2048/h32",
         "input":if selected.is_some(){"selected native corpus window"}else{"native held-out validation windows"},
         "input_window":selected.map(|s|&s.metadata),"target_tokens":batch.token_count,
+        "base_backward_rng_attempt":rng_attempt.map_or(1, NonZeroU32::get),
         "base_seed":"0x47505432", "native_tokenwise_ce":mean_ce,"recorded_native_ce":expected,
         "native_validation_ce":mean_ce,"native_validation_target_tokens":validation_batch.token_count,
         "probe_tokenwise_ce":probe_ce,"probe_replay_bit_exact":probe_replay,
@@ -164,7 +182,7 @@ fn inspect_checkpoint_with_replay(
         "independent_matrix_checks":independent_matrix_checks,
         "optimizer_updates":updates,"optimizer_state_replayed":false,
         "engram_present":trainer.engram.is_some(),"mhc_present":trainer.mhc.is_some(),"ce_replay_bit_exact":replay,
-        "limits":"Frozen averaged evaluation checkpoint; native CUDA forward/backward and existing GPU clip reductions. No optimizer update, training-weight materialization, CPU training or dense precision fallback. Original unsaved optimizer/RNG/training-view state is not replayed; this probe localizes contributions at the saved model, not the original training event. Native validation replay and selected corpus-window CE are reported separately."}),
+        "limits":"Native CUDA forward/backward on frozen averaged weights with zero optimizer updates. The base backward RNG can reproduce the draws at a selected attempt. Engram, mHC and feedback keep their checkpoint-inspection RNG initialization. The training-view weights and optimizer state are absent. Native validation and selected corpus-window CE are reported separately."}),
     )
 }
 

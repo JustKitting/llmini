@@ -1,4 +1,4 @@
-use std::num::NonZeroUsize;
+use std::num::{NonZeroU32, NonZeroUsize};
 use std::path::PathBuf;
 
 use clap::Parser;
@@ -125,6 +125,10 @@ pub(super) struct TrainArgs {
     #[arg(long, requires_all = ["inspect_gradients", "gradient_shard"])]
     pub(super) gradient_token_offset: Option<usize>,
 
+    /// Use the base backward RNG draws from this 1-based training attempt.
+    #[arg(long, requires = "inspect_gradients")]
+    pub(super) gradient_rng_attempt: Option<NonZeroU32>,
+
     /// Compare held-out P1/P2/P3/P4 losses of a saved feedback model without training.
     #[arg(long, conflicts_with_all=["dataset","steps","max_seconds","eval_interval"])]
     pub(super) inspect_feedback_depths: Option<PathBuf>,
@@ -191,11 +195,11 @@ mod gradient_window_cli_tests {
             "data/fineweb/shards/fineweb_mistral_v01_train_000007.bin",
             "--gradient-token-offset",
             "2129920",
+            "--gradient-rng-attempt",
+            "6231",
         ]);
-        assert!(
-            result.is_ok(),
-            "exact corpus-window probe was rejected: {result:?}"
-        );
+        let args = result.expect("exact corpus-window probe was rejected");
+        assert_eq!(args.gradient_rng_attempt.map(NonZeroU32::get), Some(6231));
     }
 
     #[test]
@@ -230,6 +234,14 @@ mod gradient_window_cli_tests {
                 "shard.bin",
                 "--gradient-token-offset",
                 "-1",
+            ],
+            vec!["rust-kernels", "--gradient-rng-attempt", "6231"],
+            vec![
+                "rust-kernels",
+                "--inspect-gradients",
+                "model.ckpt",
+                "--gradient-rng-attempt",
+                "0",
             ],
         ] {
             assert!(TrainArgs::try_parse_from(args).is_err());

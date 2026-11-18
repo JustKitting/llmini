@@ -1,5 +1,20 @@
 use super::*;
 
+#[test]
+fn gradient_probe_replays_base_backward_draws_at_attempt_6231() {
+    let mut rng = Gpt2Rng::new(0x4750_5432 ^ 0xa047_0a91);
+    let mut sequential = rng.clone();
+    let attempt = NonZeroU32::new(6231).unwrap();
+    for _ in 1..attempt.get() {
+        NextLatBackwardSeeds::from_rng(&mut sequential);
+        Gpt2BackwardSeeds::from_rng(&mut sequential);
+    }
+    advance_base_backward_rng(&mut rng, attempt);
+    for _ in 0..16 {
+        assert_eq!(rng.next_u32(), sequential.next_u32());
+    }
+}
+
 // Declared before fixing the reached four-stream report failure. Match actual
 // optimizer matrix names/indices; do not relabel key1 as the shared value.
 #[test]

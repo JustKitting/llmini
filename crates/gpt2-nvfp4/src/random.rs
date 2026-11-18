@@ -12,6 +12,16 @@ impl Gpt2Rng {
         self.next_u64() as u32
     }
 
+    /// Advance by repetitions of a sequence that consumes a fixed number of draws.
+    pub fn advance_repeated(&mut self, repetitions: u32, draw_sequence: impl FnOnce(&mut Self)) {
+        let mut next = self.clone();
+        draw_sequence(&mut next);
+        let stride = next.state.wrapping_sub(self.state);
+        self.state = self
+            .state
+            .wrapping_add(stride.wrapping_mul(u64::from(repetitions)));
+    }
+
     pub(crate) fn next_u8(&mut self) -> u8 {
         self.next_u64() as u8
     }

@@ -37,6 +37,7 @@ pub(crate) fn launch_from_args() -> AppResult {
             args.replay_provenance.as_deref(),
             args.gradient_shard.as_deref(),
             args.gradient_token_offset,
+            args.gradient_rng_attempt,
         );
     }
     if let Some(checkpoint) = args.inspect_model.as_deref() {
