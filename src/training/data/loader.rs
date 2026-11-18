@@ -14,7 +14,7 @@ impl TokenDataLoader {
             return Err(format!("{} has fewer than {len} tokens", self.path.display()).into());
         }
         if !self.repeat_first_window && self.offset + batch_span > self.train_end {
-            self.advance_train_shard()?;
+            self.advance_train_shard(batch_span)?;
         }
 
         let batch_offset = self.offset;
@@ -49,9 +49,9 @@ impl TokenDataLoader {
         validation_windows(&self.path, &self.tokens, start)
     }
 
-    fn advance_train_shard(&mut self) -> AppResult<()> {
+    fn advance_train_shard(&mut self, batch_span: usize) -> AppResult<()> {
         let next_index = self.train_path_index + 1;
-        if next_index >= self.train_paths.len() {
+        let next_index = if next_index >= self.train_paths.len() {
             if !self.wrap_train {
                 return Err(format!(
                     "ran out of fresh train shards after {}; prepare more train shards",
@@ -59,18 +59,30 @@ impl TokenDataLoader {
                 )
                 .into());
             }
-            self.train_path_index = 0;
+            0
         } else {
-            self.train_path_index = next_index;
+            next_index
+        };
+
+        let path = &self.train_paths[next_index];
+        let tokens = tokens::read_u16_tokens(path)?;
+        let train_end = if self.validation_tokens.is_some() {
+            tokens.len()
+        } else {
+            train_end(tokens.len())
+        };
+        if train_end < batch_span {
+            return Err(format!(
+                "{} has fewer than {batch_span} training tokens",
+                path.display()
+            )
+            .into());
         }
 
-        self.path = self.train_paths[self.train_path_index].clone();
-        self.tokens = tokens::read_u16_tokens(&self.path)?;
-        self.train_end = if self.validation_tokens.is_some() {
-            self.tokens.len()
-        } else {
-            train_end(self.tokens.len())
-        };
+        self.train_path_index = next_index;
+        self.path = path.clone();
+        self.tokens = tokens;
+        self.train_end = train_end;
         self.offset = 0;
         Ok(())
     }

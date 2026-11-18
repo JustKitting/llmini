@@ -149,9 +149,15 @@ pub(crate) fn launch_from_args() -> AppResult {
     if config.mhc && !config.engram_mhc && std::env::var("TRAIN_ENGRAM").is_ok_and(|s| s == "1") {
         return Err("four-stream mHC cannot use the single-stream Engram hook; unset TRAIN_ENGRAM or select TRAIN_ENGRAM=0".into());
     }
-    let (dataset, data) = match args.dataset.as_deref() {
-        Some(dataset) => TokenDataLoader::from_dataset(dataset)?,
-        None => TokenDataLoader::from_training_dataset()?,
+    let (dataset, data, manifest_info) = if let Some(path) = args.training_shards.as_deref() {
+        let (data, sha256) = TokenDataLoader::from_training_manifest(path)?;
+        ("manifest".to_owned(), data, Some((path, sha256)))
+    } else {
+        let (dataset, data) = match args.dataset.as_deref() {
+            Some(dataset) => TokenDataLoader::from_dataset(dataset)?,
+            None => TokenDataLoader::from_training_dataset()?,
+        };
+        (dataset, data, None)
     };
     let interrupter = Interrupter::new();
     let run_label = format!("{}s", config.max_seconds.round() as u64);
@@ -164,7 +170,14 @@ pub(crate) fn launch_from_args() -> AppResult {
     let validation_tokens = data.validation_tokens()?;
     let validation_target_bytes = validation_target_byte_count(&validation_tokens)?;
 
-    run_output.write_info(&build_run_info(&dataset, &config))?;
+    let mut info = build_run_info(&dataset, &config);
+    if let Some((path, sha256)) = manifest_info {
+        info.push_str(&format!(
+            "training_shards_manifest={}\ntraining_shards_manifest_sha256={sha256}\nvalidation_dataset=fineweb\n",
+            path.display()
+        ));
+    }
+    run_output.write_info(&info)?;
     println!(
         "training_tokens={} max_seconds={:.3} step_cap={}",
         training_tokens, config.max_seconds, config.step_cap

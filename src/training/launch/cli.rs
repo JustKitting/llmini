@@ -19,6 +19,10 @@ pub(super) struct TrainArgs {
     #[arg(long, value_parser = ["fineweb", "synth", "shakespeare"])]
     pub(super) dataset: Option<String>,
 
+    /// Read a JSON manifest with a tokenizer name and ordered native u16 training shards.
+    #[arg(long, conflicts_with_all = ["dataset", "checkpoint_action"])]
+    pub(super) training_shards: Option<PathBuf>,
+
     /// Train the complete latent-feedback architecture (replaces the Engram experiment).
     #[arg(long, conflicts_with_all=["inspect_model","inspect_gradients","evaluate_model","inspect_feedback_depths"])]
     latent_feedback: bool,

@@ -3,6 +3,7 @@ use std::path::PathBuf;
 mod factory;
 mod fineweb;
 mod loader;
+mod manifest;
 mod shakespeare;
 mod source;
 mod synth;
