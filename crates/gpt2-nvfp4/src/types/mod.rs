@@ -18,6 +18,7 @@ pub use backward::{
 };
 pub use canon::{CanonTensors, CanonWeights};
 pub use l1_embeddings::{EmbeddingWeights, HiddenStateDevice, TokenEmbeddingArgs};
+pub(crate) use l2_attention::project_attention_value;
 pub use l2_attention::{
     AttentionForwardArgs, AttentionForwardTape, AttentionProjectionTensors, AttentionWeights,
     ValueProjectionObserver, project_attention_qkv,

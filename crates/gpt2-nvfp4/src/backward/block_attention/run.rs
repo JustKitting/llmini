@@ -13,7 +13,7 @@ use crate::backward::{
     attention_c_proj_backward, causal_attention_backward, layer_norm_backward_add,
     layer_norm_backward_add_amax, layer_norm_backward_amax, qkv_projection_backward,
 };
-use crate::types::BlockBackwardGrads;
+use crate::types::{BlockBackwardGrads, project_attention_value};
 use crate::{
     AttentionDims, GPT2_N_LAYER, attention_headwise_gate_enabled, attention_headwise_gate_offset,
     uses_exclusive_self_attention, uses_value_residual,
@@ -176,7 +176,10 @@ fn attention_side_backward_impl(
     let dims = AttentionDims::new(use_full_attention);
     if crate::GPT2_VALUE_RMS {
         let raw = scratch.value_rms;
-        crate::project_attention_qkv(
+        // Only the raw V section is read after this replay. Keep the full QKV
+        // row stride so sharing, normalization and their observers use the
+        // same coordinates as forward.
+        project_attention_value(
             stream,
             modules.tma,
             modules.pad,

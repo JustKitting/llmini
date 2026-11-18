@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{ops::Range, sync::Arc};
 
 use cuda_core::{
     CudaContext, CudaModule, CudaStream, DeviceBuffer, DriverError, LaunchConfig,
@@ -7,13 +7,13 @@ use cuda_core::{
 use cuda_device::TmaDescriptor;
 
 use super::cute::{KMajorU4, Sm120KMajorSwizzle, Sm120ScaleLayout};
-use super::kernels::polar;
 use super::kernels::{
     Nvfp4GemmParams, ROUTE_FEATURE_M_TOKEN_K, ROUTE_FEATURE_N_TOKEN_K, ROUTE_NONE,
     ROUTE_TOKEN_M_FEATURE_K, ROUTE_TOKEN_M_FEATURE_N, TILE_K, TILE_M, TILE_N,
     TMA_NVFP4_RESIDUAL_THREADS_PER_BLOCK, TMA_NVFP4_THREADS_PER_BLOCK, module,
     tma_nvfp4_output_amax_chunks,
 };
+use super::kernels::{affine_columns, polar};
 use super::scale_layout::sm120_scale_tma_shape_padded;
 use super::tma::{
     TmaNvfp4DeviceScaleDescriptorKey, TmaNvfp4DeviceScaleDescriptors, encode_u4_tiled_layout,
@@ -129,7 +129,8 @@ impl<'a> Nvfp4GemmRoute<'a> {
             || self.feature_tiles > u64::BITS
             || self.active_tiles == 0
             || self.active_tiles > self.feature_tiles
-            || self.masks.len() < (self.token_tiles + self.feature_tiles * self.token_tiles.div_ceil(64)) as usize
+            || self.masks.len()
+                < (self.token_tiles + self.feature_tiles * self.token_tiles.div_ceil(64)) as usize
         {
             return false;
         }
@@ -191,6 +192,7 @@ fn gemm_params(
 pub struct Nvfp4GemmModule {
     module: module::LoadedModule,
     polar: polar::module::LoadedModule,
+    affine_columns: Option<affine_columns::LoadedModule>,
 }
 
 impl Nvfp4GemmModule {
@@ -207,7 +209,12 @@ impl Nvfp4GemmModule {
     }
 
     pub fn from_module(module: Arc<CudaModule>) -> Result<Self, DriverError> {
+        let affine_columns =
+            crate::module_exports::contains(&module, b"nvfp4_gemm_tma_affine_columns_kernel")?
+                .then(|| affine_columns::from_module(module.clone()))
+                .transpose()?;
         Ok(Self {
+            affine_columns,
             polar: polar::module::from_module(module.clone())?,
             module: module::from_module(module)?,
         })
@@ -1240,6 +1247,42 @@ impl Nvfp4GemmModule {
         a_global_scales: &DeviceBuffer<f32>,
         b_global_scale: &DeviceBuffer<f32>,
     ) -> Result<(), DriverError> {
+        self.gemm_tma_nvfp4_rowwise_a_scale_affine_columns(
+            stream,
+            tma,
+            out,
+            bias,
+            token_count,
+            input_dim,
+            output_dim,
+            padded_output_dim,
+            a_global_scales,
+            b_global_scale,
+            None,
+        )
+    }
+
+    /// Restrict a full-stride affine projection to complete output tiles when
+    /// this PTX and shape support that launch. The ordinary affine launch is
+    /// retained for older PTX and unaligned ranges.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "fused TMA affine launch uses explicit buffers"
+    )]
+    pub fn gemm_tma_nvfp4_rowwise_a_scale_affine_columns(
+        &self,
+        stream: &CudaStream,
+        tma: &TmaNvfp4DeviceScaleDescriptors,
+        out: &mut DeviceBuffer<f32>,
+        bias: Nvfp4DeviceTensor<'_>,
+        token_count: u32,
+        input_dim: u32,
+        output_dim: u32,
+        padded_output_dim: u32,
+        a_global_scales: &DeviceBuffer<f32>,
+        b_global_scale: &DeviceBuffer<f32>,
+        columns: Option<Range<u32>>,
+    ) -> Result<(), DriverError> {
         if token_count % TILE_M != 0
             || padded_output_dim % TILE_N != 0
             || output_dim > padded_output_dim
@@ -1261,19 +1304,39 @@ impl Nvfp4GemmModule {
             None,
         );
 
-        let config = LaunchConfig {
-            grid_dim: (
-                padded_output_dim.div_ceil(TILE_N),
-                token_count.div_ceil(TILE_M),
-                1,
-            ),
+        let config = |tile_count| LaunchConfig {
+            grid_dim: (tile_count, token_count.div_ceil(TILE_M), 1),
             block_dim: (TMA_NVFP4_THREADS_PER_BLOCK, 1, 1),
             shared_mem_bytes: 0,
         };
 
+        if let Some(columns) = columns {
+            if columns.is_empty() || columns.end > output_dim {
+                return Err(DriverError(cudaError_enum_CUDA_ERROR_INVALID_VALUE));
+            }
+            if let Some(module) = &self.affine_columns
+                && columns.start.is_multiple_of(TILE_N)
+                && columns.end.is_multiple_of(TILE_N)
+            {
+                return module.nvfp4_gemm_tma_affine_columns_kernel(
+                    stream,
+                    config((columns.end - columns.start) / TILE_N),
+                    tma.a_deviceptr() as *const TmaDescriptor,
+                    tma.b_deviceptr() as *const TmaDescriptor,
+                    tma.a_scales_deviceptr() as *const TmaDescriptor,
+                    tma.b_scales_deviceptr() as *const TmaDescriptor,
+                    out,
+                    bias.bytes,
+                    bias.scales,
+                    bias.global_scale,
+                    params,
+                    columns.start / TILE_N,
+                );
+            }
+        }
         self.module.nvfp4_gemm_tma_affine_kernel(
             stream,
-            config,
+            config(padded_output_dim.div_ceil(TILE_N)),
             tma.a_deviceptr() as *const TmaDescriptor,
             tma.b_deviceptr() as *const TmaDescriptor,
             tma.a_scales_deviceptr() as *const TmaDescriptor,

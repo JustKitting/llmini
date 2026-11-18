@@ -27,6 +27,135 @@ pub mod polar;
 include!(concat!(env!("OUT_DIR"), "/nvfp4_config.rs"));
 include!("geometry.rs");
 
+macro_rules! run_affine_tile {
+    (
+        $a_tma:ident,
+        $b_tma:ident,
+        $a_scale_tma:ident,
+        $b_scale_tma:ident,
+        $out:ident,
+        $bias_bytes:ident,
+        $bias_scales:ident,
+        $bias_global_scale:ident,
+        $params:ident,
+        $output_tile:expr $(,)?
+    ) => {{
+        $params.global_scale_mode = 2;
+        $params.route_mode = ROUTE_NONE;
+        let thread_id = thread::threadIdx_x();
+
+        static mut TMA_BARS: BarrierSmemStages = SharedArray::UNINIT;
+        static mut EMPTY_BARS: BarrierSmemStages = SharedArray::UNINIT;
+        static mut A_SCALES_SM: CsfAScalesSmemStages = SharedArray::UNINIT;
+        static mut B_SCALES_SM: CsfBScalesSmemStages = SharedArray::UNINIT;
+        static mut A_PACKS_SM: APacksSmemStages = SharedArray::UNINIT;
+        static mut B_PACKS_SM: BPacksSmemStages = SharedArray::UNINIT;
+        static mut BIAS_SM: BiasSmem = SharedArray::UNINIT;
+
+        let tile = CtaTile::new_at(
+            thread_id,
+            N_LAYOUT_WARP_CONTIGUOUS,
+            thread::blockIdx_y(),
+            $output_tile,
+        );
+        let tma_bars = unsafe { (&mut *(&raw mut TMA_BARS)).as_mut_ptr() };
+        let empty_bars = unsafe { (&mut *(&raw mut EMPTY_BARS)).as_mut_ptr() };
+        let a_scales_base = unsafe { (&mut *(&raw mut A_SCALES_SM)).as_mut_ptr() };
+        let b_scales_base = unsafe { (&mut *(&raw mut B_SCALES_SM)).as_mut_ptr() };
+        let a_packs_base = unsafe { (&mut *(&raw mut A_PACKS_SM)).as_mut_ptr() };
+        let b_packs_base = unsafe { (&mut *(&raw mut B_PACKS_SM)).as_mut_ptr() };
+        let bias_tile = unsafe { &mut *(&raw mut BIAS_SM) };
+
+        if thread_id < TILE_N / 2 {
+            let bias_col = tile.col_base + thread_id * 2;
+            let (bias0, bias1) = if bias_col + 1 < $params.output_dim {
+                nvfp4_values2(
+                    $bias_bytes,
+                    $bias_scales,
+                    $bias_global_scale[0],
+                    bias_col as usize,
+                )
+            } else {
+                (0.0, 0.0)
+            };
+            store_f32x2_shared(
+                bias_tile.as_mut_ptr(),
+                (thread_id * 2) as usize,
+                bias0,
+                bias1,
+            );
+        }
+
+        if thread_id == 0 {
+            prefetch_tma_descriptor($a_tma);
+            prefetch_tma_descriptor($b_tma);
+            prefetch_tma_descriptor($a_scale_tma);
+            prefetch_tma_descriptor($b_scale_tma);
+            unsafe {
+                let mut stage = 0;
+                while stage < TMA_PIPELINE_STAGES {
+                    mbarrier_init(stage_barrier(tma_bars, stage), 1);
+                    mbarrier_init(stage_barrier(empty_bars, stage), MMA_THREADS_PER_BLOCK);
+                    stage += 1;
+                }
+                fence_proxy_async_shared_cta();
+            }
+        }
+        thread::sync_threads();
+
+        run_tma_nvfp4_full_tile_affine!(
+            $a_tma,
+            $b_tma,
+            $a_scale_tma,
+            $b_scale_tma,
+            tile,
+            $params,
+            a_packs_base,
+            b_packs_base,
+            a_scales_base,
+            b_scales_base,
+            tma_bars,
+            empty_bars,
+            &mut $out,
+            bias_tile,
+        );
+    }};
+}
+
+#[cuda_module]
+pub mod affine_columns {
+    use super::*;
+
+    #[kernel]
+    #[launch_bounds(288, 1)]
+    #[allow(unused_variables)]
+    pub fn nvfp4_gemm_tma_affine_columns_kernel(
+        a_tma: *const TmaDescriptor,
+        b_tma: *const TmaDescriptor,
+        a_scale_tma: *const TmaDescriptor,
+        b_scale_tma: *const TmaDescriptor,
+        mut out: DisjointSlice<f32>,
+        bias_bytes: &[u8],
+        bias_scales: &[u8],
+        bias_global_scale: &[f32],
+        mut params: Nvfp4GemmParams,
+        first_output_tile: u32,
+    ) {
+        run_affine_tile!(
+            a_tma,
+            b_tma,
+            a_scale_tma,
+            b_scale_tma,
+            out,
+            bias_bytes,
+            bias_scales,
+            bias_global_scale,
+            params,
+            first_output_tile + thread::blockIdx_x(),
+        );
+    }
+}
+
 #[cuda_module]
 pub mod module {
     use super::*;
@@ -529,79 +658,17 @@ pub mod module {
         bias_global_scale: &[f32],
         mut params: Nvfp4GemmParams,
     ) {
-        params.global_scale_mode = 2;
-        params.route_mode = ROUTE_NONE;
-        let thread_id = thread::threadIdx_x();
-
-        static mut TMA_BARS: BarrierSmemStages = SharedArray::UNINIT;
-        static mut EMPTY_BARS: BarrierSmemStages = SharedArray::UNINIT;
-        static mut A_SCALES_SM: CsfAScalesSmemStages = SharedArray::UNINIT;
-        static mut B_SCALES_SM: CsfBScalesSmemStages = SharedArray::UNINIT;
-        static mut A_PACKS_SM: APacksSmemStages = SharedArray::UNINIT;
-        static mut B_PACKS_SM: BPacksSmemStages = SharedArray::UNINIT;
-        static mut BIAS_SM: BiasSmem = SharedArray::UNINIT;
-
-        let tile = CtaTile::new_csf(thread_id);
-        let tma_bars = unsafe { (&mut *(&raw mut TMA_BARS)).as_mut_ptr() };
-        let empty_bars = unsafe { (&mut *(&raw mut EMPTY_BARS)).as_mut_ptr() };
-        let a_scales_base = unsafe { (&mut *(&raw mut A_SCALES_SM)).as_mut_ptr() };
-        let b_scales_base = unsafe { (&mut *(&raw mut B_SCALES_SM)).as_mut_ptr() };
-        let a_packs_base = unsafe { (&mut *(&raw mut A_PACKS_SM)).as_mut_ptr() };
-        let b_packs_base = unsafe { (&mut *(&raw mut B_PACKS_SM)).as_mut_ptr() };
-        let bias_tile = unsafe { &mut *(&raw mut BIAS_SM) };
-
-        if thread_id < TILE_N / 2 {
-            let bias_col = thread::blockIdx_x() * TILE_N + thread_id * 2;
-            let (bias0, bias1) = if bias_col + 1 < params.output_dim {
-                nvfp4_values2(
-                    bias_bytes,
-                    bias_scales,
-                    bias_global_scale[0],
-                    bias_col as usize,
-                )
-            } else {
-                (0.0, 0.0)
-            };
-            store_f32x2_shared(
-                bias_tile.as_mut_ptr(),
-                (thread_id * 2) as usize,
-                bias0,
-                bias1,
-            );
-        }
-
-        if thread_id == 0 {
-            prefetch_tma_descriptor(a_tma);
-            prefetch_tma_descriptor(b_tma);
-            prefetch_tma_descriptor(a_scale_tma);
-            prefetch_tma_descriptor(b_scale_tma);
-            unsafe {
-                let mut stage = 0;
-                while stage < TMA_PIPELINE_STAGES {
-                    mbarrier_init(stage_barrier(tma_bars, stage), 1);
-                    mbarrier_init(stage_barrier(empty_bars, stage), MMA_THREADS_PER_BLOCK);
-                    stage += 1;
-                }
-                fence_proxy_async_shared_cta();
-            }
-        }
-        thread::sync_threads();
-
-        run_tma_nvfp4_full_tile_affine!(
+        run_affine_tile!(
             a_tma,
             b_tma,
             a_scale_tma,
             b_scale_tma,
-            tile,
+            out,
+            bias_bytes,
+            bias_scales,
+            bias_global_scale,
             params,
-            a_packs_base,
-            b_packs_base,
-            a_scales_base,
-            b_scales_base,
-            tma_bars,
-            empty_bars,
-            &mut out,
-            bias_tile,
+            thread::blockIdx_x(),
         );
     }
 

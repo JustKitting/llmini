@@ -9,6 +9,7 @@ use rust_kernels_cuda::nvfp4_tma_matmul::{
     scale_layout::sm120_scale_padded_mn_extent,
     tma::TmaNvfp4DeviceScaleDescriptors,
 };
+use std::ops::Range;
 
 pub fn project_attention_qkv(
     stream: &CudaStream,
@@ -21,6 +22,62 @@ pub fn project_attention_qkv(
     out: &mut DeviceBuffer<f32>,
     rows: u32,
     dims: AttentionDims,
+) -> Result<(), DriverError> {
+    project_attention_columns(
+        stream,
+        tma,
+        pad,
+        descriptors,
+        padded_weight,
+        input,
+        projections,
+        out,
+        rows,
+        dims,
+        None,
+    )
+}
+
+pub(crate) fn project_attention_value(
+    stream: &CudaStream,
+    tma: &Nvfp4GemmModule,
+    pad: &TmaMatrixPadModule,
+    descriptors: &mut TmaNvfp4DeviceScaleDescriptors,
+    padded_weight: &mut DeviceBuffer<u8>,
+    input: Nvfp4RowwiseDeviceTensor<'_>,
+    projections: AttentionProjectionTensors<'_>,
+    out: &mut DeviceBuffer<f32>,
+    rows: u32,
+    dims: AttentionDims,
+) -> Result<(), DriverError> {
+    let d = dims.embedding_dim;
+    project_attention_columns(
+        stream,
+        tma,
+        pad,
+        descriptors,
+        padded_weight,
+        input,
+        projections,
+        out,
+        rows,
+        dims,
+        Some(2 * d..3 * d),
+    )
+}
+
+fn project_attention_columns(
+    stream: &CudaStream,
+    tma: &Nvfp4GemmModule,
+    pad: &TmaMatrixPadModule,
+    descriptors: &mut TmaNvfp4DeviceScaleDescriptors,
+    padded_weight: &mut DeviceBuffer<u8>,
+    input: Nvfp4RowwiseDeviceTensor<'_>,
+    projections: AttentionProjectionTensors<'_>,
+    out: &mut DeviceBuffer<f32>,
+    rows: u32,
+    dims: AttentionDims,
+    columns: Option<Range<u32>>,
 ) -> Result<(), DriverError> {
     let padded = sm120_scale_padded_mn_extent(dims.qkv_dim as usize) as u32;
     if padded != dims.qkv_dim {
@@ -49,7 +106,7 @@ pub fn project_attention_qkv(
         padded,
         descriptors,
     )?;
-    tma.gemm_tma_nvfp4_rowwise_a_scale_affine_padded_output(
+    tma.gemm_tma_nvfp4_rowwise_a_scale_affine_columns(
         stream,
         descriptors,
         out,
@@ -60,5 +117,6 @@ pub fn project_attention_qkv(
         padded,
         input.global_scales,
         projections.qkv_weight_device.global_scale,
+        columns,
     )
 }

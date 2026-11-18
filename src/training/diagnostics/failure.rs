@@ -306,7 +306,7 @@ impl Trainer {
                 &self.buffers.scratch.value_first_grad,
             )?;
             dump.f32(
-                "value_rms.raw_QKV_recompute_workspace",
+                "value_rms.raw_V_recompute_workspace_qkv_stride",
                 &self.buffers.scratch.value_qkv_recompute,
             )?;
         }

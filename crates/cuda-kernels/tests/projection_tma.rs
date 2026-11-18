@@ -11,7 +11,9 @@ use rust_kernels_cuda::mlp::{
 use rust_kernels_cuda::mma::Nvfp4FourSixMmaWeightTensor;
 use rust_kernels_cuda::nvfp4::{Nvfp4DeviceTensor, Nvfp4RowwiseDeviceTensor};
 use rust_kernels_cuda::nvfp4_tma_matmul::{
-    kernels::{TILE_K, TILE_M, TILE_N, polar::TILE_N as POLAR_TILE_N, tma_nvfp4_output_amax_chunks},
+    kernels::{
+        TILE_K, TILE_M, TILE_N, polar::TILE_N as POLAR_TILE_N, tma_nvfp4_output_amax_chunks,
+    },
     launcher::{Nvfp4GemmModule, Nvfp4GemmRoute},
     pad::{TmaMatrixPadModule, U4RowPadArgs},
     scale_layout::{
@@ -32,7 +34,8 @@ const TOLERANCE: f32 = 1.0e-5;
 
 #[ignore = "requires generated sm_120a PTX"]
 #[test]
-fn mlp_block_topk_route_uses_only_prior_sequence_context_and_transposes_exact_tiles() -> Result<(), Box<dyn Error>> {
+fn mlp_block_topk_route_uses_only_prior_sequence_context_and_transposes_exact_tiles()
+-> Result<(), Box<dyn Error>> {
     const TILE: usize = 128;
     const TOKEN_TILES: usize = 64;
     const FEATURE_TILES: usize = 64;
@@ -89,7 +92,8 @@ fn mlp_block_topk_route_uses_only_prior_sequence_context_and_transposes_exact_ti
             let sequence_start = t % (2048 / TILE) == 0;
             let source_tile = if sequence_start { t } else { t - 1 };
             let source_rows = if sequence_start { 1 } else { TILE };
-            let payload = [0.0f32, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0][(f * 5 + source_tile * 3) % 8];
+            let payload =
+                [0.0f32, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0][(f * 5 + source_tile * 3) % 8];
             let mut expected = 0.0f32;
             for row in source_tile * TILE..source_tile * TILE + source_rows {
                 for group in 0..8 {
@@ -181,7 +185,8 @@ fn mlp_block_topk_route_batch8_preserves_upper_half_and_causality() -> Result<()
             let sequence_start = t % (2048 / TILE) == 0;
             let source_tile = if sequence_start { t } else { t - 1 };
             let source_rows = if sequence_start { 1 } else { TILE };
-            let payload = [0.0f32, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0][(f * 5 + source_tile * 3) % 8];
+            let payload =
+                [0.0f32, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0][(f * 5 + source_tile * 3) % 8];
             let mut expected = 0.0f32;
             for row in source_tile * TILE..source_tile * TILE + source_rows {
                 for group in 0..8 {
@@ -207,7 +212,8 @@ fn mlp_block_topk_route_batch8_preserves_upper_half_and_causality() -> Result<()
         });
         for feature_tile in ranked_features[..ACTIVE_FEATURE_TILES].iter().copied() {
             expected_masks[token_tile] |= 1_u64 << feature_tile;
-            expected_masks[TOKEN_TILES + feature_tile * 2 + token_tile / 64] |= 1_u64 << (token_tile % 64);
+            expected_masks[TOKEN_TILES + feature_tile * 2 + token_tile / 64] |=
+                1_u64 << (token_tile % 64);
         }
     }
     assert_eq!(masks, expected_masks);
@@ -301,8 +307,11 @@ fn tma_feature_routes_consume_batch8_upper_token_word() -> Result<(), Box<dyn Er
                     let active = if feature_on_m { row < 128 } else { col < 128 };
                     let index = row * n + col;
                     let expected = if active { dense[index] } else { 0.0 };
-                    assert!((routed[index] - expected).abs() <= TOLERANCE,
-                        "tile={selected} feature_on_m={feature_on_m} row={row} col={col}: {} != {expected}", routed[index]);
+                    assert!(
+                        (routed[index] - expected).abs() <= TOLERANCE,
+                        "tile={selected} feature_on_m={feature_on_m} row={row} col={col}: {} != {expected}",
+                        routed[index]
+                    );
                 }
             }
         }
@@ -577,6 +586,38 @@ fn tma_affine_padded_output_matches_old_qkv_projection() -> Result<(), Box<dyn E
 
 #[ignore = "requires generated sm_120a PTX"]
 #[test]
+fn tma_affine_columns_replay_preserves_full_stride_and_other_columns() -> Result<(), Box<dyn Error>>
+{
+    let tile = TILE_N as usize;
+    let n = 3 * tile + 32;
+    let fixture = Fixture::new(ROWS, 3 * K, n)?;
+    let mut full = DeviceBuffer::<f32>::zeroed(&fixture.stream, ROWS * n)?;
+    let poison = -1234.25_f32;
+    let mut partial = DeviceBuffer::from_host(&fixture.stream, &vec![poison; ROWS * n])?;
+    fixture.tma_affine(&mut full)?;
+    fixture.tma_affine_columns(&mut partial, Some(TILE_N..3 * TILE_N))?;
+    let full = full.to_host_vec(&fixture.stream)?;
+    let partial = partial.to_host_vec(&fixture.stream)?;
+    for row in 0..ROWS {
+        for column in 0..n {
+            let index = row * n + column;
+            let expected = if (tile..3 * tile).contains(&column) {
+                full[index]
+            } else {
+                poison
+            };
+            assert_eq!(
+                partial[index].to_bits(),
+                expected.to_bits(),
+                "row {row}, column {column}"
+            );
+        }
+    }
+    Ok(())
+}
+
+#[ignore = "requires generated sm_120a PTX"]
+#[test]
 fn tma_residual_matches_old_projection_residual_add() -> Result<(), Box<dyn Error>> {
     let fixture = Fixture::new(ROWS, K, 128)?;
     let residual = residual_values(ROWS * 128);
@@ -694,7 +735,11 @@ fn tma_mlp_down_residual_matches_old_projection() -> Result<(), Box<dyn Error>> 
 #[ignore = "requires generated sm_120a PTX"]
 #[test]
 fn tma_branch_output_overwrites_poisoned_dense_and_routed_outputs() -> Result<(), Box<dyn Error>> {
-    let fixture = Fixture::new((2 * TILE_M) as usize, (4 * TILE_K) as usize, (2 * TILE_N) as usize)?;
+    let fixture = Fixture::new(
+        (2 * TILE_M) as usize,
+        (4 * TILE_K) as usize,
+        (2 * TILE_N) as usize,
+    )?;
     let masks = DeviceBuffer::from_host(&fixture.stream, &[0b0111_u64, 0b1101, 0, 0, 0, 0])?;
     let route = Nvfp4GemmRoute::token_m_feature_k(&masks, 2, 4, 3);
     let len = fixture.rows * fixture.n;
@@ -706,7 +751,10 @@ fn tma_branch_output_overwrites_poisoned_dense_and_routed_outputs() -> Result<()
         let expected = zero_residual.to_host_vec(&fixture.stream)?;
         let actual = poisoned.to_host_vec(&fixture.stream)?;
         for (index, (expected, actual)) in expected.iter().zip(actual).enumerate() {
-            assert!(expected.is_finite(), "reference output {index} is nonfinite");
+            assert!(
+                expected.is_finite(),
+                "reference output {index} is nonfinite"
+            );
             assert_eq!(actual.to_bits(), expected.to_bits(), "output index {index}");
         }
     }
@@ -1139,6 +1187,14 @@ impl Fixture {
     }
 
     fn tma_affine(&self, out: &mut DeviceBuffer<f32>) -> Result<(), Box<dyn Error>> {
+        self.tma_affine_columns(out, None)
+    }
+
+    fn tma_affine_columns(
+        &self,
+        out: &mut DeviceBuffer<f32>,
+        columns: Option<std::ops::Range<u32>>,
+    ) -> Result<(), Box<dyn Error>> {
         let padded_n = sm120_scale_padded_mn_extent(self.n);
 
         let mut weight_bytes_padded = DeviceBuffer::zeroed(&self.stream, padded_n * self.k / 2)?;
@@ -1168,19 +1224,19 @@ impl Fixture {
             padded_n as u32,
             &mut descriptors,
         )?;
-        self.tma
-            .gemm_tma_nvfp4_rowwise_a_scale_affine_padded_output(
-                &self.stream,
-                &descriptors,
-                out,
-                self.bias_device(),
-                self.rows as u32,
-                self.k as u32,
-                self.n as u32,
-                padded_n as u32,
-                &self.input_globals,
-                &self.weight_global,
-            )?;
+        self.tma.gemm_tma_nvfp4_rowwise_a_scale_affine_columns(
+            &self.stream,
+            &descriptors,
+            out,
+            self.bias_device(),
+            self.rows as u32,
+            self.k as u32,
+            self.n as u32,
+            padded_n as u32,
+            &self.input_globals,
+            &self.weight_global,
+            columns,
+        )?;
         Ok(())
     }
 
