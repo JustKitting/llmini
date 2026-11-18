@@ -15,6 +15,10 @@ use crate::{
 };
 
 impl GradientClipBuffers {
+    pub(in crate::training) fn uses_cached_matrix_norm(&self, gradient: u64) -> bool {
+        self.matrix_sum_count != 0 && !self.recomputed_matrix_ptrs.contains(&gradient)
+    }
+
     pub(in crate::training) fn norm_components(
         &self,
         stream: &CudaStream,
@@ -62,10 +66,7 @@ impl GradientClipBuffers {
         }
         if self.matrix_sum_count != 0 {
             for (slot, desc) in tables.all.host_symexp_lin_slots.iter().enumerate() {
-                if desc.rows == 0
-                    || desc.cols == 0
-                    || self.recomputed_matrix_ptrs.contains(&desc.grad)
-                {
+                if desc.rows == 0 || desc.cols == 0 || !self.uses_cached_matrix_norm(desc.grad) {
                     continue;
                 }
                 let len = (desc.rows * desc.cols) as usize;

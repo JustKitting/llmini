@@ -178,6 +178,7 @@ fn inspect_checkpoint_with_replay(
         "component_norm":sum.sqrt(),"global_norm_reconciles":reconciles,
         "full_attention_backward_tile_budget":gpt2_nvfp4::GPT2_ATTENTION_BACKWARD_TILE_BUDGET,
         "full_attention_dense_value_gradient":gpt2_nvfp4::GPT2_FULL_ATTN_DENSE_DV || gpt2_nvfp4::GPT2_ATTENTION_BACKWARD_TILE_BUDGET == 0.0,
+        "muon_matrix_gradient_coordinate":if super::symexp_lin::enabled() {"optimizer_master"} else {"represented_weight"},
         "components":components,"groups":groups,"all_components_finite":all_finite,
         "independent_matrix_checks":independent_matrix_checks,
         "optimizer_updates":updates,"optimizer_state_replayed":false,
@@ -233,13 +234,16 @@ fn independent_matrix_checks(trainer: &Trainer, components: &[Value]) -> AppResu
             .iter()
             .map(|&x| f64::from(x).powi(2))
             .sum::<f64>();
-        // mHC's physical padding is cleared after MS-EDEN, so its matrix norm
-        // deliberately scans the completed gradient through the ordinary
-        // reduction path. Other selected matrices use cached Muon tile sums.
-        let expected_kind = if name.starts_with("mhc.") {
-            "ordinary_parameter"
-        } else {
+        // Recomputed matrices and configurations without cached tile sums
+        // use ordinary chunks for the completed gradient.
+        let expected_kind = if trainer
+            .buffers
+            .grad_clip
+            .uses_cached_matrix_norm(buffer.cu_deviceptr())
+        {
             "muon_matrix"
+        } else {
+            "ordinary_parameter"
         };
         let component = components
             .iter()
