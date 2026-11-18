@@ -40,6 +40,7 @@ fn read_tensors(path: &Path) -> AppResult<(u32, HashMap<String, super::format::C
     super::mlp::take_and_validate(&mut tensors)?;
     super::value_rms::take_and_validate(&mut tensors)?;
     super::kda_backward::take_and_validate(&mut tensors)?;
+    super::kda_output_gate::take_and_validate(&mut tensors)?;
     super::stationary_rope::take_and_validate(&mut tensors)?;
     if gpt2_nvfp4::GPT2_REQUIRES_ENGRAM_MHC
         && !(tensors.contains_key("mhc.config")
@@ -95,7 +96,12 @@ pub fn load_uploaded_model(stream: &CudaStream, path: &Path) -> AppResult<Upload
     if tensors.contains_key("engram.config") || tensors.contains_key("engram.layers") {
         model.engram = Some(super::engram::load(stream, &mut tensors)?);
     }
-    if tensor_count == expected_tensor_count + 2 + super::activation_quant::extra_tensors() {
+    if tensor_count
+        == expected_tensor_count
+            + 2
+            + super::activation_quant::extra_tensors()
+            + super::kda_output_gate::extra_tensors()
+    {
         model.latent_feedback = Some(super::latent_feedback::load(stream, &mut tensors)?);
     }
     if !tensors.is_empty() {

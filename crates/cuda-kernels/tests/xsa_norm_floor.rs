@@ -116,7 +116,7 @@ fn check(
         value_offset: (2 * d) as u32,
         gate_offset: gate_offset as u32,
         alpha_offset: 0,
-        apply_headwise_gate: true,
+        gate: rust_kernels_cuda::attention::AttentionOutputGate::Sigmoid,
         kda_value_activation: kda,
     })?;
     let mut dout = DeviceBuffer::from_host(s, &grad)?;
@@ -141,7 +141,7 @@ fn check(
         gate_offset: gate_offset as u32,
         gate_amax_offset: 0,
         alpha_offset: 0,
-        apply_headwise_gate: true,
+        gate: rust_kernels_cuda::attention::AttentionOutputGate::Sigmoid,
         kda_value_activation: kda,
     })?;
     let dx = dq.to_host_vec(s)?;

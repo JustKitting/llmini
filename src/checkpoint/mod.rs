@@ -7,6 +7,7 @@ mod combined_graph_tests;
 mod engram;
 mod format;
 mod kda_backward;
+mod kda_output_gate;
 mod latent_feedback;
 mod load;
 mod mhc;

@@ -1,6 +1,6 @@
 use cuda_core::DriverError;
 use rust_kernels_cuda::attention::{
-    AccumulateValueResidualGradArgs, ExclusiveSelfAttentionBackwardArgs,
+    AccumulateValueResidualGradArgs, AttentionOutputGate, ExclusiveSelfAttentionBackwardArgs,
     FinishValueResidualGradArgs, HeadwiseAttentionGateBackwardArgs,
     InitializeValueResidualGradArgs,
 };
@@ -85,6 +85,7 @@ fn attention_side_backward_impl(
         4 * saved.row_count
     };
     let use_xsa = uses_exclusive_self_attention(use_full_attention);
+    let gate = crate::config::attention_output_gate(use_full_attention);
     let xsa_amax_chunks = if use_xsa {
         let raw_out = if use_full_attention {
             saved.attention_out
@@ -113,11 +114,11 @@ fn attention_side_backward_impl(
                 gate_offset: attention_headwise_gate_offset(use_full_attention) as u32,
                 gate_amax_offset,
                 alpha_offset: projections.xsa_alpha_offset,
-                apply_headwise_gate: attention_headwise_gate_enabled(),
+                gate,
                 kda_value_activation: !use_full_attention && !crate::GPT2_VALUE_RMS,
             },
         )?)
-    } else if attention_headwise_gate_enabled() {
+    } else if gate != AttentionOutputGate::Disabled {
         let raw_out = if use_full_attention {
             saved.attention_out
         } else {
@@ -142,6 +143,7 @@ fn attention_side_backward_impl(
                 head_count: dims.head_count,
                 head_dim: dims.head_dim,
                 gate_offset: attention_headwise_gate_offset(use_full_attention) as u32,
+                gate,
             })?;
         None
     } else {
@@ -164,7 +166,7 @@ fn attention_side_backward_impl(
         scratch: scratch.core,
         backward_mask_seed: seeds.qkv.attention_mask_seed(),
     })?;
-    if use_xsa || attention_headwise_gate_enabled() {
+    if use_xsa || gate != AttentionOutputGate::Disabled {
         assert_eq!(
             d_qkv_amax_chunks,
             Some(gate_amax_offset),

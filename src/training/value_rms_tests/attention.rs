@@ -170,7 +170,7 @@ fn native_value_rms_attention_XSA_beta_complete_chain() -> AppResult {
                 value_offset: (2 * D) as u32,
                 gate_offset: gate as u32,
                 alpha_offset: 0,
-                apply_headwise_gate: true,
+                gate: rust_kernels_cuda::attention::AttentionOutputGate::Sigmoid,
                 kda_value_activation: false,
             })?;
         let actual = output.to_host_vec(stream)?;
@@ -205,7 +205,7 @@ fn native_value_rms_attention_XSA_beta_complete_chain() -> AppResult {
                     gate_offset: gate as u32,
                     gate_amax_offset: if full { 3 * N as u32 } else { 4 * N as u32 },
                     alpha_offset: 0,
-                    apply_headwise_gate: true,
+                    gate: rust_kernels_cuda::attention::AttentionOutputGate::Sigmoid,
                     kda_value_activation: false,
                 },
             )?;

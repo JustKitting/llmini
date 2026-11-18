@@ -71,6 +71,7 @@ pub(super) fn write_uploaded_model_to(
             + super::mlp::extra_tensors()
             + super::value_rms::extra_tensors()
             + super::kda_backward::extra_tensors()
+            + super::kda_output_gate::extra_tensors()
             + super::stationary_rope::extra_tensors()
             + model.engram.as_ref().map_or(0, |w| w.tensor_count())
             + model.mhc.as_ref().map_or(0, |w| w.tensor_count())
@@ -85,6 +86,7 @@ pub(super) fn write_uploaded_model_to(
     super::mlp::write(&mut writer)?;
     super::value_rms::write(&mut writer)?;
     super::kda_backward::write(&mut writer)?;
+    super::kda_output_gate::write(&mut writer)?;
     super::stationary_rope::write(&mut writer)?;
     if let Some(w) = &model.mhc {
         super::mhc::write(&mut writer, stream, w)?;

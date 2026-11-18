@@ -21,7 +21,7 @@ pub use causal::{CausalAttentionArgs, CausalAttentionParams};
 pub use causal_backward_tc::{CausalAttentionBackwardTcArgs, CausalAttentionBackwardTcScratch};
 pub use causal_tc::{CausalAttentionTcArgs, CausalAttentionTcScratch};
 pub use headwise_gate::{
-    ExclusiveSelfAttentionBackwardArgs, ExclusiveSelfAttentionForwardArgs,
+    AttentionOutputGate, ExclusiveSelfAttentionBackwardArgs, ExclusiveSelfAttentionForwardArgs,
     HeadwiseAttentionGateBackwardArgs, HeadwiseAttentionGateForwardArgs,
 };
 pub use qkv_projection::{CProjArgs, QkvProjectionArgs, QkvProjectionParams};

@@ -25,6 +25,11 @@ fn main() {
     let value_rms = build_support::value_rms();
     let full_kda_backward = build_support::full_kda_backward();
     let stationary_rope = build_support::stationary_rope();
+    let kda_rational_output_gate = match env::var("GPT2_KDA_OUTPUT_GATE").as_deref() {
+        Ok("sigmoid") | Err(env::VarError::NotPresent) => false,
+        Ok("rational") => true,
+        other => panic!("unsupported GPT2_KDA_OUTPUT_GATE={other:?}; use sigmoid or rational"),
+    };
     assert!(
         !(stationary_rope && (bounded_swiglu || value_rms)) || full_kda_backward,
         "stationary RoPE with numerical components requires the complete full-credit Engram/mHC graph"
@@ -98,6 +103,7 @@ fn main() {
         "GPT2_MLP_INITIALIZER",
         "GPT2_VALUE_RMS",
         "GPT2_KDA_BACKWARD",
+        "GPT2_KDA_OUTPUT_GATE",
         "GPT2_POSITION_KIND",
         "GPT2_SEQ_LEN",
         "GPT2_BATCH_SIZE",
@@ -123,6 +129,7 @@ fn main() {
              pub const GPT2_MLP_REFERENCE_NORMAL_INIT: bool = {mlp_reference_normal_init};\n\
              pub const GPT2_VALUE_RMS: bool = {value_rms};\n\
              pub const GPT2_KDA_FULL_STATE_BACKWARD: bool = {full_kda_backward};\n\
+             pub const GPT2_KDA_RATIONAL_OUTPUT_GATE: bool = {kda_rational_output_gate};\n\
              pub const GPT2_STATIONARY_ROPE: bool = {stationary_rope};\n"
         ),
     )

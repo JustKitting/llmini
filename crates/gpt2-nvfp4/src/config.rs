@@ -137,6 +137,20 @@ pub fn attention_headwise_gate_enabled() -> bool {
     env_bool("TRAIN_ATTENTION_HEADWISE_GATE", true)
 }
 
+pub(crate) fn attention_output_gate(
+    use_full_attention: bool,
+) -> rust_kernels_cuda::attention::AttentionOutputGate {
+    use rust_kernels_cuda::attention::AttentionOutputGate;
+
+    if !attention_headwise_gate_enabled() {
+        AttentionOutputGate::Disabled
+    } else if GPT2_KDA_RATIONAL_OUTPUT_GATE && !use_full_attention {
+        AttentionOutputGate::Rational
+    } else {
+        AttentionOutputGate::Sigmoid
+    }
+}
+
 pub fn exclusive_self_attention_enabled() -> bool {
     env_bool("TRAIN_XSA", true)
 }

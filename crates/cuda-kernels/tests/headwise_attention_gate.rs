@@ -2,8 +2,9 @@ use std::error::Error;
 
 use cuda_core::DeviceBuffer;
 use rust_kernels_cuda::attention::{
-    AttentionModule, ExclusiveSelfAttentionBackwardArgs, ExclusiveSelfAttentionForwardArgs,
-    HeadwiseAttentionGateBackwardArgs, HeadwiseAttentionGateForwardArgs,
+    AttentionModule, AttentionOutputGate, ExclusiveSelfAttentionBackwardArgs,
+    ExclusiveSelfAttentionForwardArgs, HeadwiseAttentionGateBackwardArgs,
+    HeadwiseAttentionGateForwardArgs,
 };
 use rust_kernels_cuda::nvfp4::Nvfp4DeviceTensor;
 
@@ -20,9 +21,19 @@ const TEST_SCALE: f32 = 4.0 / HEAD_DIM as f32;
 #[ignore = "requires generated sm_120a PTX"]
 #[test]
 fn headwise_gate_forward_and_backward_match_chain_rule() -> Result<(), Box<dyn Error>> {
+    run_headwise_case(AttentionOutputGate::Sigmoid)?;
+    run_headwise_case(AttentionOutputGate::Rational)
+}
+
+fn run_headwise_case(gate_kind: AttentionOutputGate) -> Result<(), Box<dyn Error>> {
     let (_, stream, module) = common::cuda_test_module(AttentionModule::from_module)?;
     let mut qkv = vec![0.0_f32; ROWS * QKV_DIM];
-    let gate_logits = [[-1.25_f32, 18.0_f32], [2.0_f32, -18.0_f32]];
+    let negative_tail = if gate_kind == AttentionOutputGate::Rational {
+        -110.0
+    } else {
+        -18.0
+    };
+    let gate_logits = [[-1.25_f32, 18.0_f32], [2.0_f32, negative_tail]];
     for row in 0..ROWS {
         for head in 0..HEADS {
             qkv[row * QKV_DIM + GATE_OFFSET + head] = gate_logits[row][head];
@@ -48,12 +59,13 @@ fn headwise_gate_forward_and_backward_match_chain_rule() -> Result<(), Box<dyn E
         head_count: HEADS as u32,
         head_dim: HEAD_DIM as u32,
         gate_offset: GATE_OFFSET as u32,
+        gate: gate_kind,
     })?;
 
     let out = out_dev.to_host_vec(&stream)?;
     for row in 0..ROWS {
         for head in 0..HEADS {
-            let gate = sigmoid(gate_logits[row][head]);
+            let gate = test_output_gate(gate_logits[row][head], gate_kind);
             for dim in 0..HEAD_DIM {
                 let index = row * EMBEDDING + head * HEAD_DIM + dim;
                 common::assert_close(out[index], raw[index] * gate, 2.0e-6);
@@ -82,6 +94,7 @@ fn headwise_gate_forward_and_backward_match_chain_rule() -> Result<(), Box<dyn E
         head_count: HEADS as u32,
         head_dim: HEAD_DIM as u32,
         gate_offset: GATE_OFFSET as u32,
+        gate: gate_kind,
     })?;
 
     let d_out = d_out.to_host_vec(&stream)?;
@@ -94,14 +107,14 @@ fn headwise_gate_forward_and_backward_match_chain_rule() -> Result<(), Box<dyn E
         for head in 0..HEADS {
             let gate_index = row * QKV_DIM + GATE_OFFSET + head;
             let logit = f16_bits_to_f32(saved_qkv[gate_index]);
-            let gate = sigmoid(logit);
+            let gate = test_output_gate(logit, gate_kind);
             let mut dot = 0.0;
             for dim in 0..HEAD_DIM {
                 let index = row * EMBEDDING + head * HEAD_DIM + dim;
                 common::assert_close(d_out[index], upstream[index] * gate, 2.0e-6);
                 dot += upstream[index] * f16_bits_to_f32(saved_raw[index]);
             }
-            let expected_gate_grad = dot * gate * sigmoid(-logit);
+            let expected_gate_grad = dot * test_output_gate_derivative(logit, gate_kind);
             common::assert_close(
                 d_qkv[gate_index],
                 expected_gate_grad,
@@ -129,14 +142,25 @@ fn headwise_gate_forward_and_backward_match_chain_rule() -> Result<(), Box<dyn E
 #[ignore = "requires generated sm_120a PTX"]
 #[test]
 fn gated_xsa_forward_and_backward_match_reference() -> Result<(), Box<dyn Error>> {
-    run_xsa_case(false)?;
-    run_xsa_case(true)
+    for gate in [AttentionOutputGate::Sigmoid, AttentionOutputGate::Rational] {
+        run_xsa_case(false, gate)?;
+        run_xsa_case(true, gate)?;
+    }
+    Ok(())
 }
 
-fn run_xsa_case(kda_value_activation: bool) -> Result<(), Box<dyn Error>> {
+fn run_xsa_case(
+    kda_value_activation: bool,
+    gate_kind: AttentionOutputGate,
+) -> Result<(), Box<dyn Error>> {
     let (_, stream, module) = common::cuda_test_module(AttentionModule::from_module)?;
     let mut qkv = vec![0.0_f32; ROWS * QKV_DIM];
-    let gate_logits = [[-0.75_f32, 18.0_f32], [1.25_f32, -18.0_f32]];
+    let negative_tail = if gate_kind == AttentionOutputGate::Rational {
+        -110.0
+    } else {
+        -18.0
+    };
+    let gate_logits = [[-0.75_f32, 18.0_f32], [1.25_f32, negative_tail]];
     for row in 0..ROWS {
         for head in 0..HEADS {
             for dim in 0..HEAD_DIM {
@@ -181,7 +205,7 @@ fn run_xsa_case(kda_value_activation: bool) -> Result<(), Box<dyn Error>> {
         value_offset: (2 * EMBEDDING) as u32,
         gate_offset: GATE_OFFSET as u32,
         alpha_offset: 0,
-        apply_headwise_gate: true,
+        gate: gate_kind,
         kda_value_activation,
     })?;
 
@@ -189,7 +213,7 @@ fn run_xsa_case(kda_value_activation: bool) -> Result<(), Box<dyn Error>> {
     for row in 0..ROWS {
         for head in 0..HEADS {
             let a = alpha_raw[head].tanh();
-            let gate = sigmoid(gate_logits[row][head]);
+            let gate = test_output_gate(gate_logits[row][head], gate_kind);
             let value_base = row * QKV_DIM + 2 * EMBEDDING + head * HEAD_DIM;
             let hidden_base = row * EMBEDDING + head * HEAD_DIM;
             let values: Vec<f32> = (0..HEAD_DIM)
@@ -240,7 +264,7 @@ fn run_xsa_case(kda_value_activation: bool) -> Result<(), Box<dyn Error>> {
             gate_offset: GATE_OFFSET as u32,
             gate_amax_offset,
             alpha_offset: 0,
-            apply_headwise_gate: true,
+            gate: gate_kind,
             kda_value_activation,
         })?;
     assert_eq!(xsa_amax_chunks, HEADS as u32);
@@ -259,7 +283,7 @@ fn run_xsa_case(kda_value_activation: bool) -> Result<(), Box<dyn Error>> {
             let a = alpha_raw[head].tanh();
             let gate_index = row * QKV_DIM + GATE_OFFSET + head;
             let logit = f16_bits_to_f32(saved_qkv[gate_index]);
-            let gate = sigmoid(logit);
+            let gate = test_output_gate(logit, gate_kind);
             let value_base = row * QKV_DIM + 2 * EMBEDDING + head * HEAD_DIM;
             let hidden_base = row * EMBEDDING + head * HEAD_DIM;
             let raw_values: Vec<f32> = (0..HEAD_DIM)
@@ -291,7 +315,7 @@ fn run_xsa_case(kda_value_activation: bool) -> Result<(), Box<dyn Error>> {
             let gate_dot = (0..HEAD_DIM)
                 .map(|dim| upstream[hidden_base + dim] * exclusive[dim])
                 .sum::<f32>();
-            let gate_grad = gate_dot * gate * sigmoid(-logit);
+            let gate_grad = gate_dot * test_output_gate_derivative(logit, gate_kind);
             common::assert_close(pre_d_qkv[gate_index], gate_grad, gate_grad.abs() * 2.0e-4);
             expected_gate_amax[head] = expected_gate_amax[head].max(gate_grad.abs());
             expected_alpha_grad[head] += -(1.0 - a * a) * projection * grad_projection;
@@ -332,6 +356,23 @@ fn run_xsa_case(kda_value_activation: bool) -> Result<(), Box<dyn Error>> {
     }
 
     Ok(())
+}
+
+fn test_output_gate(value: f32, mode: AttentionOutputGate) -> f32 {
+    match mode {
+        AttentionOutputGate::Disabled => 1.0,
+        AttentionOutputGate::Sigmoid => sigmoid(value),
+        AttentionOutputGate::Rational if value >= 0.0 => (1.0 + value) / (2.0 + value),
+        AttentionOutputGate::Rational => 1.0 / (2.0 - value),
+    }
+}
+
+fn test_output_gate_derivative(value: f32, mode: AttentionOutputGate) -> f32 {
+    match mode {
+        AttentionOutputGate::Disabled => 0.0,
+        AttentionOutputGate::Sigmoid => sigmoid(value) * sigmoid(-value),
+        AttentionOutputGate::Rational => 1.0 / (2.0 + value.abs()).powi(2),
+    }
 }
 
 fn sigmoid(value: f32) -> f32 {

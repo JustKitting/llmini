@@ -15,6 +15,15 @@ pub(in crate::training::launch) fn build_run_info(dataset: &str, config: &TrainC
     push_info(&mut info, "muon_storage_layout", "physical_output_by_input");
     push_info(
         &mut info,
+        "kda_output_gate",
+        if gpt2_nvfp4::GPT2_KDA_RATIONAL_OUTPUT_GATE {
+            "rational"
+        } else {
+            "sigmoid"
+        },
+    );
+    push_info(
+        &mut info,
         "nvfp4_activation_quantization",
         if rust_kernels_cuda::nvfp4_quant::ACTIVATION_MAE_FOUR_SIX {
             "mae-4-6"

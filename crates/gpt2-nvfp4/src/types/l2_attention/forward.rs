@@ -1,15 +1,15 @@
 use cuda_core::DriverError;
 use rust_kernels_cuda::attention::{
-    ApplyRopeArgs, CaptureValueResidualArgs, CausalAttentionTcArgs,
+    ApplyRopeArgs, AttentionOutputGate, CaptureValueResidualArgs, CausalAttentionTcArgs,
     ExclusiveSelfAttentionForwardArgs, HeadwiseAttentionGateForwardArgs, MixValueResidualArgs,
 };
 
 use super::tensors::AttentionForwardArgs;
 use crate::types::HiddenStateDevice;
 use crate::{
-    AttentionDims, GPT2_FULL_ATTENTION_WINDOW, attention_headwise_gate_enabled,
-    attention_headwise_gate_offset, partial_key_offset_enabled, selective_attention_enabled,
-    stable_mask_gamma, uses_exclusive_self_attention,
+    AttentionDims, GPT2_FULL_ATTENTION_WINDOW, attention_headwise_gate_offset,
+    partial_key_offset_enabled, selective_attention_enabled, stable_mask_gamma,
+    uses_exclusive_self_attention,
 };
 
 pub(super) fn forward<'a, 'scratch>(
@@ -178,6 +178,7 @@ pub(super) fn forward_impl<'a, 'scratch>(
         args.module.kda_attention_tc(attention_args)?;
     }
 
+    let gate = crate::config::attention_output_gate(args.use_full_attention);
     if uses_exclusive_self_attention(args.use_full_attention) {
         let (qkv_f16, raw_out_f16) = match tape.as_mut() {
             Some(tape) if args.use_full_attention => {
@@ -210,10 +211,10 @@ pub(super) fn forward_impl<'a, 'scratch>(
                 value_offset: 2 * dims.embedding_dim,
                 gate_offset: attention_headwise_gate_offset(args.use_full_attention) as u32,
                 alpha_offset: args.projections.xsa_alpha_offset,
-                apply_headwise_gate: attention_headwise_gate_enabled(),
+                gate,
                 kda_value_activation: !args.use_full_attention && !crate::GPT2_VALUE_RMS,
             })?;
-    } else if attention_headwise_gate_enabled() {
+    } else if gate != AttentionOutputGate::Disabled {
         let (qkv_f16, raw_out_f16) = match tape.as_mut() {
             Some(tape) if args.use_full_attention => {
                 (Some(&mut *tape.qkv_f16), Some(&mut *tape.attention_out_f16))
@@ -242,6 +243,7 @@ pub(super) fn forward_impl<'a, 'scratch>(
                 head_count: dims.head_count,
                 head_dim: dims.head_dim,
                 gate_offset: attention_headwise_gate_offset(args.use_full_attention) as u32,
+                gate,
             })?;
     }
 

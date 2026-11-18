@@ -10,7 +10,9 @@ pub(super) fn tensor_count(block_count: usize) -> u32 {
 
 pub(super) fn supported_tensor_count(block_count: usize, count: u32) -> bool {
     count
-        .checked_sub(super::activation_quant::extra_tensors())
+        .checked_sub(
+            super::activation_quant::extra_tensors() + super::kda_output_gate::extra_tensors(),
+        )
         .is_some_and(|count| supported_graph_tensor_count(block_count, count))
 }
 
