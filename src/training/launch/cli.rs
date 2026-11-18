@@ -9,6 +9,7 @@ use super::config::TrainConfig;
 #[derive(Debug, Parser)]
 #[command(version)]
 #[command(group(clap::ArgGroup::new("checkpoint_action").args(["evaluate_model","inspect_model","inspect_gradients","inspect_feedback_depths"]).multiple(false)))]
+#[command(group(clap::ArgGroup::new("evaluation_input").args(["validation_documents","validation_answers"]).multiple(false)))]
 #[command(group(clap::ArgGroup::new("complete_engram").args(["engram_mhc","bounded_swiglu_engram_mhc","value_rms_engram_mhc","stationary_rope_engram_mhc"]).multiple(true)))]
 pub(super) struct TrainArgs {
     /// Hash-bound native replay record for a verified numerical graph repair.
@@ -74,13 +75,17 @@ pub(super) struct TrainArgs {
     eval_interval: Option<NonZeroUsize>,
 
     /// Evaluate this saved native checkpoint without training.
-    #[arg(long, requires = "validation_documents",
+    #[arg(long, requires = "evaluation_input",
         conflicts_with_all = ["dataset", "steps", "max_seconds", "eval_interval"])]
     pub(super) evaluate_model: Option<PathBuf>,
 
     /// Reserved reference documents produced by the native FineWeb preparer.
     #[arg(long, requires = "evaluate_model")]
     pub(super) validation_documents: Option<PathBuf>,
+
+    /// Held-out JSONL records with task, prompt, and answer fields. Score the answer bytes.
+    #[arg(long, requires = "evaluate_model")]
+    pub(super) validation_answers: Option<PathBuf>,
 
     /// JSON destination; defaults to reference_validation.json beside the checkpoint.
     #[arg(long, requires = "evaluate_model")]

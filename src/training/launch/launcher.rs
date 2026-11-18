@@ -48,6 +48,14 @@ pub(crate) fn launch_from_args() -> AppResult {
         );
     }
     if let Some(checkpoint) = args.evaluate_model.as_deref() {
+        if let Some(answers) = args.validation_answers.as_deref() {
+            return crate::training::reference_eval::run_answers(
+                checkpoint,
+                answers,
+                args.evaluation_output.as_deref(),
+                args.replay_provenance.as_deref(),
+            );
+        }
         return crate::training::reference_eval::run(
             checkpoint,
             args.validation_documents

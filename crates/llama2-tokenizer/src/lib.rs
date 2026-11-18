@@ -54,6 +54,22 @@ impl TrainingTokenizer {
             .to_vec())
     }
 
+    pub fn encode_ordinary_with_offsets(
+        &self,
+        text: &str,
+    ) -> AppResult<Vec<(u32, (usize, usize))>> {
+        let encoded = self
+            .tokenizer
+            .encode(text, false)
+            .map_err(tokenizer_error)?;
+        Ok(encoded
+            .get_ids()
+            .iter()
+            .copied()
+            .zip(encoded.get_offsets().iter().copied())
+            .collect())
+    }
+
     pub fn encode_document(&self, text: &str) -> AppResult<Vec<u32>> {
         let mut ids =
             Vec::with_capacity(DOCUMENT_PREFIX.len() + text.len() / 4 + DOCUMENT_SUFFIX.len());

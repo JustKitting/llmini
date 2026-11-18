@@ -3,10 +3,12 @@ use super::{TokenDataLoader, Trainer};
 use crate::{AppResult, reference_validation as reference};
 use gpt2_nvfp4::{GPT2_BATCH_SIZE, GPT2_SEQ_LEN};
 use std::{fs, path::Path, time::Instant};
+mod answers;
 mod causality;
 mod input;
 mod repeatability;
 mod replay_provenance;
+pub(in crate::training) use answers::run as run_answers;
 pub(in crate::training) use replay_provenance::expectation as replay_expectation;
 mod seen;
 #[cfg(test)]
