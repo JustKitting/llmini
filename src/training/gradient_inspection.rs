@@ -159,6 +159,7 @@ fn inspect_checkpoint_with_replay(
         "verified_replay_provenance":verified_replay_record,
         "component_norm":sum.sqrt(),"global_norm_reconciles":reconciles,
         "full_attention_backward_tile_budget":gpt2_nvfp4::GPT2_ATTENTION_BACKWARD_TILE_BUDGET,
+        "full_attention_dense_value_gradient":gpt2_nvfp4::GPT2_FULL_ATTN_DENSE_DV || gpt2_nvfp4::GPT2_ATTENTION_BACKWARD_TILE_BUDGET == 0.0,
         "components":components,"groups":groups,"all_components_finite":all_finite,
         "independent_matrix_checks":independent_matrix_checks,
         "optimizer_updates":updates,"optimizer_state_replayed":false,

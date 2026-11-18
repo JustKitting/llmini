@@ -95,14 +95,14 @@ fn selective_attention_backward_matches_finite_difference_and_dense_sparse_paths
         stable_mask_gamma: 0.0,
     })?;
 
-    let run_backward = |tile_budget: f32| -> Result<Vec<f32>, Box<dyn Error>> {
+    let run_backward = |tile_budget: f32, dense_value: bool| -> Result<Vec<f32>, Box<dyn Error>> {
         let mut softmax_d = DeviceBuffer::<f32>::zeroed(&stream, HEADS * SEQ)?;
         let mut qk_norm_max = DeviceBuffer::<f32>::zeroed(&stream, 2 * HEADS)?;
         let mut d_qkv = DeviceBuffer::<f32>::zeroed(&stream, SEQ * QKV_DIM)?;
         let mut d_qkv_chunk_amax = DeviceBuffer::<f32>::zeroed(&stream, 3 * SEQ)?;
         let mut d_qk_scale = DeviceBuffer::<f32>::zeroed(&stream, 16)?;
         let mut backward_scratch = TcScratchBuffers::new_for_shape(&stream, HEADS, SEQ, HEAD_DIM)?;
-        attention.causal_attention_backward_tc(CausalAttentionBackwardTcArgs {
+        let args = CausalAttentionBackwardTcArgs {
             reuse_forward_probs: true,
             forward_probs_f16: Some(&probabilities_f16),
             stream: &stream,
@@ -136,13 +136,33 @@ fn selective_attention_backward_matches_finite_difference_and_dense_sparse_paths
             qk_norm_offset: 0,
             backward_mask_seed: 0x1234_5678,
             backward_tile_budget: tile_budget,
-        })?;
+        };
+        if dense_value {
+            attention.causal_attention_backward_tc_dense_value(args)?;
+        } else {
+            attention.causal_attention_backward_tc(args)?;
+        }
         Ok(d_qkv.to_host_vec(&stream)?)
     };
 
-    let dense_gradients = run_backward(0.0)?;
-    let all_tiles_sparse_gradients = run_backward(100.0)?;
+    let dense_gradients = run_backward(0.0, false)?;
+    let all_tiles_sparse_gradients = run_backward(100.0, false)?;
     common::assert_slice_close(&all_tiles_sparse_gradients, &dense_gradients, 2.0e-5);
+    // With this seed and subunit budget, one head's tile drops and one stays.
+    let sampled_gradients = run_backward(0.75, false)?;
+    let sampled_qk_dense_v = run_backward(0.75, true)?;
+    let mut sampled_value_changed = false;
+    for row in 0..SEQ {
+        let qk = row * QKV_DIM..row * QKV_DIM + 2 * EMBEDDING;
+        let v = qk.end..(row + 1) * QKV_DIM;
+        assert_eq!(sampled_qk_dense_v[qk.clone()], sampled_gradients[qk]);
+        assert_eq!(sampled_qk_dense_v[v.clone()], dense_gradients[v.clone()]);
+        sampled_value_changed |= sampled_gradients[v.clone()] != dense_gradients[v];
+    }
+    assert!(
+        sampled_value_changed,
+        "fixture must exercise value tile sampling"
+    );
 
     for (token, head, dim, section) in [
         (4_usize, 0_usize, 1_usize, 0_usize),

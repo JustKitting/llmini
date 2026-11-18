@@ -59,7 +59,13 @@ pub fn causal_attention_backward(
         },
     };
     if args.use_full_attention {
-        args.module.causal_attention_backward_tc(tc_args).map(Some)
+        if crate::GPT2_FULL_ATTN_DENSE_DV {
+            args.module
+                .causal_attention_backward_tc_dense_value(tc_args)
+                .map(Some)
+        } else {
+            args.module.causal_attention_backward_tc(tc_args).map(Some)
+        }
     } else if crate::GPT2_KDA_FULL_STATE_BACKWARD {
         args.module.kda_attention_backward_tc(tc_args).map(Some)
     } else {

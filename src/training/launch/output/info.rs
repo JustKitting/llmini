@@ -326,6 +326,11 @@ pub(in crate::training::launch) fn build_run_info(dataset: &str, config: &TrainC
     );
     push_info(
         &mut info,
+        "gpt2_full_attention_dense_value_gradient",
+        gpt2_nvfp4::GPT2_FULL_ATTN_DENSE_DV || GPT2_ATTENTION_BACKWARD_TILE_BUDGET == 0.0,
+    );
+    push_info(
+        &mut info,
         "nextlat_loss_weight",
         crate::training::next_latent::loss_weight(),
     );

@@ -4,7 +4,7 @@ use super::gather::TC_BACKWARD_THREADS_PER_BLOCK;
 use super::kernels::KDA_NORM_REDUCE_THREADS_PER_BLOCK;
 use super::launch_config::attention_config;
 use super::launch_grads::{
-    run_grad_matmuls, run_grad_matmuls_sparse, run_qk_grad_matmuls_sparse, run_v_grad_matmul_sparse,
+    run_grad_matmuls, run_grad_matmuls_sparse, run_qk_grad_matmuls_sparse, run_v_grad_matmul,
 };
 use super::launch_scores::{run_ds_scores, run_ds_scores_sparse, run_pair_scores};
 use super::matmul::AttentionTcMatmulContext;
@@ -23,6 +23,21 @@ impl AttentionModule {
     pub fn causal_attention_backward_tc(
         &self,
         args: CausalAttentionBackwardTcArgs<'_, '_, '_>,
+    ) -> Result<u32, DriverError> {
+        self.causal_attention_backward_tc_impl(args, false)
+    }
+
+    pub fn causal_attention_backward_tc_dense_value(
+        &self,
+        args: CausalAttentionBackwardTcArgs<'_, '_, '_>,
+    ) -> Result<u32, DriverError> {
+        self.causal_attention_backward_tc_impl(args, true)
+    }
+
+    fn causal_attention_backward_tc_impl(
+        &self,
+        args: CausalAttentionBackwardTcArgs<'_, '_, '_>,
+        dense_value_gradient: bool,
     ) -> Result<u32, DriverError> {
         let params = args.params();
         let CausalAttentionBackwardTcArgs {
@@ -163,11 +178,13 @@ impl AttentionModule {
                         scratch.ds.len() >= packed_selective_scores as usize,
                         "selective attention requires one packed f32 row sum per visible score"
                     );
-                    run_v_grad_matmul_sparse(
+                    // Selective attention reuses the map for Q/K below.
+                    // Finish dV before that map is changed.
+                    run_v_grad_matmul(
                         &tc_ctx,
                         probs_half,
                         &*scratch.d_out,
-                        &*scratch.p,
+                        (!dense_value_gradient).then_some(&*scratch.p),
                         &mut *scratch.d_v,
                     )?;
                     kernels.selective_attention_row_sums_sparse_kernel(
@@ -221,6 +238,7 @@ impl AttentionModule {
                         &mut *scratch.d_q,
                         &mut *scratch.d_k,
                         &mut *scratch.d_v,
+                        dense_value_gradient,
                     )?;
                 }
             } else {

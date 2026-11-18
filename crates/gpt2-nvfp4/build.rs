@@ -64,6 +64,11 @@ fn main() {
         .unwrap_or("12")
         .parse::<f32>()
         .expect("GPT2_ATTENTION_BACKWARD_TILE_BUDGET must be a number");
+    let dense_value_gradient = match env::var("GPT2_FULL_ATTN_DENSE_DV").as_deref() {
+        Ok("0") | Err(env::VarError::NotPresent) => false,
+        Ok("1") => true,
+        other => panic!("unsupported GPT2_FULL_ATTN_DENSE_DV={other:?}; use 0 or 1"),
+    };
 
     assert!(
         seq_len >= 2048,
@@ -112,6 +117,7 @@ fn main() {
         "GPT2_N_EMBD",
         "GPT2_FULL_ATTENTION_WINDOW",
         budget_name,
+        "GPT2_FULL_ATTN_DENSE_DV",
     ]);
 
     let out = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR must be set"));
@@ -125,6 +131,7 @@ fn main() {
              pub const GPT2_N_EMBD: usize = {n_embd};\n\
              pub const GPT2_FULL_ATTENTION_WINDOW: usize = {full_attention_window};\n\
              pub const GPT2_ATTENTION_BACKWARD_TILE_BUDGET: f32 = {backward_tile_budget:?};\n\
+             pub const GPT2_FULL_ATTN_DENSE_DV: bool = {dense_value_gradient};\n\
              pub const GPT2_BOUNDED_SWIGLU: bool = {bounded_swiglu};\n\
              pub const GPT2_MLP_REFERENCE_NORMAL_INIT: bool = {mlp_reference_normal_init};\n\
              pub const GPT2_VALUE_RMS: bool = {value_rms};\n\
