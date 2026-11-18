@@ -9,8 +9,10 @@ mod source;
 mod synth;
 mod tokens;
 mod validation;
+mod windows;
 
 pub(in crate::training) use validation::{VALIDATION_WINDOWS, validation_target_byte_count};
+pub(in crate::training) use windows::TrainingWindowLayout;
 
 pub struct TokenDataLoader {
     path: PathBuf,
@@ -20,6 +22,7 @@ pub struct TokenDataLoader {
     validation_tokens: Option<Vec<u16>>,
     validation_path: Option<PathBuf>,
     offset: usize,
+    layout: TrainingWindowLayout,
     train_end: usize,
     total_train_tokens: usize,
     repeat_first_window: bool,

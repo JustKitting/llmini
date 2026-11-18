@@ -1,7 +1,9 @@
 use std::path::PathBuf;
 
+use super::TrainingWindowLayout;
 use crate::AppResult;
 use crate::training::env::{env_bool, env_nonempty};
+use gpt2_nvfp4::{GPT2_BATCH_SIZE, GPT2_SEQ_LEN};
 
 const TRAIN_DATASET_ENV: &str = "TRAIN_DATASET";
 const TRAIN_REPEAT_BATCH_ENV: &str = "TRAIN_REPEAT_BATCH";
@@ -25,7 +27,8 @@ pub(super) fn token_count_paths(paths: &[PathBuf]) -> AppResult<usize> {
         if bytes % 2 != 0 {
             return Err(format!("{} has odd byte length", path.display()).into());
         }
-        total += (bytes / 2) as usize;
+        let layout = TrainingWindowLayout::for_shard(path, GPT2_BATCH_SIZE, GPT2_SEQ_LEN)?;
+        total += layout.training_input_tokens(usize::try_from(bytes / 2)?);
     }
     Ok(total)
 }

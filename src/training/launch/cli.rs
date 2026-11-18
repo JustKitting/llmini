@@ -20,6 +20,7 @@ pub(super) struct TrainArgs {
     pub(super) dataset: Option<String>,
 
     /// Read a JSON manifest with a tokenizer name and ordered native u16 training shards.
+    /// Files ending in .windows.bin store independent rows with seq_len inputs and one last target.
     #[arg(long, conflicts_with_all = ["dataset", "checkpoint_action"])]
     pub(super) training_shards: Option<PathBuf>,
 

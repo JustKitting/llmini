@@ -1,30 +1,29 @@
 use gpt2_nvfp4::{GPT2_BATCH_SIZE, GPT2_SEQ_LEN};
 
 use super::{
-    TokenDataLoader, TokenWindowBatch, tokens,
+    TokenDataLoader, TokenWindowBatch, TrainingWindowLayout, tokens,
     validation::{VALIDATION_WINDOWS, train_end, validation_windows},
 };
 use crate::AppResult;
 
 impl TokenDataLoader {
     pub fn next_batch(&mut self) -> AppResult<TokenWindowBatch> {
-        let len = GPT2_SEQ_LEN + 1;
-        let batch_span = GPT2_BATCH_SIZE * GPT2_SEQ_LEN + 1;
+        let len = self.layout.row_len();
         if self.train_end < len {
             return Err(format!("{} has fewer than {len} tokens", self.path.display()).into());
         }
-        if !self.repeat_first_window && self.offset + batch_span > self.train_end {
-            self.advance_train_shard(batch_span)?;
+        if !self.repeat_first_window && self.offset + self.layout.source_tokens() > self.train_end {
+            self.advance_train_shard()?;
         }
 
         let batch_offset = self.offset;
-        let mut tokens = Vec::with_capacity(GPT2_BATCH_SIZE * len);
-        for _ in 0..GPT2_BATCH_SIZE {
-            tokens.extend_from_slice(&self.tokens[self.offset..self.offset + len]);
-            if !self.repeat_first_window {
-                self.offset += GPT2_SEQ_LEN;
-            }
-        }
+        let stored = &self.tokens[batch_offset..];
+        let tokens = if self.repeat_first_window {
+            stored[..len].repeat(GPT2_BATCH_SIZE)
+        } else {
+            self.offset += self.layout.next_batch_stride();
+            self.layout.flatten(stored)
+        };
         Ok(TokenWindowBatch {
             tokens,
             source: self.path.clone(),
@@ -49,7 +48,7 @@ impl TokenDataLoader {
         validation_windows(&self.path, &self.tokens, start)
     }
 
-    fn advance_train_shard(&mut self, batch_span: usize) -> AppResult<()> {
+    fn advance_train_shard(&mut self) -> AppResult<()> {
         let next_index = self.train_path_index + 1;
         let next_index = if next_index >= self.train_paths.len() {
             if !self.wrap_train {
@@ -66,11 +65,13 @@ impl TokenDataLoader {
 
         let path = &self.train_paths[next_index];
         let tokens = tokens::read_u16_tokens(path)?;
+        let layout = TrainingWindowLayout::for_shard(path, GPT2_BATCH_SIZE, GPT2_SEQ_LEN)?;
         let train_end = if self.validation_tokens.is_some() {
             tokens.len()
         } else {
             train_end(tokens.len())
         };
+        let batch_span = layout.source_tokens();
         if train_end < batch_span {
             return Err(format!(
                 "{} has fewer than {batch_span} training tokens",
@@ -83,6 +84,7 @@ impl TokenDataLoader {
         self.path = path.clone();
         self.tokens = tokens;
         self.train_end = train_end;
+        self.layout = layout;
         self.offset = 0;
         Ok(())
     }

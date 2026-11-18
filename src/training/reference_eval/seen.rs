@@ -1,13 +1,10 @@
 //! Frozen-checkpoint fit on a fixed sample of the run's observed training batches.
+use super::super::data::TrainingWindowLayout;
 use super::Trainer;
 use crate::AppResult;
 use gpt2_nvfp4::{GPT2_BATCH_SIZE, GPT2_SEQ_LEN};
 use llama2_tokenizer::TrainingTokenizer;
-use std::{
-    fs::{self, File},
-    io::{Read, Seek, SeekFrom},
-    path::Path,
-};
+use std::{fs, path::Path};
 
 pub(super) fn score(
     trainer: &mut Trainer,
@@ -31,7 +28,6 @@ pub(super) fn score(
     }
     let tokenizer = TrainingTokenizer::from_default_assets()?;
     let sample_count = 32.min(sources.len());
-    let span = GPT2_BATCH_SIZE * GPT2_SEQ_LEN + 1;
     let mut total_nats = 0_f64;
     let mut total_tokens = 0_usize;
     let mut total_bytes = 0_usize;
@@ -39,30 +35,18 @@ pub(super) fn score(
     for sample in 0..sample_count {
         // Midpoints of equal strata; independent of losses and gradient norms.
         let row = ((2 * sample + 1) * sources.len()) / (2 * sample_count);
-        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join(sources[row]);
-        let offset: u64 = offsets[row].parse()?;
-        let mut input = File::open(&source)?;
-        input.seek(SeekFrom::Start(
-            offset.checked_mul(2).ok_or("token offset overflow")?,
-        ))?;
-        let mut raw = vec![0_u8; span * 2];
-        input.read_exact(&mut raw)?;
-        let contiguous = raw
-            .chunks_exact(2)
-            .map(|v| u16::from_le_bytes([v[0], v[1]]))
-            .collect::<Vec<_>>();
-        if contiguous
-            .iter()
-            .any(|&v| usize::from(v) >= llama2_tokenizer::MODEL_VOCAB_SIZE)
-        {
-            return Err("seen-data replay token is outside the model vocabulary".into());
-        }
-        let mut flat = Vec::with_capacity(GPT2_BATCH_SIZE * (GPT2_SEQ_LEN + 1));
+        let recorded = Path::new(sources[row]);
+        let source = if recorded.is_absolute() || recorded.exists() {
+            recorded.to_path_buf()
+        } else {
+            Path::new(env!("CARGO_MANIFEST_DIR")).join(recorded)
+        };
+        let offset = offsets[row].parse()?;
+        let layout = TrainingWindowLayout::for_shard(&source, GPT2_BATCH_SIZE, GPT2_SEQ_LEN)?;
+        let (flat, _) = layout.read(&source, offset)?;
         let mut bytes = 0;
-        for sequence in 0..GPT2_BATCH_SIZE {
-            let start = sequence * GPT2_SEQ_LEN;
-            flat.extend_from_slice(&contiguous[start..start + GPT2_SEQ_LEN + 1]);
-            let target_ids = contiguous[start + 1..start + GPT2_SEQ_LEN + 1]
+        for sequence in flat.chunks_exact(GPT2_SEQ_LEN + 1) {
+            let target_ids = sequence[1..]
                 .iter()
                 .map(|&v| u32::from(v))
                 .collect::<Vec<_>>();

@@ -1,9 +1,10 @@
 use std::path::{Path, PathBuf};
 
 use crate::AppResult;
+use gpt2_nvfp4::{GPT2_BATCH_SIZE, GPT2_SEQ_LEN};
 
 use super::{
-    TokenDataLoader, fineweb, manifest, shakespeare,
+    TokenDataLoader, TrainingWindowLayout, fineweb, manifest, shakespeare,
     source::{
         DATASET_FINEWEB, DATASET_SHAKESPEARE, DATASET_SYNTH, repeat_first_window,
         token_count_paths, training_dataset,
@@ -87,6 +88,7 @@ impl TokenDataLoader {
             .cloned()
             .ok_or("training dataset has no train shards")?;
         let tokens = tokens::read_u16_tokens(&path)?;
+        let layout = TrainingWindowLayout::for_shard(&path, GPT2_BATCH_SIZE, GPT2_SEQ_LEN)?;
         let train_end = if validation.is_none() && reserve_validation_tail {
             train_end(tokens.len())
         } else {
@@ -102,6 +104,7 @@ impl TokenDataLoader {
             validation_tokens,
             validation_path,
             offset: 0,
+            layout,
             train_end,
             total_train_tokens,
             repeat_first_window: repeat_first_window(),

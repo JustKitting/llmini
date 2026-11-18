@@ -6,6 +6,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use super::TrainingWindowLayout;
 use crate::AppResult;
 
 #[derive(Deserialize)]
@@ -32,20 +33,17 @@ pub(super) fn read(path: &Path) -> AppResult<(Vec<PathBuf>, String)> {
         return Err(format!("{} has no training shards", path.display()).into());
     }
     let root = path.parent().unwrap_or(Path::new("."));
-    let min_bytes = 2 * (GPT2_BATCH_SIZE * GPT2_SEQ_LEN + 1) as u64;
     let mut shards = Vec::with_capacity(manifest.shards.len());
     for name in manifest.shards {
         let shard = root.join(name);
         let info = shard
             .metadata()
             .map_err(|error| format!("{}: {error}", shard.display()))?;
-        if !info.is_file() || info.len() < min_bytes || !info.len().is_multiple_of(2) {
-            return Err(format!(
-                "{} must contain at least one full native u16 training batch",
-                shard.display()
-            )
-            .into());
+        if !info.is_file() {
+            return Err(format!("{} is not a training shard file", shard.display()).into());
         }
+        TrainingWindowLayout::for_shard(&shard, GPT2_BATCH_SIZE, GPT2_SEQ_LEN)?
+            .validate_shard(&shard, info.len())?;
         shards.push(shard);
     }
     Ok((shards, format!("{:x}", Sha256::digest(&contents))))
