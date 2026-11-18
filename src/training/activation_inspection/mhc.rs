@@ -7,7 +7,7 @@ use crate::{
     AppResult,
     training::{
         Trainer,
-        mhc::{BOUNDARIES, PAD, STREAMS, WIDTH},
+        mhc::{BOUNDARIES, PAD, STREAMS, WIDTH, boundary_input},
     },
 };
 use gpt2_nvfp4::GPT2_N_EMBD;
@@ -23,13 +23,12 @@ pub(super) fn inspect(trainer: &Trainer, rows: &[usize]) -> AppResult<(Value, us
     if state.n == 0 || rows.iter().any(|&row| row >= state.n as usize) {
         return Err("mHC inspection requires the current native forward tape".into());
     }
-    let slot = state
-        .tape_units
-        .iter()
-        .position(|&unit| unit == Some(BOUNDARIES))
-        .ok_or("mHC inspection is missing the current HyperHead input tape")?;
+    if !state.tape_units.contains(&Some(BOUNDARIES)) {
+        return Err("mHC inspection is missing the current HyperHead input tape".into());
+    }
     let stream = trainer.runtime.stream.as_ref();
-    let input = sample_rows(stream, &state.tapes[slot].input, rows, WIDTH)?;
+    let input = boundary_input(&state.checkpoints, &state.replay_inputs, BOUNDARIES);
+    let input = sample_rows(stream, input, rows, WIDTH)?;
     let raw = state.projections[BOUNDARIES].raw.to_host_vec(stream)?;
     // All coefficient rows use stride24, including the head's four active entries.
     let coefficients = state.projections[BOUNDARIES]

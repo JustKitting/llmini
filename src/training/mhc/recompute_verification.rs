@@ -1,9 +1,6 @@
 //! Test-only host fingerprints of actual CUDA operands, no host model replay.
 //! Each transfer is hashed then released, rather than retaining33 full tapes.
-use super::{
-    BOUNDARIES, Mhc, PAD, WIDTH,
-    state::{ProjectionTape, Tape},
-};
+use super::{BOUNDARIES, Mhc, PAD, WIDTH, state::ProjectionTape};
 use cuda_core::{CudaStream, DeviceBuffer, DriverError};
 use sha2::{Digest, Sha256};
 
@@ -21,7 +18,7 @@ impl RecomputeVerification {
         stream: &CudaStream,
         index: usize,
         reconstructed: bool,
-        tape: &Tape,
+        input: &DeviceBuffer<f32>,
         projection: &ProjectionTape,
         n: usize,
     ) -> Result<(), DriverError> {
@@ -39,7 +36,7 @@ impl RecomputeVerification {
             hash.update(bytes);
             Ok(())
         }
-        floats(&mut hash, stream, &tape.input, n * WIDTH)?;
+        floats(&mut hash, stream, input, n * WIDTH)?;
         let q = projection.input_q.rowwise();
         hash.update(&q.bytes.to_host_vec(stream)?[..n * WIDTH / 2]);
         let scale_bytes = rust_kernels_cuda::nvfp4::csf::rowwise_encoded_len(n, WIDTH);

@@ -67,18 +67,8 @@ impl Unit {
             .collect()
     }
 }
-pub(in crate::training) struct Tape {
-    pub input: DeviceBuffer<f32>,
-}
-impl Tape {
-    fn new(s: &CudaStream) -> Result<Self, DriverError> {
-        Ok(Self {
-            input: DeviceBuffer::zeroed(s, GPT2_TOKEN_ROWS * WIDTH)?,
-        })
-    }
-}
 // Keep native FP4 operands and small projection controls from the original
-// forward pass. Only the four full-width FP32 input slots are reconstructed.
+// forward pass. Only inputs after the saved window start are reconstructed.
 pub(in crate::training) struct ProjectionTape {
     pub input_q: RowwiseNvfp4Buffers,
     pub inverse: DeviceBuffer<f32>,
@@ -110,7 +100,7 @@ pub(in crate::training) struct Mhc {
     pub current: DeviceBuffer<f32>,
     pub dx: DeviceBuffer<f32>,
     pub checkpoints: Vec<Checkpoint>,
-    pub tapes: Vec<Tape>,
+    pub replay_inputs: Vec<DeviceBuffer<f32>>,
     pub projections: Vec<ProjectionTape>,
     pub tape_units: [Option<usize>; WINDOW],
     pub active_window: Option<usize>,
@@ -165,8 +155,8 @@ impl Mhc {
                     })
                 })
                 .collect::<Result<_, DriverError>>()?,
-            tapes: (0..WINDOW)
-                .map(|_| Tape::new(s))
+            replay_inputs: (1..WINDOW)
+                .map(|_| DeviceBuffer::zeroed(s, total))
                 .collect::<Result<_, _>>()?,
             projections: (0..=BOUNDARIES)
                 .map(|_| ProjectionTape::new(s))

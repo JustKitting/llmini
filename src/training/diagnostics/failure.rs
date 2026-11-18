@@ -238,12 +238,13 @@ impl Trainer {
                     &checkpoint.input,
                 )?;
             }
-            for (slot, tape) in mhc.tapes.iter().enumerate() {
+            for (index, input) in mhc.replay_inputs.iter().enumerate() {
+                let slot = index + 1;
                 let resident =
                     mhc.tape_units[slot].map_or_else(|| "unused".into(), |i| i.to_string());
                 dump.f32(
                     &format!("mhc.tape_slot.{slot}.boundary.{resident}.input"),
-                    &tape.input,
+                    input,
                 )?;
             }
             for (index, projection) in mhc.projections.iter().enumerate() {

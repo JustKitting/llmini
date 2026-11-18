@@ -16,6 +16,12 @@ impl Mhc {
         let slot = tape_slot(index);
         if before {
             self.n = n;
+            let input = if slot == 0 {
+                self.tape_units = [None; WINDOW];
+                &mut self.checkpoints[checkpoint_slot(index)].input
+            } else {
+                &mut self.replay_inputs[slot - 1]
+            };
             if index == 0 {
                 self.active_window = None;
                 #[cfg(test)]
@@ -26,43 +32,23 @@ impl Mhc {
                     s,
                     grid(n * WIDTH as u32),
                     h.residual,
-                    &mut self.tapes[slot].input,
+                    input,
                     n,
                     d,
                 )?;
             } else if index == BOUNDARIES {
-                copy(
-                    s,
-                    &self.current,
-                    &self.tapes[slot].input,
-                    n as usize * WIDTH,
-                )?;
+                copy(s, &self.current, input, n as usize * WIDTH)?;
             } else {
-                // The previous post map produced this boundary's input. The
-                // reused slot is dead; make it the next post map's destination
-                // without copying the complete four-stream activation.
-                std::mem::swap(&mut self.current, &mut self.tapes[slot].input);
-            }
-            if index == window_start(index) {
-                self.tape_units = [None; WINDOW];
-                let checkpoint = self
-                    .checkpoints
-                    .iter()
-                    .find(|c| c.index == index)
-                    .expect("mHC window checkpoint exists");
-                copy(
-                    s,
-                    &self.tapes[slot].input,
-                    &checkpoint.input,
-                    n as usize * WIDTH,
-                )?;
+                // A new window saves this buffer directly. The displaced
+                // checkpoint or replay buffer becomes the next post destination.
+                std::mem::swap(&mut self.current, input);
             }
             self.prepare_tape(index, r, w, false)?;
-            let tape = &self.tapes[slot];
+            let input = boundary_input(&self.checkpoints, &self.replay_inputs, index);
             self.module.mhc_pre_kernel(
                 s,
                 grid(n * d),
-                &tape.input,
+                input,
                 &self.projections[index].coefficients,
                 h.residual,
                 n,
@@ -83,13 +69,13 @@ impl Mhc {
             // Keep this result for backward. The next pre map overwrites
             // the recycled buffer before the next branch reads it.
             std::mem::swap(h.residual, branch);
-            let tape = &self.tapes[slot];
+            let input = boundary_input(&self.checkpoints, &self.replay_inputs, index);
             post_mix(
                 self.post_reuse.as_ref(),
                 &self.module,
                 PostArgs {
                     stream: s,
-                    input: &tape.input,
+                    input,
                     branch,
                     coefficients: &self.projections[index].coefficients,
                     out: &mut self.current,

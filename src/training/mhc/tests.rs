@@ -225,7 +225,7 @@ fn native_mhc_checkpoint_windows_preserve_every_forward_and_backward_operand() -
         mhc.checkpoints.iter().map(|c| c.index).collect::<Vec<_>>(),
         vec![0, 2, 6, 10, 14, 18, 22, 26, 30]
     );
-    assert_eq!(mhc.tapes.len(), 4);
+    assert_eq!(mhc.replay_inputs.len(), super::WINDOW - 1);
     mhc.verify_recomputation();
     let windows = (0..GPT2_BATCH_SIZE * (GPT2_SEQ_LEN + 1))
         .map(|i| {
@@ -253,7 +253,7 @@ fn native_mhc_checkpoint_windows_preserve_every_forward_and_backward_operand() -
         assert!(values.iter().any(|x| *x != 0.), "disconnected {name}");
     }
     println!(
-        "full_mhc_recomputation_verified checkpoints=9 workspace_tapes=4 original_and_rebuilt_tapes=33 input_quantization_inverse_raw_coefficients=bit_exact stochastic_backward_seed_order=unchanged all198_gradients=active updates=0"
+        "full_mhc_recomputation_verified checkpoints=9 workspace_tapes=3 original_and_rebuilt_tapes=33 input_quantization_inverse_raw_coefficients=bit_exact stochastic_backward_seed_order=unchanged all198_gradients=active updates=0"
     );
     Ok(())
 }

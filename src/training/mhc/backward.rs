@@ -15,7 +15,7 @@ impl Mhc {
         let s = r.stream.as_ref();
         let n = self.n;
         let unit = &mut self.units[index];
-        let tape = &self.tapes[tape_slot(index)];
+        let input = boundary_input(&self.checkpoints, &self.replay_inputs, index);
         let projection = &self.projections[index];
         let weights = &w.units[index];
         let [bias_grad, alpha_grad] = &mut unit.fg;
@@ -67,7 +67,7 @@ impl Mhc {
         self.reverse
             .finish(rust_kernels_cuda::mhc_reverse::FinishArgs {
                 stream: s,
-                input: &tape.input,
+                input,
                 inverse: &projection.inverse,
                 coefficients: &projection.coefficients,
                 normalized_gradient: &self.dx,
@@ -99,10 +99,10 @@ impl Mhc {
                     zero(s, gradient)?;
                 }
             }
-            let tape = &self.tapes[tape_slot(index)];
+            let input = boundary_input(&self.checkpoints, &self.replay_inputs, index);
             self.reverse.pre(rust_kernels_cuda::mhc_reverse::PreArgs {
                 stream: s,
-                input: &tape.input,
+                input,
                 coefficients: &self.projections[index].coefficients,
                 gradient,
                 dc: &mut self.dc,
@@ -112,11 +112,11 @@ impl Mhc {
             self.coefficient_backward(index, r, w, gradient)?;
         } else if before {
             let unit = &self.units[index];
-            let tape = &self.tapes[tape_slot(index)];
+            let input = boundary_input(&self.checkpoints, &self.replay_inputs, index);
             self.reverse
                 .post(rust_kernels_cuda::mhc_reverse::PostArgs {
                     stream: s,
-                    input: &tape.input,
+                    input,
                     branch: unit.branch.as_ref().unwrap(),
                     coefficients: &self.projections[index].coefficients,
                     incoming: &self.current,
@@ -126,10 +126,10 @@ impl Mhc {
                     dim: d,
                 })?;
         } else {
-            let tape = &self.tapes[tape_slot(index)];
+            let input = boundary_input(&self.checkpoints, &self.replay_inputs, index);
             self.reverse.pre(rust_kernels_cuda::mhc_reverse::PreArgs {
                 stream: s,
-                input: &tape.input,
+                input,
                 coefficients: &self.projections[index].coefficients,
                 gradient,
                 dc: &mut self.dc,

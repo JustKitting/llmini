@@ -16,14 +16,14 @@ impl Mhc {
         let s = r.stream.as_ref();
         let n = self.n;
         let slot = tape_slot(index);
-        let tape = &mut self.tapes[slot];
+        let stream_input = boundary_input(&self.checkpoints, &self.replay_inputs, index);
         let projection = &mut self.projections[index];
         let weights = &w.units[index];
         let packed = projection.input_q.scratch();
         self.rms_quant
             .forward(rust_kernels_cuda::mhc_rms_quant::RmsQuantArgs {
                 stream: s,
-                input: &tape.input,
+                input: stream_input,
                 inverse: &mut projection.inverse,
                 amax: &mut self.row_amax,
                 payload: packed.bytes,
@@ -69,7 +69,14 @@ impl Mhc {
         self.tape_units[slot] = Some(index);
         #[cfg(test)]
         if let Some(verification) = &mut self.recompute_verification {
-            verification.observe(s, index, _reconstructed, tape, projection, n as usize)?;
+            verification.observe(
+                s,
+                index,
+                _reconstructed,
+                stream_input,
+                projection,
+                n as usize,
+            )?;
         }
         Ok(())
     }
@@ -84,27 +91,17 @@ impl Mhc {
             return Ok(());
         }
         let s = r.stream.as_ref();
-        let checkpoint = self
-            .checkpoints
-            .iter()
-            .find(|c| c.index == start)
-            .expect("every mHC window starts at a checkpoint");
-        copy(
-            s,
-            &checkpoint.input,
-            &self.tapes[0].input,
-            self.n as usize * WIDTH,
-        )?;
+        let checkpoint = &self.checkpoints[checkpoint_slot(start)];
         self.tape_units = [None; WINDOW];
         let end = window_end(start);
         let fused = self.window_post.as_ref().filter(|_| end - start == WINDOW);
         if let Some(fused) = fused {
-            let [start_tape, first, second, third] = self.tapes.as_mut_slice() else {
-                unreachable!("mHC allocates four workspace tapes")
+            let [first, second, third] = self.replay_inputs.as_mut_slice() else {
+                unreachable!("mHC allocates three replay inputs")
             };
             fused.rebuild(PostWindowArgs {
                 stream: s,
-                input: &start_tape.input,
+                input: &checkpoint.input,
                 branches: std::array::from_fn(|i| {
                     self.units[start + i]
                         .branch
@@ -112,7 +109,7 @@ impl Mhc {
                         .expect("branch successor")
                 }),
                 coefficients: std::array::from_fn(|i| &self.projections[start + i].coefficients),
-                out: [&mut first.input, &mut second.input, &mut third.input],
+                out: [first, second, third],
                 rows: self.n,
                 dim: GPT2_N_EMBD as u32,
             })?;
@@ -126,14 +123,14 @@ impl Mhc {
                     s,
                     boundary,
                     true,
-                    &self.tapes[slot],
+                    boundary_input(&self.checkpoints, &self.replay_inputs, boundary),
                     &self.projections[boundary],
                     self.n as usize,
                 )?;
             }
             if fused.is_none() && boundary + 1 < end {
-                let (previous, next) = self.tapes.split_at_mut(slot + 1);
-                let previous = &previous[slot];
+                let (previous, next) = self.replay_inputs.split_at_mut(slot);
+                let input = boundary_input(&self.checkpoints, previous, boundary);
                 // `current` holds the reverse stream gradient here. Rebuild
                 // directly into the next tape so that gradient survives.
                 post_mix(
@@ -141,13 +138,13 @@ impl Mhc {
                     &self.module,
                     PostArgs {
                         stream: s,
-                        input: &previous.input,
+                        input,
                         branch: self.units[boundary]
                             .branch
                             .as_ref()
                             .expect("branch successor"),
                         coefficients: &self.projections[boundary].coefficients,
-                        out: &mut next[0].input,
+                        out: &mut next[0],
                         rows: self.n,
                         dim: GPT2_N_EMBD as u32,
                     },

@@ -523,7 +523,7 @@ pub(in crate::training::launch) fn build_run_info(dataset: &str, config: &TrainC
         push_info(
             &mut info,
             "mhc_activation_policy",
-            "exact_stream_checkpoints_and_four_recomputed_boundary_tapes",
+            "exact_stream_checkpoints_and_three_recomputed_boundary_inputs",
         );
         push_info(
             &mut info,
