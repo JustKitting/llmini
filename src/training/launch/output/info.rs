@@ -628,6 +628,7 @@ fn push_run_env(info: &mut String) {
         "TRAIN_SKIP_SIGMA_FACTOR",
         "TRAIN_SKIP_USE_LOSS",
         "TRAIN_SKIP_USE_GRAD_NORM",
+        "TRAIN_SKIP_CAP_GRAD_HISTORY",
         "TRAIN_GENERATE_PROMPT",
         "TRAIN_GENERATE",
         "TRAIN_GENERATE_TOKENS",
