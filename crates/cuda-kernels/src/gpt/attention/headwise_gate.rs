@@ -328,6 +328,14 @@ fn sigmoid(value: f32) -> f32 {
 }
 
 #[inline(always)]
+fn sigmoid_grad(value: f32) -> f32 {
+    // The rounded sigmoid can be one while its derivative is representable.
+    let tail = exp_f32(-abs_f32(value));
+    let inv = 1.0 / (1.0 + tail);
+    tail * inv * inv
+}
+
+#[inline(always)]
 fn gate_position(
     element_count: u32,
     embedding_dim: u32,
@@ -440,14 +448,12 @@ fn backward_body(
     let mut head = warp_in_block;
     while head < head_count {
         let gate_index = (row * qkv_dim + gate_offset + head) as usize;
-        let gate = warp::shuffle_f32(
-            if lane == 0 {
-                sigmoid(cvt_f32_f16(qkv_f16[gate_index]))
-            } else {
-                0.0
-            },
-            0,
-        );
+        let gate_logit = if lane == 0 {
+            cvt_f32_f16(qkv_f16[gate_index])
+        } else {
+            0.0
+        };
+        let gate = warp::shuffle_f32(if lane == 0 { sigmoid(gate_logit) } else { 0.0 }, 0);
         let mut dot = 0.0;
         let mut dim = lane;
         while dim < head_dim {
@@ -459,8 +465,9 @@ fn backward_body(
             }
             dim += 32;
         }
-        let gate_grad = warp_sum_f32(dot) * gate * (1.0 - gate);
+        let dot = warp_sum_f32(dot);
         if lane == 0 {
+            let gate_grad = dot * sigmoid_grad(gate_logit);
             unsafe {
                 *d_qkv.get_unchecked_mut(gate_index) = gate_grad;
             }
@@ -855,10 +862,11 @@ fn xsa_backward_body(
             projection += raw_1 * unit_value_1;
             let projection = warp_sum_f32(projection);
             let gate_index = (row * qkv_dim + gate_offset + head) as usize;
-            let gate = if apply_headwise_gate != 0 {
-                sigmoid(cvt_f32_f16(qkv_f16[gate_index]))
+            let (gate_logit, gate) = if apply_headwise_gate != 0 {
+                let logit = cvt_f32_f16(qkv_f16[gate_index]);
+                (logit, sigmoid(logit))
             } else {
-                1.0
+                (0.0, 1.0)
             };
 
             let upstream_0 = unsafe { *d_out.as_mut_ptr().add(hidden_index_0) };
@@ -912,7 +920,7 @@ fn xsa_backward_body(
             }
             if lane == 0 {
                 if apply_headwise_gate != 0 {
-                    let gate_grad = gate_dot * gate * (1.0 - gate);
+                    let gate_grad = gate_dot * sigmoid_grad(gate_logit);
                     unsafe {
                         *d_qkv.get_unchecked_mut(gate_index) = gate_grad;
                     }
@@ -965,10 +973,11 @@ fn xsa_backward_body(
         }
         let projection = warp_sum_f32(projection);
         let gate_index = (row * qkv_dim + gate_offset + head) as usize;
-        let gate = if apply_headwise_gate != 0 {
-            sigmoid(cvt_f32_f16(qkv_f16[gate_index]))
+        let (gate_logit, gate) = if apply_headwise_gate != 0 {
+            let logit = cvt_f32_f16(qkv_f16[gate_index]);
+            (logit, sigmoid(logit))
         } else {
-            1.0
+            (0.0, 1.0)
         };
 
         let mut gate_dot = 0.0;
@@ -1018,7 +1027,7 @@ fn xsa_backward_body(
         }
         if lane == 0 {
             if apply_headwise_gate != 0 {
-                let gate_grad = gate_dot * gate * (1.0 - gate);
+                let gate_grad = gate_dot * sigmoid_grad(gate_logit);
                 unsafe {
                     *d_qkv.get_unchecked_mut(gate_index) = gate_grad;
                 }
