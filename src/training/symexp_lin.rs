@@ -72,6 +72,39 @@ pub(super) fn prepare_weight_gradients(
     Ok(())
 }
 
+pub(super) fn rejected_next_latent_output_transform(
+    trainer: &Trainer,
+) -> AppResult<serde_json::Value> {
+    let optimizer = &trainer.buffers.optimizer_state;
+    let state = &optimizer
+        .next_latent
+        .output_projection
+        .weight_muon
+        .symexp_lin;
+    let stream = trainer.runtime.stream.as_ref();
+    let mut scales = serde_json::Map::new();
+    for (name, scalar) in [
+        ("exponential", &state.exponential),
+        ("linear", &state.linear),
+        ("curvature", &state.curvature),
+    ] {
+        scales.insert(
+            name.into(),
+            serde_json::json!({
+                "z": scalar.z_master.to_host_vec(stream)?[0],
+                "x": scalar.x_master.to_host_vec(stream)?[0],
+            }),
+        );
+    }
+    let step = optimizer.next_step();
+    Ok(serde_json::json!({
+        "optimizer_step": step,
+        "beta": beta(),
+        "schedule_beta": super::learning_rate::schedule_free_beta(step),
+        "scales": scales,
+    }))
+}
+
 pub(super) fn scale_summary(trainer: &Trainer) -> AppResult<Option<String>> {
     if !learn_scales() {
         return Ok(None);

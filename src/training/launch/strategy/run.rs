@@ -125,6 +125,15 @@ impl CudaTrainingStrategy {
                         serde_json::json!(stats.optimizer.skip_loss_spike);
                     snapshot["skip_non_finite"] =
                         serde_json::json!(stats.optimizer.skip_non_finite);
+                    if stats.optimizer.skip_grad_norm_spike
+                        && crate::training::symexp_lin::learn_scales()
+                    {
+                        // A rejected update returns before advancing the optimizer.
+                        snapshot["next_latent_output_transform"] =
+                            crate::training::symexp_lin::rejected_next_latent_output_transform(
+                                &trainer,
+                            )?;
+                    }
                     snapshot["capture_reason"] =
                         serde_json::json!(if stats.optimizer.update_skipped {
                             "rejected_update"
