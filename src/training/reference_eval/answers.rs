@@ -26,11 +26,19 @@ struct Score {
 }
 
 impl Score {
+    fn bits_per_byte(&self) -> f64 {
+        self.nats / self.bytes as f64 / std::f64::consts::LN_2
+    }
+
     fn json(&self) -> Value {
         json!({"examples":self.examples, "answer_bytes":self.bytes, "target_tokens":self.targets,
             "mean_token_ce":self.nats/self.targets as f64,
-            "bits_per_byte":self.nats/self.bytes as f64/std::f64::consts::LN_2})
+            "bits_per_byte":self.bits_per_byte()})
     }
+}
+
+fn mean_task_bits_per_byte(tasks: &BTreeMap<String, Score>) -> f64 {
+    tasks.values().map(Score::bits_per_byte).sum::<f64>() / tasks.len() as f64
 }
 
 fn plan(tokenizer: &TrainingTokenizer, item: &Answer) -> AppResult<Vec<Window>> {
@@ -155,6 +163,7 @@ pub(in crate::training) fn run(
         "stride_tokens":reference_validation::STRIDE, "teacher_forced":true,
         "optimizer_updates":trainer.buffers.optimizer_state.step,
         "elapsed_s":started.elapsed().as_secs_f64(), "total":total.json(),
+        "mean_task_bits_per_byte":mean_task_bits_per_byte(&tasks),
         "tasks":tasks.iter().map(|(name, score)| (name.clone(), score.json())).collect::<BTreeMap<_,_>>(),
         "verified_replay_provenance":verified_replay,
     });
@@ -166,6 +175,29 @@ pub(in crate::training) fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn task_mean_weights_short_code_answers_equally() {
+        let tasks = [
+            ("code", 699, 3.0),
+            ("knowledge", 40_239, 1.0),
+            ("math", 19_776, 1.0),
+            ("reasoning", 11_541, 1.0),
+        ]
+        .into_iter()
+        .map(|(name, bytes, bpb)| {
+            (
+                name.to_owned(),
+                Score {
+                    bytes,
+                    nats: bpb * bytes as f64 * std::f64::consts::LN_2,
+                    ..Score::default()
+                },
+            )
+        })
+        .collect();
+        assert!((mean_task_bits_per_byte(&tasks) - 1.5).abs() < 1e-12);
+    }
 
     #[test]
     fn answer_windows_score_the_suffix_exactly_once() -> AppResult<()> {
