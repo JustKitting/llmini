@@ -149,17 +149,7 @@ pub(super) fn forward_impl<'a, 'scratch>(
         crate::GPT2_EMBEDDING_DIM,
         args.scratch.tma_descriptors,
     )?;
-    if !add_residual {
-        unsafe {
-            cuda_core::memory::memset_d8_async(
-                hidden.residual.cu_deviceptr(),
-                0,
-                hidden.row_count as usize * crate::GPT2_N_EMBD * 4,
-                hidden.stream.cu_stream(),
-            )?;
-        }
-    }
-    args.tma_module.gemm_tma_nvfp4_rowwise_a_scale_residual(
+    args.tma_module.gemm_tma_nvfp4_rowwise_a_scale_projection(
         hidden.stream,
         args.scratch.tma_descriptors,
         &mut *hidden.residual,
@@ -177,6 +167,7 @@ pub(super) fn forward_impl<'a, 'scratch>(
                 crate::GPT2_MLP_ROUTE_ACTIVE_FEATURE_TILES as u32,
             )
         }),
+        add_residual,
     )?;
 
     Ok(hidden)

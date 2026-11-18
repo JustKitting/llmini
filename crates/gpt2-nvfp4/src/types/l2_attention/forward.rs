@@ -278,19 +278,7 @@ pub(super) fn forward_impl<'a, 'scratch>(
         dims.embedding_dim,
         args.tma_descriptors,
     )?;
-    if !add_residual {
-        // Inputs/tapes are already saved; emit only the branch result through
-        // the same NVFP4 GEMM with a zero addend, without residual cancellation.
-        unsafe {
-            cuda_core::memory::memset_d8_async(
-                hidden.residual.cu_deviceptr(),
-                0,
-                (hidden.row_count * dims.embedding_dim) as usize * 4,
-                hidden.stream.cu_stream(),
-            )?;
-        }
-    }
-    args.tma_module.gemm_tma_nvfp4_rowwise_a_scale_residual(
+    args.tma_module.gemm_tma_nvfp4_rowwise_a_scale_projection(
         hidden.stream,
         args.tma_descriptors,
         &mut *hidden.residual,
@@ -301,6 +289,7 @@ pub(super) fn forward_impl<'a, 'scratch>(
         input.global_scales,
         args.projections.c_proj_weight_device.global_scale,
         None,
+        add_residual,
     )?;
 
     Ok(hidden)

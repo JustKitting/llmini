@@ -1234,7 +1234,7 @@ fn store_acc_affine_scaled(
 }
 
 #[inline(always)]
-fn store_acc_residual_scaled(
+fn store_acc_residual_scaled<const ADD_RESIDUAL: bool>(
     acc: [f32; 4],
     tile: CtaTile,
     m_repeat: u32,
@@ -1261,10 +1261,18 @@ fn store_acc_residual_scaled(
     let value01 = affine_from_stored_product(acc[1], scale0, bias1);
     let value10 = affine_from_stored_product(acc[2], scale1, bias0);
     let value11 = affine_from_stored_product(acc[3], scale1, bias1);
-    let residual00 = unsafe { *residual.get_unchecked_mut(index00 as usize) };
-    let residual01 = unsafe { *residual.get_unchecked_mut((index00 + 1) as usize) };
-    let residual10 = unsafe { *residual.get_unchecked_mut(index10 as usize) };
-    let residual11 = unsafe { *residual.get_unchecked_mut((index10 + 1) as usize) };
+    let (residual00, residual01, residual10, residual11) = if ADD_RESIDUAL {
+        unsafe {
+            (
+                *residual.get_unchecked_mut(index00 as usize),
+                *residual.get_unchecked_mut((index00 + 1) as usize),
+                *residual.get_unchecked_mut(index10 as usize),
+                *residual.get_unchecked_mut((index10 + 1) as usize),
+            )
+        }
+    } else {
+        (0.0, 0.0, 0.0, 0.0)
+    };
     store_f32x2_global(
         residual,
         index00,
@@ -1784,13 +1792,13 @@ macro_rules! store_accumulator_residual_rows {
         $tile:expr,
         $params:expr,
         $output_scale:expr,
-        ($residual:expr, $bias_tile:expr)
+        ($residual:expr, $bias_tile:expr, $add_residual:expr)
     ) => {{
         let row0 = $tile.mma_row_base($m_repeat) + $tile.group;
         let scale0 = $output_scale.row(row0);
         let scale1 = $output_scale.row(row0 + 8);
         $(
-            store_acc_residual_scaled(
+            store_acc_residual_scaled::<{ $add_residual }>(
                 $acc,
                 $tile,
                 $m_repeat,
@@ -1807,7 +1815,7 @@ macro_rules! store_accumulator_residual_rows {
             $tile,
             $params,
             $output_scale,
-            ($residual, $bias_tile)
+            ($residual, $bias_tile, $add_residual)
         );
     }};
 }
@@ -2816,7 +2824,8 @@ macro_rules! run_tma_nvfp4_full_tile_residual_shape {
         $tma_bars:expr,
         $empty_bars:expr,
         $residual:expr,
-        $bias_tile:expr $(,)?
+        $bias_tile:expr,
+        $add_residual:expr $(,)?
     ) => {{
         run_tma_nvfp4_full_tile_shape_body!(
             [$($m_axis),+],
@@ -2835,7 +2844,7 @@ macro_rules! run_tma_nvfp4_full_tile_residual_shape {
             $tma_bars,
             $empty_bars,
             store_accumulator_residual_rows,
-            ($residual, $bias_tile),
+            ($residual, $bias_tile, $add_residual),
         );
     }};
 }

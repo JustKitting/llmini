@@ -11,7 +11,7 @@ use rust_kernels_cuda::mlp::{
 use rust_kernels_cuda::mma::Nvfp4FourSixMmaWeightTensor;
 use rust_kernels_cuda::nvfp4::{Nvfp4DeviceTensor, Nvfp4RowwiseDeviceTensor};
 use rust_kernels_cuda::nvfp4_tma_matmul::{
-    kernels::{polar::TILE_N as POLAR_TILE_N, tma_nvfp4_output_amax_chunks},
+    kernels::{TILE_K, TILE_M, TILE_N, polar::TILE_N as POLAR_TILE_N, tma_nvfp4_output_amax_chunks},
     launcher::{Nvfp4GemmModule, Nvfp4GemmRoute},
     pad::{TmaMatrixPadModule, U4RowPadArgs},
     scale_layout::{
@@ -691,6 +691,28 @@ fn tma_mlp_down_residual_matches_old_projection() -> Result<(), Box<dyn Error>> 
     Ok(())
 }
 
+#[ignore = "requires generated sm_120a PTX"]
+#[test]
+fn tma_branch_output_overwrites_poisoned_dense_and_routed_outputs() -> Result<(), Box<dyn Error>> {
+    let fixture = Fixture::new((2 * TILE_M) as usize, (4 * TILE_K) as usize, (2 * TILE_N) as usize)?;
+    let masks = DeviceBuffer::from_host(&fixture.stream, &[0b0111_u64, 0b1101, 0, 0, 0, 0])?;
+    let route = Nvfp4GemmRoute::token_m_feature_k(&masks, 2, 4, 3);
+    let len = fixture.rows * fixture.n;
+    for route in [None, Some(route)] {
+        let mut zero_residual = DeviceBuffer::<f32>::zeroed(&fixture.stream, len)?;
+        let mut poisoned = DeviceBuffer::from_host(&fixture.stream, &vec![f32::NAN; len])?;
+        fixture.tma_projection(&mut zero_residual, route, true)?;
+        fixture.tma_projection(&mut poisoned, route, false)?;
+        let expected = zero_residual.to_host_vec(&fixture.stream)?;
+        let actual = poisoned.to_host_vec(&fixture.stream)?;
+        for (index, (expected, actual)) in expected.iter().zip(actual).enumerate() {
+            assert!(expected.is_finite(), "reference output {index} is nonfinite");
+            assert_eq!(actual.to_bits(), expected.to_bits(), "output index {index}");
+        }
+    }
+    Ok(())
+}
+
 struct Fixture {
     stream: std::sync::Arc<CudaStream>,
     attention: AttentionModule,
@@ -1176,6 +1198,15 @@ impl Fixture {
     }
 
     fn tma_residual(&self, residual: &mut DeviceBuffer<f32>) -> Result<(), Box<dyn Error>> {
+        self.tma_projection(residual, None, true)
+    }
+
+    fn tma_projection(
+        &self,
+        out: &mut DeviceBuffer<f32>,
+        route: Option<Nvfp4GemmRoute<'_>>,
+        add_residual: bool,
+    ) -> Result<(), Box<dyn Error>> {
         let mut descriptors = TmaNvfp4DeviceScaleDescriptors::new(&self.stream)?;
 
         self.tma.prepare_tma_nvfp4_csf_scales_into(
@@ -1189,17 +1220,18 @@ impl Fixture {
             self.n as u32,
             &mut descriptors,
         )?;
-        self.tma.gemm_tma_nvfp4_rowwise_a_scale_residual(
+        self.tma.gemm_tma_nvfp4_rowwise_a_scale_projection(
             &self.stream,
             &descriptors,
-            residual,
+            out,
             self.bias_device(),
             self.rows as u32,
             self.k as u32,
             self.n as u32,
             &self.input_globals,
             &self.weight_global,
-            None,
+            route,
+            add_residual,
         )?;
         Ok(())
     }

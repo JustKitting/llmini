@@ -1303,6 +1303,39 @@ impl Nvfp4GemmModule {
         b_global_scale: &DeviceBuffer<f32>,
         route: Option<Nvfp4GemmRoute<'_>>,
     ) -> Result<(), DriverError> {
+        self.gemm_tma_nvfp4_rowwise_a_scale_projection(
+            stream,
+            tma,
+            residual,
+            bias,
+            token_count,
+            input_dim,
+            output_dim,
+            a_global_scales,
+            b_global_scale,
+            route,
+            true,
+        )
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "fused TMA projection launch uses explicit buffers"
+    )]
+    pub fn gemm_tma_nvfp4_rowwise_a_scale_projection(
+        &self,
+        stream: &CudaStream,
+        tma: &TmaNvfp4DeviceScaleDescriptors,
+        residual: &mut DeviceBuffer<f32>,
+        bias: Nvfp4DeviceTensor<'_>,
+        token_count: u32,
+        input_dim: u32,
+        output_dim: u32,
+        a_global_scales: &DeviceBuffer<f32>,
+        b_global_scale: &DeviceBuffer<f32>,
+        route: Option<Nvfp4GemmRoute<'_>>,
+        add_residual: bool,
+    ) -> Result<(), DriverError> {
         if token_count % TILE_M != 0
             || output_dim % TILE_N != 0
             || input_dim % Sm120ScaleLayout::K_ATOM != 0
@@ -1330,19 +1363,28 @@ impl Nvfp4GemmModule {
             shared_mem_bytes: 0,
         };
 
-        self.module.nvfp4_gemm_tma_residual_kernel(
-            stream,
-            config,
-            tma.a_deviceptr() as *const TmaDescriptor,
-            tma.b_deviceptr() as *const TmaDescriptor,
-            tma.a_scales_deviceptr() as *const TmaDescriptor,
-            tma.b_scales_deviceptr() as *const TmaDescriptor,
-            residual,
-            bias.bytes,
-            bias.scales,
-            bias.global_scale,
-            params,
-        )
+        macro_rules! launch_projection {
+            ($kernel:ident) => {
+                self.module.$kernel(
+                    stream,
+                    config,
+                    tma.a_deviceptr() as *const TmaDescriptor,
+                    tma.b_deviceptr() as *const TmaDescriptor,
+                    tma.a_scales_deviceptr() as *const TmaDescriptor,
+                    tma.b_scales_deviceptr() as *const TmaDescriptor,
+                    residual,
+                    bias.bytes,
+                    bias.scales,
+                    bias.global_scale,
+                    params,
+                )
+            };
+        }
+        if add_residual {
+            launch_projection!(nvfp4_gemm_tma_residual_kernel)
+        } else {
+            launch_projection!(nvfp4_gemm_tma_branch_output_kernel)
+        }
     }
 
     #[expect(

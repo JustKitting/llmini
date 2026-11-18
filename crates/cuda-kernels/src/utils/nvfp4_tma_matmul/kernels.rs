@@ -613,6 +613,58 @@ pub mod module {
         b_tma: *const TmaDescriptor,
         a_scale_tma: *const TmaDescriptor,
         b_scale_tma: *const TmaDescriptor,
+        residual: DisjointSlice<f32>,
+        bias_bytes: &[u8],
+        bias_scales: &[u8],
+        bias_global_scale: &[f32],
+        params: Nvfp4GemmParams,
+    ) {
+        residual_projection::<true>(
+            a_tma,
+            b_tma,
+            a_scale_tma,
+            b_scale_tma,
+            residual,
+            bias_bytes,
+            bias_scales,
+            bias_global_scale,
+            params,
+        );
+    }
+
+    #[kernel]
+    #[launch_bounds(256, 2)]
+    pub fn nvfp4_gemm_tma_branch_output_kernel(
+        a_tma: *const TmaDescriptor,
+        b_tma: *const TmaDescriptor,
+        a_scale_tma: *const TmaDescriptor,
+        b_scale_tma: *const TmaDescriptor,
+        out: DisjointSlice<f32>,
+        bias_bytes: &[u8],
+        bias_scales: &[u8],
+        bias_global_scale: &[f32],
+        params: Nvfp4GemmParams,
+    ) {
+        residual_projection::<false>(
+            a_tma,
+            b_tma,
+            a_scale_tma,
+            b_scale_tma,
+            out,
+            bias_bytes,
+            bias_scales,
+            bias_global_scale,
+            params,
+        );
+    }
+
+    #[inline(always)]
+    #[allow(unused_variables)]
+    fn residual_projection<const ADD_RESIDUAL: bool>(
+        a_tma: *const TmaDescriptor,
+        b_tma: *const TmaDescriptor,
+        a_scale_tma: *const TmaDescriptor,
+        b_scale_tma: *const TmaDescriptor,
         mut residual: DisjointSlice<f32>,
         bias_bytes: &[u8],
         bias_scales: &[u8],
@@ -687,6 +739,7 @@ pub mod module {
             empty_bars,
             &mut residual,
             bias_tile,
+            ADD_RESIDUAL,
         );
     }
 
