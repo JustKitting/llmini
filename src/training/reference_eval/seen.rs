@@ -110,6 +110,6 @@ pub(super) fn score(
         "mean_token_ce": ce,
         "bits_per_byte": bpb,
         "samples": samples,
-        "interpretation": "Previously seen FineWeb batches, scored with the final averaged checkpoint. Not an optimizer-state replay or causal attribution of a generalization gap.",
+        "interpretation": "Batches recorded by this training run, scored with the final averaged checkpoint.",
     })))
 }
