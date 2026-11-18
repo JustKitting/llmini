@@ -34,6 +34,7 @@ pub(in crate::training) struct Feedback {
     pub module: rust_kernels_cuda::latent_feedback::kernels::LoadedModule,
     pub active: bool,
     pub n: u32,
+    next_training_attempt: u64,
     rng: Gpt2Rng,
 }
 impl Feedback {
@@ -54,9 +55,10 @@ impl Feedback {
             module: _,
             active,
             n,
+            next_training_attempt,
             rng,
         } = self;
-        serde_json::json!({"active":active,"rows":n,"rng":format!("{rng:?}")})
+        serde_json::json!({"active":active,"rows":n,"next_training_attempt":next_training_attempt,"rng":format!("{rng:?}")})
     }
 
     pub fn new(r: &Runtime, w: &Weights) -> Result<Self, DriverError> {
@@ -86,9 +88,15 @@ impl Feedback {
             module: r.latent_feedback_module()?,
             active: false,
             n: 0,
+            next_training_attempt: 0,
             rng: Gpt2Rng::new(0x4c4f524d6a910735),
         })
     }
+
+    pub(in crate::training) fn next_training_passes(&mut self, seed: u64) -> usize {
+        super::sample_training_passes(seed, &mut self.next_training_attempt)
+    }
+
     pub fn named_gradients(&self) -> Vec<(&str, &DeviceBuffer<f32>)> {
         vec![
             ("latent_feedback.fusion.weight", &self.grad),

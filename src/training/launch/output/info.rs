@@ -553,6 +553,7 @@ pub(in crate::training::launch) fn build_run_info(dataset: &str, config: &TrainC
             "latent_feedback_one_pass_probability",
             crate::training::latent_feedback::ONE_PASS_PROBABILITY,
         );
+        push_info(&mut info, "latent_feedback_pass_clock", "training_attempt");
         push_info(
             &mut info,
             "latent_feedback_evaluation_passes",

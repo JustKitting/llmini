@@ -254,11 +254,19 @@ fn native_latent_feedback_recurrence_gradients_conditional_update_checkpoint() -
 
 #[test]
 fn feedback_pass_sampler_is_deterministic_and_matches_reference_mix() {
-    let count = (0..100000)
-        .filter(|&step| training_passes(0x47505432, step) == 1)
+    let mut next_attempt = 0;
+    let mut replay_attempt = 0;
+    let count = (0..100_000)
+        .map(|_| {
+            let passes = sample_training_passes(0x47505432, &mut next_attempt);
+            assert_eq!(
+                passes,
+                sample_training_passes(0x47505432, &mut replay_attempt)
+            );
+            passes
+        })
+        .filter(|&passes| passes == 1)
         .count();
+    assert_eq!(next_attempt, 100_000);
     assert!((14500..15500).contains(&count), "one-pass count {count}");
-    for step in 0..1000 {
-        assert_eq!(training_passes(7, step), training_passes(7, step));
-    }
 }

@@ -13,10 +13,11 @@ use cuda_core::{CudaStream, DeviceBuffer, DriverError};
 pub(crate) const EPSILON: f32 = 1e-5;
 pub(crate) const ONE_PASS_PROBABILITY: f32 = 0.15;
 pub(crate) const EVAL_PASSES: usize = 4;
-pub(crate) fn training_passes(seed: u64, step: u32) -> usize {
-    let mut r = gpt2_nvfp4::Gpt2Rng::new(
-        seed ^ (u64::from(step).wrapping_mul(0x9e3779b97f4a7c15)) ^ 0x4c4f524d,
-    );
+fn sample_training_passes(seed: u64, next_attempt: &mut u64) -> usize {
+    let attempt = *next_attempt;
+    *next_attempt = attempt.wrapping_add(1);
+    let mut r =
+        gpt2_nvfp4::Gpt2Rng::new(seed ^ attempt.wrapping_mul(0x9e3779b97f4a7c15) ^ 0x4c4f524d);
     if f64::from(r.next_u32()) / 4294967296.0 < f64::from(ONE_PASS_PROBABILITY) {
         1
     } else {

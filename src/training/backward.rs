@@ -83,14 +83,10 @@ impl Trainer {
     }
 
     pub fn train_step(&mut self, batch: &TokenBatch, sync_loss: bool) -> AppResult<TrainStats> {
-        let passes = if self.latent_feedback.is_some() {
-            super::latent_feedback::training_passes(
-                self.base_seed,
-                self.buffers.optimizer_state.step,
-            )
-        } else {
-            1
-        };
+        let passes = self
+            .latent_feedback
+            .as_mut()
+            .map_or(1, |feedback| feedback.next_training_passes(self.base_seed));
         self.train_step_with_passes(batch, sync_loss, passes)
     }
 
