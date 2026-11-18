@@ -19,9 +19,9 @@ mod ms_eden;
 pub use args::{
     LinearBackwardArgs, LinearBackwardDeviceScaleArgs, LinearBackwardInputTranspose,
     LinearBackwardMsEdenArgs, LinearBackwardMsEdenScratch, LinearBackwardMsEdenScratchBuffers,
-    LinearBackwardRoute, LinearBackwardTmaScratch, LinearBackwardWeightTranspose,
-    MsEdenOperandScratch, MsEdenOperandScratchBuffer, MsEdenTransposeScratch,
-    MsEdenTransposeScratchBuffer,
+    LinearBackwardMsEdenWeightArgs, LinearBackwardRoute, LinearBackwardTmaScratch,
+    LinearBackwardWeightTranspose, MsEdenOperandScratch, MsEdenOperandScratchBuffer,
+    MsEdenTransposeScratch, MsEdenTransposeScratchBuffer,
 };
 pub use bias::LINEAR_BIAS_THREADS_PER_BLOCK;
 

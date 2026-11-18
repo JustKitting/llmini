@@ -4,7 +4,8 @@ mod call;
 mod scratch;
 
 pub use call::{
-    LinearBackwardInputTranspose, LinearBackwardMsEdenArgs, LinearBackwardWeightTranspose,
+    LinearBackwardInputTranspose, LinearBackwardMsEdenArgs, LinearBackwardMsEdenWeightArgs,
+    LinearBackwardWeightTranspose,
 };
 pub use scratch::{
     LinearBackwardMsEdenScratch, LinearBackwardMsEdenScratchBuffers, LinearBackwardTmaScratch,

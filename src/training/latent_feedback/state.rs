@@ -15,9 +15,7 @@ use gpt2_nvfp4::{
     GPT2_N_EMBD, GPT2_TOKEN_ROWS, Gpt2Rng, HiddenStateDevice, LinearScratch, RowwiseNvfp4Buffers,
 };
 use rust_kernels_cuda::{
-    linear_backward::{
-        LinearBackwardInputTranspose, LinearBackwardMsEdenArgs, LinearBackwardWeightTranspose,
-    },
+    linear_backward::{LinearBackwardInputTranspose, LinearBackwardMsEdenWeightArgs},
     nvfp4_tma_matmul::tma::TmaNvfp4DeviceScaleDescriptors,
     residual::ResidualGradAccumulateArgs,
 };
@@ -29,7 +27,7 @@ pub(in crate::training) struct Feedback {
     pub input: DeviceBuffer<f32>,
     pub input_q: RowwiseNvfp4Buffers,
     pub projected: DeviceBuffer<f32>,
-    pub detached_gradient: DeviceBuffer<f32>,
+    fusion_error: DeviceBuffer<f32>,
     row_amax: DeviceBuffer<f32>,
     tma: TmaNvfp4DeviceScaleDescriptors,
     linear: LinearScratch,
@@ -49,7 +47,7 @@ impl Feedback {
             input: _,
             input_q: _,
             projected: _,
-            detached_gradient: _,
+            fusion_error: _,
             row_amax: _,
             tma: _,
             linear: _,
@@ -81,7 +79,7 @@ impl Feedback {
             input: DeviceBuffer::zeroed(s, total)?,
             input_q: RowwiseNvfp4Buffers::gpt2_rows(s, total)?,
             projected: DeviceBuffer::zeroed(s, total)?,
-            detached_gradient: DeviceBuffer::zeroed(s, total)?,
+            fusion_error: DeviceBuffer::zeroed(s, total)?,
             row_amax: DeviceBuffer::zeroed(s, GPT2_TOKEN_ROWS)?,
             tma: TmaNvfp4DeviceScaleDescriptors::new(s)?,
             linear: LinearScratch::new(s, d, d)?,
@@ -223,30 +221,57 @@ impl Feedback {
     pub fn backward(
         &mut self,
         r: &Runtime,
-        w: &Weights,
         e: &DeviceBuffer<f32>,
+        seq_len: usize,
     ) -> Result<(), DriverError> {
         if !self.active {
             return Ok(());
         }
-        r.linear.backward_ms_eden(LinearBackwardMsEdenArgs {
-            stream: r.stream.as_ref(),
-            quant_module: &r.quant,
-            e,
-            weight_t: LinearBackwardWeightTranspose::Nvfp4(w.weight.device()),
-            input_t: LinearBackwardInputTranspose::RowwiseNvfp4(self.input_q.rowwise()),
-            scratch: self.linear.parts(),
-            dinput: &mut self.detached_gradient,
-            dweight: &mut self.grad,
-            dbias: None,
-            token_count: self.n,
-            input_dim: GPT2_N_EMBD as u32,
-            output_dim: GPT2_N_EMBD as u32,
-            sign_seed: self.rng.next_u32(),
-            scale_seed: self.rng.next_u32(),
-            precomputed_e_amax_chunks: None,
-        })
-        // The computed input derivative belongs to the detached previous pass and is not accumulated.
+        let stream = r.stream.as_ref();
+        let rows = self.n as usize;
+        let row_bytes = GPT2_N_EMBD * size_of::<f32>();
+        if seq_len == 0
+            || !rows.is_multiple_of(seq_len)
+            || e.len() < rows * GPT2_N_EMBD
+            || self.fusion_error.len() < rows * GPT2_N_EMBD
+        {
+            return Err(DriverError(
+                cuda_core::sys::cudaError_enum_CUDA_ERROR_INVALID_VALUE,
+            ));
+        }
+        // The fusion branch is absent at each sequence start. Mask its
+        // upstream errors before MS-EDEN mixes token lanes and derives amax.
+        // The direct embedding residual gradient still uses the original e.
+        unsafe {
+            cuda_core::memory::memcpy_dtod_async(
+                self.fusion_error.cu_deviceptr(),
+                e.cu_deviceptr(),
+                rows * row_bytes,
+                stream.cu_stream(),
+            )?;
+            for row in (0..rows).step_by(seq_len) {
+                cuda_core::memory::memset_d8_async(
+                    self.fusion_error.cu_deviceptr() + (row * row_bytes) as u64,
+                    0,
+                    row_bytes,
+                    stream.cu_stream(),
+                )?;
+            }
+        }
+        r.linear
+            .backward_ms_eden_weight(LinearBackwardMsEdenWeightArgs {
+                stream,
+                quant_module: &r.quant,
+                e: &self.fusion_error,
+                input_t: LinearBackwardInputTranspose::RowwiseNvfp4(self.input_q.rowwise()),
+                scratch: self.linear.parts(),
+                dweight: &mut self.grad,
+                token_count: self.n,
+                input_dim: GPT2_N_EMBD as u32,
+                output_dim: GPT2_N_EMBD as u32,
+                sign_seed: self.rng.next_u32(),
+                scale_seed: self.rng.next_u32(),
+            })
     }
     pub fn materialize_training(
         &mut self,

@@ -210,6 +210,25 @@ fn native_latent_feedback_recurrence_gradients_conditional_update_checkpoint() -
         "model-only reload must not pretend to continue"
     );
     assert_eq!(expected, t.eval_token_losses_for_passes(&b, 4)?);
+    t.forward_for_passes(&b, 2)?;
+    let stream = t.runtime.stream.as_ref();
+    let mut error = vec![0.0; GPT2_BATCH_SIZE * GPT2_SEQ_LEN * GPT2_N_EMBD];
+    for sequence in 0..GPT2_BATCH_SIZE {
+        let first = sequence * GPT2_SEQ_LEN * GPT2_N_EMBD;
+        error[first] = 128.0 + sequence as f32;
+        error[first + 31] = -32.0;
+    }
+    let input = DeviceBuffer::from_host(stream, &error)?;
+    let f = t.latent_feedback.as_mut().unwrap();
+    f.backward(&t.runtime, &input, GPT2_SEQ_LEN)?;
+    assert!(f.grad.to_host_vec(stream)?.iter().all(|&g| g == 0.0));
+    assert_eq!(
+        input.to_host_vec(stream)?,
+        error,
+        "keep the direct embedding adjoint"
+    );
+    drop(input);
+    drop(error);
     let f = t.latent_feedback.as_ref().unwrap();
     let nan = [f32::NAN];
     unsafe {

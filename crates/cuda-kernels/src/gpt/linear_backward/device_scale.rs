@@ -1,13 +1,19 @@
-use cuda_core::{DeviceBuffer, DriverError, sys::cudaError_enum_CUDA_ERROR_INVALID_VALUE};
+use cuda_core::{
+    CudaStream, DeviceBuffer, DriverError, sys::cudaError_enum_CUDA_ERROR_INVALID_VALUE,
+};
 
 use crate::launch::{grid_x_config, launch_config};
 use crate::mma::{
-    NVFP4_PROJECTION_CTA_THREADS, NVFP4_PROJECTION_THREADS_PER_BLOCK, Nvfp4ProjectionParams,
-    projection_cta_grid_dim, projection_cta_row_pair_tile_count, projection_cta_shape_aligned,
-    projection_grid_dim,
+    NVFP4_PROJECTION_CTA_THREADS, NVFP4_PROJECTION_THREADS_PER_BLOCK,
+    Nvfp4DeviceScaleMmaWeightTensor, Nvfp4ProjectionParams, projection_cta_grid_dim,
+    projection_cta_row_pair_tile_count, projection_cta_shape_aligned, projection_grid_dim,
 };
+use crate::nvfp4::Nvfp4RowwiseDeviceTensor;
 use crate::nvfp4_tc_matmul::nvfp4_tc_matmul_padded_k;
-use crate::nvfp4_tma_matmul::kernels::{TILE_K, TILE_M, TILE_N};
+use crate::nvfp4_tma_matmul::{
+    kernels::{TILE_K, TILE_M, TILE_N},
+    tma::TmaNvfp4DeviceScaleDescriptors,
+};
 
 use super::{
     LinearBackwardDeviceScaleArgs, LinearBackwardModule, LinearBackwardRoute,
@@ -148,53 +154,85 @@ impl LinearBackwardModule {
                     )?;
                 None
             };
-        if dweight_tma {
-            self.tma.prepare_tma_nvfp4_csf_scales_into(
-                args.stream,
-                args.e_t_h.bytes,
-                args.e_t_h.scales,
-                args.input_t_h.bytes,
-                args.input_t_h.scales,
-                args.output_dim,
-                dweight_k,
-                args.input_dim,
-                tma.descriptors,
-            )?;
-            let transform = self
-                .weight_gradient_transforms
-                .borrow()
-                .get(&args.dweight.cu_deviceptr())
-                .copied();
-            if let Some(transform) = transform {
-                self.tma
-                    .gemm_tma_nvfp4_rowwise_a_scale_and_global_scale_buffer_csf_gradient(
-                        args.stream,
-                        &*tma.descriptors,
-                        args.dweight,
-                        args.output_dim,
-                        dweight_k,
-                        args.input_dim,
-                        args.e_t_h.global_scales,
-                        args.input_t_h.global_scale,
-                        route.map(LinearBackwardRoute::dweight),
-                        transform,
-                    )?;
-            } else {
-                self.tma
-                    .gemm_tma_nvfp4_rowwise_a_scale_and_global_scale_buffer_csf(
-                        args.stream,
-                        &*tma.descriptors,
-                        args.dweight,
-                        args.output_dim,
-                        dweight_k,
-                        args.input_dim,
-                        args.e_t_h.global_scales,
-                        args.input_t_h.global_scale,
-                        route.map(LinearBackwardRoute::dweight),
-                    )?;
-            }
-        }
+        self.backward_weight_device_scale_tma(
+            args.stream,
+            args.e_t_h,
+            args.input_t_h,
+            args.dweight,
+            args.token_count,
+            args.input_dim,
+            args.output_dim,
+            tma.descriptors,
+            route,
+        )?;
         Ok(dinput_chunk_count)
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "explicit CUDA projection operands"
+    )]
+    pub(super) fn backward_weight_device_scale_tma(
+        &self,
+        stream: &CudaStream,
+        error_t: Nvfp4RowwiseDeviceTensor<'_>,
+        input_t: Nvfp4DeviceScaleMmaWeightTensor<'_>,
+        dweight: &mut DeviceBuffer<f32>,
+        token_count: u32,
+        input_dim: u32,
+        output_dim: u32,
+        descriptors: &mut TmaNvfp4DeviceScaleDescriptors,
+        route: Option<LinearBackwardRoute<'_>>,
+    ) -> Result<(), DriverError> {
+        let k = nvfp4_tc_matmul_padded_k(token_count);
+        if !tma_shape_aligned(output_dim, k, input_dim) {
+            return Err(DriverError(cudaError_enum_CUDA_ERROR_INVALID_VALUE));
+        }
+        self.tma.prepare_tma_nvfp4_csf_scales_into(
+            stream,
+            error_t.bytes,
+            error_t.scales,
+            input_t.bytes,
+            input_t.scales,
+            output_dim,
+            k,
+            input_dim,
+            descriptors,
+        )?;
+        let transform = self
+            .weight_gradient_transforms
+            .borrow()
+            .get(&dweight.cu_deviceptr())
+            .copied();
+        let route = route.map(LinearBackwardRoute::dweight);
+        if let Some(transform) = transform {
+            self.tma
+                .gemm_tma_nvfp4_rowwise_a_scale_and_global_scale_buffer_csf_gradient(
+                    stream,
+                    descriptors,
+                    dweight,
+                    output_dim,
+                    k,
+                    input_dim,
+                    error_t.global_scales,
+                    input_t.global_scale,
+                    route,
+                    transform,
+                )
+        } else {
+            self.tma
+                .gemm_tma_nvfp4_rowwise_a_scale_and_global_scale_buffer_csf(
+                    stream,
+                    descriptors,
+                    dweight,
+                    output_dim,
+                    k,
+                    input_dim,
+                    error_t.global_scales,
+                    input_t.global_scale,
+                    route,
+                )
+        }
     }
 
     pub fn backward_device_scale(

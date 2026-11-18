@@ -4,11 +4,12 @@ mod quantize;
 use cuda_core::{DeviceBuffer, DriverError, sys::cudaError_enum_CUDA_ERROR_INVALID_VALUE};
 
 use crate::launch::grid_x_config;
+use crate::nvfp4::Nvfp4RowwiseDeviceTensor;
 
 use self::quantize::QuantizeContext;
 use super::{
     LINEAR_BIAS_THREADS_PER_BLOCK, LinearBackwardDeviceScaleArgs, LinearBackwardModule,
-    LinearBackwardMsEdenArgs, LinearBackwardRoute, bias,
+    LinearBackwardMsEdenArgs, LinearBackwardMsEdenWeightArgs, LinearBackwardRoute, bias,
 };
 
 impl LinearBackwardModule {
@@ -17,6 +18,42 @@ impl LinearBackwardModule {
         args: LinearBackwardMsEdenArgs<'_, '_, '_>,
     ) -> Result<(), DriverError> {
         self.backward_ms_eden_impl(args, None, None).map(|_| ())
+    }
+
+    pub fn backward_ms_eden_weight(
+        &self,
+        args: LinearBackwardMsEdenWeightArgs<'_, '_, '_>,
+    ) -> Result<(), DriverError> {
+        let quantize = QuantizeContext::new(
+            args.stream,
+            args.quant_module,
+            args.token_count,
+            args.input_dim,
+            args.output_dim,
+            args.sign_seed,
+            args.scale_seed,
+        );
+        let mut scratch = args.scratch;
+        // Use the same paired pack and transpose seed for dW as the full
+        // backward path, even though the other orientation is unused.
+        quantize.error_pair(args.e, &mut scratch, None, None)?;
+        quantize.input_transpose(args.input_t, &mut scratch.input_t_h)?;
+        let error_t = Nvfp4RowwiseDeviceTensor::new(
+            &*scratch.e_t_h.bytes,
+            &*scratch.e_t_h.scales,
+            &*scratch.e_h.global_scale,
+        );
+        self.backward_weight_device_scale_tma(
+            args.stream,
+            error_t,
+            scratch.input_t_h.device_scale_mma_weight(),
+            args.dweight,
+            args.token_count,
+            args.input_dim,
+            args.output_dim,
+            scratch.tma.descriptors,
+            None,
+        )
     }
 
     pub fn backward_ms_eden_routed(
@@ -55,7 +92,15 @@ impl LinearBackwardModule {
         relu2_backward_f16: Option<(&DeviceBuffer<u16>, &mut DeviceBuffer<f32>)>,
         route: Option<LinearBackwardRoute<'_>>,
     ) -> Result<Option<u32>, DriverError> {
-        let quantize = QuantizeContext::for_args(&args);
+        let quantize = QuantizeContext::new(
+            args.stream,
+            args.quant_module,
+            args.token_count,
+            args.input_dim,
+            args.output_dim,
+            args.sign_seed,
+            args.scale_seed,
+        );
         let mut scratch = args.scratch;
         let bias_fused = quantize.error_pair(
             args.e,

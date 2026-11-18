@@ -34,3 +34,17 @@ pub struct LinearBackwardMsEdenArgs<'a, 'scratch, 'out> {
     pub scale_seed: u32,
     pub precomputed_e_amax_chunks: Option<u32>,
 }
+
+pub struct LinearBackwardMsEdenWeightArgs<'a, 'scratch, 'out> {
+    pub stream: &'a CudaStream,
+    pub quant_module: &'a Nvfp4QuantModule,
+    pub e: &'a DeviceBuffer<f32>,
+    pub input_t: LinearBackwardInputTranspose<'a>,
+    pub scratch: LinearBackwardMsEdenScratch<'scratch>,
+    pub dweight: &'out mut DeviceBuffer<f32>,
+    pub token_count: u32,
+    pub input_dim: u32,
+    pub output_dim: u32,
+    pub sign_seed: u32,
+    pub scale_seed: u32,
+}

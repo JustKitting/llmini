@@ -116,11 +116,11 @@ impl Trainer {
                 },
             )?;
         }
-        if let (Some(f), Some(w)) = (&mut self.latent_feedback, &self.uploaded.latent_feedback) {
+        if let Some(f) = &mut self.latent_feedback {
             f.backward(
                 &self.runtime,
-                w,
                 &self.buffers.backward.d_embedding_residual,
+                batch.seq_len,
             )?;
         }
         self.runtime
