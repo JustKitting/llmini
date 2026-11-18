@@ -90,7 +90,7 @@ fn headwise_gate_forward_and_backward_match_chain_rule() -> Result<(), Box<dyn E
     let saved_raw = raw_f16.to_host_vec(&stream)?;
     let gate_amax = d_qkv_chunk_amax.to_host_vec(&stream)?;
     for row in 0..ROWS {
-        let mut expected_row_amax = 0.0_f32;
+        let mut emitted_row_amax = 0.0_f32;
         for head in 0..HEADS {
             let gate_index = row * QKV_DIM + GATE_OFFSET + head;
             let logit = f16_bits_to_f32(saved_qkv[gate_index]);
@@ -107,9 +107,9 @@ fn headwise_gate_forward_and_backward_match_chain_rule() -> Result<(), Box<dyn E
                 expected_gate_grad,
                 expected_gate_grad.abs() * 2.0e-4,
             );
-            expected_row_amax = expected_row_amax.max(expected_gate_grad.abs());
+            emitted_row_amax = emitted_row_amax.max(d_qkv[gate_index].abs());
         }
-        common::assert_close(gate_amax[row], expected_row_amax, 2.0e-6);
+        assert_eq!(gate_amax[row], emitted_row_amax);
         for col in 0..QKV_DIM {
             if (GATE_OFFSET..GATE_OFFSET + HEADS).contains(&col) {
                 continue;
