@@ -1,16 +1,64 @@
 use cuda_core::DeviceBuffer;
+use gpt2_nvfp4::Gpt2Rng;
+use rust_kernels_cuda::hnet_stage::RatioObjective;
 
-use super::Trainer;
+use super::{Trainer, bytes::ByteBatch, hierarchy::HierarchyScratch, parameters::Parameters};
 use crate::{
     AppResult,
     training::{
         grad_clip::GradientClipBuffers,
+        learning_rate::schedule_free_beta,
         optimizer_apply::{WeightUpdateArgs, apply_backbone_weight_updates},
         optimizer_muon::MuonPointerTables,
     },
 };
 
+pub(super) struct HnetStep {
+    pub nll_sum: f32,
+    pub ratio_loss: f32,
+    pub grad_norm: f32,
+    pub skipped: bool,
+}
+
 impl Trainer {
+    pub(super) fn train_hnet_step(
+        &mut self,
+        scratch: &mut HierarchyScratch,
+        parameters: &mut Parameters,
+        batch: &ByteBatch,
+        ratio: RatioObjective,
+        rng: &mut Gpt2Rng,
+    ) -> AppResult<HnetStep> {
+        let step = self.buffers.optimizer_state.next_step();
+        parameters.materialize(
+            &self.runtime,
+            &mut self.buffers.optimizer,
+            schedule_free_beta(step),
+        )?;
+        let weights = parameters.weights();
+        let (adjoints, lookup) = self.backward_hnet_bytes(
+            scratch,
+            batch,
+            weights.embedding,
+            weights.hierarchy(),
+            ratio,
+            rng,
+        )?;
+        let stream = &self.runtime.stream;
+        parameters.bind_gradients(stream, &adjoints, &lookup)?;
+        let nll_sum: f32 = adjoints.byte_losses.to_host_vec(stream)?.into_iter().sum();
+        let ratio_loss = adjoints.ratio_loss.to_host_vec(stream)?[0];
+        let loss = nll_sum / batch.scored_targets as f32 + ratio_loss;
+        let result = self.update_hnet_backbone(adjoints.backbone_rows, Some(loss))?;
+        parameters.update(&self.runtime, step, &result, rng)?;
+        Ok(HnetStep {
+            nll_sum,
+            ratio_loss,
+            grad_norm: result.trace.grad_norm,
+            skipped: result.trace.update_skipped,
+        })
+    }
+
     /// Install the routed-backbone update tables and include the hierarchy's
     /// parameter gradients in the same norm reduction. These buffers must
     /// keep their device addresses for the lifetime of the training loop.

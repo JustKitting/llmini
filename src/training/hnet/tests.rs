@@ -224,6 +224,89 @@ fn native_hnet_hierarchy_reverses_masked_byte_loss() -> AppResult {
 }
 
 #[test]
+#[ignore = "runs one complete H-Net update on CUDA"]
+fn native_hnet_step_updates_the_outer_and_inner_parameters() -> AppResult {
+    use super::{
+        bytes::{ByteDocuments, MAGIC},
+        hierarchy::HierarchyScratch,
+        parameters::{OUTER_WIDTH, Parameters},
+    };
+
+    let mut trainer = Trainer::new_full_kda(720)?;
+    let stream = trainer.runtime.stream.clone();
+    let mut parameters = Parameters::new(&mut trainer, 1, 4.0, 92)?;
+    let mut scratch = HierarchyScratch::new(&trainer.runtime, 2, 128, OUTER_WIDTH as u32)?;
+    let before = trainer.buffers.optimizer_state.blocks[0]
+        .ln_1
+        .bias
+        .z_master
+        .to_host_vec(&stream)?;
+
+    let mut framed = MAGIC.to_vec();
+    framed.extend(2_u32.to_le_bytes());
+    for bytes in [
+        b"abcdef abcdef abcdef".as_slice(),
+        b"The training loss follows the byte targets.".as_slice(),
+    ] {
+        framed.extend((bytes.len() as u32).to_le_bytes());
+        framed.push(1);
+        framed.extend(bytes);
+    }
+    let batch = ByteDocuments::new(framed.as_slice())?
+        .next_batch(2, 128)?
+        .unwrap();
+    let step = trainer.train_hnet_step(
+        &mut scratch,
+        &mut parameters,
+        &batch,
+        RatioObjective {
+            target: 4.0,
+            weight: 0.03,
+        },
+        &mut Gpt2Rng::new(66),
+    )?;
+    assert!(!step.skipped);
+    assert!(step.nll_sum > 0.0 && step.nll_sum.is_finite());
+    assert!(step.ratio_loss.is_finite() && step.grad_norm.is_finite());
+    assert_eq!(trainer.buffers.optimizer_state.step, 1);
+    assert_ne!(
+        trainer.buffers.optimizer_state.blocks[0]
+            .ln_1
+            .bias
+            .z_master
+            .to_host_vec(&stream)?,
+        before
+    );
+
+    parameters.materialize(&trainer.runtime, &mut trainer.buffers.optimizer, 1.0)?;
+    let weights = parameters.weights();
+    let weights = weights.hierarchy();
+    assert!(
+        weights
+            .width_padding
+            .unwrap()
+            .to_host_vec(&stream)?
+            .iter()
+            .any(|&bits| bits & 0x7fff != 0)
+    );
+    for tensor in [
+        weights.stage.residual,
+        weights.encoder[0].norm_bias,
+        weights.decoder[0].norm_bias,
+    ] {
+        assert!(tensor.global_scale_to_host(&stream)? > 0.0);
+        assert!(
+            tensor
+                .bytes
+                .to_host_vec(&stream)?
+                .into_iter()
+                .any(|byte| byte & 0x77 != 0)
+        );
+    }
+    Ok(())
+}
+
+#[test]
 #[ignore = "requires sm_120a PTX and the full native KDA backbone"]
 fn native_routed_backbone_executes_and_reverses_real_blocks() -> AppResult {
     let mut trainer = Trainer::new_full_kda(0x47505432)?;

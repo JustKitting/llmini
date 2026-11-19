@@ -66,6 +66,12 @@ impl Runtime {
         rust_kernels_cuda::hnet_byte_head::ByteHeadModule::from_module(self.cuda_module.clone())
     }
 
+    pub(in crate::training) fn hnet_optimizer_module(
+        &self,
+    ) -> Result<rust_kernels_cuda::hnet_optimizer::CompactAdamModule, cuda_core::DriverError> {
+        rust_kernels_cuda::hnet_optimizer::CompactAdamModule::from_module(self.cuda_module.clone())
+    }
+
     #[cfg(test)]
     pub(in crate::training) fn value_rms_point_check_module(
         &self,

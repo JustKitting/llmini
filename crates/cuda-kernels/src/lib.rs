@@ -68,6 +68,8 @@ pub mod engram_multi;
 pub mod hnet_byte_head;
 #[path = "gpt/hnet_chunk.rs"]
 pub mod hnet_chunk;
+#[path = "gpt/hnet_optimizer.rs"]
+pub mod hnet_optimizer;
 #[path = "gpt/hnet_router.rs"]
 pub mod hnet_router;
 #[path = "gpt/hnet_stage.rs"]

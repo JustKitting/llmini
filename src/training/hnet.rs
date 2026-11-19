@@ -10,6 +10,7 @@ mod bytes;
 mod hierarchy;
 mod optimizer;
 mod outer;
+mod parameters;
 mod projection;
 
 pub(in crate::training) struct RoutedBackboneTape<'trainer, 'stage, 'plan> {
