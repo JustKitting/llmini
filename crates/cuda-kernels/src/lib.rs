@@ -64,6 +64,8 @@ pub mod embedding;
 pub mod engram;
 #[path = "gpt/engram_multi.rs"]
 pub mod engram_multi;
+#[path = "gpt/hnet_chunk.rs"]
+pub mod hnet_chunk;
 #[path = "utils/f16_tc_matmul/mod.rs"]
 pub mod f16_tc_matmul;
 #[path = "utils/f32_matrix_ops.rs"]
