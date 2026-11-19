@@ -1,4 +1,5 @@
 mod device;
+pub(super) mod relocate;
 mod tensor;
 mod topology;
 

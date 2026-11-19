@@ -25,6 +25,37 @@ pub struct Trainer {
 }
 
 impl Trainer {
+    /// Transfer same-dtype live state before activating a deeper prefix.
+    /// The caller changes the active forward/backward and optimizer range
+    /// after this operation. Embedding, readout, Engram and clocks stay live.
+    pub fn relocate_depth_growth(
+        &mut self,
+        transition: gpt2_nvfp4::depth_growth::GrowthTransition,
+    ) -> AppResult {
+        use super::optimizer_state::relocate::{copy_fp32, copy_muon};
+
+        let stream = self.runtime.stream.as_ref();
+        self.buffers
+            .optimizer_state
+            .copy_growth_blocks(stream, transition)?;
+        if let Some(mhc) = &mut self.mhc {
+            for (source, destination) in transition.copies() {
+                let (before, after) = mhc.units.split_at_mut(destination * 2);
+                for (from, to) in before[source * 2..source * 2 + 2]
+                    .iter()
+                    .zip(after.iter_mut().take(2))
+                {
+                    copy_muon(stream, &from.phi, &mut to.phi)?;
+                    for (from, to) in from.fp.iter().zip(&mut to.fp) {
+                        copy_fp32(stream, from, to)?;
+                    }
+                }
+            }
+        }
+        stream.synchronize()?;
+        Ok(())
+    }
+
     pub fn new(seed: u64) -> AppResult<Self> {
         let memory = gpt2_nvfp4::GPT2_REQUIRES_ENGRAM_MHC || super::engram::multistream_enabled();
         Self::new_architecture(seed, false, memory || super::mhc::enabled(), memory)
