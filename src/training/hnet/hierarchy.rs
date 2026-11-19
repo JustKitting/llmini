@@ -1,17 +1,20 @@
 use cuda_core::DeviceBuffer;
 use gpt2_nvfp4::{GPT2_MLP_ROUTE_TILE, Gpt2Rng, RowwiseNvfp4Buffers};
 use rust_kernels_cuda::{
-    hnet_byte_head::{BYTE_LOGIT_STRIDE, ByteHeadModule, ByteLossArgs, ByteProjection},
+    embedding::EmbeddingArgs,
+    hnet_byte_head::{BYTE_BOS, BYTE_LOGIT_STRIDE, ByteHeadModule, ByteLossArgs, ByteProjection},
     hnet_stage::{HnetStage, RatioObjective, StageShape},
     linear_backward::{
         LinearBackwardInputTranspose, LinearBackwardMsEdenArgs, LinearBackwardMsEdenScratchBuffers,
         LinearBackwardWeightTranspose,
     },
     nvfp4_tma_matmul::tma::TmaNvfp4DeviceScaleDescriptors,
+    optimizer::EmbeddingLookupGradArgs,
 };
 
 use super::{
     Trainer,
+    bytes::ByteBatch,
     outer::{OuterParameterAdjoints, OuterScratch, OuterTape, OuterWeights},
     projection::{StageParameterAdjoints, StageProjectionScratch, StageWeights},
 };
@@ -168,6 +171,66 @@ impl ByteReadoutScratch {
 }
 
 impl Trainer {
+    pub(super) fn backward_hnet_bytes(
+        &mut self,
+        scratch: &mut HierarchyScratch,
+        batch: &ByteBatch,
+        embedding: &UploadedNvfp4,
+        weights: HierarchyWeights<'_>,
+        ratio: RatioObjective,
+        rng: &mut Gpt2Rng,
+    ) -> AppResult<(HierarchyAdjoints, DeviceBuffer<f32>)> {
+        let shape = scratch.shape;
+        let rows = shape.batch * shape.outer_stride;
+        if batch.lengths.len() != shape.batch as usize
+            || batch.stride != shape.outer_stride
+            || batch.inputs.len() != rows as usize
+            || batch.targets.len() != rows as usize
+            || embedding.scale_rows != BYTE_BOS + 1
+            || embedding.scale_k != shape.features
+        {
+            return Err("byte batch or lookup table has the wrong dimensions for H-Net".into());
+        }
+        let stream = self.runtime.stream.clone();
+        let features = rows * shape.features;
+        let inputs = DeviceBuffer::from_host(&stream, &batch.inputs)?;
+        let targets = DeviceBuffer::from_host(&stream, &batch.targets)?;
+        let valid_lengths = DeviceBuffer::from_host(&stream, &batch.lengths)?;
+        let mut embeddings = DeviceBuffer::zeroed(&stream, features as usize)?;
+        self.runtime.embedding.token_embedding(EmbeddingArgs {
+            stream: &stream,
+            tokens: &inputs,
+            token_embedding: embedding.device(),
+            residual: &mut embeddings,
+            hidden_len: features,
+            embedding_dim: shape.features,
+        })?;
+        let adjoints = self.backward_hnet(
+            scratch,
+            HierarchyBatch {
+                embeddings: &embeddings,
+                valid_lengths: &valid_lengths,
+                targets: &targets,
+                scored_targets: batch.scored_targets,
+            },
+            weights,
+            ratio,
+            rng,
+        )?;
+        let mut lookup = DeviceBuffer::zeroed(&stream, embedding.len)?;
+        self.runtime
+            .optimizer
+            .add_embedding_lookup_grad(EmbeddingLookupGradArgs {
+                stream: &stream,
+                tokens: &inputs,
+                d_embedding_residual: &adjoints.embeddings,
+                d_token_embedding: &mut lookup,
+                token_count: rows,
+                embedding_dim: shape.features,
+            })?;
+        Ok((adjoints, lookup))
+    }
+
     /// Differentiate the native byte hierarchy. The trunk gradients stay in
     /// the trainer's existing optimizer buffers, and the outer adjoints are
     /// returned in the same order as the parameter slices.

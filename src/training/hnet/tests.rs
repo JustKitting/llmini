@@ -102,10 +102,11 @@ fn outer_hnet_block_is_causal_and_preserves_recurrent_adjoint() -> AppResult {
 #[test]
 #[ignore = "uses the CUDA outer blocks, routed inner backbone, and byte head"]
 fn native_hnet_hierarchy_reverses_masked_byte_loss() -> AppResult {
-    use rust_kernels_cuda::hnet_byte_head::{BYTE_EOS, BYTE_LOGIT_STRIDE, BYTE_PADDING_TARGET};
+    use rust_kernels_cuda::hnet_byte_head::{BYTE_BOS, BYTE_EOS, BYTE_LOGIT_STRIDE};
 
     use super::{
-        hierarchy::{HierarchyBatch, HierarchyScratch, HierarchyWeights},
+        bytes::{ByteDocuments, MAGIC},
+        hierarchy::{HierarchyScratch, HierarchyWeights},
         outer::OuterWeights,
         projection::StageWeights,
     };
@@ -141,33 +142,24 @@ fn native_hnet_hierarchy_reverses_masked_byte_loss() -> AppResult {
     let key = packed_matrix(stream, WIDTH, WIDTH, &mut rng)?;
     let residual = packed_matrix(stream, WIDTH, WIDTH, &mut rng)?;
     let byte_readout = packed_matrix(stream, BYTE_LOGIT_STRIDE as usize, WIDTH, &mut rng)?;
+    let byte_embedding = packed_matrix(stream, (BYTE_BOS + 1) as usize, WIDTH, &mut rng)?;
     let padding = DeviceBuffer::zeroed(stream, GPT2_N_EMBD - WIDTH)?;
     let mut scratch = HierarchyScratch::new(&trainer.runtime, 2, STRIDE as u32, WIDTH as u32)?;
-    let embeddings: Vec<_> = (0..2 * STRIDE * WIDTH)
-        .map(|_| (rng.next_u32() % 65) as f32 / 256.0 - 0.125)
-        .collect();
-    let embeddings = DeviceBuffer::from_host(stream, &embeddings)?;
-    let lengths_device = DeviceBuffer::from_host(stream, &lengths)?;
-    let mut targets = [BYTE_PADDING_TARGET; 2 * STRIDE];
-    for (sequence, length) in lengths.into_iter().enumerate() {
-        let start = sequence * STRIDE;
-        for (i, target) in targets[start..start + length as usize - 1]
-            .iter_mut()
-            .enumerate()
-        {
-            *target = (i * 73 % 256) as u32;
-        }
-        targets[start + length as usize - 1] = BYTE_EOS;
+    let mut framed = MAGIC.to_vec();
+    framed.extend(2_u32.to_le_bytes());
+    for length in lengths {
+        let bytes = length - 1_u32;
+        framed.extend(bytes.to_le_bytes());
+        framed.push(1);
+        framed.extend((0..bytes).map(|i| (i * 73 % 256) as u8));
     }
-    let targets = DeviceBuffer::from_host(stream, &targets)?;
-    let adjoints = trainer.backward_hnet(
+    let mut source = ByteDocuments::new(framed.as_slice())?;
+    let batch = source.next_batch(2, STRIDE as u32)?.unwrap();
+    assert_eq!(batch.lengths, lengths);
+    let (adjoints, d_lookup) = trainer.backward_hnet_bytes(
         &mut scratch,
-        HierarchyBatch {
-            embeddings: &embeddings,
-            valid_lengths: &lengths_device,
-            targets: &targets,
-            scored_targets: lengths.into_iter().sum(),
-        },
+        &batch,
+        &byte_embedding,
         HierarchyWeights {
             encoder: &encoder,
             decoder: &decoder,
@@ -210,6 +202,12 @@ fn native_hnet_hierarchy_reverses_masked_byte_loss() -> AppResult {
             .iter()
             .all(|value| *value == 0.0)
     );
+    let d_lookup = d_lookup.to_host_vec(stream)?;
+    let eos = BYTE_EOS as usize * WIDTH;
+    let bos = BYTE_BOS as usize * WIDTH;
+    assert!(d_lookup.iter().all(|g| g.is_finite()));
+    assert!(d_lookup[eos..bos].iter().all(|g| *g == 0.0));
+    assert!(d_lookup[bos..].iter().any(|g| *g != 0.0));
     for matrix in [
         &adjoints.encoder[0].qkv,
         &adjoints.decoder[0].qkv,

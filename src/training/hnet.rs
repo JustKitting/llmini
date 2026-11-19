@@ -6,6 +6,7 @@ use rust_kernels_cuda::hnet_stage::{HnetStage, StagePlan, WidthAdjoints};
 use super::{Trainer, forward::ForwardInput, learning_rate::schedule_free_beta, schedule_free};
 use crate::AppResult;
 
+mod bytes;
 mod hierarchy;
 mod optimizer;
 mod outer;
