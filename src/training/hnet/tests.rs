@@ -382,11 +382,13 @@ fn native_routed_backbone_executes_and_reverses_real_blocks() -> AppResult {
     const OUTER: usize = 256;
     const WIDTH: usize = 512;
     let lengths = [192, 91];
-    let mut queries = [0x3c00_u16, 0].repeat(BATCH * OUTER);
+    let queries = [0x3c00_u16, 0].repeat(BATCH * OUTER);
+    let mut keys = [0x3c00_u16, 0].repeat(BATCH * OUTER);
+    // A negative cosine selects these positions. An orthogonal key is a
+    // continuation under the released router's tie rule.
     for row in [41, 98, OUTER + 32] {
-        queries[2 * row..2 * row + 2].copy_from_slice(&[0, 0x3c00]);
+        keys[2 * row..2 * row + 2].copy_from_slice(&[0xbc00, 0x3c00]);
     }
-    let keys = [0x3c00_u16, 0].repeat(BATCH * OUTER);
     let encoded: Vec<_> = (0..BATCH * OUTER * WIDTH)
         .map(|index| [0x3000_u16, 0xb000, 0x3400, 0x2800][(index + index / WIDTH) % 4])
         .collect();
