@@ -47,9 +47,11 @@ impl Trainer {
         Self::new_architecture(seed, true, super::mhc::enabled(), false)
     }
 
+    #[cfg(test)]
     pub fn new_mhc(seed: u64) -> AppResult<Self> {
         Self::new_architecture(seed, false, true, false)
     }
+    #[cfg(test)]
     pub fn new_bounded_swiglu(seed: u64) -> AppResult<Self> {
         if !gpt2_nvfp4::GPT2_BOUNDED_SWIGLU {
             return Err(
@@ -58,21 +60,25 @@ impl Trainer {
         }
         Self::new_architecture(seed, false, false, false)
     }
+    #[cfg(test)]
     pub fn new_value_rms(seed: u64) -> AppResult<Self> {
         if !gpt2_nvfp4::GPT2_VALUE_RMS {
             return Err("value RMS requires the native GPT2_VALUE_RMS=1 build".into());
         }
         Self::new_architecture(seed, false, false, false)
     }
+    #[cfg(test)]
     pub fn new_full_kda(seed: u64) -> AppResult<Self> {
         if !gpt2_nvfp4::GPT2_KDA_FULL_STATE_BACKWARD {
             return Err("full KDA backward requires a GPT2_KDA_BACKWARD=full native build".into());
         }
         Self::new_architecture(seed, false, false, false)
     }
+    #[cfg(test)]
     pub fn new_engram_mhc(seed: u64) -> AppResult<Self> {
         Self::new_architecture(seed, false, true, true)
     }
+    #[cfg(test)]
     pub fn new_stationary_rope(seed: u64) -> AppResult<Self> {
         if !gpt2_nvfp4::GPT2_STATIONARY_ROPE {
             return Err(
@@ -81,13 +87,17 @@ impl Trainer {
         }
         Self::new_architecture(seed, false, false, false)
     }
+    #[cfg(test)]
     pub fn new_engram_mhc_with_table_budget(seed: u64, requested: usize) -> AppResult<Self> {
-        super::engram::Config::multistream_with_table_budget(Some(requested))?;
-        Self::new_architecture_with_table_budget(seed, false, true, true, Some(requested), false)
-    }
-    pub fn new_engram_mhc_with_four_grams(seed: u64, requested: Option<usize>) -> AppResult<Self> {
-        super::engram::Config::multistream_with_ngram_budget(requested, true)?;
-        Self::new_architecture_with_table_budget(seed, false, true, true, requested, true)
+        Self::new_architecture_at_layout(
+            seed,
+            false,
+            true,
+            true,
+            Some(requested),
+            false,
+            GPT2_N_LAYER.into(),
+        )
     }
     fn new_architecture(
         seed: u64,
@@ -95,16 +105,29 @@ impl Trainer {
         use_mhc: bool,
         multi_memory: bool,
     ) -> AppResult<Self> {
-        Self::new_architecture_with_table_budget(seed, feedback, use_mhc, multi_memory, None, false)
+        Self::new_architecture_at_layout(
+            seed,
+            feedback,
+            use_mhc,
+            multi_memory,
+            None,
+            false,
+            GPT2_N_LAYER.into(),
+        )
     }
-    fn new_architecture_with_table_budget(
+
+    pub(in crate::training) fn new_architecture_at_layout(
         seed: u64,
         feedback: bool,
         use_mhc: bool,
         multi_memory: bool,
         table_budget: Option<usize>,
         four_grams: bool,
+        layout: LayerLayout,
     ) -> AppResult<Self> {
+        if multi_memory && (table_budget.is_some() || four_grams) {
+            super::engram::Config::multistream_with_ngram_budget(table_budget, four_grams)?;
+        }
         let bounded_combined = gpt2_nvfp4::GPT2_BOUNDED_SWIGLU_ENGRAM_MHC;
         if gpt2_nvfp4::GPT2_REQUIRES_ENGRAM_MHC && !(use_mhc && multi_memory && !feedback) {
             return Err("the composite full-credit build requires the complete four-stream Engram/mHC graph".into());
@@ -138,7 +161,11 @@ impl Trainer {
         }
         let runtime = Runtime::new()?;
         let mut model = Gpt2::new();
-        model.init(seed);
+        if layout.inherit_block_policy {
+            model.init_for_depth_growth(seed);
+        } else {
+            model.init(seed);
+        }
         let weights = model.weights().expect("Gpt2::init must create weights");
 
         let mut uploaded = UploadedModel::new_with_engram(
@@ -171,7 +198,7 @@ impl Trainer {
                 super::engram::Weights::new_multistream(&runtime)?
             });
         }
-        Self::with_uploaded_model(seed, runtime, model, uploaded, GPT2_N_LAYER.into())
+        Self::with_uploaded_model(seed, runtime, model, uploaded, layout)
     }
 
     fn with_uploaded_model(

@@ -5,7 +5,26 @@ use gpt2_nvfp4::{
 };
 
 use super::Trainer;
+use crate::training::launch::TrainConfig;
 use crate::{AppResult, training::TokenDataLoader};
+
+fn configured_growth_trainer() -> AppResult<Trainer> {
+    TrainConfig {
+        depth_growth: true,
+        seed: 0x47505432,
+        latent_feedback: false,
+        mhc: true,
+        engram_mhc: true,
+        engram_table_params: Some(500_000_000),
+        engram_four_grams: false,
+        step_cap: 20_000,
+        log_interval: 1,
+        eval_interval: None,
+        eval_repeats: 1,
+        max_seconds: 43_200.,
+    }
+    .create_trainer()
+}
 
 fn prefix<T: Default + Copy>(stream: &CudaStream, buffer: &DeviceBuffer<T>) -> AppResult<[T; 8]> {
     read_span(stream, buffer, 0)
@@ -41,6 +60,10 @@ fn block_state(trainer: &Trainer, index: usize) -> AppResult<Vec<u32>> {
         &matrix.z_master,
         &matrix.x_master,
         &matrix.second_momentum,
+        &block.attn_c_proj.weight_muon.z_master,
+        &block.attn_c_proj.weight_muon.x_master,
+        &block.mlp_down.weight_muon.z_master,
+        &block.mlp_down.weight_muon.x_master,
         &block.ln_1.bias.first,
         &block.ln_1.bias.second,
         &trainer.mhc.as_ref().unwrap().units[2 * index].phi.x_master,
@@ -90,7 +113,25 @@ fn optimizer_clock(trainer: &Trainer) -> (u32, u32, String) {
 #[ignore = "uses the native B8/S2048 FineWeb/Engram/mHC CUDA trainer"]
 fn native_depth_growth_copies_state_and_reduces_only_active_parameters() -> AppResult {
     assert_eq!((GPT2_BATCH_SIZE, GPT2_SEQ_LEN, GPT2_N_LAYER), (8, 2048, 16));
-    let mut trainer = Trainer::new_engram_mhc_with_table_budget(0x47505432, 500_000_000)?;
+    let mut trainer = configured_growth_trainer()?;
+    assert_eq!(trainer.layer_layout(), super::LayerLayout::grown(4));
+    assert_eq!(trainer.mhc.as_ref().unwrap().active_boundaries, 8);
+    assert_eq!(trainer.engram.as_ref().unwrap().active_depth, 4);
+    let expected = 0.02 / 8.0_f32.sqrt();
+    for block in &trainer.uploaded.blocks[..4] {
+        for weight in [&block.attn_c_proj.weight, &block.mlp_down.weight] {
+            assert_eq!(
+                weight.global_scale.to_host_vec(&trainer.runtime.stream)?,
+                [expected]
+            );
+        }
+        for weight in [&block.attn_qkv.weight, &block.mlp_up.weight] {
+            assert_eq!(
+                weight.global_scale.to_host_vec(&trainer.runtime.stream)?,
+                [0.02]
+            );
+        }
+    }
     let mut loader = TokenDataLoader::from_fineweb()?;
     let mut upload = trainer.reusable_default_batch()?;
     let mut previous = 0;
@@ -167,10 +208,9 @@ fn native_depth_growth_copies_state_and_reduces_only_active_parameters() -> AppR
 #[test]
 #[ignore = "uses the native NVFP4 CUDA evaluator and a partial Engram/mHC checkpoint"]
 fn partial_growth_checkpoint_replays_the_active_prefix() -> AppResult {
-    let mut trainer = Trainer::new_engram_mhc_with_table_budget(0x47505432, 500_000_000)?;
+    let mut trainer = configured_growth_trainer()?;
     let windows = TokenDataLoader::fineweb_validation_tokens()?;
     let batch = trainer.batch_from_windows(&windows, crate::training::data::VALIDATION_WINDOWS)?;
-    trainer.select_training_depth(4)?;
     trainer.select_training_depth(8)?;
     trainer.materialize_evaluation_weights()?;
     let expected = trainer.eval_token_losses(&batch)?;
@@ -194,7 +234,8 @@ fn partial_growth_checkpoint_replays_the_active_prefix() -> AppResult {
         drop(batch);
         drop(trainer);
         let mut reopened = Trainer::from_checkpoint(0x47505432, &path)?;
-        let batch = reopened.batch_from_windows(&windows, crate::training::data::VALIDATION_WINDOWS)?;
+        let batch =
+            reopened.batch_from_windows(&windows, crate::training::data::VALIDATION_WINDOWS)?;
         assert_eq!(reopened.layer_layout(), super::LayerLayout::grown(8));
         assert_eq!(reopened.mhc.as_ref().unwrap().active_boundaries, 16);
         assert_eq!(reopened.engram.as_ref().unwrap().active_depth, 8);

@@ -65,7 +65,13 @@ impl Gpt2 {
     }
 
     pub fn init_from_rng(&mut self, rng: &mut Gpt2Rng) {
-        self.weights = Some(Gpt2Weights::init(rng));
+        self.weights = Some(Gpt2Weights::init(rng, false));
+    }
+
+    /// Initialize the starting stack of a fresh LIDAS run.
+    pub fn init_for_depth_growth(&mut self, seed: u64) {
+        let mut rng = Gpt2Rng::new(seed);
+        self.weights = Some(Gpt2Weights::init(&mut rng, true));
     }
 
     pub fn weights(&self) -> Option<&Gpt2Weights> {

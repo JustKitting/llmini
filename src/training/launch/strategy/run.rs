@@ -2,6 +2,7 @@ use burn::train::{
     EventProcessorTraining, Interrupter, LearnerEvent, SupervisedTrainingEventProcessor,
     TrainLoader, ValidLoader,
 };
+use gpt2_nvfp4::{GPT2_N_LAYER, depth_growth::LayerLayout};
 use std::time::Instant;
 
 use super::{
@@ -16,10 +17,14 @@ use crate::training::launch::{
     CudaLearningComponents, TrainConfig,
     config::{load_model_path, should_eval_step, should_log_step},
 };
-use crate::training::{Trainer, debug_metrics};
+use crate::training::{Trainer, debug_metrics, engram, mhc};
 
 impl TrainConfig {
     pub(in crate::training) fn create_trainer(&self) -> AppResult<Trainer> {
+        let layout = self.growth_plan()?.map_or_else(
+            || LayerLayout::from(GPT2_N_LAYER),
+            |plan| LayerLayout::grown(plan.depth(0)),
+        );
         if gpt2_nvfp4::GPT2_REQUIRES_ENGRAM_MHC && !self.engram_mhc {
             return Err(
                 "this composite full-credit build requires the complete Engram/mHC factory".into(),
@@ -30,29 +35,35 @@ impl TrainConfig {
         {
             return Err("full recurrent KDA credit supports the standalone backbone or complete four-stream Engram/mHC graph".into());
         }
-        if self.engram_mhc {
-            if self.engram_four_grams {
-                Trainer::new_engram_mhc_with_four_grams(self.seed, self.engram_table_params)
-            } else if let Some(requested) = self.engram_table_params {
-                Trainer::new_engram_mhc_with_table_budget(self.seed, requested)
-            } else {
-                Trainer::new_engram_mhc(self.seed)
-            }
-        } else if gpt2_nvfp4::GPT2_STATIONARY_ROPE {
-            Trainer::new_stationary_rope(self.seed)
-        } else if gpt2_nvfp4::GPT2_VALUE_RMS {
-            Trainer::new_value_rms(self.seed)
-        } else if gpt2_nvfp4::GPT2_BOUNDED_SWIGLU {
-            Trainer::new_bounded_swiglu(self.seed)
-        } else if gpt2_nvfp4::GPT2_KDA_FULL_STATE_BACKWARD {
-            Trainer::new_full_kda(self.seed)
+        let (feedback, mhc, multi_memory) = if self.engram_mhc {
+            (false, true, true)
+        } else if gpt2_nvfp4::GPT2_STATIONARY_ROPE
+            || gpt2_nvfp4::GPT2_VALUE_RMS
+            || gpt2_nvfp4::GPT2_BOUNDED_SWIGLU
+            || gpt2_nvfp4::GPT2_KDA_FULL_STATE_BACKWARD
+        {
+            (false, false, false)
         } else if self.mhc {
-            Trainer::new_mhc(self.seed)
+            (false, true, false)
         } else if self.latent_feedback {
-            Trainer::new_feedback(self.seed)
+            (true, mhc::enabled(), false)
         } else {
-            Trainer::new(self.seed)
-        }
+            let memory = engram::multistream_enabled();
+            (false, memory || mhc::enabled(), memory)
+        };
+        Trainer::new_architecture_at_layout(
+            self.seed,
+            feedback,
+            mhc,
+            multi_memory,
+            if self.engram_mhc {
+                self.engram_table_params
+            } else {
+                None
+            },
+            self.engram_mhc && self.engram_four_grams,
+            layout,
+        )
     }
 }
 
@@ -71,11 +82,10 @@ impl CudaTrainingStrategy {
         let mut gradient_log = gradient_interval
             .map(|_| std::fs::File::create(self.run_output.path("gradient_components.jsonl")))
             .transpose()?;
-        let mut trainer = self.config.create_trainer()?;
         let growth = self.config.growth_plan()?;
-        if let Some(plan) = growth {
-            let depth = plan.depth(0);
-            trainer.select_training_depth(depth)?;
+        let mut trainer = self.config.create_trainer()?;
+        if growth.is_some() {
+            let depth = trainer.active_depth();
             println!("depth_growth active_depth={depth} completed_attempts=0");
         }
         if let Some(path) = load_model_path() {

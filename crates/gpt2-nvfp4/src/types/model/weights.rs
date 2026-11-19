@@ -20,8 +20,12 @@ pub struct Gpt2Weights {
 }
 
 impl Gpt2Weights {
-    pub(crate) fn init(rng: &mut InitRng) -> Self {
-        let residual_projection_scale = 0.02;
+    pub(crate) fn init(rng: &mut InitRng, depth_growth: bool) -> Self {
+        let mut residual_projection_scale = 0.02;
+        if depth_growth {
+            // LIDAS initializes residual projections against the starting depth.
+            residual_projection_scale /= (2.0 * crate::KIMI_FULL_ATTENTION_PERIOD as f32).sqrt();
+        }
         Self {
             config: Gpt2Config::gpt2_124m(),
             embeddings: EmbeddingWeights::init(rng),
@@ -52,5 +56,48 @@ impl Gpt2Weights {
         hook: &mut dyn FnMut(usize, &mut HiddenStateDevice<'_>) -> Result<(), DriverError>,
     ) -> Result<HiddenStateDevice<'a>, DriverError> {
         forward::forward_with_hook(self, args, hook)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::Gpt2;
+
+    #[test]
+    fn depth_growth_initializes_residual_projections_at_the_first_stage_depth() {
+        let mut fixed = Gpt2::new();
+        let mut grown = Gpt2::new();
+        fixed.init(0x47505432);
+        grown.init_for_depth_growth(0x47505432);
+        let fixed = &fixed.weights().unwrap().h;
+        let grown = &grown.weights().unwrap().h;
+        let expected = 0.02 / 8.0_f32.sqrt();
+        for (fixed, grown) in fixed.iter().zip(grown) {
+            assert_eq!(grown.attn.c_proj.weight.global_scale, expected);
+            assert_eq!(grown.mlp.c_proj.weight.global_scale, expected);
+            assert_eq!(fixed.attn.c_proj.weight.global_scale, 0.02);
+            assert_eq!(fixed.mlp.c_proj.weight.global_scale, 0.02);
+            assert_eq!(
+                grown.attn.c_attn.weight.global_scale,
+                fixed.attn.c_attn.weight.global_scale
+            );
+            assert_eq!(
+                grown.mlp.c_fc.weight.global_scale,
+                fixed.mlp.c_fc.weight.global_scale
+            );
+            assert!(
+                grown.attn.c_proj.weight.bytes.as_ref() == fixed.attn.c_proj.weight.bytes.as_ref()
+            );
+            assert!(
+                grown.mlp.c_proj.weight.bytes.as_ref() == fixed.mlp.c_proj.weight.bytes.as_ref()
+            );
+            assert!(
+                grown.attn.c_proj.weight.scales.as_ref()
+                    == fixed.attn.c_proj.weight.scales.as_ref()
+            );
+            assert!(
+                grown.mlp.c_proj.weight.scales.as_ref() == fixed.mlp.c_proj.weight.scales.as_ref()
+            );
+        }
     }
 }
