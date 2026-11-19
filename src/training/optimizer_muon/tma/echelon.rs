@@ -5,8 +5,9 @@ use rust_kernels_cuda::optimizer::echelon::{
 };
 
 use super::{
-    MuonGroupTable, Runtime, TmaDims, TmaScratchRefs, crop_tma_out, polar_shape,
-    quantize_operand_padded, quantize_operand_transposed_padded, run_tma_gemm_self_prepared,
+    MuonGroupTable, MuonTmaOperandScratch, Runtime, TmaDims, TmaScratchRefs, crop_tma_out,
+    operand_refs, polar_shape, quantize_operand_padded, quantize_operand_transposed_padded,
+    run_tma_gemm_self_prepared,
 };
 
 const HEAD_RANK: u32 = 128;
@@ -43,6 +44,7 @@ struct Scratch {
     polynomial: DeviceBuffer<f32>,
     norm_chunks: DeviceBuffer<f32>,
     tail: TailScratch,
+    momentum_transpose: MuonTmaOperandScratch,
 }
 
 impl Echelon {
@@ -90,6 +92,7 @@ impl Echelon {
         let allocate = |len: u32| DeviceBuffer::zeroed(stream, len as usize);
         let thin = max_long * max_rank;
         let square = max_rank * max_rank;
+        let momentum_dims = TmaDims::new(max_rank, max_long, max_short);
         let scratch = Scratch {
             q: allocate(max_short * max_rank)?,
             v: allocate(thin)?,
@@ -102,6 +105,12 @@ impl Echelon {
             polynomial: allocate(square)?,
             norm_chunks: allocate(thin.div_ceil(128))?,
             tail: TailScratch::new(stream, capacity)?,
+            momentum_transpose: MuonTmaOperandScratch::new(
+                stream,
+                momentum_dims.n as usize * momentum_dims.k as usize,
+                momentum_dims.n as usize,
+                momentum_dims.k as usize,
+            )?,
         };
         Ok(Self {
             kernels,
@@ -129,17 +138,18 @@ impl Echelon {
         let (short, long, rank) = slot.shape.dimensions();
         let s = &mut self.scratch;
         let cold = !slot.refreshed;
-        let sample = TmaDims::new(rank, long, short);
+        let (sample, refresh) =
+            pack_momentum(runtime, tma, &mut s.momentum_transpose, x, slot.shape)?;
         self.qr
             .load_warm(stream, &slot.frame, &mut s.q, slot.seed, short, cold)?;
         for _ in 0..if cold { COLD_REFRESHES } else { 1 } {
             // QᵀX then VᵀXᵀ. Each factor is orthonormalized before
             // the next half-step, following the two-sided power iteration.
-            product(
+            product_with_momentum_transpose(
                 runtime,
                 tma,
-                (&s.q, false),
-                (x, true),
+                &mut s.momentum_transpose,
+                &s.q,
                 &mut s.factor,
                 sample,
                 short,
@@ -150,20 +160,20 @@ impl Echelon {
                 runtime,
                 tma,
                 (&s.v, false),
-                (x, false),
+                None,
                 &mut s.factor,
-                TmaDims::new(rank, short, long),
+                refresh,
                 long,
             )?;
             self.qr
                 .orthonormalize(stream, &mut s.factor, &mut s.q, 1, rank, short)?;
         }
         self.qr.store_warm(stream, &s.q, &mut slot.frame)?;
-        product(
+        product_with_momentum_transpose(
             runtime,
             tma,
-            (&s.q, false),
-            (x, true),
+            &mut s.momentum_transpose,
+            &s.q,
             &mut s.head,
             sample,
             short,
@@ -173,7 +183,7 @@ impl Echelon {
             runtime,
             tma,
             (&s.q, true),
-            (&s.head, true),
+            Some((&s.head, true)),
             residual,
             lift,
             rank,
@@ -221,7 +231,7 @@ impl Echelon {
                 runtime,
                 tma,
                 (&s.polynomial, false),
-                (&s.polar, true),
+                Some((&s.polar, true)),
                 &mut s.next_polar,
                 head_dims,
                 rank,
@@ -242,7 +252,7 @@ impl Echelon {
             runtime,
             tma,
             (&s.q, true),
-            (&s.polar, true),
+            Some((&s.polar, true)),
             update,
             lift,
             rank,
@@ -252,6 +262,57 @@ impl Echelon {
         slot.refreshed = true;
         Ok(())
     }
+}
+
+/// These two layouts are read-only across every refresh and the final head
+/// projection of this slot. Keep the ordinary packers and their exact extents.
+fn pack_momentum(
+    runtime: &Runtime,
+    tma: &mut TmaScratchRefs<'_>,
+    transpose: &mut MuonTmaOperandScratch,
+    momentum: &DeviceBuffer<f32>,
+    shape: Shape,
+) -> Result<(TmaDims, TmaDims), DriverError> {
+    let stream = runtime.stream.as_ref();
+    let (short, long, rank) = shape.dimensions();
+    let sample = TmaDims::new(rank, long, short);
+    let refresh = TmaDims::new(rank, short, long);
+    quantize_operand_transposed_padded(
+        stream,
+        runtime,
+        momentum,
+        operand_refs(transpose),
+        short,
+        long,
+        sample.n,
+        sample.k,
+    )?;
+    quantize_operand_padded(
+        stream,
+        runtime,
+        momentum,
+        tma.b.reborrow(),
+        short,
+        long,
+        refresh.n,
+        refresh.k,
+        tma.bound_amax,
+    )?;
+    Ok((sample, refresh))
+}
+
+fn product_with_momentum_transpose(
+    runtime: &Runtime,
+    tma: &mut TmaScratchRefs<'_>,
+    transpose: &mut MuonTmaOperandScratch,
+    frame: &DeviceBuffer<f32>,
+    output: &mut DeviceBuffer<f32>,
+    dims: TmaDims,
+    inner: u32,
+) -> Result<(), DriverError> {
+    let mut tma = tma.reborrow();
+    tma.b = operand_refs(transpose);
+    product(runtime, &mut tma, (frame, false), None, output, dims, inner)
 }
 
 fn self_product(
@@ -277,22 +338,25 @@ fn self_product(
     run_tma_gemm_self_prepared(stream, runtime, output, tma, dims)
 }
 
-/// Pack both operands as NVFP4 rows of length `inner`. The native TMA
-/// product contracts those rows and crops padding from each output axis.
+/// Pack NVFP4 rows of length `inner` unless the right operand is already
+/// packed. The TMA product contracts those rows and crops the output padding.
 fn product(
     runtime: &Runtime,
     tma: &mut TmaScratchRefs<'_>,
     a: (&DeviceBuffer<f32>, bool),
-    b: (&DeviceBuffer<f32>, bool),
+    b: Option<(&DeviceBuffer<f32>, bool)>,
     output: &mut DeviceBuffer<f32>,
     dims: TmaDims,
     inner: u32,
 ) -> Result<(), DriverError> {
     let stream = runtime.stream.as_ref();
-    for ((input, transposed), scratch, rows, padded_rows) in [
-        (a, tma.a.reborrow(), dims.logical_m, dims.m),
+    for (operand, scratch, rows, padded_rows) in [
+        (Some(a), tma.a.reborrow(), dims.logical_m, dims.m),
         (b, tma.b.reborrow(), dims.logical_n, dims.n),
     ] {
+        let Some((input, transposed)) = operand else {
+            continue;
+        };
         if transposed {
             quantize_operand_transposed_padded(
                 stream,
@@ -355,6 +419,91 @@ fn product(
 mod tests {
     use super::*;
     use crate::training::optimizer_tc_scratch::MuonScratchBuffers;
+
+    #[test]
+    #[ignore = "uses the Blackwell NVFP4 TMA optimizer path"]
+    fn cached_momentum_matches_repacking_in_both_orientations() -> crate::AppResult {
+        let runtime = Runtime::new()?;
+        let stream = &runtime.stream;
+        let mut muon = MuonScratchBuffers::new(stream)?;
+        let mut tma = super::super::tma_refs(&mut muon.tma);
+        let capacity = TmaDims::new(8, 256, 128);
+        let mut transpose = MuonTmaOperandScratch::new(
+            stream,
+            (capacity.n * capacity.k) as usize,
+            capacity.n as usize,
+            capacity.k as usize,
+        )?;
+        let bits = |values: Vec<f32>| values.into_iter().map(f32::to_bits).collect::<Vec<_>>();
+        for (case, (short, long, rank)) in [(128, 256, 8), (3, 5, 1), (128, 256, 8)]
+            .into_iter()
+            .enumerate()
+        {
+            let make = |len: u32, offset: u32| {
+                let values = (0..len)
+                    .map(|i| ((i.wrapping_mul(13) + offset) % 37) as f32 * 0.0625 - 1.0)
+                    .collect::<Vec<_>>();
+                DeviceBuffer::from_host(stream, &values)
+            };
+            let momentum = make(short * long, case as u32 + 1)?;
+            let query = make(rank * short, 11)?;
+            let frame = make(rank * long, 19)?;
+            let mut actual_right = DeviceBuffer::zeroed(stream, (rank * long) as usize)?;
+            let mut expected_right = DeviceBuffer::zeroed(stream, (rank * long) as usize)?;
+            let mut actual_left = DeviceBuffer::zeroed(stream, (rank * short) as usize)?;
+            let mut expected_left = DeviceBuffer::zeroed(stream, (rank * short) as usize)?;
+            let (sample, refresh) = pack_momentum(
+                &runtime,
+                &mut tma,
+                &mut transpose,
+                &momentum,
+                Shape::new(short, long, rank)?,
+            )?;
+            for _ in 0..2 {
+                product_with_momentum_transpose(
+                    &runtime,
+                    &mut tma,
+                    &mut transpose,
+                    &query,
+                    &mut actual_right,
+                    sample,
+                    short,
+                )?;
+                product(
+                    &runtime,
+                    &mut tma,
+                    (&frame, false),
+                    None,
+                    &mut actual_left,
+                    refresh,
+                    long,
+                )?;
+            }
+            for (basis, transposed, output, dims, inner) in [
+                (&query, true, &mut expected_right, sample, short),
+                (&frame, false, &mut expected_left, refresh, long),
+            ] {
+                product(
+                    &runtime,
+                    &mut tma,
+                    (basis, false),
+                    Some((&momentum, transposed)),
+                    output,
+                    dims,
+                    inner,
+                )?;
+            }
+            assert_eq!(
+                bits(actual_right.to_host_vec(stream)?),
+                bits(expected_right.to_host_vec(stream)?),
+            );
+            assert_eq!(
+                bits(actual_left.to_host_vec(stream)?),
+                bits(expected_left.to_host_vec(stream)?),
+            );
+        }
+        Ok(())
+    }
 
     #[test]
     #[ignore = "uses the Blackwell NVFP4 TMA optimizer path"]

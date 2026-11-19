@@ -92,7 +92,7 @@ impl MuonTmaScratch {
 }
 
 impl MuonTmaOperandScratch {
-    fn new(
+    pub(super) fn new(
         stream: &CudaStream,
         elements: usize,
         rows: usize,
