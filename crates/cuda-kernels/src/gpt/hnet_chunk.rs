@@ -15,8 +15,9 @@ fn causal_layout(
 ) -> u32 {
     let mut count = 0;
     for row in 0..valid {
-        // Forced start, including a start after splitting a document.
-        let boundary = row == 0 || probability(row) >= 0.5;
+        // Force sequence starts. At a tie, the released router's argmax
+        // chooses the first class (continuation).
+        let boundary = row == 0 || probability(row) > 0.5;
         if boundary {
             count += 1;
         }
@@ -500,9 +501,9 @@ mod tests {
     }
 
     #[test]
-    fn causal_selection_retains_first_and_threshold_ties() {
-        let p = [0.0, 0.4, 0.5, 0.1, 0.9];
-        assert_eq!(mapping(&p), (vec![0, 2, 4], vec![0, 0, 1, 1, 2]));
+    fn causal_selection_forces_first_and_continues_at_threshold_ties() {
+        let p = [0.0, 0.4, 0.5, 0.5 + 1.0 / 2048.0, 0.9];
+        assert_eq!(mapping(&p), (vec![0, 3, 4], vec![0, 0, 0, 1, 2]));
         assert_eq!(mapping(&[]), (vec![], vec![]));
         assert_eq!(mapping(&[0.2]), (vec![0], vec![0]));
     }

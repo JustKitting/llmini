@@ -73,10 +73,14 @@ fn hnet_rms_uses_the_full_width_and_ignores_padding() -> Result<(), Box<dyn std:
 fn ragged_hnet_stage_matches_causal_forward_and_backward() -> Result<(), Box<dyn std::error::Error>>
 {
     let (_, stream, stage) = common::cuda_test_module(HnetStage::from_module)?;
-    let q = fp16(&[
-        1, 0, 1, 0, 0, 1, 1, 0, -1, 0, 1, 0, 1, 0, -1, 0, 0, 1, -1, 0,
-    ]);
-    let k = fp16(&[1, 0].repeat(10));
+    let mut q = [1, 0, 0, 0].repeat(10);
+    q[4..8].copy_from_slice(&[1, 1, 1, 1]);
+    let mut k = [1, 0, 0, 0].repeat(10);
+    k[4..8].copy_from_slice(&[0, 1, 0, 0]);
+    k[8..12].copy_from_slice(&[-1, -1, -1, 1]);
+    k[16] = -1;
+    let q = fp16(&q);
+    let k = fp16(&k);
     let encoded = fp16(&[2, 4, 9, 9, 6, 8, 9, 9, 10, 12, 1, 2, 9, 9, 9, 9, 9, 9, 9, 9]);
     let lengths = [5, 2];
     let d_expanded = [1.0; 20];
@@ -94,7 +98,7 @@ fn ragged_hnet_stage_matches_causal_forward_and_backward() -> Result<(), Box<dyn
             batch: 2,
             outer_stride: 5,
             features: 2,
-            router_width: 2,
+            router_width: 4,
             inner_alignment: 1,
         },
         RatioObjective {
@@ -106,7 +110,7 @@ fn ragged_hnet_stage_matches_causal_forward_and_backward() -> Result<(), Box<dyn
     assert_eq!(plan.inner_lengths().to_host_vec(&stream)?, [3, 1]);
     common::assert_slice_close(
         &plan.ratio_loss().to_host_vec(&stream)?,
-        &[0.03 * 10.0 / 7.0],
+        &[0.03 * 79.0 / 49.0],
         1e-6,
     );
 
@@ -155,19 +159,28 @@ fn ragged_hnet_stage_matches_causal_forward_and_backward() -> Result<(), Box<dyn
     let expanded = stage.expand(&plan, &gathered)?;
     assert_eq!(
         expanded.values.to_host_vec(&stream)?,
-        fp16(&[2, 4, 2, 4, 4, 6, 4, 6, 10, 12, 1, 2, 1, 2, 0, 0, 0, 0, 0, 0,])
+        fp16(&[2, 4, 2, 4, 5, 7, 5, 7, 10, 12, 1, 2, 1, 2, 0, 0, 0, 0, 0, 0,])
     );
     let reverse = stage.backward(&expanded, &d_expanded_dev)?;
     assert_eq!(
         reverse.d_inner.to_host_vec(&stream)?,
-        [3., 3., 1., 1., 1., 1., 2., 2., 0., 0., 0., 0.]
+        [2.5, 2.5, 1.5, 1.5, 1., 1., 2., 2., 0., 0., 0., 0.]
     );
     let d_ratio = 0.03 * (4.0 / 3.0) * (16.0 / 7.0 - 1.0) / 7.0;
-    let d_cosine = -0.5 * (26.0 + d_ratio);
-    let mut d_q = [0.0; 20];
-    let mut d_k = [0.0; 20];
-    d_q[4] = d_cosine;
-    d_k[3] = d_cosine;
+    // The tied pair continues the previous chunk, so its STE adjoint is
+    // negative. The selected pair gets both the STE and smoothing terms.
+    let d_tied_cosine = -0.5 * (-6.0 + d_ratio);
+    let d_selected_cosine = -0.5 * (28.0 + d_ratio);
+    let mut d_q = [0.0; 40];
+    let mut d_k = [0.0; 40];
+    d_q[1] = d_tied_cosine;
+    d_k[4] = d_tied_cosine;
+    for feature in 0..3 {
+        d_q[4 + feature] = -0.125 * d_selected_cosine;
+        d_k[8 + feature] = 0.125 * d_selected_cosine;
+    }
+    d_q[7] = 0.375 * d_selected_cosine;
+    d_k[11] = 0.375 * d_selected_cosine;
     common::assert_slice_close(&reverse.d_queries.to_host_vec(&stream)?, &d_q, 1e-5);
     common::assert_slice_close(&reverse.d_keys.to_host_vec(&stream)?, &d_k, 1e-5);
     assert_eq!(
@@ -175,7 +188,7 @@ fn ragged_hnet_stage_matches_causal_forward_and_backward() -> Result<(), Box<dyn
             .scatter(&plan, &reverse.d_inner)?
             .to_host_vec(&stream)?,
         [
-            3., 3., 0., 0., 1., 1., 0., 0., 1., 1., 2., 2., 0., 0., 0., 0., 0., 0., 0., 0.,
+            2.5, 2.5, 0., 0., 1.5, 1.5, 0., 0., 1., 1., 2., 2., 0., 0., 0., 0., 0., 0., 0., 0.,
         ]
     );
     Ok(())

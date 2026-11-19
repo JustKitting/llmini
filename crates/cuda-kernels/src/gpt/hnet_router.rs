@@ -27,8 +27,8 @@ pub mod kernels {
     fn vector_pair(
         q: &[u16],
         k: &[u16],
-        current: usize,
-        previous: usize,
+        query_offset: usize,
+        key_offset: usize,
         lane: usize,
         width: usize,
     ) -> (f32, f32, f32) {
@@ -36,8 +36,8 @@ pub mod kernels {
         let mut q_sq = 0.0;
         let mut k_sq = 0.0;
         for feature in (lane..width).step_by(32) {
-            let x = cvt_f32_f16(q[current + feature]);
-            let y = cvt_f32_f16(k[previous + feature]);
+            let x = cvt_f32_f16(q[query_offset + feature]);
+            let y = cvt_f32_f16(k[key_offset + feature]);
             dot = fma_f32(x, y, dot);
             q_sq = fma_f32(x, x, q_sq);
             k_sq = fma_f32(y, y, k_sq);
@@ -49,7 +49,8 @@ pub mod kernels {
     }
 
     /// One warp per row. The caller supplies represented outputs of the two
-    /// NVFP4 router projections. Force the first probability to 1 per sequence.
+    /// NVFP4 router projections. The released router pairs the previous
+    /// query with the current key and forces the first probability to 1.
     #[kernel]
     pub fn hnet_route_cosine_kernel(
         q: &[u16],
@@ -75,7 +76,7 @@ pub mod kernels {
             1.0
         } else {
             let width = width as usize;
-            let (cosine, _, _) = vector_pair(q, k, row * width, (row - 1) * width, lane, width);
+            let (cosine, _, _) = vector_pair(q, k, (row - 1) * width, row * width, lane, width);
             let cosine = if cosine > 1.0 {
                 1.0
             } else if cosine < -1.0 {
@@ -90,7 +91,7 @@ pub mod kernels {
         }
     }
 
-    /// Each routing probability consumes one Q row and its predecessor's K.
+    /// Each routing probability consumes one K row and its predecessor's Q.
     /// Each projection row has at most one owner, so reverse needs no atomics.
     #[kernel]
     pub fn hnet_route_cosine_backward_kernel(
@@ -119,7 +120,7 @@ pub mod kernels {
         let current = row * width;
         if position != 0 && position < valid {
             let previous = (row - 1) * width;
-            let (cosine, q_norm, k_norm) = vector_pair(q, k, current, previous, lane, width);
+            let (cosine, q_norm, k_norm) = vector_pair(q, k, previous, current, lane, width);
             let q_inv = 1.0 / max_f32(q_norm, NORM_EPS);
             let k_inv = 1.0 / max_f32(k_norm, NORM_EPS);
             let scale = if abs_f32(cosine) > 1.0 {
@@ -138,23 +139,23 @@ pub mod kernels {
                 0.0
             };
             for feature in (lane..width).step_by(32) {
-                let x = cvt_f32_f16(q[current + feature]) * q_inv;
-                let y = cvt_f32_f16(k[previous + feature]) * k_inv;
+                let x = cvt_f32_f16(q[previous + feature]) * q_inv;
+                let y = cvt_f32_f16(k[current + feature]) * k_inv;
                 unsafe {
-                    *d_q.get_unchecked_mut(current + feature) =
+                    *d_q.get_unchecked_mut(previous + feature) =
                         scale * (y * q_inv - x * q_correction);
-                    *d_k.get_unchecked_mut(previous + feature) =
+                    *d_k.get_unchecked_mut(current + feature) =
                         scale * (x * k_inv - y * k_correction);
                 }
             }
         } else {
             for feature in (lane..width).step_by(32) {
-                unsafe { *d_q.get_unchecked_mut(current + feature) = 0.0 };
+                unsafe { *d_k.get_unchecked_mut(current + feature) = 0.0 };
             }
         }
         if position + 1 >= valid {
             for feature in (lane..width).step_by(32) {
-                unsafe { *d_k.get_unchecked_mut(current + feature) = 0.0 };
+                unsafe { *d_q.get_unchecked_mut(current + feature) = 0.0 };
             }
         }
     }
