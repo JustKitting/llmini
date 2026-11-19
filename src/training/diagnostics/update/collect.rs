@@ -49,6 +49,7 @@ pub(in crate::training::diagnostics) fn collect_update_snapshots(
         .iter()
         .zip(grads.blocks.iter())
         .zip(state.blocks.iter())
+        .take(state.active_depth)
         .enumerate()
     {
         collect_block_updates(&mut collector, index, block, grad, state)?;

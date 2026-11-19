@@ -70,6 +70,7 @@ impl Trainer {
         include_next_latent: bool,
     ) -> AppResult<TrainStats> {
         let stream = self.runtime.stream.as_ref();
+        let active_depth = self.active_depth();
         let buffers = &mut self.buffers;
         let uploaded = &self.uploaded;
 
@@ -159,7 +160,9 @@ impl Trainer {
                     f.mix(runtime, w, hidden)?;
                 }
             }
-            if let (Some(e), Some(w)) = (engram.as_mut(), uploaded.engram.as_ref()) {
+            if let (Some(e), Some(w)) = (engram.as_mut(), uploaded.engram.as_ref())
+                && (index < active_depth || active_depth == gpt2_nvfp4::GPT2_N_LAYER)
+            {
                 if w.streams() == Some(4) {
                     let mut state = mhc.borrow_mut();
                     let m = state.as_mut().expect("validated four-stream backbone");
@@ -176,7 +179,7 @@ impl Trainer {
                     e.forward_at(index, runtime, w, &batch.tokens, hidden)?;
                 }
             }
-            if index == gpt2_nvfp4::GPT2_N_LAYER && !readout {
+            if index == active_depth && !readout {
                 if let Some(f) = feedback.as_mut() {
                     f.prepare_input(runtime, hidden)?;
                 }
@@ -186,12 +189,15 @@ impl Trainer {
         let mut boundary = |index, before, hidden: &mut gpt2_nvfp4::HiddenStateDevice<'_>| {
             let mut state = mhc.borrow_mut();
             if let (Some(m), Some(w)) = (state.as_mut(), mhc_weights.as_ref()) {
-                m.forward_boundary(index, before, runtime, w, hidden)
+                let unit = if index == active_depth * 2 { super::mhc::BOUNDARIES } else { index };
+                m.forward_boundary(unit, before, runtime, w, hidden)
             } else {
                 Ok(false)
             }
         };
-        let hidden = if has_mhc {
+        let hidden = if active_depth != gpt2_nvfp4::GPT2_N_LAYER {
+            self.model.forward_at_depth(active_depth, args, &mut hook, readout, &mut boundary)?
+        } else if has_mhc {
             self.model
                 .forward_with_boundaries(args, &mut hook, readout, &mut boundary)?
         } else if readout {

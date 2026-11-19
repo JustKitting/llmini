@@ -3,7 +3,7 @@ use cuda_core::DriverError;
 use super::blocks::{BlocksBackwardRun, run_blocks};
 use super::final_head::run_final_head;
 use super::types::Gpt2BackwardArgs;
-use crate::GPT2_EMBEDDING_DIM;
+use crate::{GPT2_EMBEDDING_DIM, GPT2_N_LAYER};
 use crate::backward::{Gpt2LayerNormBackwardAmaxArgs, layer_norm_backward_amax};
 use crate::types::Gpt2BackwardGrads;
 use rust_kernels_cuda::residual::ResidualGradAccumulateArgs;
@@ -28,6 +28,24 @@ pub fn backward_with_boundaries(
         &mut cuda_core::DeviceBuffer<f32>,
     ) -> Result<bool, DriverError>,
 ) -> Result<(), DriverError> {
+    backward_at_depth(GPT2_N_LAYER, args, hook, boundary)
+}
+
+/// Reverse the same prefix executed by `Gpt2::forward_at_depth`. Inactive
+/// block gradients are left untouched and must be excluded by the caller.
+pub fn backward_at_depth(
+    depth: usize,
+    args: Gpt2BackwardArgs<'_, '_, '_>,
+    hook: &mut dyn FnMut(usize, &mut cuda_core::DeviceBuffer<f32>) -> Result<bool, DriverError>,
+    boundary: &mut dyn FnMut(
+        usize,
+        bool,
+        &mut cuda_core::DeviceBuffer<f32>,
+    ) -> Result<bool, DriverError>,
+) -> Result<(), DriverError> {
+    if !(1..=GPT2_N_LAYER).contains(&depth) {
+        return Err(DriverError(1));
+    }
     let Gpt2BackwardArgs {
         stream,
         modules,
@@ -91,14 +109,14 @@ pub fn backward_with_boundaries(
             chunk_amax: &mut *mlp_scratch.down_linear.e_h.chunk_amax,
             output_scale: 1.0,
         })?;
-    let head_changed = boundary(crate::GPT2_N_LAYER * 2, true, d_embedding_residual)?;
+    let head_changed = boundary(depth * 2, true, d_embedding_residual)?;
     run_blocks(
         BlocksBackwardRun {
             stream,
             modules,
             saved,
             weights,
-            blocks: &mut blocks,
+            blocks: &mut blocks[..depth],
             d_xsa_alphas,
             d_embedding_residual,
             d_residual_after_attention,

@@ -72,6 +72,12 @@ impl CudaTrainingStrategy {
             .map(|_| std::fs::File::create(self.run_output.path("gradient_components.jsonl")))
             .transpose()?;
         let mut trainer = self.config.create_trainer()?;
+        let growth = self.config.growth_plan()?;
+        if let Some(plan) = growth {
+            let depth = plan.depth(0);
+            trainer.select_training_depth(depth)?;
+            println!("depth_growth active_depth={depth} completed_attempts=0");
+        }
         if let Some(path) = load_model_path() {
             trainer.load_model(&path)?;
             println!("loaded_model={}", path.display());
@@ -86,6 +92,13 @@ impl CudaTrainingStrategy {
 
         while let Some(item) = train_iter.next() {
             let step = completed_steps;
+            if let Some(plan) = growth {
+                let depth = plan.depth(step);
+                if depth != trainer.active_depth() {
+                    trainer.select_training_depth(depth)?;
+                    println!("depth_growth active_depth={depth} completed_attempts={step}");
+                }
+            }
             let log_step = should_log_step(step, self.config.step_cap, self.config.log_interval);
             let window = item.map_err(|err| format!("training dataloader failed: {err}"))?;
             let batch = trainer.upload_default_batch(&mut train_batch, &window.tokens)?;
@@ -103,7 +116,9 @@ impl CudaTrainingStrategy {
                     batch,
                     &self.run_output.path("numerical_failure_state.tsv"),
                 )?;
-                trainer.save_model(&self.run_output.path("numerical_failure_weights.ckpt"))?;
+                if trainer.active_depth() == gpt2_nvfp4::GPT2_N_LAYER {
+                    trainer.save_model(&self.run_output.path("numerical_failure_weights.ckpt"))?;
+                }
                 eprintln!("numerical_failure_capture_complete completed_steps={completed_steps}");
             }
 

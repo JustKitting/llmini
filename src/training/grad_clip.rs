@@ -16,6 +16,7 @@ use layout::{HostGradChunk, gradient_chunks, parameter_gradients};
 const GLOBAL_GRAD_CLIP_NORM: f32 = 1.0;
 
 pub(super) struct GradientClipBuffers {
+    active_depth: usize,
     recomputed_matrix_ptrs: HashSet<u64>,
     recomputed_matrix_sums: Vec<(u32, u32)>,
     extra_gradients: Vec<(String, u64, usize)>,
@@ -66,9 +67,23 @@ impl GradientClipBuffers {
         extra: &[(&str, &DeviceBuffer<f32>)],
         recompute: &[u64],
     ) -> Result<Self, DriverError> {
+        Self::new_at_depth(
+            stream, grads, next_latent, muon_tables, extra, recompute, gpt2_nvfp4::GPT2_N_LAYER,
+        )
+    }
+
+    pub(super) fn new_at_depth(
+        stream: &CudaStream,
+        grads: &BackwardBuffers,
+        next_latent: &NextLatGradBuffers,
+        muon_tables: &MuonPointerTables,
+        extra: &[(&str, &DeviceBuffer<f32>)],
+        recompute: &[u64],
+        active_depth: usize,
+    ) -> Result<Self, DriverError> {
         let recomputed_matrix_ptrs: HashSet<u64> = recompute.iter().copied().collect();
         let mut recomputed_matrix_sums = Vec::new();
-        let mut rows = parameter_gradients(grads, next_latent);
+        let mut rows = parameter_gradients(grads, next_latent, active_depth);
         for (_, buffer) in extra {
             rows.push(layout::HostGradPtr {
                 ptr: buffer.cu_deviceptr(),
@@ -133,6 +148,7 @@ impl GradientClipBuffers {
         let chunk_count = chunks.len() as u32;
 
         Ok(Self {
+            active_depth,
             recomputed_matrix_ptrs,
             recomputed_matrix_sums,
             extra_gradients: extra

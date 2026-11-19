@@ -4,7 +4,7 @@ use std::path::Path;
 use std::sync::{Mutex, OnceLock};
 
 use cuda_core::{CudaStream, DeviceBuffer};
-use gpt2_nvfp4::{AttentionDims, GPT2_N_LAYER, uses_full_attention};
+use gpt2_nvfp4::{AttentionDims, uses_full_attention};
 
 use crate::AppResult;
 use crate::training::env::env_usize;
@@ -54,6 +54,7 @@ pub(in crate::training) fn record(
     qk_norm_max: &DeviceBuffer<f32>,
     factors: &DeviceBuffer<f32>,
     optimizer_step: u32,
+    active_depth: usize,
     tau: f32,
 ) -> AppResult {
     let Some(logger) = LOGGER.get() else {
@@ -68,7 +69,7 @@ pub(in crate::training) fn record(
 
     let norms = qk_norm_max.to_host_vec(stream)?;
     let factors = factors.to_host_vec(stream)?;
-    for layer in 0..GPT2_N_LAYER {
+    for layer in 0..active_depth {
         let full_attention = uses_full_attention(layer);
         let dims = AttentionDims::new(full_attention);
         let count = dims.head_count as usize;

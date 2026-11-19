@@ -27,8 +27,8 @@ pub(in crate::training) fn materialize_training_weights(
     }
     let beta = schedule_free_beta(state.next_step());
     let symexp_lin_beta = super::super::symexp_lin::beta();
-    let reuse_adam_amax = state.next_step() > 1;
-    let reuse_muon_amax = state.next_step() > 1
+    let reuse_adam_amax = state.update_amax_valid;
+    let reuse_muon_amax = state.update_amax_valid
         && (symexp_lin_beta == 0.0 || super::super::symexp_lin::reuse_precomputed_amax());
     let mut materializer = Materializer::new(
         stream,
@@ -72,6 +72,7 @@ pub(in crate::training) fn materialize_training_weights(
         .iter_mut()
         .zip(state.blocks.iter())
         .zip(grads.blocks.iter())
+        .take(state.active_depth)
         .enumerate()
     {
         materialize_block(
@@ -127,6 +128,7 @@ pub(in crate::training) fn materialize_evaluation_weights(
         .blocks
         .iter_mut()
         .zip(state.blocks.iter())
+        .take(state.active_depth)
         .enumerate()
     {
         materialize_evaluation_block(&mut materializer, block_index, block, state)?;

@@ -18,7 +18,7 @@ impl AttentionWeights {
     pub fn forward_branch<'a, 'scratch>(
         args: AttentionForwardArgs<'a, 'scratch>,
     ) -> Result<HiddenStateDevice<'a>, DriverError> {
-        forward::forward_impl(args, false)
+        forward::forward_impl(args, false, crate::GPT2_N_LAYER)
     }
     pub(crate) fn init(rng: &mut InitRng, residual_projection_scale: f32) -> Self {
         Self {
@@ -32,5 +32,13 @@ impl AttentionWeights {
         args: AttentionForwardArgs<'a, 'scratch>,
     ) -> Result<HiddenStateDevice<'a>, DriverError> {
         forward::forward(args)
+    }
+
+    pub(crate) fn forward_at_depth<'a, 'scratch>(
+        args: AttentionForwardArgs<'a, 'scratch>,
+        add_residual: bool,
+        active_depth: usize,
+    ) -> Result<HiddenStateDevice<'a>, DriverError> {
+        forward::forward_impl(args, add_residual, active_depth)
     }
 }

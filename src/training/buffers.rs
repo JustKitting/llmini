@@ -48,6 +48,47 @@ pub struct TrainBuffers {
 }
 
 impl TrainBuffers {
+    pub(super) fn configure_optimizer_graph(
+        &mut self,
+        stream: &CudaStream,
+        uploaded: &UploadedModel,
+        engram: Option<&super::engram::Engram>,
+        feedback: Option<&super::latent_feedback::Feedback>,
+        mhc: Option<&super::mhc::Mhc>,
+    ) -> Result<(), DriverError> {
+        let tables = MuonPointerTables::new_with_architectures(
+            stream,
+            uploaded,
+            &self.backward,
+            &self.next_latent_grads,
+            &self.optimizer_state,
+            engram,
+            feedback,
+            mhc,
+        )?;
+        let mut extra = engram.map_or_else(Vec::new, |e| e.named_gradients());
+        if let Some(f) = feedback {
+            extra.extend(f.named_gradients());
+        }
+        if let Some(m) = mhc {
+            extra.extend(m.named_gradients());
+        }
+        let recompute = mhc.map_or_else(Vec::new, |m| {
+            m.active_unit_indices().map(|i| m.units[i].grad.cu_deviceptr()).collect()
+        });
+        self.grad_clip = GradientClipBuffers::new_at_depth(
+            stream,
+            &self.backward,
+            &self.next_latent_grads,
+            &tables,
+            &extra,
+            &recompute,
+            self.optimizer_state.active_depth,
+        )?;
+        self.muon_tables = tables;
+        Ok(())
+    }
+
     pub fn new(
         stream: &CudaStream,
         runtime: &Runtime,

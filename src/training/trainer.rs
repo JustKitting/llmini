@@ -176,37 +176,13 @@ impl Trainer {
             .map(|w| super::mhc::Mhc::new(&runtime, w))
             .transpose()?;
         if engram.is_some() || latent_feedback.is_some() || mhc.is_some() {
-            buffers.muon_tables = super::optimizer_muon::MuonPointerTables::new_with_architectures(
+            buffers.configure_optimizer_graph(
                 stream,
                 &uploaded,
-                &buffers.backward,
-                &buffers.next_latent_grads,
-                &buffers.optimizer_state,
                 engram.as_ref(),
                 latent_feedback.as_ref(),
                 mhc.as_ref(),
             )?;
-            let mut extra = engram
-                .as_ref()
-                .map_or_else(Vec::new, |e| e.named_gradients());
-            if let Some(f) = &latent_feedback {
-                extra.extend(f.named_gradients());
-            }
-            if let Some(m) = &mhc {
-                extra.extend(m.named_gradients());
-            }
-            let recompute = mhc.as_ref().map_or_else(Vec::new, |m| {
-                m.units.iter().map(|u| u.grad.cu_deviceptr()).collect()
-            });
-            buffers.grad_clip =
-                super::grad_clip::GradientClipBuffers::new_with_recomputed_matrices(
-                    stream,
-                    &buffers.backward,
-                    &buffers.next_latent_grads,
-                    &buffers.muon_tables,
-                    &extra,
-                    &recompute,
-                )?;
         }
 
         if std::env::var_os("TRAIN_REPORT_MEMORY").is_some() {

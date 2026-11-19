@@ -13,8 +13,9 @@ use views::parameter_gradient_views;
 pub(super) fn named_parameter_ranges(
     grads: &BackwardBuffers,
     next_latent: &NextLatGradBuffers,
+    active_depth: usize,
 ) -> Vec<(String, u64, usize)> {
-    parameter_gradient_views(grads, next_latent)
+    parameter_gradient_views(grads, next_latent, active_depth)
         .into_iter()
         .map(|view| (view.name, view.buffer.cu_deviceptr(), view.len))
         .collect()
@@ -35,8 +36,9 @@ pub(super) struct HostGradChunk {
 pub(super) fn parameter_gradients(
     grads: &BackwardBuffers,
     next_latent: &NextLatGradBuffers,
+    active_depth: usize,
 ) -> Vec<HostGradPtr> {
-    let views = parameter_gradient_views(grads, next_latent);
+    let views = parameter_gradient_views(grads, next_latent, active_depth);
     let mut rows = Vec::new();
     for view in views {
         push(&mut rows, view.buffer, view.len);

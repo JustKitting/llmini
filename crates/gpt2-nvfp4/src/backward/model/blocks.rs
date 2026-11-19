@@ -5,18 +5,19 @@ use cuda_core::{CudaStream, DeviceBuffer, DriverError, memory};
 use super::types::{Gpt2BackwardModules, Gpt2BackwardSeeds, Gpt2BackwardWeights};
 use crate::backward::{
     BlockAttentionBackwardArgs, BlockAttentionBackwardScratch, BlockMlpBackwardArgs,
-    MlpBackwardScratch, attention_side_backward, attention_side_backward_branch, mlp_side_backward,
+    MlpBackwardScratch, mlp_side_backward,
     mlp_side_backward_branch,
 };
+use crate::backward::block_attention::attention_side_backward_at_depth;
 use crate::types::{BlockBackwardGrads, Gpt2ForwardSaved};
-use crate::{GPT2_N_LAYER, exclusive_self_attention_enabled, uses_full_attention};
+use crate::{exclusive_self_attention_enabled, uses_full_attention};
 
 pub(super) struct BlocksBackwardRun<'ctx, 'a, 'scratch, 'out> {
     pub stream: &'a CudaStream,
     pub modules: Gpt2BackwardModules<'a>,
     pub saved: Gpt2ForwardSaved<'a>,
     pub weights: Gpt2BackwardWeights<'a>,
-    pub blocks: &'ctx mut [BlockBackwardGrads<'out>; GPT2_N_LAYER],
+    pub blocks: &'ctx mut [BlockBackwardGrads<'out>],
     pub d_xsa_alphas: &'ctx mut DeviceBuffer<f32>,
     pub d_embedding_residual: &'ctx mut DeviceBuffer<f32>,
     pub d_residual_after_attention: &'ctx mut DeviceBuffer<f32>,
@@ -46,7 +47,8 @@ pub(super) fn run_blocks(
         }
     }
     let mut d_residual_amax_chunks = args.initial_d_residual_amax_chunks;
-    for block_index in (0..GPT2_N_LAYER).rev() {
+    let active_depth = args.blocks.len();
+    for block_index in (0..active_depth).rev() {
         let current = &mut args.blocks[block_index];
         d_residual_amax_chunks = run_block(
             args.stream,
@@ -66,6 +68,7 @@ pub(super) fn run_blocks(
             d_residual_amax_chunks,
             args.seeds,
             block_index,
+            active_depth,
             boundary,
         )?;
         if hook(block_index, &mut *args.d_embedding_residual)? {
@@ -96,6 +99,7 @@ fn run_block<'a, 'scratch, 'out>(
     precomputed_d_residual_amax_chunks: Option<u32>,
     seeds: Gpt2BackwardSeeds,
     block_index: usize,
+    active_depth: usize,
     boundary: &mut dyn FnMut(usize, bool, &mut DeviceBuffer<f32>) -> Result<bool, DriverError>,
 ) -> Result<Option<u32>, DriverError> {
     let mut grads = current.reborrow();
@@ -157,11 +161,7 @@ fn run_block<'a, 'scratch, 'out>(
         scratch: attention_scratch.reborrow(),
         seeds: seeds.attention[block_index],
     };
-    let amax = if isolated_attention {
-        attention_side_backward_branch(attention_args)?
-    } else {
-        attention_side_backward(attention_args)?
-    };
+    let amax = attention_side_backward_at_depth(attention_args, !isolated_attention, active_depth)?;
     Ok(if boundary(branch, false, d_residual)? {
         None
     } else {

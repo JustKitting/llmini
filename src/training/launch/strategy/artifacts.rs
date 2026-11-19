@@ -10,9 +10,13 @@ pub(super) fn finish_training_artifacts(
     run_output: &RunOutput,
 ) -> AppResult {
     if let Some(path) = save_model_path(run_output) {
-        ensure_parent(&path)?;
-        trainer.save_model(&path)?;
-        println!("saved_model={}", path.display());
+        if trainer.active_depth() == gpt2_nvfp4::GPT2_N_LAYER {
+            ensure_parent(&path)?;
+            trainer.save_model(&path)?;
+            println!("saved_model={}", path.display());
+        } else {
+            println!("partial_growth_end active_depth={}", trainer.active_depth());
+        }
     }
 
     if let Some(prompt) = generate_prompt(dataset, train_elapsed_s) {
