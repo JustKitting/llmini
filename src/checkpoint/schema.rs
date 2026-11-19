@@ -11,7 +11,9 @@ pub(super) fn tensor_count(block_count: usize) -> u32 {
 pub(super) fn supported_tensor_count(block_count: usize, count: u32) -> bool {
     count
         .checked_sub(
-            super::activation_quant::extra_tensors() + super::kda_output_gate::extra_tensors(),
+            super::activation_quant::extra_tensors()
+                + super::kda_output_gate::extra_tensors()
+                + u32::from(gpt2_nvfp4::GPT2_ADAPTIVE_RELU2),
         )
         .is_some_and(|count| supported_graph_tensor_count(block_count, count))
 }

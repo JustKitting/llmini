@@ -6,7 +6,7 @@ use super::args::{
     MlpBlockTopKRouteArgs, MlpDownResidualArgs, MlpUpRelu2Args, Relu2BackwardArgs,
     Relu2BackwardF16Args,
 };
-use super::kernels;
+use super::{adaptive, kernels};
 use crate::launch::{launch_config, linear_config};
 use crate::mma::{
     NVFP4_PROJECTION_CTA_THREADS, Nvfp4ProjectionParams, projection_cta_launch_grid_dim,
@@ -15,6 +15,7 @@ use crate::mma::{
 pub struct MlpModule {
     module: kernels::LoadedModule,
     bounded: Option<crate::bounded_swiglu::kernels::LoadedModule>,
+    pub(super) adaptive: Option<adaptive::kernels::LoadedModule>,
     graph: Option<crate::bounded_swiglu::graph::LoadedModule>,
     precision: Option<crate::bounded_swiglu::precision_graph::LoadedModule>,
     graph_verified: OnceLock<bool>,
@@ -75,6 +76,9 @@ impl MlpModule {
             None
         };
         Ok(Self {
+            adaptive: super::config::ADAPTIVE_RELU2
+                .then(|| adaptive::kernels::from_module(module.clone()))
+                .transpose()?,
             module: kernels::from_module(module)?,
             bounded,
             graph,

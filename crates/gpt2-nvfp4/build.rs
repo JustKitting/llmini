@@ -7,7 +7,7 @@ use build_support::{Baseline, emit_rerun_metadata, env_usize};
 
 fn main() {
     let baseline = Baseline::load();
-    let bounded_swiglu = build_support::bounded_swiglu();
+    let bounded_swiglu = build_support::mlp_kind() == build_support::MlpKind::BoundedSwiGlu;
     let mlp_initializer = match env::var("GPT2_MLP_INITIALIZER") {
         Ok(value) => value,
         Err(env::VarError::NotPresent) => "legacy".into(),

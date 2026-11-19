@@ -84,11 +84,10 @@ pub(super) fn forward_impl<'a, 'scratch>(
             crate::GPT2_MLP_DIM,
             args.scratch.tma_descriptors,
         )?;
-        args.tma_module
-            .gemm_tma_nvfp4_rowwise_a_scale_relu2_compact(
+        if crate::GPT2_ADAPTIVE_RELU2 {
+            args.tma_module.gemm_tma_nvfp4_rowwise_a_scale_projection(
                 hidden.stream,
                 args.scratch.tma_descriptors,
-                pre_activation.as_deref_mut(),
                 args.scratch.activation,
                 args.projections.up.bias,
                 hidden.row_count,
@@ -96,7 +95,31 @@ pub(super) fn forward_impl<'a, 'scratch>(
                 crate::GPT2_MLP_DIM,
                 input.global_scales,
                 args.projections.up.weight_device.global_scale,
+                None,
+                false,
             )?;
+            args.module.adaptive_relu2_forward(
+                hidden.stream,
+                args.scratch.activation,
+                pre_activation.as_deref_mut(),
+                hidden.row_count,
+                crate::GPT2_MLP_DIM,
+            )?;
+        } else {
+            args.tma_module
+                .gemm_tma_nvfp4_rowwise_a_scale_relu2_compact(
+                    hidden.stream,
+                    args.scratch.tma_descriptors,
+                    pre_activation.as_deref_mut(),
+                    args.scratch.activation,
+                    args.projections.up.bias,
+                    hidden.row_count,
+                    crate::GPT2_EMBEDDING_DIM,
+                    crate::GPT2_MLP_DIM,
+                    input.global_scales,
+                    args.projections.up.weight_device.global_scale,
+                )?;
+        }
     }
 
     if let Some(tape) = down_tape.as_mut() {

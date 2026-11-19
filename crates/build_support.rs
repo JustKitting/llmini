@@ -4,11 +4,21 @@ pub fn env_usize(name: &str) -> Option<usize> {
     env::var(name).ok().and_then(|value| value.parse().ok())
 }
 
-pub fn bounded_swiglu() -> bool {
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum MlpKind {
+    Relu2,
+    AdaptiveRelu2,
+    BoundedSwiGlu,
+}
+
+pub fn mlp_kind() -> MlpKind {
     match env::var("GPT2_MLP_KIND").as_deref().unwrap_or("relu2") {
-        "relu2" => false,
-        "bounded-swiglu" => true,
-        other => panic!("unsupported GPT2_MLP_KIND={other}; use relu2 or bounded-swiglu"),
+        "relu2" => MlpKind::Relu2,
+        "adaptive-relu2" => MlpKind::AdaptiveRelu2,
+        "bounded-swiglu" => MlpKind::BoundedSwiGlu,
+        other => {
+            panic!("unsupported GPT2_MLP_KIND={other}; use relu2, adaptive-relu2 or bounded-swiglu")
+        }
     }
 }
 

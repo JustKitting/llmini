@@ -1,3 +1,4 @@
+mod adaptive;
 mod args;
 mod kernels;
 mod launcher;

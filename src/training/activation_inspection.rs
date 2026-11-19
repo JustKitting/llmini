@@ -2,8 +2,8 @@
 use super::{TokenDataLoader, Trainer};
 use crate::{AppResult, reference_validation};
 use gpt2_nvfp4::{
-    AttentionDims, GPT2_BOUNDED_SWIGLU, GPT2_MLP, GPT2_MLP_UP, GPT2_N_EMBD, GPT2_SEQ_LEN,
-    MlpWeights, uses_full_attention,
+    AttentionDims, GPT2_ADAPTIVE_RELU2, GPT2_BOUNDED_SWIGLU, GPT2_MLP, GPT2_MLP_UP, GPT2_N_EMBD,
+    GPT2_SEQ_LEN, MlpWeights, uses_full_attention,
 };
 use rust_kernels_cuda::{activation::RELU2_INITIAL_MEAN, nvfp4::csf};
 use serde_json::{Value, json};
@@ -173,6 +173,18 @@ pub(super) fn run(
         let mut exact_activation = Moments::default();
         let mut zero_scales = 0;
         for &row in &rows {
+            let relu2_shift = if GPT2_ADAPTIVE_RELU2 {
+                pre[row * GPT2_MLP..(row + 1) * GPT2_MLP]
+                    .iter()
+                    .map(|&bits| {
+                        let p = f16(bits).max(0.0);
+                        p * p
+                    })
+                    .sum::<f32>()
+                    / GPT2_MLP as f32
+            } else {
+                RELU2_INITIAL_MEAN
+            };
             for group in 0..GPT2_MLP / 16 {
                 let code = csf::scale_at(&scales, row * (GPT2_MLP / 16) + group);
                 let scale = f64::from(globals[row]) * fp8(code);
@@ -192,7 +204,7 @@ pub(super) fn run(
                     } else {
                         let p = f16(pre[position]);
                         let relu = p.max(0.0);
-                        (p, f64::from(relu * relu - RELU2_INITIAL_MEAN))
+                        (p, f64::from(relu * relu - relu2_shift))
                     };
                     let byte = packed[position / 2];
                     let code = if position % 2 == 0 {
@@ -238,7 +250,7 @@ pub(super) fn run(
             + error.nonfinite;
         let mut layer = json!({"layer": index,
             "attention": if uses_full_attention(index) {"full"} else {"kda"},
-            "mlp_kind": if GPT2_BOUNDED_SWIGLU {"bounded-swiglu"} else {"relu2"},
+            "mlp_kind": gpt2_nvfp4::GPT2_MLP_KIND_NAME,
             "sampled_rows": rows.len(),
             "preactivation_fp16": (!GPT2_BOUNDED_SWIGLU).then(|| pre_stats.json()),
             "paired_gate_preactivation_fp32": GPT2_BOUNDED_SWIGLU.then(|| pre_stats.json()),

@@ -3,30 +3,36 @@ use super::format::{CheckpointTensor, CheckpointWriter};
 use crate::AppResult;
 use std::{collections::HashMap, io::Write};
 
-fn bounded_descriptor() -> Vec<f32> {
-    // version, function, d, product, paired, caps, route geometry,
-    // recomputation, joint paired parameter, stable analytic derivative,
-    // represented activation-input bits and straight-through quantizer.
-    vec![
-        2., 1., 2048., 5504., 11008., 4., 25., 43., 32., 1., 1., 1., 16., 1.,
-    ]
-}
-fn validate_descriptor(values: Option<&[f32]>, bounded: bool) -> AppResult {
-    match values {
-        None if !bounded => Ok(()),
-        Some(values) if bounded && values == bounded_descriptor() => Ok(()),
-        None => Err(
-            "legacy ReLU checkpoint is incompatible with the compiled bounded-SwiGLU graph".into(),
-        ),
-        Some(_) => Err("MLP checkpoint graph/layout does not match this native executable".into()),
+const BOUNDED: &[f32] = &[
+    2., 1., 2048., 5504., 11008., 4., 25., 43., 32., 1., 1., 1., 16., 1.,
+];
+// Version, function ID, feature width, token-local centering, tape bits,
+// mask direct down adjoints, and retain the dense coupled up adjoint.
+const ADAPTIVE: &[f32] = &[1., 2., gpt2_nvfp4::GPT2_MLP as f32, 1., 16., 1., 1.];
+
+fn compiled_descriptor() -> Option<&'static [f32]> {
+    if gpt2_nvfp4::GPT2_BOUNDED_SWIGLU {
+        Some(BOUNDED)
+    } else if gpt2_nvfp4::GPT2_ADAPTIVE_RELU2 {
+        Some(ADAPTIVE)
+    } else {
+        None
     }
 }
+
+fn validate_descriptor(values: Option<&[f32]>, expected: Option<&[f32]>) -> AppResult {
+    if values == expected {
+        Ok(())
+    } else {
+        Err("MLP checkpoint graph/layout does not match this native executable".into())
+    }
+}
+
 pub(super) fn extra_tensors() -> u32 {
-    gpt2_nvfp4::GPT2_BOUNDED_SWIGLU as u32
+    u32::from(compiled_descriptor().is_some())
 }
 pub(super) fn write(writer: &mut CheckpointWriter<impl Write>) -> AppResult {
-    if gpt2_nvfp4::GPT2_BOUNDED_SWIGLU {
-        let values = bounded_descriptor();
+    if let Some(values) = compiled_descriptor() {
         let bytes = values
             .iter()
             .flat_map(|v| v.to_le_bytes())
@@ -36,10 +42,15 @@ pub(super) fn write(writer: &mut CheckpointWriter<impl Write>) -> AppResult {
     Ok(())
 }
 pub(super) fn take_and_validate(tensors: &mut HashMap<String, CheckpointTensor>) -> AppResult {
+    let expected = compiled_descriptor();
     let values = match tensors.remove("mlp.config") {
         None => None,
         Some(t) => {
-            if t.len != 14 || t.bytes.len() != 56 || !t.scales.is_empty() || t.global_scale != 1. {
+            if expected.is_none_or(|values| t.len != values.len())
+                || t.bytes.len() != t.len * size_of::<f32>()
+                || !t.scales.is_empty()
+                || t.global_scale != 1.
+            {
                 return Err("invalid native MLP graph descriptor".into());
             }
             Some(
@@ -50,7 +61,7 @@ pub(super) fn take_and_validate(tensors: &mut HashMap<String, CheckpointTensor>)
             )
         }
     };
-    validate_descriptor(values.as_deref(), gpt2_nvfp4::GPT2_BOUNDED_SWIGLU)
+    validate_descriptor(values.as_deref(), expected)
 }
 #[cfg(test)]
 mod tests {
@@ -61,28 +72,61 @@ mod tests {
             2., 1., 2048., 5504., 11008., 4., 25., 43., 32., 1., 1., 1., 16., 1.,
         ];
         let old = vec![1., 1., 2048., 5504., 11008., 4., 25., 43., 32., 1., 1., 1.];
-        assert_eq!(bounded_descriptor(), required);
-        assert!(validate_descriptor(Some(&required), true).is_ok());
-        assert!(validate_descriptor(Some(&old), true).is_err());
-        assert!(validate_descriptor(None, false).is_ok());
+        assert_eq!(BOUNDED, required);
+        assert!(validate_descriptor(Some(&required), Some(BOUNDED)).is_ok());
+        assert!(validate_descriptor(Some(&old), Some(BOUNDED)).is_err());
+        assert!(validate_descriptor(None, None).is_ok());
     }
     #[test]
     fn paired_mlp_metadata_is_explicit_and_never_reinterprets_legacy_relu() {
-        let descriptor = bounded_descriptor();
-        assert!(validate_descriptor(Some(&descriptor), true).is_ok());
-        assert!(validate_descriptor(None, false).is_ok());
-        assert!(validate_descriptor(None, true).is_err());
-        assert!(validate_descriptor(Some(&descriptor), false).is_err());
+        let descriptor = BOUNDED;
+        assert!(validate_descriptor(Some(descriptor), Some(BOUNDED)).is_ok());
+        assert!(validate_descriptor(None, None).is_ok());
+        assert!(validate_descriptor(None, Some(BOUNDED)).is_err());
+        assert!(validate_descriptor(Some(descriptor), None).is_err());
         for index in 0..descriptor.len() {
-            let mut changed = descriptor.clone();
+            let mut changed = descriptor.to_vec();
             changed[index] += 1.;
             assert!(
-                validate_descriptor(Some(&changed), true).is_err(),
+                validate_descriptor(Some(&changed), Some(BOUNDED)).is_err(),
                 "unchecked descriptor field{index}"
             );
         }
-        let mut nonfinite = descriptor;
+        let mut nonfinite = descriptor.to_vec();
         nonfinite[0] = f32::NAN;
-        assert!(validate_descriptor(Some(&nonfinite), true).is_err());
+        assert!(validate_descriptor(Some(&nonfinite), Some(BOUNDED)).is_err());
+    }
+    #[test]
+    fn adaptive_relu2_has_distinct_graph_metadata() {
+        assert!(validate_descriptor(Some(ADAPTIVE), Some(ADAPTIVE)).is_ok());
+        assert!(validate_descriptor(None, Some(ADAPTIVE)).is_err());
+        assert!(validate_descriptor(Some(ADAPTIVE), None).is_err());
+        assert!(validate_descriptor(Some(BOUNDED), Some(ADAPTIVE)).is_err());
+        assert!(validate_descriptor(Some(ADAPTIVE), Some(BOUNDED)).is_err());
+    }
+
+    #[test]
+    fn compiled_mlp_metadata_round_trips_native_writer() -> AppResult {
+        use crate::checkpoint::CheckpointReader;
+        use std::io::{BufReader, BufWriter};
+
+        let mut bytes = Vec::new();
+        let mut writer = CheckpointWriter::new(BufWriter::new(&mut bytes));
+        writer.write_header(extra_tensors())?;
+        write(&mut writer)?;
+        writer.finish()?;
+        drop(writer);
+
+        let mut reader = CheckpointReader::new(BufReader::new(bytes.as_slice()));
+        let mut records = HashMap::new();
+        let count = reader.read_header()?;
+        assert_eq!(count, extra_tensors());
+        for _ in 0..count {
+            let tensor = reader.read_tensor()?;
+            records.insert(tensor.name.clone(), tensor);
+        }
+        take_and_validate(&mut records)?;
+        assert!(records.is_empty());
+        Ok(())
     }
 }

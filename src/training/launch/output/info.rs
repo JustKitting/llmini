@@ -122,15 +122,7 @@ pub(in crate::training::launch) fn build_run_info(dataset: &str, config: &TrainC
             "immutable_F32_raw_cache_with_separate_gradient",
         );
     }
-    push_info(
-        &mut info,
-        "mlp_kind",
-        if GPT2_BOUNDED_SWIGLU {
-            "bounded-swiglu"
-        } else {
-            "relu2"
-        },
-    );
+    push_info(&mut info, "mlp_kind", gpt2_nvfp4::GPT2_MLP_KIND_NAME);
     push_info(
         &mut info,
         "mlp_initializer",

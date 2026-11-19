@@ -57,30 +57,58 @@ pub fn backward(args: MlpBackwardArgs<'_, '_, '_>) -> Result<(), DriverError> {
         scale_seed: seeds.down_scale,
         precomputed_e_amax_chunks: precomputed_d_residual_amax_chunks,
     };
-    let d_mlp_up_amax_chunks = if uses_block_topk_mlp(block_index) {
-        run_rowwise_linear_backward_relu2_backward_f16_routed(
+    let routed = uses_block_topk_mlp(block_index);
+    let down_route = routed.then(|| {
+        LinearBackwardRoute::mlp_down(
+            saved.mlp_route_masks,
+            saved.row_count / crate::GPT2_MLP_ROUTE_TILE as u32,
+            GPT2_MLP_ROUTE_FEATURE_TILES as u32,
+            GPT2_MLP_ROUTE_ACTIVE_FEATURE_TILES as u32,
+        )
+    });
+    let d_mlp_up_amax_chunks = if crate::GPT2_ADAPTIVE_RELU2 {
+        if let Some(route) = down_route {
+            run_rowwise_linear_backward_routed(
+                modules.linear,
+                modules.quant,
+                stream,
+                down_pass,
+                route,
+            )?;
+        } else {
+            run_rowwise_linear_backward(modules.linear, modules.quant, stream, down_pass)?;
+        }
+        modules.mlp.adaptive_relu2_backward(
+            stream,
+            d_mlp_up,
+            saved.mlp_up,
+            saved.mlp_route_masks,
+            saved.row_count,
+            GPT2_MLP_DIM,
+            routed,
+        )?;
+        // The up projection quantizes the complete coupled adjoint using its
+        // true amax. The original fused derivative did not produce this tensor.
+        None
+    } else if let Some(route) = down_route {
+        Some(run_rowwise_linear_backward_relu2_backward_f16_routed(
             modules.linear,
             modules.quant,
             stream,
             down_pass,
             saved.mlp_up,
             &mut *up_linear.e_h.chunk_amax,
-            LinearBackwardRoute::mlp_down(
-                saved.mlp_route_masks,
-                saved.row_count / crate::GPT2_MLP_ROUTE_TILE as u32,
-                GPT2_MLP_ROUTE_FEATURE_TILES as u32,
-                GPT2_MLP_ROUTE_ACTIVE_FEATURE_TILES as u32,
-            ),
-        )?
+            route,
+        )?)
     } else {
-        run_rowwise_linear_backward_relu2_backward_f16(
+        Some(run_rowwise_linear_backward_relu2_backward_f16(
             modules.linear,
             modules.quant,
             stream,
             down_pass,
             saved.mlp_up,
             &mut *up_linear.e_h.chunk_amax,
-        )?
+        )?)
     };
 
     let up_pass = RowwiseLinearBackwardPass {
@@ -96,9 +124,9 @@ pub fn backward(args: MlpBackwardArgs<'_, '_, '_>) -> Result<(), DriverError> {
         output_dim: GPT2_MLP_DIM,
         sign_seed: seeds.up_sign,
         scale_seed: seeds.up_scale,
-        precomputed_e_amax_chunks: Some(d_mlp_up_amax_chunks),
+        precomputed_e_amax_chunks: d_mlp_up_amax_chunks,
     };
-    if uses_block_topk_mlp(block_index) {
+    if routed && !crate::GPT2_ADAPTIVE_RELU2 {
         run_rowwise_linear_backward_routed(
             modules.linear,
             modules.quant,

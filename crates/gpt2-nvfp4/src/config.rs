@@ -1,5 +1,13 @@
 pub const GPT2_VOCAB_SIZE: usize = llama2_tokenizer::VOCAB_SIZE;
 include!(concat!(env!("OUT_DIR"), "/gpt2_shape.rs"));
+pub const GPT2_ADAPTIVE_RELU2: bool = rust_kernels_cuda::mlp::config::ADAPTIVE_RELU2;
+pub const GPT2_MLP_KIND_NAME: &str = if GPT2_BOUNDED_SWIGLU {
+    "bounded-swiglu"
+} else if GPT2_ADAPTIVE_RELU2 {
+    "adaptive-relu2"
+} else {
+    "relu2"
+};
 pub const GPT2_BOUNDED_SWIGLU_ENGRAM_MHC: bool =
     GPT2_BOUNDED_SWIGLU && GPT2_KDA_FULL_STATE_BACKWARD;
 pub const GPT2_VALUE_RMS_ENGRAM_MHC: bool = GPT2_VALUE_RMS && GPT2_KDA_FULL_STATE_BACKWARD;

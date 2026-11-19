@@ -43,7 +43,9 @@ fn main() {
         ),
     )
     .expect("write NVFP4 activation policy");
-    let bounded_swiglu = build_support::bounded_swiglu();
+    let mlp_kind = build_support::mlp_kind();
+    let bounded_swiglu = mlp_kind == build_support::MlpKind::BoundedSwiGlu;
+    let adaptive_relu2 = mlp_kind == build_support::MlpKind::AdaptiveRelu2;
     let value_rms = build_support::value_rms();
     let stationary_rope = build_support::stationary_rope();
     assert!(
@@ -65,7 +67,7 @@ fn main() {
     )
     .expect("write value graph configuration");
     fs::write(out.join("mlp_config.rs"), format!(
-        "pub const BOUNDED_SWIGLU: bool = {bounded_swiglu};\npub const FEATURE_TILES: u32 = {};\npub const ACTIVE_FEATURE_TILES: u32 = {};\n",
+        "pub const BOUNDED_SWIGLU: bool = {bounded_swiglu};\npub const ADAPTIVE_RELU2: bool = {adaptive_relu2};\npub const FEATURE_TILES: u32 = {};\npub const ACTIVE_FEATURE_TILES: u32 = {};\n",
         if bounded_swiglu { 43 } else { 64 }, if bounded_swiglu { 32 } else { 48 },
     )).expect("write MLP graph configuration");
     let activation_fan_in = env_usize("GPT2_N_EMBD")

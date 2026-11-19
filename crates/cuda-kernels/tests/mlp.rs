@@ -8,6 +8,46 @@ mod common;
 const LEN: usize = 4097;
 const CHUNK_LEN: usize = 2048;
 
+#[ignore = "requires the adaptive-ReLU2 Blackwell build"]
+#[test]
+fn adaptive_relu2_centers_each_row_and_preserves_routed_off_adjoints() -> Result<(), Box<dyn Error>>
+{
+    let (_, stream, module) = common::cuda_test_module(MlpModule::from_module)?;
+    let input = [-2., -1., 1., 2., 3., 3., 3., 3., -3., -2., -1., -0.5];
+    let mut values = DeviceBuffer::from_host(&stream, &input)?;
+    let mut tape = DeviceBuffer::zeroed(&stream, input.len())?;
+    module.adaptive_relu2_forward(&stream, &mut values, Some(&mut tape), 3, 4)?;
+    assert_eq!(
+        values.to_host_vec(&stream)?,
+        [-1.25, -1.25, -0.25, 2.75, 0., 0., 0., 0., 0., 0., 0., 0.],
+    );
+    let masks = DeviceBuffer::from_host(&stream, &[1_u64])?;
+    let mut gradient =
+        DeviceBuffer::from_host(&stream, &[0., 0., 0., 1., 2., 2., 2., 2., 1., 2., 3., 4.])?;
+    module.adaptive_relu2_backward(&stream, &mut gradient, &tape, &masks, 3, 4, false)?;
+    assert_eq!(
+        gradient.to_host_vec(&stream)?,
+        [0., 0., -0.5, 3., 0., 0., 0., 0., 0., 0., 0., 0.],
+    );
+
+    const WIDTH: usize = 256;
+    let mut z = vec![1.0; 2 * WIDTH];
+    z[WIDTH / 2..WIDTH + WIDTH / 2].fill(2.0);
+    let mut values = DeviceBuffer::from_host(&stream, &z)?;
+    let mut tape = DeviceBuffer::zeroed(&stream, z.len())?;
+    module.adaptive_relu2_forward(&stream, &mut values, Some(&mut tape), 2, WIDTH as u32)?;
+    let mut dy = vec![100.0; z.len()];
+    dy[..WIDTH / 2].fill(2.0);
+    dy[WIDTH..WIDTH + WIDTH / 2].fill(-4.0);
+    let mut gradient = DeviceBuffer::from_host(&stream, &dy)?;
+    module.adaptive_relu2_backward(&stream, &mut gradient, &tape, &masks, 2, WIDTH as u32, true)?;
+    let actual = gradient.to_host_vec(&stream)?;
+    for (part, expected) in actual.chunks_exact(WIDTH / 2).zip([2., -4., -8., 4.]) {
+        common::assert_all_close(part, expected, 0.);
+    }
+    Ok(())
+}
+
 #[ignore = "requires generated sm_120a PTX"]
 #[test]
 fn relu2_backward_f16_writes_exact_output_and_chunk_amax() -> Result<(), Box<dyn Error>> {
