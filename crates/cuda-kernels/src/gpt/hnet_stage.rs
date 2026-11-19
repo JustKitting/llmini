@@ -477,6 +477,7 @@ impl HnetStage {
             chunks.inner,
             &chunks.values,
             &d_smoothed,
+            &plan.probability,
             &plan.row_to_chunk,
             &plan.chunk_to_row,
             &mut d_probability,

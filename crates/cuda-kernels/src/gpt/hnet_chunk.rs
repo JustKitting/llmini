@@ -6,6 +6,20 @@ use crate::nvfp4::nvfp4_vector_value;
 use crate::warp_reduce::warp_sum_f32;
 
 const INVALID: u32 = u32::MAX;
+const EMA_MIN_PROBABILITY: f32 = 1.0e-4;
+const EMA_MAX_PROBABILITY: f32 = 1.0 - EMA_MIN_PROBABILITY;
+
+#[inline(always)]
+fn ema_probability(raw: f32) -> (f32, bool) {
+    let bounded = if raw < EMA_MIN_PROBABILITY {
+        EMA_MIN_PROBABILITY
+    } else if raw > EMA_MAX_PROBABILITY {
+        EMA_MAX_PROBABILITY
+    } else {
+        raw
+    };
+    (bounded, bounded == raw)
+}
 
 #[inline(always)]
 fn causal_layout(
@@ -334,13 +348,9 @@ pub mod kernels {
         for chunk in 0..valid {
             let index = inner_offset + chunk * features;
             let row = chunk_to_row[outer_offset + chunk] as usize;
-            let value = inner[index];
-            let next = if chunk == 0 {
-                value
-            } else {
-                let p = cvt_f32_f16(probability[outer_offset + row]);
-                cvt_rn_f16_f32(p * cvt_f32_f16(value) + (1.0 - p) * cvt_f32_f16(previous))
-            };
+            let (p, _) = ema_probability(cvt_f32_f16(probability[outer_offset + row]));
+            let next =
+                cvt_rn_f16_f32(p * cvt_f32_f16(inner[index]) + (1.0 - p) * cvt_f32_f16(previous));
             unsafe { *smoothed.get_unchecked_mut(index) = next };
             previous = next;
         }
@@ -383,11 +393,7 @@ pub mod kernels {
             for pos in row..end {
                 adjoint += d_decoder_input[(outer_offset + pos) * features + idx % features];
             }
-            let p = if chunk == 0 {
-                1.0
-            } else {
-                cvt_f32_f16(probability[outer_offset + row])
-            };
+            let (p, _) = ema_probability(cvt_f32_f16(probability[outer_offset + row]));
             let index = inner_offset + chunk * features;
             unsafe {
                 *d_smoothed.get_unchecked_mut(index) = adjoint;
@@ -413,6 +419,7 @@ pub mod kernels {
         inner: &[u16],
         smoothed: &[u16],
         d_smoothed: &[f32],
+        probability: &[u16],
         row_to_chunk: &[u32],
         chunk_to_row: &[u32],
         mut d_probability: DisjointSlice<f32>,
@@ -435,6 +442,7 @@ pub mod kernels {
             let sequence = row / outer_stride;
             let chunk = chunk as usize;
             let is_boundary = chunk_to_row[sequence * outer_stride + chunk] as usize == position;
+            let (_, ema_accepts_adjoint) = ema_probability(cvt_f32_f16(probability[row]));
             let features = features as usize;
             let chunk_offset = (sequence * inner_stride as usize + chunk) * features;
             let direction = if is_boundary { 1.0 } else { -1.0 };
@@ -443,7 +451,9 @@ pub mod kernels {
                 adjoint += direction
                     * d_decoder_input[row * features + feature]
                     * cvt_f32_f16(smoothed[index]);
-                if is_boundary {
+                // Only the EMA uses a clamped probability. The confidence
+                // straight-through gradient still uses the raw probability.
+                if is_boundary && ema_accepts_adjoint {
                     let previous = cvt_f32_f16(smoothed[index - features]);
                     adjoint += d_smoothed[index] * (cvt_f32_f16(inner[index]) - previous);
                 }
@@ -459,6 +469,21 @@ pub mod kernels {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn smoothing_clamps_only_the_ema_and_zeros_its_saturated_probability_adjoint() {
+        assert_eq!(ema_probability(1.0), (1.0 - 1.0e-4, false));
+        assert_eq!(ema_probability(0.0), (1.0e-4, false));
+        assert_eq!(ema_probability(0.75), (0.75, true));
+        assert_eq!(
+            ema_probability(EMA_MAX_PROBABILITY),
+            (EMA_MAX_PROBABILITY, true)
+        );
+        assert_eq!(
+            ema_probability(EMA_MIN_PROBABILITY),
+            (EMA_MIN_PROBABILITY, true)
+        );
+    }
 
     fn mapping(p: &[f32]) -> (Vec<u32>, Vec<u32>) {
         let mut selection = Vec::new();

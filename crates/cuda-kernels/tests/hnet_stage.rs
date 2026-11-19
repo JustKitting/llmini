@@ -29,6 +29,7 @@ fn fused_decoder_preserves_causal_expansion_and_skip_rounding()
     queries[4..8].copy_from_slice(&[1, 1, 1, 1]);
     let mut keys = [1, 0, 0, 0].repeat(8);
     keys[8..12].copy_from_slice(&[-1, -1, -1, 1]);
+    keys[12] = -1;
     let queries = DeviceBuffer::from_host(&stream, &fp16(&queries))?;
     let keys = DeviceBuffer::from_host(&stream, &fp16(&keys))?;
     let lengths = DeviceBuffer::from_host(&stream, &[4_u32, 1])?;
@@ -49,12 +50,13 @@ fn fused_decoder_preserves_causal_expansion_and_skip_rounding()
             weight: 0.03,
         },
     )?;
-    assert_eq!(plan.inner_lengths().to_host_vec(&stream)?, [2, 1]);
+    assert_eq!(plan.inner_lengths().to_host_vec(&stream)?, [3, 1]);
 
     let mut compact = fp16(&[2; WIDTH]);
     compact.extend(fp16(&[6; WIDTH]));
+    compact.extend(fp16(&[0; WIDTH]));
     compact.extend(fp16(&[-3; WIDTH]));
-    compact.extend([0x7e00; WIDTH]);
+    compact.extend([0x7e00; 2 * WIDTH]);
     let inner = DeviceBuffer::from_host(&stream, &compact)?;
     let smoothed = stage.smooth_chunks(&plan, &inner)?;
     let mut skip = [-0.75_f32; 8 * WIDTH];
@@ -74,6 +76,12 @@ fn fused_decoder_preserves_causal_expansion_and_skip_rounding()
     let restored = [2.0_f32, 2.0, 5.0, 5.0, -3.0];
     assert_eq!(actual.len(), skip.len());
     for (index, value) in actual.into_iter().enumerate() {
+        if index / WIDTH == 3 {
+            // A boundary with p=1 still keeps a small amount of the previous
+            // chunk through the released EMA's clamp.
+            common::assert_close(value, 0.25 + 5.0e-4, 1.0e-6);
+            continue;
+        }
         let expected = restored
             .get(index / WIDTH)
             .map_or(0.0, |chunk| chunk + (skip[index] + 1.0));
@@ -149,7 +157,10 @@ fn ragged_hnet_stage_matches_causal_forward_and_backward() -> Result<(), Box<dyn
     k[8..12].copy_from_slice(&[-1, -1, -1, 1]);
     k[16] = -1;
     let q = fp16(&q);
-    let k = fp16(&k);
+    let mut k = fp16(&k);
+    // Close to opposite, but with a nonzero cosine derivative. The router
+    // rounds this boundary probability to one in its FP16 tape.
+    k[17] = 0x2400; // 1/64
     let encoded = fp16(&[2, 4, 9, 9, 6, 8, 9, 9, 10, 12, 1, 2, 9, 9, 9, 9, 9, 9, 9, 9]);
     let lengths = [5, 2];
     let d_expanded = [1.0; 20];
@@ -227,15 +238,33 @@ fn ragged_hnet_stage_matches_causal_forward_and_backward() -> Result<(), Box<dyn
     // Use the identity as the inner model to isolate the hierarchy operators.
     let smoothed = stage.smooth_chunks(&plan, &gathered)?;
     let reverse = stage.backward(&smoothed, &d_expanded_dev)?;
-    assert_eq!(
-        reverse.d_inner.to_host_vec(&stream)?,
-        [2.5, 2.5, 1.5, 1.5, 1., 1., 2., 2., 0., 0., 0., 0.]
+    let cap = 1.0_f32 - 1.0e-4;
+    let d_middle = 2.0 + (1.0 - cap);
+    let first = cap * (2.0 + 0.25 * d_middle);
+    let middle = 0.75 * d_middle;
+    common::assert_slice_close(
+        &reverse.d_inner.to_host_vec(&stream)?,
+        &[
+            first,
+            first,
+            middle,
+            middle,
+            cap,
+            cap,
+            2.0 * cap,
+            2.0 * cap,
+            0.,
+            0.,
+            0.,
+            0.,
+        ],
+        1e-6,
     );
     let d_ratio = 0.03 * (4.0 / 3.0) * (16.0 / 7.0 - 1.0) / 7.0;
     // The tied pair continues the previous chunk, so its STE adjoint is
     // negative. The selected pair gets both the STE and smoothing terms.
     let d_tied_cosine = -0.5 * (-6.0 + d_ratio);
-    let d_selected_cosine = -0.5 * (28.0 + d_ratio);
+    let d_selected_cosine = -0.5 * (12.0 + 8.0 * d_middle + d_ratio);
     let mut d_q = [0.0; 40];
     let mut d_k = [0.0; 40];
     d_q[1] = d_tied_cosine;
@@ -246,15 +275,44 @@ fn ragged_hnet_stage_matches_causal_forward_and_backward() -> Result<(), Box<dyn
     }
     d_q[7] = 0.375 * d_selected_cosine;
     d_k[11] = 0.375 * d_selected_cosine;
+    // The saturated boundary receives the STE dot product (10 + 12) and
+    // the ratio adjoint. The output difference of the EMA contributes zero.
+    let d_saturated_cosine = -0.5 * (22.0 + d_ratio);
+    let inverse = (1.0_f32 + (1.0_f32 / 64.0).powi(2)).sqrt().recip();
+    let cosine = -inverse;
+    let normalized_k_y = inverse / 64.0;
+    d_q[13] = d_saturated_cosine * normalized_k_y;
+    d_k[16] = d_saturated_cosine * (1.0 - cosine * cosine) * inverse;
+    d_k[17] = d_saturated_cosine * (-cosine * normalized_k_y) * inverse;
     common::assert_slice_close(&reverse.d_queries.to_host_vec(&stream)?, &d_q, 1e-5);
     common::assert_slice_close(&reverse.d_keys.to_host_vec(&stream)?, &d_k, 1e-5);
-    assert_eq!(
-        stage
+    common::assert_slice_close(
+        &stage
             .scatter(&plan, &reverse.d_inner)?
             .to_host_vec(&stream)?,
-        [
-            2.5, 2.5, 0., 0., 1.5, 1.5, 0., 0., 1., 1., 2., 2., 0., 0., 0., 0., 0., 0., 0., 0.,
-        ]
+        &[
+            first,
+            first,
+            0.,
+            0.,
+            middle,
+            middle,
+            0.,
+            0.,
+            cap,
+            cap,
+            2.0 * cap,
+            2.0 * cap,
+            0.,
+            0.,
+            0.,
+            0.,
+            0.,
+            0.,
+            0.,
+            0.,
+        ],
+        1e-6,
     );
     Ok(())
 }
