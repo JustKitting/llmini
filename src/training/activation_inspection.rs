@@ -72,8 +72,7 @@ pub(super) fn run(
         &audit_path,
         serde_json::to_string_pretty(&quantization)? + "\n",
     )?;
-    let mut trainer = Trainer::new(0x47505432)?;
-    trainer.load_model(checkpoint)?;
+    let mut trainer = Trainer::from_checkpoint(0x47505432, checkpoint)?;
     let batch = trainer.batch_from_windows(&validation, super::data::VALIDATION_WINDOWS)?;
     let before = trainer.eval_token_losses(&batch)?;
     let native_ce = before.iter().sum::<f32>() / before.len() as f32;

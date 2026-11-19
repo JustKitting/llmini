@@ -1,5 +1,7 @@
+use std::path::Path;
+
 use cuda_core::sys;
-use gpt2_nvfp4::{GPT2_SEQ_LEN, Gpt2, Gpt2Rng};
+use gpt2_nvfp4::{GPT2_N_LAYER, GPT2_SEQ_LEN, Gpt2, Gpt2Rng};
 
 use super::{ReusableTokenBatch, TokenBatch, buffers, runtime::Runtime};
 use crate::{AppResult, upload::UploadedModel};
@@ -28,6 +30,15 @@ impl Trainer {
     pub fn new(seed: u64) -> AppResult<Self> {
         let memory = gpt2_nvfp4::GPT2_REQUIRES_ENGRAM_MHC || super::engram::multistream_enabled();
         Self::new_architecture(seed, false, memory || super::mhc::enabled(), memory)
+    }
+
+    /// Open saved evaluation weights directly, before allocating trainer state.
+    pub(in crate::training) fn from_checkpoint(seed: u64, path: &Path) -> AppResult<Self> {
+        let runtime = Runtime::new()?;
+        let (uploaded, depth) = crate::checkpoint::load_uploaded_model(&runtime.stream, path)?;
+        let mut model = Gpt2::new();
+        model.init(seed);
+        Self::with_uploaded_model(seed, runtime, model, uploaded, depth)
     }
 
     pub fn new_feedback(seed: u64) -> AppResult<Self> {
@@ -124,7 +135,6 @@ impl Trainer {
             return Err("select full mHC as a separate native graph with TRAIN_ENGRAM=0 and no latent feedback; the single-stream memory hook is not a four-stream integration".into());
         }
         let runtime = Runtime::new()?;
-        let stream = runtime.stream.as_ref();
         let mut model = Gpt2::new();
         model.init(seed);
         let weights = model.weights().expect("Gpt2::init must create weights");
@@ -159,8 +169,20 @@ impl Trainer {
                 super::engram::Weights::new_multistream(&runtime)?
             });
         }
+        Self::with_uploaded_model(seed, runtime, model, uploaded, GPT2_N_LAYER)
+    }
+
+    fn with_uploaded_model(
+        seed: u64,
+        runtime: Runtime,
+        model: Gpt2,
+        uploaded: UploadedModel,
+        depth: usize,
+    ) -> AppResult<Self> {
+        let stream = runtime.stream.as_ref();
         let mut buffers = buffers::TrainBuffers::new(stream, &runtime, &uploaded)?;
-        let engram = uploaded
+        buffers.optimizer_state.active_depth = depth;
+        let mut engram = uploaded
             .engram
             .as_ref()
             .map(|weights| super::engram::Engram::new(&runtime, weights))
@@ -170,12 +192,18 @@ impl Trainer {
             .as_ref()
             .map(|w| super::latent_feedback::Feedback::new(&runtime, w))
             .transpose()?;
-        let mhc = uploaded
+        let mut mhc = uploaded
             .mhc
             .as_ref()
             .map(|w| super::mhc::Mhc::new(&runtime, w))
             .transpose()?;
-        if engram.is_some() || latent_feedback.is_some() || mhc.is_some() {
+        if let Some(engram) = &mut engram {
+            engram.active_depth = depth;
+        }
+        if let Some(mhc) = &mut mhc {
+            mhc.active_boundaries = depth * 2;
+        }
+        if depth != GPT2_N_LAYER || engram.is_some() || latent_feedback.is_some() || mhc.is_some() {
             buffers.configure_optimizer_graph(
                 stream,
                 &uploaded,

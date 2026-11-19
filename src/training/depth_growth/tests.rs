@@ -188,6 +188,16 @@ fn partial_growth_checkpoint_replays_the_active_prefix() -> AppResult {
         assert_eq!(trainer.engram.as_ref().unwrap().active_depth, 4);
         assert_eq!(trainer.eval_token_losses(&batch)?, expected);
         assert_eq!(trainer.buffers.optimizer_state.step, 0);
+
+        drop(batch);
+        drop(trainer);
+        let mut reopened = Trainer::from_checkpoint(0x47505432, &path)?;
+        let batch = reopened.batch_from_windows(&windows, crate::training::data::VALIDATION_WINDOWS)?;
+        assert_eq!(reopened.active_depth(), 4);
+        assert_eq!(reopened.mhc.as_ref().unwrap().active_boundaries, 8);
+        assert_eq!(reopened.engram.as_ref().unwrap().active_depth, 4);
+        assert_eq!(reopened.eval_token_losses(&batch)?, expected);
+        assert_eq!(reopened.buffers.optimizer_state.step, 0);
         Ok(())
     })();
     let cleanup = std::fs::remove_dir_all(&directory);
