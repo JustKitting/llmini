@@ -51,8 +51,7 @@ pub(in crate::training) fn run(
         return Err("nonfinite represented checkpoint values; quantization audit saved".into());
     }
     let started = Instant::now();
-    let mut trainer = Trainer::new(0x47505432)?;
-    trainer.load_model(checkpoint)?;
+    let mut trainer = Trainer::from_checkpoint(0x47505432, checkpoint)?;
     if requested_feedback_passes.is_some() && trainer.latent_feedback.is_none() {
         return Err("--feedback-evaluation-passes requires a latent-feedback checkpoint".into());
     }

@@ -63,8 +63,8 @@ pub(super) struct TrainArgs {
     #[arg(long, conflicts_with_all=["bounded_swiglu","engram_mhc","mhc","latent_feedback","inspect_model","inspect_gradients","evaluate_model","inspect_feedback_depths"])]
     pub(super) value_rms: bool,
 
-    /// Train full recurrent KDA credit, optionally with --engram-mhc; matching native build required.
-    #[arg(long, conflicts_with_all=["value_rms","bounded_swiglu","mhc","latent_feedback","inspect_model","inspect_gradients","evaluate_model","inspect_feedback_depths"])]
+    /// Train full recurrent KDA credit, optionally with --engram-mhc or --latent-feedback.
+    #[arg(long, conflicts_with_all=["value_rms","bounded_swiglu","mhc","inspect_model","inspect_gradients","evaluate_model","inspect_feedback_depths"])]
     pub(super) full_kda_backward: bool,
 
     /// Train half-truncated base1024 RoPE with stationary-half key offset; matching build required.

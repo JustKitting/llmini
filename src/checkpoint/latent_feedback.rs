@@ -11,6 +11,9 @@ use crate::{
 use cuda_core::CudaStream;
 use gpt2_nvfp4::GPT2_N_EMBD;
 use std::{collections::HashMap, io::Write};
+
+pub(super) const TENSOR_COUNT: u32 = 2;
+
 fn config() -> Vec<f32> {
     vec![
         1.0,

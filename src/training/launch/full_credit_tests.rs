@@ -19,6 +19,33 @@ fn full_credit_combined_cli_keeps_the_complete_graph() {
 }
 
 #[test]
+fn full_credit_feedback_cli_selects_the_native_training_graph() {
+    let args = TrainArgs::try_parse_from([
+        "rust-kernels",
+        "--latent-feedback",
+        "--full-kda-backward",
+        "--steps",
+        "20000",
+    ])
+    .expect("the final feedback pass must support full recurrent KDA credit");
+    assert!(args.full_kda_backward);
+    let config = args.config();
+    assert!(config.latent_feedback && !config.engram_mhc && !config.mhc);
+    assert_eq!(config.step_cap, 20000);
+    let info = build_run_info("fineweb", &config);
+    assert!(
+        info.lines()
+            .any(|line| line == "latent_feedback_enabled=true")
+    );
+    if gpt2_nvfp4::GPT2_KDA_FULL_STATE_BACKWARD {
+        assert!(
+            info.lines()
+                .any(|line| line == "KDA_backward=full_recurrent_state_adjoint")
+        );
+    }
+}
+
+#[test]
 fn full_credit_combined_cli_retains_explicit_table_capacity() {
     let args = TrainArgs::try_parse_from([
         "rust-kernels",
@@ -54,7 +81,6 @@ fn full_credit_combined_report_keeps_memory_active() {
 fn full_credit_keeps_other_unverified_graph_combinations_rejected() {
     for other in [
         "--mhc",
-        "--latent-feedback",
         "--bounded-swiglu",
         "--value-rms",
         "--stationary-rope",

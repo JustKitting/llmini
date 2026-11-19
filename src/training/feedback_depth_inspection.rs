@@ -31,8 +31,7 @@ pub(super) fn run(
         super::reference_eval::replay_expectation(checkpoint, replay_record)?;
     let tokens = TokenDataLoader::fineweb_validation_tokens()?;
     let bytes = super::data::validation_target_byte_count(&tokens)?;
-    let mut trainer = Trainer::new_feedback(0x47505432)?;
-    trainer.load_model(checkpoint)?;
+    let mut trainer = Trainer::from_checkpoint(0x47505432, checkpoint)?;
     if trainer.latent_feedback.is_none() {
         return Err("checkpoint does not contain the latent-feedback graph".into());
     }

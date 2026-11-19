@@ -25,10 +25,13 @@ impl TrainConfig {
                 "this composite full-credit build requires the complete Engram/mHC factory".into(),
             );
         }
-        if gpt2_nvfp4::GPT2_KDA_FULL_STATE_BACKWARD
-            && (self.latent_feedback || (self.mhc && !self.engram_mhc))
-        {
-            return Err("full recurrent KDA credit supports the standalone backbone or complete four-stream Engram/mHC graph".into());
+        if self.latent_feedback && (self.mhc || self.engram_mhc) {
+            return Err("mHC and latent feedback select separate native training graphs".into());
+        }
+        if gpt2_nvfp4::GPT2_KDA_FULL_STATE_BACKWARD && self.mhc && !self.engram_mhc {
+            return Err(
+                "full recurrent KDA with mHC requires the complete Engram/mHC graph".into(),
+            );
         }
         if self.engram_mhc {
             if self.engram_four_grams {
@@ -44,12 +47,12 @@ impl TrainConfig {
             Trainer::new_value_rms(self.seed)
         } else if gpt2_nvfp4::GPT2_BOUNDED_SWIGLU {
             Trainer::new_bounded_swiglu(self.seed)
-        } else if gpt2_nvfp4::GPT2_KDA_FULL_STATE_BACKWARD {
-            Trainer::new_full_kda(self.seed)
         } else if self.mhc {
             Trainer::new_mhc(self.seed)
         } else if self.latent_feedback {
             Trainer::new_feedback(self.seed)
+        } else if gpt2_nvfp4::GPT2_KDA_FULL_STATE_BACKWARD {
+            Trainer::new_full_kda(self.seed)
         } else {
             Trainer::new(self.seed)
         }

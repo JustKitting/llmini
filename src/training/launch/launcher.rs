@@ -114,11 +114,10 @@ pub(crate) fn launch_from_args() -> AppResult {
         );
     }
     if args.full_kda_backward
-        && (config.latent_feedback
-            || (!config.engram_mhc
-                && (config.mhc || std::env::var("TRAIN_ENGRAM").is_ok_and(|s| s == "1"))))
+        && !config.engram_mhc
+        && (config.mhc || std::env::var("TRAIN_ENGRAM").is_ok_and(|s| s == "1"))
     {
-        return Err("full recurrent KDA credit supports the standalone backbone or complete --engram-mhc graph".into());
+        return Err("full recurrent KDA requires the standalone, latent-feedback, or complete --engram-mhc graph".into());
     }
     if args.full_kda_backward && super::config::load_model_path().is_some() {
         return Err("full recurrent KDA trial requires fresh model, optimizer, RNG and warmup state; TRAIN_LOAD_MODEL is not a continuation".into());

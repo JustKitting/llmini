@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::BufReader;
+use std::io::{BufReader, Read};
 use std::path::Path;
 
 use cuda_core::CudaStream;
@@ -16,9 +16,8 @@ use super::{format::CheckpointReader, schema};
 use crate::AppResult;
 use crate::upload::UploadedModel;
 
-fn read_tensors(path: &Path) -> AppResult<(u32, HashMap<String, super::format::CheckpointTensor>)> {
-    let file = File::open(path)?;
-    let mut reader = CheckpointReader::new(BufReader::new(file));
+fn read_tensors(input: impl Read) -> AppResult<HashMap<String, super::format::CheckpointTensor>> {
+    let mut reader = CheckpointReader::new(BufReader::new(input));
     let tensor_count = reader.read_header()?;
     let expected_tensor_count = schema::tensor_count(GPT2_N_LAYER);
     if !schema::supported_tensor_count(GPT2_N_LAYER, tensor_count) {
@@ -67,28 +66,28 @@ fn read_tensors(path: &Path) -> AppResult<(u32, HashMap<String, super::format::C
         );
     }
     if gpt2_nvfp4::GPT2_KDA_FULL_STATE_BACKWARD
-        && [
-            "mhc.config",
-            "engram.config",
-            "engram.layers",
-            "latent_feedback.config",
-        ]
-        .iter()
-        .any(|key| tensors.contains_key(*key))
-        && !(tensors.contains_key("mhc.config")
-            && (tensors.contains_key("engram.config") || tensors.contains_key("engram.layers"))
-            && !tensors.contains_key("latent_feedback.config"))
+        && !schema::full_credit_supports_graph(
+            tensors.contains_key("engram.config") || tensors.contains_key("engram.layers"),
+            tensors.contains_key("mhc.config"),
+            tensors.contains_key("latent_feedback.config"),
+        )
     {
         return Err(
             "full-credit auxiliary checkpoint requires the complete Engram/mHC graph".into(),
         );
     }
-    Ok((tensor_count, tensors))
+    Ok(tensors)
 }
 
 pub fn load_uploaded_model(stream: &CudaStream, path: &Path) -> AppResult<UploadedModel> {
-    let (tensor_count, mut tensors) = read_tensors(path)?;
-    let expected_tensor_count = schema::tensor_count(GPT2_N_LAYER);
+    load_uploaded_model_from_reader(stream, File::open(path)?)
+}
+
+pub(crate) fn load_uploaded_model_from_reader(
+    stream: &CudaStream,
+    input: impl Read,
+) -> AppResult<UploadedModel> {
+    let mut tensors = read_tensors(input)?;
     let mut model = topology::load_model(stream, &mut tensors)?;
     if tensors.contains_key("mhc.config") {
         model.mhc = Some(super::mhc::load(stream, &mut tensors)?);
@@ -96,12 +95,7 @@ pub fn load_uploaded_model(stream: &CudaStream, path: &Path) -> AppResult<Upload
     if tensors.contains_key("engram.config") || tensors.contains_key("engram.layers") {
         model.engram = Some(super::engram::load(stream, &mut tensors)?);
     }
-    if tensor_count
-        == expected_tensor_count
-            + 2
-            + super::activation_quant::extra_tensors()
-            + super::kda_output_gate::extra_tensors()
-    {
+    if tensors.contains_key("latent_feedback.config") {
         model.latent_feedback = Some(super::latent_feedback::load(stream, &mut tensors)?);
     }
     if !tensors.is_empty() {

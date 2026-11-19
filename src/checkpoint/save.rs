@@ -34,8 +34,11 @@ fn validate_graph(model: &UploadedModel) -> AppResult {
         return Err("this numerical/backward checkpoint encodes a separate native trial".into());
     }
     if gpt2_nvfp4::GPT2_KDA_FULL_STATE_BACKWARD
-        && (model.engram.is_some() || model.mhc.is_some() || model.latent_feedback.is_some())
-        && !(model.engram.is_some() && model.mhc.is_some() && model.latent_feedback.is_none())
+        && !schema::full_credit_supports_graph(
+            model.engram.is_some(),
+            model.mhc.is_some(),
+            model.latent_feedback.is_some(),
+        )
     {
         return Err(
             "full-credit auxiliary checkpoint requires the complete Engram/mHC graph".into(),
@@ -58,7 +61,7 @@ fn validate_graph(model: &UploadedModel) -> AppResult {
     Ok(())
 }
 
-pub(super) fn write_uploaded_model_to(
+pub(crate) fn write_uploaded_model_to(
     stream: &CudaStream,
     model: &UploadedModel,
     output: impl Write,
@@ -76,7 +79,7 @@ pub(super) fn write_uploaded_model_to(
             + model.engram.as_ref().map_or(0, |w| w.tensor_count())
             + model.mhc.as_ref().map_or(0, |w| w.tensor_count())
             + if model.latent_feedback.is_some() {
-                2
+                super::latent_feedback::TENSOR_COUNT
             } else {
                 0
             },

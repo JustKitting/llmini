@@ -16,6 +16,10 @@ pub(super) fn supported_tensor_count(block_count: usize, count: u32) -> bool {
         .is_some_and(|count| supported_graph_tensor_count(block_count, count))
 }
 
+pub(super) fn full_credit_supports_graph(engram: bool, mhc: bool, feedback: bool) -> bool {
+    (!engram && !mhc) || (engram && mhc && !feedback)
+}
+
 fn supported_graph_tensor_count(block_count: usize, count: u32) -> bool {
     let base = tensor_count(block_count);
     let mhc = 1 + 3 * (2 * block_count as u32 + 1);
@@ -40,7 +44,10 @@ fn supported_graph_tensor_count(block_count: usize, count: u32) -> bool {
         || (gpt2_nvfp4::GPT2_BOUNDED_SWIGLU_ENGRAM_MHC && gpt2_nvfp4::GPT2_VALUE_RMS_ENGRAM_MHC && gpt2_nvfp4::GPT2_STATIONARY_ROPE_ENGRAM_MHC
             && count == base + mhc + four_stream_engram + 4)
         || count == base + 11
-        || count == base + 2
+        || count == base + super::latent_feedback::TENSOR_COUNT
+        || (gpt2_nvfp4::GPT2_KDA_FULL_STATE_BACKWARD
+            && !gpt2_nvfp4::GPT2_REQUIRES_ENGRAM_MHC
+            && count == base + super::latent_feedback::TENSOR_COUNT + super::kda_backward::extra_tensors())
         || (count > base + 1
             && (count - base - 1) % 11 == 0
             && (count - base - 1) / 11 <= block_count as u32)
@@ -77,12 +84,27 @@ mod tests {
                 "legacy graph header {count}"
             );
         }
-        for count in [0, base - 1, base + 3, base + mhc + engram + 5, u32::MAX] {
+        for count in [0, base - 1, base + mhc + engram + 5, u32::MAX] {
             assert!(
                 !supported_tensor_count(layers, count),
                 "unknown header {count}"
             );
         }
+    }
+
+    #[test]
+    fn feedback_header_accounts_for_the_full_kda_descriptor() {
+        let count = tensor_count(16) + super::super::latent_feedback::TENSOR_COUNT;
+        assert!(supported_tensor_count(16, count));
+        assert_eq!(
+            supported_tensor_count(16, count + 1),
+            gpt2_nvfp4::GPT2_KDA_FULL_STATE_BACKWARD && !gpt2_nvfp4::GPT2_REQUIRES_ENGRAM_MHC
+        );
+        assert!(super::full_credit_supports_graph(false, false, true));
+        assert!(super::full_credit_supports_graph(true, true, false));
+        assert!(!super::full_credit_supports_graph(true, true, true));
+        assert!(!super::full_credit_supports_graph(true, false, true));
+        assert!(!super::full_credit_supports_graph(false, true, true));
     }
     #[test]
     fn full_credit_combined_header_matches_the_real_writer_count() {

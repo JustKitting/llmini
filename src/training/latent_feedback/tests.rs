@@ -1,7 +1,6 @@
 use super::*;
-use crate::training::{TokenDataLoader, Trainer};
+use crate::training::{TokenDataLoader, Trainer, launch::TrainConfig};
 use gpt2_nvfp4::{GPT2_BATCH_SIZE, GPT2_N_EMBD, GPT2_SEQ_LEN};
-use std::path::Path;
 
 fn batch(t: &Trainer) -> crate::AppResult<crate::training::TokenBatch> {
     let v = TokenDataLoader::fineweb_validation_tokens()?;
@@ -46,9 +45,22 @@ fn state_bits(
 #[test]
 #[ignore = "full approximately1B native CUDA feedback contract; fixture updates are not convergence evidence"]
 fn native_latent_feedback_recurrence_gradients_conditional_update_checkpoint() -> crate::AppResult {
-    let mut t = Trainer::new_feedback(0x47505432)?;
+    let config = TrainConfig {
+        seed: 0x47505432,
+        latent_feedback: true,
+        mhc: false,
+        engram_mhc: false,
+        engram_table_params: None,
+        engram_four_grams: false,
+        step_cap: 20_000,
+        log_interval: 1,
+        eval_interval: Some(1000),
+        eval_repeats: 1,
+        max_seconds: 43_200.0,
+    };
+    let mut t = config.create_trainer()?;
     println!("feedback_test_stage=initialized");
-    assert!(t.engram.is_none());
+    assert!(t.latent_feedback.is_some() && t.engram.is_none() && t.mhc.is_none());
     let b = batch(&t)?;
     let feedback_state = t.latent_feedback.as_ref().unwrap().integrity_metadata();
     let one = t.eval_token_losses_for_passes(&b, 1)?;
@@ -203,18 +215,24 @@ fn native_latent_feedback_recurrence_gradients_conditional_update_checkpoint() -
     );
     assert!(t.completed_gradient_components(2, inactive.optimizer.grad_norm)?["passed"] == true);
     t.materialize_evaluation_weights()?;
-    let expected = t.eval_token_losses_for_passes(&b, 4)?;
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("target/checks/20261115/latent-feedback-native-roundtrip.ckpt");
-    t.save_model(&path)?;
-    t.load_model(&path)?;
+    let expected_p2 = t.eval_token_losses_for_passes(&b, 2)?;
+    let expected_p4 = t.eval_token_losses_for_passes(&b, 4)?;
+    let mut checkpoint = Vec::new();
+    crate::checkpoint::write_uploaded_model_to(&t.runtime.stream, &t.uploaded, &mut checkpoint)?;
+    drop(b);
+    drop(t);
+    let mut t =
+        Trainer::from_checkpoint_reader(config.seed.wrapping_add(1), checkpoint.as_slice())?;
+    drop(checkpoint);
+    let b = batch(&t)?;
     println!("feedback_test_stage=checkpoint_reload");
     assert!(t.latent_feedback.is_some() && t.engram.is_none());
     assert_eq!(
         t.buffers.optimizer_state.step, 0,
         "model-only reload must not pretend to continue"
     );
-    assert_eq!(expected, t.eval_token_losses_for_passes(&b, 4)?);
+    assert_eq!(expected_p2, t.eval_token_losses_for_passes(&b, 2)?);
+    assert_eq!(expected_p4, t.eval_token_losses_for_passes(&b, 4)?);
     t.forward_for_passes(&b, 2)?;
     let stream = t.runtime.stream.as_ref();
     let mut error = vec![0.0; GPT2_BATCH_SIZE * GPT2_SEQ_LEN * GPT2_N_EMBD];
