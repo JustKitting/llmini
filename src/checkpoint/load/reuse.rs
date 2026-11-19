@@ -1,11 +1,11 @@
 //! Prevalidated, byte-exact reload of the same complete Engram/mHC topology.
 //! The exclusive model borrow keeps destinations alive until copies complete.
-use std::{collections::HashMap, marker::PhantomData, path::Path};
+use std::{collections::HashMap, fs::File, marker::PhantomData, path::Path};
 
 use super::super::format::CheckpointTensor;
 use crate::{
-    upload::{UploadedModel, UploadedNvfp4},
     AppResult,
+    upload::{UploadedModel, UploadedNvfp4},
 };
 use cuda_core::{CudaStream, DeviceBuffer};
 
@@ -160,7 +160,7 @@ pub(crate) fn prepare_reload<'a>(
     {
         return Ok(None);
     }
-    let (_, mut tensors) = super::read_tensors(path)?;
+    let (_, mut tensors) = super::read_tensors(File::open(path)?)?;
     let mut descriptors = vec![
         (
             "mhc.config".to_string(),

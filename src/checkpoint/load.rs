@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::BufReader;
+use std::io::{BufReader, Read};
 use std::path::Path;
 
 use cuda_core::CudaStream;
@@ -16,9 +16,10 @@ use super::{format::CheckpointReader, schema};
 use crate::AppResult;
 use crate::upload::UploadedModel;
 
-fn read_tensors(path: &Path) -> AppResult<(u32, HashMap<String, super::format::CheckpointTensor>)> {
-    let file = File::open(path)?;
-    let mut reader = CheckpointReader::new(BufReader::new(file));
+fn read_tensors(
+    input: impl Read,
+) -> AppResult<(u32, HashMap<String, super::format::CheckpointTensor>)> {
+    let mut reader = CheckpointReader::new(BufReader::new(input));
     let tensor_count = reader.read_header()?;
     let expected_tensor_count = schema::tensor_count(GPT2_N_LAYER);
     if !schema::supported_tensor_count(GPT2_N_LAYER, tensor_count) {
@@ -87,7 +88,14 @@ fn read_tensors(path: &Path) -> AppResult<(u32, HashMap<String, super::format::C
 }
 
 pub fn load_uploaded_model(stream: &CudaStream, path: &Path) -> AppResult<UploadedModel> {
-    let (tensor_count, mut tensors) = read_tensors(path)?;
+    load_uploaded_model_from_reader(stream, File::open(path)?)
+}
+
+pub(crate) fn load_uploaded_model_from_reader(
+    stream: &CudaStream,
+    input: impl Read,
+) -> AppResult<UploadedModel> {
+    let (tensor_count, mut tensors) = read_tensors(input)?;
     let expected_tensor_count = schema::tensor_count(GPT2_N_LAYER);
     let mut model = topology::load_model(stream, &mut tensors)?;
     if tensors.contains_key("mhc.config") {

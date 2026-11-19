@@ -58,7 +58,7 @@ fn validate_graph(model: &UploadedModel) -> AppResult {
     Ok(())
 }
 
-pub(super) fn write_uploaded_model_to(
+pub(crate) fn write_uploaded_model_to(
     stream: &CudaStream,
     model: &UploadedModel,
     output: impl Write,

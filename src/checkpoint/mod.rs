@@ -23,6 +23,9 @@ pub(crate) use audit::audit_model;
 pub(crate) use format::CheckpointReader;
 pub(crate) use format::CheckpointWriter;
 pub use load::load_uploaded_model;
+pub(crate) use load::load_uploaded_model_from_reader;
 pub(crate) use load::prepare_reload;
 pub use save::save_uploaded_model;
 pub(crate) use save::tensor::write as write_nvfp4_tensor;
+#[cfg(test)]
+pub(crate) use save::write_uploaded_model_to;

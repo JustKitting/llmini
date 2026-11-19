@@ -173,8 +173,7 @@ pub(in crate::training) fn evaluate(
     let backbone_sha = crate::reference_validation::sha256(&backbone)?;
     let outer_sha = crate::reference_validation::sha256(&outer)?;
     open(holdout)?;
-    let mut trainer = Trainer::new_full_kda(0x47505432)?;
-    trainer.load_model(&backbone)?;
+    let mut trainer = Trainer::from_hnet_backbone_checkpoint(0x47505432, File::open(&backbone)?)?;
     let snapshot = Snapshot::load(&trainer.runtime, &outer, OUTER_LAYERS)?;
     let mut scratch = HierarchyScratch::new(
         &trainer.runtime,

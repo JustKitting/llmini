@@ -345,21 +345,7 @@ fn native_hnet_step_updates_the_outer_and_inner_parameters() -> AppResult {
     assert_eq!(trainer.buffers.optimizer_state.step, 1);
     let mut outer_checkpoint = Vec::new();
     parameters.write_weights(&stream, &mut outer_checkpoint)?;
-    let snapshot = Snapshot::read(&trainer.runtime, outer_checkpoint.as_slice(), 1)?;
-    let saved = snapshot.weights();
-    let saved_losses = trainer.score_hnet_bytes(
-        &mut scratch,
-        &batch,
-        saved.embedding,
-        saved.hierarchy(),
-        RatioObjective {
-            target: 4.0,
-            weight: 0.03,
-        },
-    )?;
-    assert_eq!(losses, saved_losses);
-    assert_eq!(trainer.buffers.optimizer_state.step, 1);
-    for (&target, loss) in batch.targets.iter().zip(losses) {
+    for (&target, &loss) in batch.targets.iter().zip(&losses) {
         if target == u32::MAX {
             assert_eq!(loss, 0.0);
         } else {
@@ -389,6 +375,36 @@ fn native_hnet_step_updates_the_outer_and_inner_parameters() -> AppResult {
                 .any(|byte| byte & 0x77 != 0)
         );
     }
+
+    let mut backbone_checkpoint = Vec::new();
+    crate::checkpoint::write_uploaded_model_to(
+        &stream,
+        &trainer.uploaded,
+        &mut backbone_checkpoint,
+    )?;
+    drop(parameters);
+    drop(scratch);
+    drop(trainer);
+    drop(stream);
+
+    let mut reopened =
+        Trainer::from_hnet_backbone_checkpoint(0x47505432, backbone_checkpoint.as_slice())?;
+    drop(backbone_checkpoint);
+    let snapshot = Snapshot::read(&reopened.runtime, outer_checkpoint.as_slice(), 1)?;
+    let mut scratch = HierarchyScratch::new(&reopened.runtime, 2, 128, OUTER_WIDTH as u32)?;
+    let saved = snapshot.weights();
+    let saved_losses = reopened.score_hnet_bytes(
+        &mut scratch,
+        &batch,
+        saved.embedding,
+        saved.hierarchy(),
+        RatioObjective {
+            target: 4.0,
+            weight: 0.03,
+        },
+    )?;
+    assert_eq!(losses, saved_losses);
+    assert_eq!(reopened.buffers.optimizer_state.step, 0);
     Ok(())
 }
 

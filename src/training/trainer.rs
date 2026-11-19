@@ -1,3 +1,5 @@
+use std::io::Read;
+
 use cuda_core::sys;
 use gpt2_nvfp4::{GPT2_SEQ_LEN, Gpt2, Gpt2Rng};
 
@@ -56,6 +58,26 @@ impl Trainer {
             return Err("full KDA backward requires a GPT2_KDA_BACKWARD=full native build".into());
         }
         Self::new_architecture(seed, false, false, false)
+    }
+
+    pub(in crate::training) fn from_hnet_backbone_checkpoint(
+        seed: u64,
+        checkpoint: impl Read,
+    ) -> AppResult<Self> {
+        if !gpt2_nvfp4::GPT2_KDA_FULL_STATE_BACKWARD {
+            return Err("H-Net requires a GPT2_KDA_BACKWARD=full native build".into());
+        }
+        let runtime = Runtime::new()?;
+        let uploaded =
+            crate::checkpoint::load_uploaded_model_from_reader(&runtime.stream, checkpoint)?;
+        if uploaded.engram.is_some() || uploaded.latent_feedback.is_some() {
+            return Err(
+                "a routed backbone has neither token-indexed Engram nor token feedback".into(),
+            );
+        }
+        let mut model = Gpt2::new();
+        model.init(seed);
+        Self::with_uploaded_model(seed, runtime, model, uploaded)
     }
     pub fn new_engram_mhc(seed: u64) -> AppResult<Self> {
         Self::new_architecture(seed, false, true, true)
@@ -124,7 +146,6 @@ impl Trainer {
             return Err("select full mHC as a separate native graph with TRAIN_ENGRAM=0 and no latent feedback; the single-stream memory hook is not a four-stream integration".into());
         }
         let runtime = Runtime::new()?;
-        let stream = runtime.stream.as_ref();
         let mut model = Gpt2::new();
         model.init(seed);
         let weights = model.weights().expect("Gpt2::init must create weights");
@@ -159,6 +180,16 @@ impl Trainer {
                 super::engram::Weights::new_multistream(&runtime)?
             });
         }
+        Self::with_uploaded_model(seed, runtime, model, uploaded)
+    }
+
+    fn with_uploaded_model(
+        seed: u64,
+        runtime: Runtime,
+        model: Gpt2,
+        uploaded: UploadedModel,
+    ) -> AppResult<Self> {
+        let stream = runtime.stream.as_ref();
         let mut buffers = buffers::TrainBuffers::new(stream, &runtime, &uploaded)?;
         let engram = uploaded
             .engram
