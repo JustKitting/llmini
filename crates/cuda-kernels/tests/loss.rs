@@ -1,9 +1,60 @@
 use std::error::Error;
 
 use cuda_core::DeviceBuffer;
-use rust_kernels_cuda::loss::{CrossEntropyArgs, LossModule};
+use rust_kernels_cuda::loss::{CrossEntropyArgs, CrossEntropyParams, LossModule};
 
 mod common;
+
+#[ignore = "requires generated sm_120a PTX"]
+#[test]
+fn cross_entropy_loss_only_is_bit_exact_at_model_vocabulary() -> Result<(), Box<dyn Error>> {
+    let (_, stream, module) = common::cuda_test_module(LossModule::from_module)?;
+    let vocab_size = 32000;
+    let mut logits = vec![f32::NEG_INFINITY; 4 * vocab_size];
+    logits[1024] = 0.0;
+    logits[2047] = 100.0;
+    logits[vocab_size + 24] = 0.0;
+    logits[2 * vocab_size - 1] = 0.0;
+    logits[2 * vocab_size + 31] = -200.0;
+    logits[3 * vocab_size - 1] = 200.0;
+    for (index, value) in logits[3 * vocab_size..].iter_mut().enumerate() {
+        *value = (index % 31) as f32 * 0.125 - 2.0;
+    }
+    let logits = DeviceBuffer::from_host(&stream, &logits)?;
+    let targets = DeviceBuffer::from_host(&stream, &[2047_u32, 24, 31, 145])?;
+    let mut full_loss = DeviceBuffer::<f32>::zeroed(&stream, 4)?;
+    let mut read_only_loss = DeviceBuffer::<f32>::zeroed(&stream, 4)?;
+    let mut gradients = DeviceBuffer::<f32>::zeroed(&stream, 4 * vocab_size)?;
+    let mut amax = DeviceBuffer::<f32>::zeroed(&stream, 4)?;
+    let params = CrossEntropyParams {
+        token_count: 4,
+        vocab_size: vocab_size as u32,
+    };
+    module.cross_entropy(CrossEntropyArgs {
+        stream: &stream,
+        logits: &logits,
+        targets: &targets,
+        losses: &mut full_loss,
+        dlogits: &mut gradients,
+        dlogits_row_amax: &mut amax,
+        token_count: params.token_count,
+        vocab_size: params.vocab_size,
+    })?;
+    assert!(module.try_cross_entropy_loss(
+        &stream,
+        &logits,
+        &targets,
+        &mut read_only_loss,
+        params,
+    )?);
+    let full_loss = full_loss.to_host_vec(&stream)?;
+    let read_only_loss = read_only_loss.to_host_vec(&stream)?;
+    assert!(full_loss[0] > 0.0 && full_loss.iter().all(|loss| loss.is_finite()));
+    for (&actual, &expected) in read_only_loss.iter().zip(&full_loss) {
+        assert_eq!(actual.to_bits(), expected.to_bits());
+    }
+    Ok(())
+}
 
 const TOKEN_COUNT: usize = 2;
 const VOCAB_SIZE: usize = 4;
