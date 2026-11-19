@@ -130,7 +130,7 @@ fn adaptive_relu2_centers_each_row_and_preserves_routed_off_adjoints() -> Result
     let masks = DeviceBuffer::from_host(&stream, &[1_u64])?;
     let mut gradient =
         DeviceBuffer::from_host(&stream, &[0., 0., 0., 1., 2., 2., 2., 2., 1., 2., 3., 4.])?;
-    module.adaptive_relu2_backward(&stream, &mut gradient, &tape, &masks, 3, 4, false)?;
+    module.adaptive_relu2_backward(&stream, &mut gradient, &tape, &masks, 3, 4, false, None)?;
     assert_eq!(
         gradient.to_host_vec(&stream)?,
         [0., 0., -0.5, 3., 0., 0., 0., 0., 0., 0., 0., 0.],
@@ -146,10 +146,82 @@ fn adaptive_relu2_centers_each_row_and_preserves_routed_off_adjoints() -> Result
     dy[..WIDTH / 2].fill(2.0);
     dy[WIDTH..WIDTH + WIDTH / 2].fill(-4.0);
     let mut gradient = DeviceBuffer::from_host(&stream, &dy)?;
-    module.adaptive_relu2_backward(&stream, &mut gradient, &tape, &masks, 2, WIDTH as u32, true)?;
+    module.adaptive_relu2_backward(
+        &stream,
+        &mut gradient,
+        &tape,
+        &masks,
+        2,
+        WIDTH as u32,
+        true,
+        None,
+    )?;
     let actual = gradient.to_host_vec(&stream)?;
     for (part, expected) in actual.chunks_exact(WIDTH / 2).zip([2., -4., -8., 4.]) {
         common::assert_all_close(part, expected, 0.);
+    }
+    Ok(())
+}
+
+#[ignore = "requires generated sm_120a PTX"]
+#[test]
+fn adaptive_relu2_backward_amax_matches_unfused_gradient_and_scan() -> Result<(), Box<dyn Error>> {
+    let (_, stream, module) = common::cuda_test_module(MlpModule::from_module)?;
+    let rows = 129;
+    let width = ADAPTIVE_RELU2_PACK_WIDTH;
+    let len = (rows * width) as usize;
+    let dy: Vec<f32> = (0..len)
+        .map(|index| ((index.wrapping_mul(691) % 1291) as f32 - 251.0) * 0.013)
+        .collect();
+    let tape: Vec<u16> = (0..len).map(|index| pre_activation(index).0).collect();
+    let tape = DeviceBuffer::from_host(&stream, &tape)?;
+    let masks =
+        DeviceBuffer::from_host(&stream, &[0x0f1f_f00f_000f_aaaa_u64, 0x8300_9ff0_300f_5555])?;
+    let chunk_count = relu2_backward_amax_chunks(len as u32);
+    let mut chunk_amax = DeviceBuffer::zeroed(&stream, chunk_count as usize)?;
+
+    for routed in [false, true] {
+        let mut reference = DeviceBuffer::from_host(&stream, &dy)?;
+        let mut fused = DeviceBuffer::from_host(&stream, &dy)?;
+        assert_eq!(
+            module.adaptive_relu2_backward(
+                &stream,
+                &mut reference,
+                &tape,
+                &masks,
+                rows,
+                width,
+                routed,
+                None,
+            )?,
+            None
+        );
+        assert_eq!(
+            module.adaptive_relu2_backward(
+                &stream,
+                &mut fused,
+                &tape,
+                &masks,
+                rows,
+                width,
+                routed,
+                Some(&mut chunk_amax),
+            )?,
+            Some(chunk_count)
+        );
+        let reference = reference.to_host_vec(&stream)?;
+        assert_eq!(
+            float_bits(&fused.to_host_vec(&stream)?),
+            float_bits(&reference)
+        );
+        let expected_amax: Vec<f32> = reference
+            .chunks_exact(CHUNK_LEN)
+            .map(|chunk| chunk.iter().copied().map(f32::abs).fold(0.0, f32::max))
+            .collect();
+        assert_eq!(
+            float_bits(&chunk_amax.to_host_vec(&stream)?),
+            float_bits(&expected_amax),
+        );
     }
     Ok(())
 }

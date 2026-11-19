@@ -1,19 +1,23 @@
 use cuda_core::{CudaStream, DeviceBuffer, DriverError};
 use cuda_device::{DisjointSlice, SharedArray, cuda_module, kernel, thread};
 
-use super::{MlpModule, kernels::BLOCK_TOPK_TILE};
+use super::{
+    MlpModule,
+    kernels::{BLOCK_TOPK_TILE, RELU2_VALUES_PER_BLOCK},
+};
 use crate::{
     activation::unshifted_relu2,
     block_reduce::block_sum_shared_f32,
     f16_tc_matmul::convert::{cvt_f32_f16, cvt_rn_f16_f32},
-    float_ptx::max_f32,
+    float_ptx::{abs_f32, max_f32},
     launch::grid_x_config,
-    warp_reduce::thread_lane_warp,
+    warp_reduce::{thread_lane_warp, warp_max_nonnegative_f32},
 };
 
 const THREADS: u32 = 256;
 const WARPS: usize = (THREADS / 32) as usize;
 pub const ADAPTIVE_RELU2_PACK_WIDTH: u32 = 8192;
+const AMAX_CHUNKS_PER_ROW: u32 = ADAPTIVE_RELU2_PACK_WIDTH / RELU2_VALUES_PER_BLOCK;
 
 pub struct AdaptiveRelu2PackArgs<'a> {
     pub stream: &'a CudaStream,
@@ -99,6 +103,7 @@ impl MlpModule {
 
     /// Apply the coupled centering adjoint in place to the down-projection
     /// input gradient. A route masks only the direct term of that gradient.
+    /// At width 8192, optionally emit the up projection's MS-EDEN maxima.
     pub fn adaptive_relu2_backward(
         &self,
         stream: &CudaStream,
@@ -108,7 +113,8 @@ impl MlpModule {
         rows: u32,
         width: u32,
         routed: bool,
-    ) -> Result<(), DriverError> {
+        chunk_amax: Option<&mut DeviceBuffer<f32>>,
+    ) -> Result<Option<u32>, DriverError> {
         let len = rows
             .checked_mul(width)
             .filter(|&n| n != 0)
@@ -121,18 +127,34 @@ impl MlpModule {
         {
             return Err(DriverError(1));
         }
-        self.adaptive
-            .as_ref()
-            .ok_or(DriverError(1))?
-            .adaptive_relu2_backward_kernel(
+        let adaptive = self.adaptive.as_ref().ok_or(DriverError(1))?;
+        let launch = grid_x_config(rows, THREADS);
+        if let Some(chunk_amax) = chunk_amax.filter(|_| width == ADAPTIVE_RELU2_PACK_WIDTH) {
+            let chunk_count = rows * AMAX_CHUNKS_PER_ROW;
+            if chunk_amax.len() < chunk_count as usize {
+                return Err(DriverError(1));
+            }
+            adaptive.adaptive_relu2_backward_amax_8192_kernel(
                 stream,
-                grid_x_config(rows, THREADS),
+                launch,
                 gradient,
                 tape,
                 masks,
-                width,
+                chunk_amax,
                 routed as u32,
-            )
+            )?;
+            return Ok(Some(chunk_count));
+        }
+        adaptive.adaptive_relu2_backward_kernel(
+            stream,
+            launch,
+            gradient,
+            tape,
+            masks,
+            width,
+            routed as u32,
+        )?;
+        Ok(None)
     }
 }
 
@@ -215,15 +237,16 @@ pub(super) mod kernels {
         );
     }
 
-    #[kernel]
-    pub fn adaptive_relu2_backward_kernel(
+    #[inline(always)]
+    fn adaptive_relu2_backward_body(
         mut gradient: DisjointSlice<f32>,
         tape: &[u16],
         masks: &[u64],
         width: u32,
         routed: u32,
+        chunk_amax: Option<DisjointSlice<f32>>,
+        reduction: &mut SharedArray<f32, WARPS>,
     ) {
-        static mut REDUCTION: SharedArray<f32, WARPS> = SharedArray::UNINIT;
         let row = thread::blockIdx_x();
         let base = (row * width) as usize;
         let (tid, lane, warp) = thread_lane_warp();
@@ -244,11 +267,92 @@ pub(super) mod kernels {
         for col in (tid..width).step_by(THREADS as usize) {
             sum += direct(col);
         }
-        let mean = unsafe { block_sum_shared_f32(&mut REDUCTION, sum, lane, warp) } / width as f32;
-        for col in (tid..width).step_by(THREADS as usize) {
+        let mean = block_sum_shared_f32(reduction, sum, lane, warp) / width as f32;
+        let write_adjoint = |col: u32| {
             let positive = max_f32(cvt_f32_f16(tape[base + col as usize]), 0.0);
             let adjoint = (direct(col) - mean) * 2.0 * positive;
             unsafe { *gradient.add(col as usize) = adjoint };
+            adjoint
+        };
+        if let Some(mut chunk_amax) = chunk_amax {
+            static mut WARP_MAXIMA: SharedArray<f32, { WARPS * AMAX_CHUNKS_PER_ROW as usize }> =
+                SharedArray::UNINIT;
+
+            // Preserve the scan's 2048-element chunks and eight values per thread.
+            for chunk in 0..AMAX_CHUNKS_PER_ROW {
+                let start = chunk * RELU2_VALUES_PER_BLOCK + tid;
+                let mut local = abs_f32(write_adjoint(start));
+                for col in (start + THREADS..(chunk + 1) * RELU2_VALUES_PER_BLOCK)
+                    .step_by(THREADS as usize)
+                {
+                    local = max_f32(local, abs_f32(write_adjoint(col)));
+                }
+                let maximum = warp_max_nonnegative_f32(local);
+                if lane == 0 {
+                    unsafe { WARP_MAXIMA[chunk as usize * WARPS + warp as usize] = maximum };
+                }
+            }
+            thread::sync_threads();
+            if warp < AMAX_CHUNKS_PER_ROW {
+                let partial = if lane < WARPS as u32 {
+                    unsafe { WARP_MAXIMA[warp as usize * WARPS + lane as usize] }
+                } else {
+                    0.0
+                };
+                let maximum = warp_max_nonnegative_f32(partial);
+                if lane == 0 {
+                    let index = (row * AMAX_CHUNKS_PER_ROW + warp) as usize;
+                    unsafe { *chunk_amax.get_unchecked_mut(index) = maximum };
+                }
+            }
+        } else {
+            for col in (tid..width).step_by(THREADS as usize) {
+                write_adjoint(col);
+            }
+        }
+    }
+
+    #[kernel]
+    pub fn adaptive_relu2_backward_kernel(
+        gradient: DisjointSlice<f32>,
+        tape: &[u16],
+        masks: &[u64],
+        width: u32,
+        routed: u32,
+    ) {
+        static mut REDUCTION: SharedArray<f32, WARPS> = SharedArray::UNINIT;
+        unsafe {
+            adaptive_relu2_backward_body(
+                gradient,
+                tape,
+                masks,
+                width,
+                routed,
+                None,
+                &mut REDUCTION,
+            );
+        }
+    }
+
+    #[kernel]
+    pub fn adaptive_relu2_backward_amax_8192_kernel(
+        gradient: DisjointSlice<f32>,
+        tape: &[u16],
+        masks: &[u64],
+        chunk_amax: DisjointSlice<f32>,
+        routed: u32,
+    ) {
+        static mut REDUCTION: SharedArray<f32, WARPS> = SharedArray::UNINIT;
+        unsafe {
+            adaptive_relu2_backward_body(
+                gradient,
+                tape,
+                masks,
+                ADAPTIVE_RELU2_PACK_WIDTH,
+                routed,
+                Some(chunk_amax),
+                &mut REDUCTION,
+            );
         }
     }
 }

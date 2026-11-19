@@ -86,10 +86,8 @@ pub fn backward(args: MlpBackwardArgs<'_, '_, '_>) -> Result<(), DriverError> {
             saved.row_count,
             GPT2_MLP_DIM,
             routed,
-        )?;
-        // The up projection quantizes the complete coupled adjoint using its
-        // true amax. The original fused derivative did not produce this tensor.
-        None
+            Some(&mut *up_linear.e_h.chunk_amax),
+        )?
     } else if let Some(route) = down_route {
         Some(run_rowwise_linear_backward_relu2_backward_f16_routed(
             modules.linear,
