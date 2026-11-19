@@ -279,9 +279,9 @@ fn native_hnet_step_updates_the_outer_and_inner_parameters() -> AppResult {
         },
         &mut Gpt2Rng::new(66),
     )?;
-    assert!(!step.skipped);
-    assert!(step.nll_sum > 0.0 && step.nll_sum.is_finite());
-    assert!(step.ratio_loss.is_finite() && step.grad_norm.is_finite());
+    assert!(!step.optimizer.update_skipped);
+    assert!(step.byte_ce > 0.0);
+    assert!(!step.has_nonfinite());
     assert_eq!(trainer.buffers.optimizer_state.step, 1);
     assert_ne!(
         trainer.buffers.optimizer_state.blocks[0]

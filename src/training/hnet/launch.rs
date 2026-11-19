@@ -65,6 +65,7 @@ pub(in crate::training) fn run(
     let mut elapsed = 0.0;
     let mut attempts = 0;
     let mut trained_bytes = 0_u64;
+    let stop_on_nonfinite = crate::training::env::env_bool("TRAIN_STOP_ON_NONFINITE").unwrap_or(false);
     for index in 0..config.step_cap {
         if elapsed >= config.max_seconds {
             break;
@@ -88,16 +89,28 @@ pub(in crate::training) fn run(
         elapsed += step_time;
         attempts = index + 1;
         trained_bytes += u64::from(batch.raw_bytes);
-        if index.is_multiple_of(config.log_interval) || attempts == config.step_cap {
+        let optimizer = step.optimizer;
+        let nonfinite = step.has_nonfinite();
+        if index.is_multiple_of(config.log_interval)
+            || attempts == config.step_cap
+            || optimizer.update_skipped
+            || nonfinite
+        {
             println!(
-                "hnet_step attempt={attempts} optimizer_step={} byte_ce={:.8} ratio_loss={:.8} grad_norm={:.6} skipped={} step_ms={:.3} trained_bytes={trained_bytes}",
+                "hnet_step attempt={attempts} optimizer_step={} byte_ce={:.8} ratio_loss={:.8} grad_norm={:.6} skipped={} skip_loss_spike={} skip_grad_norm_spike={} skip_non_finite={} step_ms={:.3} trained_bytes={trained_bytes}",
                 trainer.buffers.optimizer_state.step,
-                step.nll_sum / batch.scored_targets as f32,
+                step.byte_ce,
                 step.ratio_loss,
-                step.grad_norm,
-                step.skipped,
+                optimizer.grad_norm,
+                optimizer.update_skipped,
+                optimizer.skip_loss_spike,
+                optimizer.skip_grad_norm_spike,
+                optimizer.skip_non_finite,
                 step_time * 1000.0
             );
+        }
+        if stop_on_nonfinite && nonfinite {
+            return Err(format!("nonfinite H-Net training at attempted step {attempts}").into());
         }
         if config
             .eval_interval

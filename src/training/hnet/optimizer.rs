@@ -6,6 +6,7 @@ use super::{Trainer, bytes::ByteBatch, hierarchy::HierarchyScratch, parameters::
 use crate::{
     AppResult,
     training::{
+        OptimizerTrace,
         grad_clip::GradientClipBuffers,
         learning_rate::schedule_free_beta,
         optimizer_apply::{WeightUpdateArgs, apply_backbone_weight_updates},
@@ -14,10 +15,46 @@ use crate::{
 };
 
 pub(super) struct HnetStep {
-    pub nll_sum: f32,
+    pub byte_ce: f32,
     pub ratio_loss: f32,
-    pub grad_norm: f32,
-    pub skipped: bool,
+    pub optimizer: OptimizerTrace,
+}
+
+impl HnetStep {
+    pub fn has_nonfinite(&self) -> bool {
+        !(self.byte_ce + self.ratio_loss).is_finite()
+            || !self.optimizer.grad_norm.is_finite()
+            || self.optimizer.skip_non_finite
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hnet_separates_finite_spike_rejections_from_numerical_failures() {
+        let mut step = HnetStep {
+            byte_ce: 5.0,
+            ratio_loss: 0.03,
+            optimizer: OptimizerTrace {
+                grad_norm: 2.0,
+                update_skipped: true,
+                skip_grad_norm_spike: true,
+                ..OptimizerTrace::default()
+            },
+        };
+        assert!(!step.has_nonfinite());
+
+        step.optimizer.skip_non_finite = true;
+        assert!(step.has_nonfinite());
+        step.optimizer.skip_non_finite = false;
+        step.optimizer.grad_norm = f32::INFINITY;
+        assert!(step.has_nonfinite());
+        step.optimizer.grad_norm = 2.0;
+        step.ratio_loss = f32::NAN;
+        assert!(step.has_nonfinite());
+    }
 }
 
 impl Trainer {
@@ -48,14 +85,14 @@ impl Trainer {
         parameters.bind_gradients(stream, &adjoints, &lookup)?;
         let nll_sum: f32 = adjoints.byte_losses.to_host_vec(stream)?.into_iter().sum();
         let ratio_loss = adjoints.ratio_loss.to_host_vec(stream)?[0];
-        let loss = nll_sum / batch.scored_targets as f32 + ratio_loss;
+        let byte_ce = nll_sum / batch.scored_targets as f32;
+        let loss = byte_ce + ratio_loss;
         let result = self.update_hnet_backbone(adjoints.backbone_rows, Some(loss))?;
         parameters.update(&self.runtime, step, &result, rng)?;
         Ok(HnetStep {
-            nll_sum,
+            byte_ce,
             ratio_loss,
-            grad_norm: result.trace.grad_norm,
-            skipped: result.trace.update_skipped,
+            optimizer: result.trace,
         })
     }
 
