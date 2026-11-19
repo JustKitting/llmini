@@ -97,6 +97,39 @@ pub mod kernels {
         unsafe { *chunks.get_unchecked_mut(idx) = value };
     }
 
+    /// Transpose of the gather. Each selected outer row owns one chunk;
+    /// the remaining outer rows receive their gradient from the residual path.
+    #[kernel]
+    pub fn hnet_gather_chunk_backward_kernel(
+        d_chunks: &[f32],
+        row_to_chunk: &[u32],
+        chunk_to_row: &[u32],
+        mut d_encoder: DisjointSlice<f32>,
+        batch: u32,
+        outer_stride: u32,
+        inner_stride: u32,
+        features: u32,
+    ) {
+        let idx = (thread::blockIdx_x() * thread::blockDim_x() + thread::threadIdx_x()) as usize;
+        let outer_stride = outer_stride as usize;
+        let features = features as usize;
+        if idx >= batch as usize * outer_stride * features {
+            return;
+        }
+        let row = idx / features;
+        let sequence = row / outer_stride;
+        let chunk = row_to_chunk[row];
+        let gradient = if chunk != INVALID
+            && chunk_to_row[sequence * outer_stride + chunk as usize] as usize == row % outer_stride
+        {
+            d_chunks
+                [(sequence * inner_stride as usize + chunk as usize) * features + idx % features]
+        } else {
+            0.0
+        };
+        unsafe { *d_encoder.get_unchecked_mut(idx) = gradient };
+    }
+
     /// Smooth the inner model outputs using the selected boundary probabilities.
     /// Store the represented FP16 state at every hop, as for the outer tape.
     #[kernel]
