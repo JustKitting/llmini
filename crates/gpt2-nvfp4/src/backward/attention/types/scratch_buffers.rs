@@ -36,9 +36,50 @@ impl AttentionCoreScratchBuffers {
         let compact = GPT2_BATCH_SIZE * GPT2_SEQ_LEN * GPT2_N_EMBD;
         let square = GPT2_BATCH_SIZE * GPT2_N_HEAD * GPT2_SEQ_LEN * GPT2_SEQ_LEN;
         let batch_head_rows = GPT2_BATCH_SIZE * GPT2_N_HEAD * GPT2_SEQ_LEN;
+        Self::allocate(
+            stream,
+            compact,
+            square,
+            batch_head_rows,
+            2 * GPT2_N_LAYER * GPT2_N_HEAD,
+        )
+    }
+
+    /// The 64×64 KDA chunk matrices and states are each as large as one
+    /// compact head tensor. Forward W and AQK fit together in its F32 arena
+    /// as two disjoint half tensors.
+    pub fn for_kda(
+        stream: &CudaStream,
+        batch: u32,
+        seq_len: u32,
+        heads: u32,
+    ) -> Result<Self, DriverError> {
+        let head_dim = crate::KDA_CHUNK_SIZE as u32;
+        let head_rows = batch
+            .checked_mul(seq_len)
+            .and_then(|rows| rows.checked_mul(heads))
+            .filter(|rows| *rows != 0 && seq_len.is_multiple_of(head_dim))
+            .ok_or(DriverError(1))?;
+        let compact = head_rows.checked_mul(head_dim).ok_or(DriverError(1))? as usize;
+        Self::allocate(
+            stream,
+            compact,
+            compact,
+            head_rows as usize,
+            2 * heads as usize,
+        )
+    }
+
+    fn allocate(
+        stream: &CudaStream,
+        compact: usize,
+        matrix_storage: usize,
+        batch_head_rows: usize,
+        qk_norm_count: usize,
+    ) -> Result<Self, DriverError> {
         Ok(Self {
             softmax_d: DeviceBuffer::zeroed(stream, batch_head_rows)?,
-            qk_norm_max: DeviceBuffer::zeroed(stream, 2 * GPT2_N_LAYER * GPT2_N_HEAD)?,
+            qk_norm_max: DeviceBuffer::zeroed(stream, qk_norm_count)?,
             q: DeviceBuffer::zeroed(stream, compact)?,
             k: DeviceBuffer::zeroed(stream, compact)?,
             v: DeviceBuffer::zeroed(stream, compact)?,
@@ -47,12 +88,12 @@ impl AttentionCoreScratchBuffers {
             backward_v: DeviceBuffer::zeroed(stream, compact)?,
             backward_d_out: DeviceBuffer::zeroed(stream, compact)?,
             d_out: DeviceBuffer::zeroed(stream, compact)?,
-            scores: DeviceBuffer::zeroed(stream, square)?,
+            scores: DeviceBuffer::zeroed(stream, matrix_storage)?,
             dot: DeviceBuffer::zeroed(stream, compact)?,
             p: DeviceBuffer::zeroed(stream, compact)?,
             ds: DeviceBuffer::zeroed(stream, compact)?,
-            p_half: DeviceBuffer::zeroed(stream, square)?,
-            ds_half: DeviceBuffer::zeroed(stream, square)?,
+            p_half: DeviceBuffer::zeroed(stream, matrix_storage)?,
+            ds_half: DeviceBuffer::zeroed(stream, matrix_storage)?,
             d_q: DeviceBuffer::zeroed(stream, compact)?,
             d_k: DeviceBuffer::zeroed(stream, compact)?,
             d_v: DeviceBuffer::zeroed(stream, compact)?,

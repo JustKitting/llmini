@@ -6,6 +6,8 @@ use rust_kernels_cuda::hnet_stage::{HnetStage, StagePlan, WidthAdjoints};
 use super::{Trainer, forward::ForwardInput};
 use crate::AppResult;
 
+mod outer;
+
 pub(in crate::training) struct RoutedBackboneTape<'trainer, 'stage, 'plan> {
     trainer: &'trainer mut Trainer,
     stage: &'stage HnetStage,

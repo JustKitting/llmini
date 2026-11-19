@@ -6,6 +6,96 @@ use super::Trainer;
 use crate::AppResult;
 
 #[test]
+#[ignore = "requires sm_120a PTX and the native NVFP4 H-Net outer block"]
+fn outer_hnet_block_is_causal_and_preserves_recurrent_adjoint() -> AppResult {
+    use gpt2_nvfp4::Gpt2Rng;
+    use rust_kernels_cuda::nvfp4::csf;
+
+    use super::outer::{OuterScratch, OuterWeights};
+    use crate::{training::runtime::Runtime, upload::UploadedNvfp4};
+
+    const BATCH: usize = 2;
+    const SEQUENCE: usize = 128;
+    const WIDTH: usize = 512;
+    const QKV: usize = 2176;
+    let runtime = Runtime::new()?;
+    let stream = &runtime.stream;
+    let mut rng = Gpt2Rng::new(911);
+    let mut matrix = |rows| -> AppResult<UploadedNvfp4> {
+        let bytes: Vec<u8> = (0..rows * WIDTH / 2)
+            .map(|_| rng.next_u32() as u8)
+            .collect();
+        let scales = csf::encode_host(&vec![0x38; rows * WIDTH / 16], rows, WIDTH);
+        UploadedNvfp4::from_host(stream, &bytes, &scales, 0.013, rows * WIDTH)
+    };
+    let qkv = matrix(QKV)?;
+    let output = matrix(WIDTH)?;
+    let scales = csf::encode_host(&[0x38; WIDTH / 16], 1, WIDTH);
+    let norm_scale = UploadedNvfp4::from_host(stream, &[0x22; WIDTH / 2], &scales, 1.0, WIDTH)?;
+    let norm_bias = UploadedNvfp4::from_host(stream, &[0; WIDTH / 2], &scales, 1.0, WIDTH)?;
+    let weights = OuterWeights {
+        qkv: &qkv,
+        output: &output,
+        norm_scale: &norm_scale,
+        norm_bias: &norm_bias,
+    };
+    let mut scratch = OuterScratch::new(&runtime, BATCH as u32, SEQUENCE as u32, WIDTH as u32)?;
+    let input: Vec<_> = (0..BATCH * SEQUENCE * WIDTH)
+        .map(|_| (rng.next_u32() % 65) as f32 / 32.0 - 1.0)
+        .collect();
+    let prefix = 93 * WIDTH;
+    let mut altered = input.clone();
+    for value in &mut altered[prefix..SEQUENCE * WIDTH] {
+        *value = -*value;
+    }
+    let input_dev = DeviceBuffer::from_host(stream, &input)?;
+    let altered_dev = DeviceBuffer::from_host(stream, &altered)?;
+    let (output, tape) = scratch.forward(&runtime, weights, &input_dev)?;
+    let (altered_output, _) = scratch.forward(&runtime, weights, &altered_dev)?;
+    let output = output.to_host_vec(stream)?;
+    let altered_output = altered_output.to_host_vec(stream)?;
+    assert!(output.iter().all(|x| x.is_finite()));
+    assert_ne!(output[..prefix], input[..prefix]);
+    assert_eq!(output[..prefix], altered_output[..prefix]);
+    assert_eq!(
+        output[SEQUENCE * WIDTH..],
+        altered_output[SEQUENCE * WIDTH..]
+    );
+
+    let mut gradient = vec![0.0; input.len()];
+    for (i, value) in gradient[(SEQUENCE - 1) * WIDTH..SEQUENCE * WIDTH]
+        .iter_mut()
+        .enumerate()
+    {
+        *value = [0.001, -0.002, 0.003][i % 3];
+    }
+    let gradient = DeviceBuffer::from_host(stream, &gradient)?;
+    let adjoint = tape.backward(&runtime, &mut scratch, &gradient, 17, 19)?;
+    let d_input = adjoint.input.to_host_vec(stream)?;
+    assert!(d_input.iter().all(|value| value.is_finite()));
+    assert!(d_input[..64 * WIDTH].iter().any(|value| *value != 0.0));
+    assert!(
+        d_input[SEQUENCE * WIDTH..]
+            .iter()
+            .all(|value| *value == 0.0)
+    );
+    let d_qkv = adjoint.qkv.to_host_vec(stream)?;
+    let active = (4 * WIDTH + WIDTH / 64) * WIDTH;
+    assert!(d_qkv[..active].iter().any(|value| *value != 0.0));
+    assert!(d_qkv[active..].iter().all(|value| *value == 0.0));
+    for parameter in [
+        d_qkv,
+        adjoint.output.to_host_vec(stream)?,
+        adjoint.norm_scale.to_host_vec(stream)?,
+        adjoint.norm_bias.to_host_vec(stream)?,
+    ] {
+        assert!(parameter.iter().all(|value| value.is_finite()));
+        assert!(parameter.iter().any(|value| *value != 0.0));
+    }
+    Ok(())
+}
+
+#[test]
 #[ignore = "requires sm_120a PTX and the full native KDA backbone"]
 fn native_routed_backbone_executes_and_reverses_real_blocks() -> AppResult {
     let mut trainer = Trainer::new_full_kda(0x47505432)?;
