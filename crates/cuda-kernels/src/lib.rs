@@ -64,6 +64,8 @@ pub mod embedding;
 pub mod engram;
 #[path = "gpt/engram_multi.rs"]
 pub mod engram_multi;
+#[path = "gpt/hnet_byte_head.rs"]
+pub mod hnet_byte_head;
 #[path = "gpt/hnet_chunk.rs"]
 pub mod hnet_chunk;
 #[path = "gpt/hnet_router.rs"]
