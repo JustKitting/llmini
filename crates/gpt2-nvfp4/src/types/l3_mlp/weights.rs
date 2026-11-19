@@ -67,7 +67,16 @@ impl MlpWeights {
     pub fn forward_branch<'a, 'scratch>(
         args: MlpForwardArgs<'a, 'scratch>,
     ) -> Result<HiddenStateDevice<'a>, DriverError> {
-        forward::forward_impl(args, false)
+        let routed = crate::uses_block_topk_mlp(args.block_index);
+        Self::forward_with_routing(args, false, routed)
+    }
+
+    pub(crate) fn forward_with_routing<'a, 'scratch>(
+        args: MlpForwardArgs<'a, 'scratch>,
+        add_residual: bool,
+        routed: bool,
+    ) -> Result<HiddenStateDevice<'a>, DriverError> {
+        forward::forward_impl(args, add_residual, routed)
     }
     pub(crate) fn init(rng: &mut InitRng, residual_projection_scale: f32) -> Self {
         if crate::config::GPT2_MLP_REFERENCE_NORMAL_INIT {

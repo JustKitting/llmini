@@ -1,6 +1,7 @@
 mod activations;
 mod backward;
 mod config;
+pub mod depth_growth;
 mod random;
 mod tensor;
 mod types;
@@ -24,7 +25,8 @@ pub use backward::{
     Gpt2LayerNormBackwardInputArgs, Gpt2LayerNormBackwardParamArgs, LinearScratch, MlpBackwardArgs,
     MlpBackwardGrads, MlpBackwardModules, MlpBackwardScratch, MlpBackwardSeeds,
     ValueRmsBackwardScratch, attention_c_proj_backward, attention_side_backward,
-    causal_attention_backward, final_head_backward, gpt2_backward, gpt2_backward_with_boundaries,
+    causal_attention_backward, final_head_backward, gpt2_backward, gpt2_backward_at_depth,
+    gpt2_backward_with_boundaries,
     gpt2_backward_with_hook, layer_norm_backward, layer_norm_backward_add_amax,
     layer_norm_backward_amax, layer_norm_backward_input, layer_norm_backward_input_add_amax,
     layer_norm_backward_input_amax, layer_norm_backward_params, mlp_backward, mlp_side_backward,

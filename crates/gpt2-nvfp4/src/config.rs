@@ -98,6 +98,10 @@ pub const fn uses_value_residual(block_index: usize) -> bool {
     block_index >= GPT2_VALUE_RESIDUAL_START_LAYER
 }
 
+pub(crate) const fn uses_value_residual_at_depth(block_index: usize, depth: usize) -> bool {
+    block_index >= depth - 3 * depth / 8 && block_index < depth
+}
+
 pub fn layer_norm_scale(block_index: usize) -> f32 {
     1.0 / ((block_index + 1) as f32).sqrt()
 }

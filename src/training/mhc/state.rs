@@ -100,6 +100,7 @@ pub(in crate::training) struct Checkpoint {
     pub input: DeviceBuffer<f32>,
 }
 pub(in crate::training) struct Mhc {
+    pub active_boundaries: usize,
     pub units: Vec<Unit>,
     pub module: rust_kernels_cuda::mhc::kernels::LoadedModule,
     pub coefficients: rust_kernels_cuda::mhc_coefficients::MhcCoefficientsModule,
@@ -142,6 +143,7 @@ impl Mhc {
             .transpose()?;
         let rms_quant = r.mhc_rms_quant_module()?;
         Ok(Self {
+            active_boundaries: BOUNDARIES,
             units: w
                 .units
                 .iter()
@@ -185,6 +187,12 @@ impl Mhc {
         })
     }
     pub fn named_gradients(&self) -> Vec<(&str, &DeviceBuffer<f32>)> {
-        self.units.iter().flat_map(Unit::gradients).collect()
+        self.active_unit_indices()
+            .flat_map(|index| self.units[index].gradients())
+            .collect()
+    }
+
+    pub fn active_unit_indices(&self) -> impl Iterator<Item = usize> + use<> {
+        (0..self.active_boundaries).chain(std::iter::once(BOUNDARIES))
     }
 }

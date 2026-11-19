@@ -46,8 +46,7 @@ pub(in crate::training) fn run(
         return Err("nonfinite represented checkpoint values; quantization audit saved".into());
     }
     let started = Instant::now();
-    let mut trainer = Trainer::new(0x47505432)?;
-    trainer.load_model(checkpoint)?;
+    let mut trainer = Trainer::from_checkpoint(0x47505432, checkpoint)?;
     println!("reference_checkpoint={}", checkpoint.display());
 
     // The saved checkpoint contains the already-materialized evaluation weights.
@@ -154,6 +153,7 @@ pub(in crate::training) fn run(
         "context_tokens": reference::CONTEXT,
         "sliding_stride_tokens": reference::STRIDE,
         "batch_size": GPT2_BATCH_SIZE,
+        "active_depth": trainer.active_depth(),
         "windows": windows.len(),
         "batches": batches,
         "native_checkpoint_replay_ce": native_ce,

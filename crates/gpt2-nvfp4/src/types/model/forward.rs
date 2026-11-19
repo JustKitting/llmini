@@ -1,6 +1,7 @@
 use super::args::Gpt2ForwardArgs;
 use super::final_logits::{FinalForwardArgs, finish_forward};
 use super::weights::Gpt2Weights;
+use crate::depth_growth::LayerLayout;
 use crate::types::{BlockForwardArgs, HiddenStateDevice};
 use crate::uses_full_attention;
 use cuda_core::DriverError;
@@ -36,6 +37,21 @@ pub(super) fn forward_with_boundaries<'a>(
     readout: bool,
     boundary: &mut dyn FnMut(usize, bool, &mut HiddenStateDevice<'_>) -> Result<bool, DriverError>,
 ) -> Result<HiddenStateDevice<'a>, DriverError> {
+    forward_at_depth(weights, weights.h.len().into(), args, hook, readout, boundary)
+}
+
+pub(super) fn forward_at_depth<'a>(
+    weights: &Gpt2Weights,
+    layout: LayerLayout,
+    args: Gpt2ForwardArgs<'a>,
+    hook: &mut dyn FnMut(usize, &mut HiddenStateDevice<'_>) -> Result<(), DriverError>,
+    readout: bool,
+    boundary: &mut dyn FnMut(usize, bool, &mut HiddenStateDevice<'_>) -> Result<bool, DriverError>,
+) -> Result<HiddenStateDevice<'a>, DriverError> {
+    let depth = layout.depth;
+    if depth == 0 || depth > weights.h.len() {
+        return Err(DriverError(1));
+    }
     let Gpt2ForwardArgs {
         value_rms,
         value_projection_observer,
@@ -77,9 +93,11 @@ pub(super) fn forward_with_boundaries<'a>(
 
     let mut hidden = weights.embeddings.forward(embeddings)?;
 
-    for (block_index, block) in weights.h.iter().enumerate() {
+    for (block_index, block) in weights.h[..depth].iter().enumerate() {
         hook(block_index, &mut hidden)?;
-        hidden = block.forward_with_boundaries(
+        hidden = block.forward_at_depth(
+            depth,
+            layout.source_slot(block_index),
             BlockForwardArgs {
                 value_rms,
                 value_projection_observer,
@@ -119,8 +137,8 @@ pub(super) fn forward_with_boundaries<'a>(
         )?;
     }
 
-    boundary(weights.h.len() * 2, true, &mut hidden)?;
-    hook(weights.h.len(), &mut hidden)?;
+    boundary(depth * 2, true, &mut hidden)?;
+    hook(depth, &mut hidden)?;
     if !readout {
         return Ok(hidden);
     }

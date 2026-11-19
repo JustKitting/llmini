@@ -72,8 +72,7 @@ pub(super) fn run(
         &audit_path,
         serde_json::to_string_pretty(&quantization)? + "\n",
     )?;
-    let mut trainer = Trainer::new(0x47505432)?;
-    trainer.load_model(checkpoint)?;
+    let mut trainer = Trainer::from_checkpoint(0x47505432, checkpoint)?;
     let batch = trainer.batch_from_windows(&validation, super::data::VALIDATION_WINDOWS)?;
     let before = trainer.eval_token_losses(&batch)?;
     let native_ce = before.iter().sum::<f32>() / before.len() as f32;
@@ -104,7 +103,7 @@ pub(super) fn run(
     let mut nonfinite = quantization["nonfinite_values"].as_u64().unwrap_or(1) as usize;
     let mut descriptors =
         rust_kernels_cuda::nvfp4_tma_matmul::tma::TmaNvfp4DeviceScaleDescriptors::new(stream)?;
-    for (index, block) in tape.blocks.iter().enumerate() {
+    for (index, block) in tape.blocks.iter().take(trainer.active_depth()).enumerate() {
         let decay_report = if let Some(inspector) = decay_inspector
             .as_mut()
             .filter(|_| !uses_full_attention(index))
@@ -272,7 +271,7 @@ pub(super) fn run(
     let after = trainer.eval_token_losses(&batch)?;
     let replay_exact = before == after;
     let unchanged = trainer.buffers.optimizer_state.step == 0;
-    let expected_decay_layers = (0..gpt2_nvfp4::GPT2_N_LAYER)
+    let expected_decay_layers = (0..trainer.active_depth())
         .filter(|&i| !uses_full_attention(i))
         .count();
     let checkpoint_unchanged =
@@ -288,7 +287,7 @@ pub(super) fn run(
         "recorded_native_ce": expected_ce, "batch_size": batch.batch_size,
         "producer_recorded_native_ce":super::reference_eval::expected_native_ce(checkpoint)?,
         "verified_replay_provenance":verified_replay_record,
-        "context_tokens": batch.seq_len, "selected_token_rows": rows,
+        "context_tokens": batch.seq_len, "active_depth": trainer.active_depth(), "selected_token_rows": rows,
         "selection": "eight equidistant token-position midpoints per native validation sequence; all features",
         "optimizer_updates": trainer.buffers.optimizer_state.step,
         "ce_replay_bit_exact": replay_exact, "nonfinite_sampled_values": nonfinite,

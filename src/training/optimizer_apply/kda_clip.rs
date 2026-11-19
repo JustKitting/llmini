@@ -20,9 +20,10 @@ pub(super) fn prepare_kda_muon_clip_factors(
     scratch: &mut OptimizerScratch,
     trace: &mut OptimizerTrace,
     optimizer_step: u32,
+    active_depth: usize,
 ) -> AppResult {
     trace.kda_clip_ms += timed_ms::<DriverError>(|| {
-        for block_index in 0..gpt2_nvfp4::GPT2_N_LAYER {
+        for block_index in 0..active_depth {
             let full_attention = uses_full_attention(block_index);
             let dims = AttentionDims::new(full_attention);
             runtime
@@ -52,6 +53,7 @@ pub(super) fn prepare_kda_muon_clip_factors(
         qk_norm_max,
         &scratch.kda_clip_factors,
         optimizer_step,
+        active_depth,
         KDA_QK_CLIP_TAU,
     )?;
     Ok(())

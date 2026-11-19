@@ -94,7 +94,8 @@ impl Mhc {
         if index == BOUNDARIES {
             // Dense dweight TMA overwrites the projection gradient. The
             // shared backward setup clears SymExpLin scale accumulators.
-            for unit in &self.units {
+            for index in self.active_unit_indices() {
+                let unit = &self.units[index];
                 for gradient in &unit.fg {
                     zero(s, gradient)?;
                 }

@@ -58,6 +58,9 @@ pub(super) fn inspect(trainer: &Trainer, rows: &[usize]) -> AppResult<(Value, us
     let mut modules = Vec::new();
     let mut nonfinite = 0;
     for (module, weight) in state.modules.iter().zip(&weights.modules) {
+        if module.cfg.layer >= trainer.active_depth() {
+            continue;
+        }
         let n = module.n as usize;
         let stream_count = weight.cfg.streams();
         if n == 0 || rows.iter().any(|row| *row >= n) {

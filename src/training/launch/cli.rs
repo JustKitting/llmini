@@ -70,6 +70,10 @@ pub(super) struct TrainArgs {
     #[arg(long)]
     steps: Option<NonZeroUsize>,
 
+    /// Train with LIDAS depth growth and a Prop-1 split of the attempt budget.
+    #[arg(long, conflicts_with = "checkpoint_action")]
+    depth_growth: bool,
+
     /// Training-time ceiling in seconds; overrides TRAIN_MAX_SECONDS.
     #[arg(long, value_parser = positive_seconds)]
     max_seconds: Option<f64>,
@@ -137,6 +141,7 @@ pub(super) struct TrainArgs {
 impl TrainArgs {
     pub(super) fn config(&self) -> TrainConfig {
         let mut config = TrainConfig::from_env();
+        config.depth_growth = self.depth_growth;
         if self.latent_feedback {
             config.latent_feedback = true;
         }
@@ -174,6 +179,23 @@ fn positive_seconds(value: &str) -> Result<f64, String> {
         Ok(seconds)
     } else {
         Err("expected a positive, finite number of seconds".to_owned())
+    }
+}
+
+#[cfg(test)]
+mod depth_growth_cli_tests {
+    use super::*;
+
+    #[test]
+    fn depth_growth_is_opt_in_and_excludes_checkpoint_actions() {
+        let base = TrainArgs::try_parse_from(["rust-kernels"]).unwrap();
+        assert!(!base.config().depth_growth);
+        let growth = TrainArgs::try_parse_from(["rust-kernels", "--depth-growth", "--steps", "20000"]).unwrap();
+        assert!(growth.config().depth_growth);
+        assert_eq!(growth.config().step_cap, 20_000);
+        assert!(TrainArgs::try_parse_from([
+            "rust-kernels", "--depth-growth", "--inspect-model", "model.ckpt",
+        ]).is_err());
     }
 }
 

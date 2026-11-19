@@ -1,5 +1,8 @@
+use std::path::Path;
+
 use cuda_core::sys;
-use gpt2_nvfp4::{GPT2_SEQ_LEN, Gpt2, Gpt2Rng};
+use gpt2_nvfp4::depth_growth::LayerLayout;
+use gpt2_nvfp4::{GPT2_N_LAYER, GPT2_SEQ_LEN, Gpt2, Gpt2Rng};
 
 use super::{ReusableTokenBatch, TokenBatch, buffers, runtime::Runtime};
 use crate::{AppResult, upload::UploadedModel};
@@ -14,6 +17,7 @@ pub struct Trainer {
         Option<super::bounded_swiglu_tests::RecomputeAudit>,
     pub(in crate::training) mhc: Option<super::mhc::Mhc>,
     pub(in crate::training) architecture_ready: bool,
+    pub(super) inherit_growth_block_policy: bool,
     pub(in crate::training) engram: Option<super::engram::Engram>,
     pub(in crate::training) latent_feedback: Option<super::latent_feedback::Feedback>,
     pub(in crate::training) base_seed: u64,
@@ -30,13 +34,24 @@ impl Trainer {
         Self::new_architecture(seed, false, memory || super::mhc::enabled(), memory)
     }
 
+    /// Open saved evaluation weights directly, before allocating trainer state.
+    pub(in crate::training) fn from_checkpoint(seed: u64, path: &Path) -> AppResult<Self> {
+        let runtime = Runtime::new()?;
+        let (uploaded, layout) = crate::checkpoint::load_uploaded_model(&runtime.stream, path)?;
+        let mut model = Gpt2::new();
+        model.init(seed);
+        Self::with_uploaded_model(seed, runtime, model, uploaded, layout)
+    }
+
     pub fn new_feedback(seed: u64) -> AppResult<Self> {
         Self::new_architecture(seed, true, super::mhc::enabled(), false)
     }
 
+    #[cfg(test)]
     pub fn new_mhc(seed: u64) -> AppResult<Self> {
         Self::new_architecture(seed, false, true, false)
     }
+    #[cfg(test)]
     pub fn new_bounded_swiglu(seed: u64) -> AppResult<Self> {
         if !gpt2_nvfp4::GPT2_BOUNDED_SWIGLU {
             return Err(
@@ -45,21 +60,25 @@ impl Trainer {
         }
         Self::new_architecture(seed, false, false, false)
     }
+    #[cfg(test)]
     pub fn new_value_rms(seed: u64) -> AppResult<Self> {
         if !gpt2_nvfp4::GPT2_VALUE_RMS {
             return Err("value RMS requires the native GPT2_VALUE_RMS=1 build".into());
         }
         Self::new_architecture(seed, false, false, false)
     }
+    #[cfg(test)]
     pub fn new_full_kda(seed: u64) -> AppResult<Self> {
         if !gpt2_nvfp4::GPT2_KDA_FULL_STATE_BACKWARD {
             return Err("full KDA backward requires a GPT2_KDA_BACKWARD=full native build".into());
         }
         Self::new_architecture(seed, false, false, false)
     }
+    #[cfg(test)]
     pub fn new_engram_mhc(seed: u64) -> AppResult<Self> {
         Self::new_architecture(seed, false, true, true)
     }
+    #[cfg(test)]
     pub fn new_stationary_rope(seed: u64) -> AppResult<Self> {
         if !gpt2_nvfp4::GPT2_STATIONARY_ROPE {
             return Err(
@@ -68,9 +87,16 @@ impl Trainer {
         }
         Self::new_architecture(seed, false, false, false)
     }
+    #[cfg(test)]
     pub fn new_engram_mhc_with_table_budget(seed: u64, requested: usize) -> AppResult<Self> {
-        super::engram::Config::multistream_with_table_budget(Some(requested))?;
-        Self::new_architecture_with_table_budget(seed, false, true, true, Some(requested))
+        Self::new_architecture_at_layout(
+            seed,
+            false,
+            true,
+            true,
+            Some(requested),
+            GPT2_N_LAYER.into(),
+        )
     }
     fn new_architecture(
         seed: u64,
@@ -78,15 +104,27 @@ impl Trainer {
         use_mhc: bool,
         multi_memory: bool,
     ) -> AppResult<Self> {
-        Self::new_architecture_with_table_budget(seed, feedback, use_mhc, multi_memory, None)
+        Self::new_architecture_at_layout(
+            seed,
+            feedback,
+            use_mhc,
+            multi_memory,
+            None,
+            GPT2_N_LAYER.into(),
+        )
     }
-    fn new_architecture_with_table_budget(
+
+    pub(in crate::training) fn new_architecture_at_layout(
         seed: u64,
         feedback: bool,
         use_mhc: bool,
         multi_memory: bool,
         table_budget: Option<usize>,
+        layout: LayerLayout,
     ) -> AppResult<Self> {
+        if multi_memory && table_budget.is_some() {
+            super::engram::Config::multistream_with_table_budget(table_budget)?;
+        }
         let bounded_combined = gpt2_nvfp4::GPT2_BOUNDED_SWIGLU_ENGRAM_MHC;
         if gpt2_nvfp4::GPT2_REQUIRES_ENGRAM_MHC && !(use_mhc && multi_memory && !feedback) {
             return Err("the composite full-credit build requires the complete four-stream Engram/mHC graph".into());
@@ -119,9 +157,12 @@ impl Trainer {
             return Err("select full mHC as a separate native graph with TRAIN_ENGRAM=0 and no latent feedback; the single-stream memory hook is not a four-stream integration".into());
         }
         let runtime = Runtime::new()?;
-        let stream = runtime.stream.as_ref();
         let mut model = Gpt2::new();
-        model.init(seed);
+        if layout.inherit_block_policy {
+            model.init_for_depth_growth(seed);
+        } else {
+            model.init(seed);
+        }
         let weights = model.weights().expect("Gpt2::init must create weights");
 
         let mut uploaded = UploadedModel::new_with_engram(
@@ -148,8 +189,21 @@ impl Trainer {
                 super::engram::Weights::new_multistream(&runtime)?
             });
         }
+        Self::with_uploaded_model(seed, runtime, model, uploaded, layout)
+    }
+
+    fn with_uploaded_model(
+        seed: u64,
+        runtime: Runtime,
+        model: Gpt2,
+        uploaded: UploadedModel,
+        layout: LayerLayout,
+    ) -> AppResult<Self> {
+        let depth = layout.depth;
+        let stream = runtime.stream.as_ref();
         let mut buffers = buffers::TrainBuffers::new(stream, &runtime, &uploaded)?;
-        let engram = uploaded
+        buffers.optimizer_state.active_depth = depth;
+        let mut engram = uploaded
             .engram
             .as_ref()
             .map(|weights| super::engram::Engram::new(&runtime, weights))
@@ -159,43 +213,25 @@ impl Trainer {
             .as_ref()
             .map(|w| super::latent_feedback::Feedback::new(&runtime, w))
             .transpose()?;
-        let mhc = uploaded
+        let mut mhc = uploaded
             .mhc
             .as_ref()
             .map(|w| super::mhc::Mhc::new(&runtime, w))
             .transpose()?;
-        if engram.is_some() || latent_feedback.is_some() || mhc.is_some() {
-            buffers.muon_tables = super::optimizer_muon::MuonPointerTables::new_with_architectures(
+        if let Some(engram) = &mut engram {
+            engram.active_depth = depth;
+        }
+        if let Some(mhc) = &mut mhc {
+            mhc.active_boundaries = depth * 2;
+        }
+        if depth != GPT2_N_LAYER || engram.is_some() || latent_feedback.is_some() || mhc.is_some() {
+            buffers.configure_optimizer_graph(
                 stream,
                 &uploaded,
-                &buffers.backward,
-                &buffers.next_latent_grads,
-                &buffers.optimizer_state,
                 engram.as_ref(),
                 latent_feedback.as_ref(),
                 mhc.as_ref(),
             )?;
-            let mut extra = engram
-                .as_ref()
-                .map_or_else(Vec::new, |e| e.named_gradients());
-            if let Some(f) = &latent_feedback {
-                extra.extend(f.named_gradients());
-            }
-            if let Some(m) = &mhc {
-                extra.extend(m.named_gradients());
-            }
-            let recompute = mhc.as_ref().map_or_else(Vec::new, |m| {
-                m.units.iter().map(|u| u.grad.cu_deviceptr()).collect()
-            });
-            buffers.grad_clip =
-                super::grad_clip::GradientClipBuffers::new_with_recomputed_matrices(
-                    stream,
-                    &buffers.backward,
-                    &buffers.next_latent_grads,
-                    &buffers.muon_tables,
-                    &extra,
-                    &recompute,
-                )?;
         }
 
         if std::env::var_os("TRAIN_REPORT_MEMORY").is_some() {
@@ -221,6 +257,7 @@ impl Trainer {
             bounded_projection_audit: None,
             mhc,
             architecture_ready: true,
+            inherit_growth_block_policy: layout.inherit_block_policy,
             latent_feedback,
             base_seed: seed,
             engram,

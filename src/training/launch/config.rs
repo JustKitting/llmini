@@ -13,6 +13,7 @@ const DEFAULT_SHAKESPEARE_PROMPT: &str = "KING:";
 
 #[derive(Clone, Copy)]
 pub(in crate::training) struct TrainConfig {
+    pub(in crate::training) depth_growth: bool,
     pub(in crate::training) seed: u64,
     pub(in crate::training) latent_feedback: bool,
     pub(in crate::training) mhc: bool,
@@ -28,6 +29,7 @@ pub(in crate::training) struct TrainConfig {
 impl TrainConfig {
     pub(super) fn from_env() -> Self {
         Self {
+            depth_growth: false,
             seed: env_u64("TRAIN_SEED").unwrap_or(DEFAULT_SEED),
             latent_feedback: env_bool("TRAIN_LATENT_FEEDBACK").unwrap_or(false),
             mhc: super::super::mhc::enabled(),
@@ -41,6 +43,23 @@ impl TrainConfig {
                 .filter(|seconds| *seconds > 0.0)
                 .unwrap_or(DEFAULT_TRAIN_MAX_SECONDS),
         }
+    }
+
+    pub(in crate::training) fn growth_plan(
+        &self,
+    ) -> crate::AppResult<Option<gpt2_nvfp4::depth_growth::GrowthPlan>> {
+        if !self.depth_growth {
+            return Ok(None);
+        }
+        let plan = gpt2_nvfp4::depth_growth::GrowthPlan::new(
+            gpt2_nvfp4::GPT2_N_LAYER,
+            self.step_cap,
+        )
+        .ok_or("depth growth requires a multiple-of-four final depth and attempts at every stage")?;
+        if load_model_path().is_some() {
+            return Err("depth growth requires a fresh live optimizer; model-only checkpoints are not continuations".into());
+        }
+        Ok(Some(plan))
     }
 }
 

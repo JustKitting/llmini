@@ -66,6 +66,7 @@ pub(crate) fn launch_from_args() -> AppResult {
         );
     }
     let config = args.config();
+    config.growth_plan()?;
     if args.bounded_swiglu_engram_mhc != gpt2_nvfp4::GPT2_BOUNDED_SWIGLU_ENGRAM_MHC {
         return Err("select --bounded-swiglu-engram-mhc --full-kda-backward with the matching GPT2_MLP_KIND=bounded-swiglu GPT2_KDA_BACKWARD=full native build".into());
     }

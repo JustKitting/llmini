@@ -41,6 +41,7 @@ pub(super) fn update_blocks(args: BlockUpdateArgs<'_>) -> Result<(), DriverError
             .iter_mut()
             .zip(args.grads.blocks.iter_mut())
             .zip(args.state.blocks.iter_mut())
+            .take(args.state.active_depth)
             .enumerate()
         {
             update_block(&mut adam, block_index, block, grad, state, args.trace)?;

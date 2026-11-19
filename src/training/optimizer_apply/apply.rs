@@ -55,6 +55,7 @@ pub fn apply_weight_updates(args: WeightUpdateArgs<'_>) -> AppResult<WeightUpdat
         &mut trace,
         skip_decision,
         extra_non_finite,
+        state.active_depth,
     )? {
         return Ok(WeightUpdateResult {
             grad_scale: grad_clip.scale,
@@ -131,6 +132,7 @@ pub fn apply_weight_updates(args: WeightUpdateArgs<'_>) -> AppResult<WeightUpdat
         scratch,
         &mut trace,
         step,
+        state.active_depth,
     )?;
     update_muon_groups(
         stream,
@@ -144,6 +146,7 @@ pub fn apply_weight_updates(args: WeightUpdateArgs<'_>) -> AppResult<WeightUpdat
         &mut trace,
     )?;
     state.mark_scheduled_values_ready();
+    state.update_amax_valid = true;
     if diagnostics.is_some() {
         super::super::schedule_free::materialize_training_weights(
             stream,

@@ -3,6 +3,7 @@ use cuda_core::DriverError;
 use super::args::Gpt2ForwardArgs;
 use super::weights::Gpt2Weights;
 use crate::Gpt2Rng;
+use crate::depth_growth::LayerLayout;
 use crate::types::{HiddenStateDevice, TokenEmbeddingArgs};
 
 #[derive(Clone, Debug, Default)]
@@ -11,6 +12,30 @@ pub struct Gpt2 {
 }
 
 impl Gpt2 {
+    /// Run an active prefix of a preallocated stack. The readout boundary is
+    /// reported immediately after its last block.
+    pub fn forward_at_depth<'a>(
+        &self,
+        layout: impl Into<LayerLayout>,
+        args: Gpt2ForwardArgs<'a>,
+        hook: &mut dyn FnMut(usize, &mut HiddenStateDevice<'_>) -> Result<(), DriverError>,
+        readout: bool,
+        boundary: &mut dyn FnMut(
+            usize,
+            bool,
+            &mut HiddenStateDevice<'_>,
+        ) -> Result<bool, DriverError>,
+    ) -> Result<HiddenStateDevice<'a>, DriverError> {
+        super::forward::forward_at_depth(
+            self.weights().expect("Gpt2 must be initialized"),
+            layout.into(),
+            args,
+            hook,
+            readout,
+            boundary,
+        )
+    }
+
     pub fn forward_with_boundaries<'a>(
         &self,
         args: Gpt2ForwardArgs<'a>,
@@ -40,7 +65,13 @@ impl Gpt2 {
     }
 
     pub fn init_from_rng(&mut self, rng: &mut Gpt2Rng) {
-        self.weights = Some(Gpt2Weights::init(rng));
+        self.weights = Some(Gpt2Weights::init(rng, false));
+    }
+
+    /// Initialize the starting stack of a fresh LIDAS run.
+    pub fn init_for_depth_growth(&mut self, seed: u64) {
+        let mut rng = Gpt2Rng::new(seed);
+        self.weights = Some(Gpt2Weights::init(&mut rng, true));
     }
 
     pub fn weights(&self) -> Option<&Gpt2Weights> {

@@ -1,4 +1,4 @@
-use gpt2_nvfp4::gpt2_backward_with_boundaries;
+use gpt2_nvfp4::gpt2_backward_at_depth;
 use gpt2_nvfp4::{Gpt2BackwardArgs, Gpt2BackwardSeeds};
 use rust_kernels_cuda::residual::ResidualGradAccumulateArgs;
 
@@ -12,6 +12,8 @@ use crate::{
 
 impl Trainer {
     pub(super) fn enqueue_backward(&mut self, batch: &TokenBatch) -> AppResult {
+        let layout = self.layer_layout();
+        let active_depth = layout.depth;
         self.buffers.optimizer_state.invalidate_scheduled_values();
         super::super::symexp_lin::prepare_weight_gradients(
             &self.runtime,
@@ -76,7 +78,8 @@ impl Trainer {
             let runtime = &self.runtime;
             let mhc = std::cell::RefCell::new(&mut self.mhc);
             let mhc_weights = &self.uploaded.mhc;
-            gpt2_backward_with_boundaries(
+            gpt2_backward_at_depth(
+                layout,
                 Gpt2BackwardArgs {
                     stream,
                     modules: self.runtime.backward_modules(),
@@ -109,7 +112,12 @@ impl Trainer {
                 &mut |index, before, gradient| {
                     let mut state = mhc.borrow_mut();
                     if let (Some(m), Some(w)) = (state.as_mut(), mhc_weights.as_ref()) {
-                        m.backward_boundary(index, before, runtime, w, gradient)
+                        let unit = if index == active_depth * 2 {
+                            crate::training::mhc::BOUNDARIES
+                        } else {
+                            index
+                        };
+                        m.backward_boundary(unit, before, runtime, w, gradient)
                     } else {
                         Ok(false)
                     }

@@ -20,6 +20,7 @@ mod buffers;
 mod bounded_swiglu_tests;
 mod data;
 mod debug_metrics;
+mod depth_growth;
 mod device_buffer;
 mod diagnostics;
 pub(crate) mod engram;

@@ -10,7 +10,7 @@ use super::layer_norm::{
 };
 use super::mlp::{
     MlpBackwardArgs, MlpBackwardGrads, MlpBackwardModules, MlpBackwardScratch, MlpBackwardSeeds,
-    backward as mlp_backward,
+    backward_with_routing as mlp_backward,
 };
 use crate::types::{BlockBackwardGrads, BlockForwardSaved};
 use crate::{CanonTensors, LayerNormTensors, MlpProjectionTensors};
@@ -43,16 +43,13 @@ pub struct BlockMlpBackwardArgs<'a, 'scratch, 'out> {
 }
 
 pub fn mlp_side_backward(args: BlockMlpBackwardArgs<'_, '_, '_>) -> Result<u32, DriverError> {
-    mlp_side_backward_impl(args, true)
+    let source_slot = args.block_index;
+    mlp_side_backward_impl(args, true, source_slot)
 }
-pub fn mlp_side_backward_branch(
-    args: BlockMlpBackwardArgs<'_, '_, '_>,
-) -> Result<u32, DriverError> {
-    mlp_side_backward_impl(args, false)
-}
-fn mlp_side_backward_impl(
+pub(super) fn mlp_side_backward_impl(
     args: BlockMlpBackwardArgs<'_, '_, '_>,
     add_residual: bool,
+    source_slot: usize,
 ) -> Result<u32, DriverError> {
     let BlockMlpBackwardArgs {
         block_index,
@@ -72,6 +69,7 @@ fn mlp_side_backward_impl(
         scratch,
         seeds,
     } = args;
+    let norm_output_scale = crate::layer_norm_scale(source_slot);
     let BlockBackwardGrads {
         ln_2: mut ln_2_grads,
         d_canon_c_weight,
@@ -81,7 +79,7 @@ fn mlp_side_backward_impl(
         d_mlp_c_proj_bias,
         ..
     } = grads;
-    mlp_backward(MlpBackwardArgs {
+    let mlp_args = MlpBackwardArgs {
         block_index,
         stream,
         modules: modules.mlp,
@@ -99,7 +97,8 @@ fn mlp_side_backward_impl(
         },
         scratch,
         seeds,
-    })?;
+    };
+    mlp_backward(mlp_args, crate::uses_block_topk_mlp(source_slot))?;
 
     let d_ln_2_normalized = if crate::canon_ac_enabled() {
         modules.canon.backward(CanonBackwardArgs {
@@ -116,7 +115,7 @@ fn mlp_side_backward_impl(
             row_count: saved.row_count,
             seq_len: saved.seq_len,
             width: crate::GPT2_EMBEDDING_DIM,
-            norm_output_scale: crate::layer_norm_scale(block_index),
+            norm_output_scale,
         })?;
         &*d_mlp_up
     } else {
@@ -133,7 +132,7 @@ fn mlp_side_backward_impl(
             d_normalized: d_ln_2_normalized,
             d_residual: d_residual_after_attention,
             chunk_amax: d_residual_after_attention_chunk_amax,
-            output_scale: crate::layer_norm_scale(block_index),
+            output_scale: norm_output_scale,
         });
     }
     layer_norm_backward_add_amax(Gpt2LayerNormBackwardAddAmaxArgs {
@@ -146,6 +145,6 @@ fn mlp_side_backward_impl(
         direct: d_residual_out,
         d_residual: d_residual_after_attention,
         chunk_amax: d_residual_after_attention_chunk_amax,
-        output_scale: crate::layer_norm_scale(block_index),
+        output_scale: norm_output_scale,
     })
 }

@@ -471,6 +471,9 @@ pub(in crate::training::launch) fn build_run_info(dataset: &str, config: &TrainC
         gpt2_nvfp4::canon_ac_enabled(),
     );
     push_info(&mut info, "step_cap", config.step_cap);
+    if config.depth_growth {
+        push_info(&mut info, "depth_growth", "lidas_prop1");
+    }
     push_info(&mut info, "log_interval", config.log_interval);
     push_info(&mut info, "max_seconds", config.max_seconds);
     let eval_interval = config

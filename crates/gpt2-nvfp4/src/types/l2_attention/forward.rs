@@ -15,12 +15,13 @@ use crate::{
 pub(super) fn forward<'a, 'scratch>(
     args: AttentionForwardArgs<'a, 'scratch>,
 ) -> Result<HiddenStateDevice<'a>, DriverError> {
-    forward_impl(args, true)
+    forward_impl(args, true, crate::GPT2_N_LAYER)
 }
 
 pub(super) fn forward_impl<'a, 'scratch>(
     args: AttentionForwardArgs<'a, 'scratch>,
     add_residual: bool,
+    active_depth: usize,
 ) -> Result<HiddenStateDevice<'a>, DriverError> {
     let mut input_nvfp4 = args.input_nvfp4;
     let mut tape = args.tape;
@@ -64,7 +65,7 @@ pub(super) fn forward_impl<'a, 'scratch>(
                 embedding_dim: dims.embedding_dim,
                 qkv_dim: dims.qkv_dim,
             })?;
-    } else if crate::uses_value_residual(args.block_index) {
+    } else if crate::config::uses_value_residual_at_depth(args.block_index, active_depth) {
         args.module.mix_value_residual(MixValueResidualArgs {
             stream: hidden.stream,
             qkv: args.qkv,

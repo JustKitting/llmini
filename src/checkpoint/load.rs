@@ -4,7 +4,7 @@ use std::io::BufReader;
 use std::path::Path;
 
 use cuda_core::CudaStream;
-use gpt2_nvfp4::GPT2_N_LAYER;
+use gpt2_nvfp4::{GPT2_N_LAYER, depth_growth::LayerLayout};
 
 mod reuse;
 pub(crate) mod tensor;
@@ -16,12 +16,15 @@ use super::{format::CheckpointReader, schema};
 use crate::AppResult;
 use crate::upload::UploadedModel;
 
-fn read_tensors(path: &Path) -> AppResult<(u32, HashMap<String, super::format::CheckpointTensor>)> {
+fn read_tensors(
+    path: &Path,
+) -> AppResult<(u32, LayerLayout, HashMap<String, super::format::CheckpointTensor>)> {
     let file = File::open(path)?;
     let mut reader = CheckpointReader::new(BufReader::new(file));
     let tensor_count = reader.read_header()?;
     let expected_tensor_count = schema::tensor_count(GPT2_N_LAYER);
-    if !schema::supported_tensor_count(GPT2_N_LAYER, tensor_count) {
+    let supported = |count| schema::supported_tensor_count(GPT2_N_LAYER, count);
+    if !supported(tensor_count) && !tensor_count.checked_sub(1).is_some_and(supported) {
         return Err(format!(
             "checkpoint has {tensor_count} tensors; expected {expected_tensor_count}"
         )
@@ -36,6 +39,11 @@ fn read_tensors(path: &Path) -> AppResult<(u32, HashMap<String, super::format::C
         }
     }
 
+    let layout = super::depth::take(&mut tensors)?;
+    let graph_count = tensor_count - super::depth::extra_tensors(layout);
+    if !supported(graph_count) {
+        return Err("checkpoint tensor count disagrees with its active depth descriptor".into());
+    }
     super::activation_quant::take_and_validate(&mut tensors)?;
     super::mlp::take_and_validate(&mut tensors)?;
     super::value_rms::take_and_validate(&mut tensors)?;
@@ -83,11 +91,11 @@ fn read_tensors(path: &Path) -> AppResult<(u32, HashMap<String, super::format::C
             "full-credit auxiliary checkpoint requires the complete Engram/mHC graph".into(),
         );
     }
-    Ok((tensor_count, tensors))
+    Ok((graph_count, layout, tensors))
 }
 
-pub fn load_uploaded_model(stream: &CudaStream, path: &Path) -> AppResult<UploadedModel> {
-    let (tensor_count, mut tensors) = read_tensors(path)?;
+pub fn load_uploaded_model(stream: &CudaStream, path: &Path) -> AppResult<(UploadedModel, LayerLayout)> {
+    let (tensor_count, layout, mut tensors) = read_tensors(path)?;
     let expected_tensor_count = schema::tensor_count(GPT2_N_LAYER);
     let mut model = topology::load_model(stream, &mut tensors)?;
     if tensors.contains_key("mhc.config") {
@@ -116,5 +124,5 @@ pub fn load_uploaded_model(stream: &CudaStream, path: &Path) -> AppResult<Upload
             return Err("Engram checkpoint stream graph is incompatible with its backbone".into());
         }
     }
-    Ok(model)
+    Ok((model, layout))
 }
