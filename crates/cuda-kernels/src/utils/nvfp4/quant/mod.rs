@@ -23,6 +23,7 @@ pub use args::{
     TensorAmaxArgs,
 };
 pub use config::ACTIVATION_MAE_FOUR_SIX;
+pub(crate) use four_six::SCALE_OVERRIDE;
 pub use launcher::Nvfp4QuantModule;
 
 pub const NVFP4_TENSOR_AMAX_VALUES_PER_BLOCK: usize =

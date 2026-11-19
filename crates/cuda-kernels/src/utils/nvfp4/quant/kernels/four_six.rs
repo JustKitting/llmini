@@ -1,7 +1,7 @@
 use cuda_device::{DisjointSlice, SharedArray, cuda_module, kernel, thread};
 
 use crate::block_reduce::block_max_shared_f32_for_warps;
-use crate::f16_tc_matmul::convert::load_f32x2_global;
+use crate::f16_tc_matmul::convert::{load_f32x2_global, store_f32x2_global};
 use crate::float_ptx::{abs_f32, max_f32, sqrt_f32};
 use crate::nvfp4_tma_matmul::cute::Sm120ScaleLayout;
 use crate::warp_reduce::thread_lane_warp;
@@ -312,8 +312,8 @@ pub(crate) mod module {
     ) {
         static mut ROW_AMAX: SharedArray<f32, ROWWISE_WARPS_PER_BLOCK> = SharedArray::UNINIT;
         unsafe {
-            rowwise_derived_amax_8192_cached_body::<false>(
-                x,
+            rowwise_derived_amax_8192_cached_body::<false, false>(
+                x.as_ptr(),
                 amax,
                 out_fp4,
                 out_scales,
@@ -344,37 +344,43 @@ pub(crate) mod module {
     }
 
     #[inline(always)]
-    fn load_8192_cached_values<const NORMALIZE: bool>(
-        x: &[f32],
+    fn load_8192_cached_values<const NORMALIZE: bool, const CENTER_RELU2: bool>(
+        x: *const f32,
         row: u32,
         group_in_row: u32,
         lane_in_group: usize,
-        inverse: f32,
+        factor: f32,
     ) -> CachedFourSixValues {
         let base = row as usize * 8192 + group_in_row as usize * GROUP_SIZE + 4 * lane_in_group;
-        let (value_0, value_1) = load_f32x2_global(x.as_ptr(), base);
-        let (value_2, value_3) = load_f32x2_global(x.as_ptr(), base + 2);
-        CachedFourSixValues {
-            value_0: if NORMALIZE {
-                value_0 * inverse
-            } else {
-                value_0
-            },
-            value_1: if NORMALIZE {
-                value_1 * inverse
-            } else {
-                value_1
-            },
-            value_2: if NORMALIZE {
-                value_2 * inverse
-            } else {
-                value_2
-            },
-            value_3: if NORMALIZE {
-                value_3 * inverse
-            } else {
-                value_3
-            },
+        let (value_0, value_1) = load_f32x2_global(x, base);
+        let (value_2, value_3) = load_f32x2_global(x, base + 2);
+        let values = CachedFourSixValues {
+            value_0: transform_8192_value::<NORMALIZE, CENTER_RELU2>(value_0, factor),
+            value_1: transform_8192_value::<NORMALIZE, CENTER_RELU2>(value_1, factor),
+            value_2: transform_8192_value::<NORMALIZE, CENTER_RELU2>(value_2, factor),
+            value_3: transform_8192_value::<NORMALIZE, CENTER_RELU2>(value_3, factor),
+        };
+        // This lane owns all four addresses, including when the activation
+        // workspace supplies both input and diagnostic output.
+        if CENTER_RELU2 {
+            let centered = x.cast_mut();
+            store_f32x2_global(centered, base, values.value_0, values.value_1);
+            store_f32x2_global(centered, base + 2, values.value_2, values.value_3);
+        }
+        values
+    }
+
+    #[inline(always)]
+    fn transform_8192_value<const NORMALIZE: bool, const CENTER_RELU2: bool>(
+        value: f32,
+        factor: f32,
+    ) -> f32 {
+        if CENTER_RELU2 {
+            crate::activation::unshifted_relu2(value) - factor
+        } else if NORMALIZE {
+            value * factor
+        } else {
+            value
         }
     }
 
@@ -421,15 +427,18 @@ pub(crate) mod module {
 
     #[inline(always)]
     #[allow(clippy::too_many_arguments)]
-    fn rowwise_derived_amax_8192_cached_body<const NORMALIZE: bool>(
-        x: &[f32],
+    pub(crate) fn rowwise_derived_amax_8192_cached_body<
+        const NORMALIZE: bool,
+        const CENTER_RELU2: bool,
+    >(
+        x: *const f32,
         mut amax: DisjointSlice<f32>,
         mut out_fp4: DisjointSlice<u8>,
         mut out_scales: DisjointSlice<u8>,
         mut out_global_scale: DisjointSlice<f32>,
         row_count: u32,
         scale_override: f32,
-        input_inverse: f32,
+        factor: f32,
         row_amax: &mut SharedArray<f32, ROWWISE_WARPS_PER_BLOCK>,
     ) {
         let row = thread::blockIdx_x();
@@ -447,22 +456,62 @@ pub(crate) mod module {
         let group_5 = group_4 + ROWWISE_GROUPS_PER_BLOCK;
         let group_6 = group_5 + ROWWISE_GROUPS_PER_BLOCK;
         let group_7 = group_6 + ROWWISE_GROUPS_PER_BLOCK;
-        let values_0 =
-            load_8192_cached_values::<NORMALIZE>(x, row, group_0, lane_in_group, input_inverse);
-        let values_1 =
-            load_8192_cached_values::<NORMALIZE>(x, row, group_1, lane_in_group, input_inverse);
-        let values_2 =
-            load_8192_cached_values::<NORMALIZE>(x, row, group_2, lane_in_group, input_inverse);
-        let values_3 =
-            load_8192_cached_values::<NORMALIZE>(x, row, group_3, lane_in_group, input_inverse);
-        let values_4 =
-            load_8192_cached_values::<NORMALIZE>(x, row, group_4, lane_in_group, input_inverse);
-        let values_5 =
-            load_8192_cached_values::<NORMALIZE>(x, row, group_5, lane_in_group, input_inverse);
-        let values_6 =
-            load_8192_cached_values::<NORMALIZE>(x, row, group_6, lane_in_group, input_inverse);
-        let values_7 =
-            load_8192_cached_values::<NORMALIZE>(x, row, group_7, lane_in_group, input_inverse);
+        let values_0 = load_8192_cached_values::<NORMALIZE, CENTER_RELU2>(
+            x,
+            row,
+            group_0,
+            lane_in_group,
+            factor,
+        );
+        let values_1 = load_8192_cached_values::<NORMALIZE, CENTER_RELU2>(
+            x,
+            row,
+            group_1,
+            lane_in_group,
+            factor,
+        );
+        let values_2 = load_8192_cached_values::<NORMALIZE, CENTER_RELU2>(
+            x,
+            row,
+            group_2,
+            lane_in_group,
+            factor,
+        );
+        let values_3 = load_8192_cached_values::<NORMALIZE, CENTER_RELU2>(
+            x,
+            row,
+            group_3,
+            lane_in_group,
+            factor,
+        );
+        let values_4 = load_8192_cached_values::<NORMALIZE, CENTER_RELU2>(
+            x,
+            row,
+            group_4,
+            lane_in_group,
+            factor,
+        );
+        let values_5 = load_8192_cached_values::<NORMALIZE, CENTER_RELU2>(
+            x,
+            row,
+            group_5,
+            lane_in_group,
+            factor,
+        );
+        let values_6 = load_8192_cached_values::<NORMALIZE, CENTER_RELU2>(
+            x,
+            row,
+            group_6,
+            lane_in_group,
+            factor,
+        );
+        let values_7 = load_8192_cached_values::<NORMALIZE, CENTER_RELU2>(
+            x,
+            row,
+            group_7,
+            lane_in_group,
+            factor,
+        );
         let mut local_amax = values_0.amax();
         local_amax = max_f32(local_amax, values_1.amax());
         local_amax = max_f32(local_amax, values_2.amax());
@@ -627,8 +676,8 @@ pub(crate) mod module {
                 *inverse_out.get_unchecked_mut(row as usize) = inverse;
             }
         }
-        rowwise_derived_amax_8192_cached_body::<true>(
-            x,
+        rowwise_derived_amax_8192_cached_body::<true, false>(
+            x.as_ptr(),
             amax,
             payload,
             scales,

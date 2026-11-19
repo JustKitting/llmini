@@ -1,5 +1,7 @@
 use cuda_core::DriverError;
-use rust_kernels_cuda::mlp::MlpBlockTopKRouteArgs;
+use rust_kernels_cuda::mlp::{
+    ADAPTIVE_RELU2_PACK_WIDTH, AdaptiveRelu2PackArgs, MlpBlockTopKRouteArgs,
+};
 use rust_kernels_cuda::nvfp4_tma_matmul::launcher::Nvfp4GemmRoute;
 
 use super::tensors::MlpForwardArgs;
@@ -27,6 +29,8 @@ pub(super) fn forward_impl<'a, 'scratch>(
         None => (None, None, None, None),
     };
     let hidden = args.hidden;
+    let fused_adaptive_relu2 =
+        crate::GPT2_ADAPTIVE_RELU2 && crate::GPT2_MLP_DIM == ADAPTIVE_RELU2_PACK_WIDTH;
 
     if !args.input_prequantized {
         if let Some(tape) = up_tape.as_mut() {
@@ -98,13 +102,15 @@ pub(super) fn forward_impl<'a, 'scratch>(
                 None,
                 false,
             )?;
-            args.module.adaptive_relu2_forward(
-                hidden.stream,
-                args.scratch.activation,
-                pre_activation.as_deref_mut(),
-                hidden.row_count,
-                crate::GPT2_MLP_DIM,
-            )?;
+            if !fused_adaptive_relu2 {
+                args.module.adaptive_relu2_forward(
+                    hidden.stream,
+                    args.scratch.activation,
+                    pre_activation.as_deref_mut(),
+                    hidden.row_count,
+                    crate::GPT2_MLP_DIM,
+                )?;
+            }
         } else {
             args.tma_module
                 .gemm_tma_nvfp4_rowwise_a_scale_relu2_compact(
@@ -125,14 +131,27 @@ pub(super) fn forward_impl<'a, 'scratch>(
     if let Some(tape) = down_tape.as_mut() {
         tape.swap_storage(&mut activation_nvfp4);
     }
-    activation_nvfp4.quantize_row_amax(
-        args.quant_module,
-        hidden.stream,
-        args.scratch.activation,
-        &mut *hidden.normalized_amax,
-        hidden.row_count,
-        crate::GPT2_MLP_DIM,
-    )?;
+    if fused_adaptive_relu2 {
+        args.module.adaptive_relu2_pack(AdaptiveRelu2PackArgs {
+            stream: hidden.stream,
+            values: args.scratch.activation,
+            tape: pre_activation,
+            amax: &mut *hidden.normalized_amax,
+            bytes: &mut *activation_nvfp4.bytes,
+            scales: &mut *activation_nvfp4.scales,
+            globals: &mut *activation_nvfp4.global_scales,
+            rows: hidden.row_count,
+        })?;
+    } else {
+        activation_nvfp4.quantize_row_amax(
+            args.quant_module,
+            hidden.stream,
+            args.scratch.activation,
+            &mut *hidden.normalized_amax,
+            hidden.row_count,
+            crate::GPT2_MLP_DIM,
+        )?;
+    }
 
     if let Some(tape) = down_tape.as_mut() {
         tape.swap_storage(&mut activation_nvfp4);

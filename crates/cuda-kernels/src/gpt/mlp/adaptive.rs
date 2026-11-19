@@ -3,6 +3,7 @@ use cuda_device::{DisjointSlice, SharedArray, cuda_module, kernel, thread};
 
 use super::{MlpModule, kernels::BLOCK_TOPK_TILE};
 use crate::{
+    activation::unshifted_relu2,
     block_reduce::block_sum_shared_f32,
     f16_tc_matmul::convert::{cvt_f32_f16, cvt_rn_f16_f32},
     float_ptx::max_f32,
@@ -12,8 +13,58 @@ use crate::{
 
 const THREADS: u32 = 256;
 const WARPS: usize = (THREADS / 32) as usize;
+pub const ADAPTIVE_RELU2_PACK_WIDTH: u32 = 8192;
+
+pub struct AdaptiveRelu2PackArgs<'a> {
+    pub stream: &'a CudaStream,
+    pub values: &'a mut DeviceBuffer<f32>,
+    pub tape: Option<&'a mut DeviceBuffer<u16>>,
+    pub amax: &'a mut DeviceBuffer<f32>,
+    pub bytes: &'a mut DeviceBuffer<u8>,
+    pub scales: &'a mut DeviceBuffer<u8>,
+    pub globals: &'a mut DeviceBuffer<f32>,
+    pub rows: u32,
+}
 
 impl MlpModule {
+    /// Center and pack in one CTA per token. Still write the centered view
+    /// into the input workspace for the native activation inspector.
+    pub fn adaptive_relu2_pack(&self, args: AdaptiveRelu2PackArgs<'_>) -> Result<(), DriverError> {
+        let rows = args.rows as usize;
+        let width = ADAPTIVE_RELU2_PACK_WIDTH as usize;
+        let len = args
+            .rows
+            .checked_mul(ADAPTIVE_RELU2_PACK_WIDTH)
+            .filter(|&n| n != 0)
+            .ok_or(DriverError(1))? as usize;
+        if args.values.len() < len
+            || args.tape.as_ref().is_some_and(|tape| tape.len() < len)
+            || args.amax.len() < rows
+            || args.globals.len() < rows
+            || args.bytes.len() < len / 2
+            || args.scales.len() < crate::nvfp4::csf::rowwise_encoded_len(rows, width)
+        {
+            return Err(DriverError(1));
+        }
+        let tape = args.tape.map_or(core::ptr::null_mut(), |tape| {
+            tape.cu_deviceptr() as *mut u16
+        });
+        self.adaptive
+            .as_ref()
+            .ok_or(DriverError(1))?
+            .adaptive_relu2_pack_8192_kernel(
+                args.stream,
+                grid_x_config(args.rows, THREADS),
+                args.values,
+                tape,
+                args.amax,
+                args.bytes,
+                args.scales,
+                args.globals,
+                args.rows,
+            )
+    }
+
     /// Replace the raw affine output by ReLU² minus its per-token feature mean.
     /// Reverse uses the ordinary FP16 preactivation tape.
     pub fn adaptive_relu2_forward(
@@ -89,6 +140,26 @@ impl MlpModule {
 pub(super) mod kernels {
     use super::*;
 
+    #[inline(always)]
+    fn row_mean(
+        row: *const f32,
+        tape: *mut u16,
+        base: usize,
+        width: u32,
+        storage: &mut SharedArray<f32, WARPS>,
+    ) -> f32 {
+        let (tid, lane, warp) = thread_lane_warp();
+        let mut sum = 0.0;
+        for col in (tid..width).step_by(THREADS as usize) {
+            let z = unsafe { *row.add(col as usize) };
+            if !tape.is_null() {
+                unsafe { *tape.add(base + col as usize) = cvt_rn_f16_f32(z) };
+            }
+            sum += unshifted_relu2(z);
+        }
+        block_sum_shared_f32(storage, sum, lane, warp) / width as f32
+    }
+
     #[kernel]
     pub fn adaptive_relu2_forward_kernel(
         mut values: DisjointSlice<f32>,
@@ -97,23 +168,51 @@ pub(super) mod kernels {
     ) {
         static mut REDUCTION: SharedArray<f32, WARPS> = SharedArray::UNINIT;
         let base = (thread::blockIdx_x() * width) as usize;
-        let (tid, lane, warp) = thread_lane_warp();
+        let tid = thread::threadIdx_x();
         let row = unsafe { values.as_mut_ptr().add(base) };
-        let mut sum = 0.0;
-        for col in (tid..width).step_by(THREADS as usize) {
-            let z = unsafe { *row.add(col as usize) };
-            if !tape.is_null() {
-                unsafe { *tape.add(base + col as usize) = cvt_rn_f16_f32(z) };
-            }
-            let positive = max_f32(z, 0.0);
-            sum += positive * positive;
-        }
-        let mean = unsafe { block_sum_shared_f32(&mut REDUCTION, sum, lane, warp) } / width as f32;
+        let mean = unsafe { row_mean(row, tape, base, width, &mut REDUCTION) };
         for col in (tid..width).step_by(THREADS as usize) {
             let value = unsafe { &mut *row.add(col as usize) };
-            let positive = max_f32(*value, 0.0);
-            *value = positive * positive - mean;
+            *value = unshifted_relu2(*value) - mean;
         }
+    }
+
+    #[kernel]
+    pub fn adaptive_relu2_pack_8192_kernel(
+        mut values: DisjointSlice<f32>,
+        tape: *mut u16,
+        amax: DisjointSlice<f32>,
+        bytes: DisjointSlice<u8>,
+        scales: DisjointSlice<u8>,
+        globals: DisjointSlice<f32>,
+        rows: u32,
+    ) {
+        static mut REDUCTION: SharedArray<f32, WARPS> = SharedArray::UNINIT;
+        let base = (thread::blockIdx_x() * ADAPTIVE_RELU2_PACK_WIDTH) as usize;
+        let values = values.as_mut_ptr();
+        let mean = unsafe {
+            row_mean(
+                values.add(base),
+                tape,
+                base,
+                ADAPTIVE_RELU2_PACK_WIDTH,
+                &mut REDUCTION,
+            )
+        };
+        crate::nvfp4_quant::kernels::four_six::module::rowwise_derived_amax_8192_cached_body::<
+            false,
+            true,
+        >(
+            values,
+            amax,
+            bytes,
+            scales,
+            globals,
+            rows,
+            crate::nvfp4_quant::SCALE_OVERRIDE,
+            mean,
+            unsafe { &mut REDUCTION },
+        );
     }
 
     #[kernel]

@@ -6,6 +6,7 @@ pub mod config {
     include!(concat!(env!("OUT_DIR"), "/mlp_config.rs"));
 }
 
+pub use adaptive::{ADAPTIVE_RELU2_PACK_WIDTH, AdaptiveRelu2PackArgs};
 pub use args::{
     MlpBlockTopKRouteArgs, MlpDownResidualArgs, MlpUpRelu2Args, Relu2BackwardArgs,
     Relu2BackwardF16Args,

@@ -13,7 +13,7 @@ use super::shape::{
 use crate::launch::grid_x_config;
 use crate::nvfp4_tma_matmul::cute::Sm120ScaleLayout;
 
-pub(super) const SCALE_OVERRIDE: f32 = 1.0;
+pub(crate) const SCALE_OVERRIDE: f32 = 1.0;
 
 impl Nvfp4QuantModule {
     pub fn fp32_to_nvfp4_four_six(&self, args: Nvfp4QuantArgs<'_, '_>) -> Result<(), DriverError> {

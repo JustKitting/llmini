@@ -1,12 +1,118 @@
 use std::error::Error;
 
 use cuda_core::DeviceBuffer;
-use rust_kernels_cuda::mlp::{MlpModule, Relu2BackwardF16Args, relu2_backward_amax_chunks};
+use rust_kernels_cuda::{
+    mlp::{
+        ADAPTIVE_RELU2_PACK_WIDTH, AdaptiveRelu2PackArgs, MlpModule, Relu2BackwardF16Args,
+        relu2_backward_amax_chunks,
+    },
+    nvfp4::csf,
+    nvfp4_quant::{Nvfp4QuantModule, Nvfp4QuantRowwiseDerivedAmaxArgs},
+};
 
 mod common;
 
 const LEN: usize = 4097;
 const CHUNK_LEN: usize = 2048;
+
+#[test]
+#[ignore = "uses the native Blackwell adaptive MLP and NVFP4 activation packer"]
+fn fused_adaptive_relu2_matches_separate_center_and_pack_bitwise() -> Result<(), Box<dyn Error>> {
+    let (_, stream, ptx) = common::cuda_test_context()?;
+    let mlp = MlpModule::from_module(ptx.clone())?;
+    let quant = Nvfp4QuantModule::from_module(ptx)?;
+    let rows = 129;
+    let width = ADAPTIVE_RELU2_PACK_WIDTH as usize;
+    let len = rows * width;
+    let scale_len = csf::rowwise_encoded_len(rows, width);
+    let z: Vec<f32> = (0..len)
+        .map(|index| match (index / width) % 7 {
+            0 => 0.0,
+            1 => -2.25,
+            2 => 0.375,
+            3 if index % width == 1 => 60_000.0,
+            3 => 0.000_13,
+            4 => 0.015_625 * ((index % 7) as f32 - 3.0),
+            5 if index % 2 == 0 => -0.0,
+            5 => f32::from_bits(1),
+            _ => 0.013 * ((index.wrapping_mul(691) % 1291) as f32 - 701.0),
+        })
+        .collect();
+
+    struct Packed {
+        amax: DeviceBuffer<f32>,
+        bytes: DeviceBuffer<u8>,
+        scales: DeviceBuffer<u8>,
+        globals: DeviceBuffer<f32>,
+    }
+    let allocate = || -> Result<Packed, Box<dyn Error>> {
+        Ok(Packed {
+            amax: DeviceBuffer::zeroed(&stream, rows)?,
+            bytes: DeviceBuffer::zeroed(&stream, len / 2)?,
+            scales: DeviceBuffer::zeroed(&stream, scale_len)?,
+            globals: DeviceBuffer::zeroed(&stream, rows)?,
+        })
+    };
+
+    for with_tape in [true, false] {
+        let mut separate_values = DeviceBuffer::from_host(&stream, &z)?;
+        let mut fused_values = DeviceBuffer::from_host(&stream, &z)?;
+        let mut separate_tape = DeviceBuffer::zeroed(&stream, len)?;
+        let mut fused_tape = DeviceBuffer::zeroed(&stream, len)?;
+        let mut separate = allocate()?;
+        let mut fused = allocate()?;
+        mlp.adaptive_relu2_forward(
+            &stream,
+            &mut separate_values,
+            with_tape.then_some(&mut separate_tape),
+            rows as u32,
+            width as u32,
+        )?;
+        quant.fp32_to_nvfp4_four_six_rowwise_derived_amax(Nvfp4QuantRowwiseDerivedAmaxArgs {
+            stream: &stream,
+            x: &separate_values,
+            amax: &mut separate.amax,
+            out_fp4: &mut separate.bytes,
+            out_scales: &mut separate.scales,
+            out_global_scale: &mut separate.globals,
+            row_count: rows as u32,
+            row_len: width as u32,
+        })?;
+        mlp.adaptive_relu2_pack(AdaptiveRelu2PackArgs {
+            stream: &stream,
+            values: &mut fused_values,
+            tape: with_tape.then_some(&mut fused_tape),
+            amax: &mut fused.amax,
+            bytes: &mut fused.bytes,
+            scales: &mut fused.scales,
+            globals: &mut fused.globals,
+            rows: rows as u32,
+        })?;
+        for (reference, candidate) in [
+            (&separate_values, &fused_values),
+            (&separate.amax, &fused.amax),
+            (&separate.globals, &fused.globals),
+        ] {
+            assert_eq!(
+                float_bits(&reference.to_host_vec(&stream)?),
+                float_bits(&candidate.to_host_vec(&stream)?)
+            );
+        }
+        assert_eq!(
+            separate.bytes.to_host_vec(&stream)?,
+            fused.bytes.to_host_vec(&stream)?
+        );
+        assert_eq!(
+            separate.scales.to_host_vec(&stream)?,
+            fused.scales.to_host_vec(&stream)?
+        );
+        assert_eq!(
+            separate_tape.to_host_vec(&stream)?,
+            fused_tape.to_host_vec(&stream)?
+        );
+    }
+    Ok(())
+}
 
 #[ignore = "requires the adaptive-ReLU2 Blackwell build"]
 #[test]
