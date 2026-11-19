@@ -102,8 +102,16 @@ impl StagePlan<'_> {
         &self.ratio_loss
     }
 
+    pub fn into_ratio_loss(self) -> DeviceBuffer<f32> {
+        self.ratio_loss
+    }
+
     fn inner_values(&self) -> u32 {
         self.shape.batch * self.inner_stride * self.shape.features
+    }
+
+    fn outer_values(&self) -> u32 {
+        self.shape.batch * self.shape.outer_stride * self.shape.features
     }
 
     fn residual_values(&self, width: u32) -> Result<u32, DriverError> {
@@ -510,6 +518,48 @@ impl HnetStage {
             d_queries,
             d_keys,
         })
+    }
+
+    pub fn decoder_input(
+        &self,
+        expanded: &ExpandedStage<'_, '_>,
+        projected_skip: &DeviceBuffer<f32>,
+    ) -> Result<DeviceBuffer<f32>, DriverError> {
+        let plan = expanded.plan;
+        let values = plan.outer_values();
+        require(plan.stream, projected_skip, values)?;
+        let mut input = DeviceBuffer::zeroed(plan.stream, values as usize)?;
+        self.chunk.hnet_decoder_input_kernel(
+            plan.stream,
+            linear_config(values, THREADS),
+            &expanded.values,
+            projected_skip,
+            plan.lengths,
+            &mut input,
+            values,
+            plan.shape.outer_stride,
+            plan.shape.features,
+        )?;
+        Ok(input)
+    }
+
+    /// Both inputs of the sum receive this masked gradient.
+    pub fn mask_decoder_input_adjoint(
+        &self,
+        plan: &StagePlan<'_>,
+        gradient: &mut DeviceBuffer<f32>,
+    ) -> Result<(), DriverError> {
+        let values = plan.outer_values();
+        require(plan.stream, gradient, values)?;
+        self.chunk.hnet_decoder_input_adjoint_kernel(
+            plan.stream,
+            linear_config(values, THREADS),
+            plan.lengths,
+            gradient,
+            values,
+            plan.shape.outer_stride,
+            plan.shape.features,
+        )
     }
 
     pub fn scatter(

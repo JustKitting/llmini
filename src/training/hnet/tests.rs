@@ -1,18 +1,29 @@
-use cuda_core::DeviceBuffer;
-use gpt2_nvfp4::{GPT2_MLP_ROUTE_TILE, GPT2_N_EMBD};
+use cuda_core::{CudaStream, DeviceBuffer};
+use gpt2_nvfp4::{GPT2_MLP_ROUTE_TILE, GPT2_N_EMBD, Gpt2Rng};
 use rust_kernels_cuda::hnet_stage::{RatioObjective, StageShape};
+use rust_kernels_cuda::nvfp4::csf;
 
 use super::Trainer;
-use crate::AppResult;
+use crate::{AppResult, upload::UploadedNvfp4};
+
+fn packed_matrix(
+    stream: &CudaStream,
+    rows: usize,
+    width: usize,
+    rng: &mut Gpt2Rng,
+) -> AppResult<UploadedNvfp4> {
+    let bytes: Vec<u8> = (0..rows * width / 2)
+        .map(|_| rng.next_u32() as u8)
+        .collect();
+    let scales = csf::encode_host(&vec![0x38; rows * width / 16], rows, width);
+    UploadedNvfp4::from_host(stream, &bytes, &scales, 0.013, rows * width)
+}
 
 #[test]
 #[ignore = "requires sm_120a PTX and the native NVFP4 H-Net outer block"]
 fn outer_hnet_block_is_causal_and_preserves_recurrent_adjoint() -> AppResult {
-    use gpt2_nvfp4::Gpt2Rng;
-    use rust_kernels_cuda::nvfp4::csf;
-
     use super::outer::{OuterScratch, OuterWeights};
-    use crate::{training::runtime::Runtime, upload::UploadedNvfp4};
+    use crate::training::runtime::Runtime;
 
     const BATCH: usize = 2;
     const SEQUENCE: usize = 128;
@@ -21,15 +32,8 @@ fn outer_hnet_block_is_causal_and_preserves_recurrent_adjoint() -> AppResult {
     let runtime = Runtime::new()?;
     let stream = &runtime.stream;
     let mut rng = Gpt2Rng::new(911);
-    let mut matrix = |rows| -> AppResult<UploadedNvfp4> {
-        let bytes: Vec<u8> = (0..rows * WIDTH / 2)
-            .map(|_| rng.next_u32() as u8)
-            .collect();
-        let scales = csf::encode_host(&vec![0x38; rows * WIDTH / 16], rows, WIDTH);
-        UploadedNvfp4::from_host(stream, &bytes, &scales, 0.013, rows * WIDTH)
-    };
-    let qkv = matrix(QKV)?;
-    let output = matrix(WIDTH)?;
+    let qkv = packed_matrix(stream, QKV, WIDTH, &mut rng)?;
+    let output = packed_matrix(stream, WIDTH, WIDTH, &mut rng)?;
     let scales = csf::encode_host(&[0x38; WIDTH / 16], 1, WIDTH);
     let norm_scale = UploadedNvfp4::from_host(stream, &[0x22; WIDTH / 2], &scales, 1.0, WIDTH)?;
     let norm_bias = UploadedNvfp4::from_host(stream, &[0; WIDTH / 2], &scales, 1.0, WIDTH)?;
@@ -70,8 +74,8 @@ fn outer_hnet_block_is_causal_and_preserves_recurrent_adjoint() -> AppResult {
         *value = [0.001, -0.002, 0.003][i % 3];
     }
     let gradient = DeviceBuffer::from_host(stream, &gradient)?;
-    let adjoint = tape.backward(&runtime, &mut scratch, &gradient, 17, 19)?;
-    let d_input = adjoint.input.to_host_vec(stream)?;
+    let (d_input, adjoint) = tape.backward(&runtime, &mut scratch, &gradient, 17, 19)?;
+    let d_input = d_input.to_host_vec(stream)?;
     assert!(d_input.iter().all(|value| value.is_finite()));
     assert!(d_input[..64 * WIDTH].iter().any(|value| *value != 0.0));
     assert!(
@@ -91,6 +95,132 @@ fn outer_hnet_block_is_causal_and_preserves_recurrent_adjoint() -> AppResult {
     ] {
         assert!(parameter.iter().all(|value| value.is_finite()));
         assert!(parameter.iter().any(|value| *value != 0.0));
+    }
+    Ok(())
+}
+
+#[test]
+#[ignore = "uses the CUDA outer blocks, routed inner backbone, and byte head"]
+fn native_hnet_hierarchy_reverses_masked_byte_loss() -> AppResult {
+    use rust_kernels_cuda::hnet_byte_head::{BYTE_EOS, BYTE_LOGIT_STRIDE, BYTE_PADDING_TARGET};
+
+    use super::{
+        hierarchy::{HierarchyBatch, HierarchyScratch, HierarchyWeights},
+        outer::OuterWeights,
+        projection::StageWeights,
+    };
+
+    const STRIDE: usize = 128;
+    const WIDTH: usize = 512;
+    const QKV: usize = 2176;
+    let lengths = [113, 57];
+    let mut trainer = Trainer::new_full_kda(0x484e4554)?;
+    let stream = trainer.runtime.stream.clone();
+    let stream = stream.as_ref();
+    let mut rng = Gpt2Rng::new(19);
+    let scales = csf::encode_host(&[0x38; WIDTH / 16], 1, WIDTH);
+    let norm_scale = UploadedNvfp4::from_host(stream, &[0x22; WIDTH / 2], &scales, 1.0, WIDTH)?;
+    let norm_bias = UploadedNvfp4::from_host(stream, &[0; WIDTH / 2], &scales, 1.0, WIDTH)?;
+    let encoder_mixer = packed_matrix(stream, QKV, WIDTH, &mut rng)?;
+    let encoder_output = packed_matrix(stream, WIDTH, WIDTH, &mut rng)?;
+    let decoder_mixer = packed_matrix(stream, QKV, WIDTH, &mut rng)?;
+    let decoder_output = packed_matrix(stream, WIDTH, WIDTH, &mut rng)?;
+    let encoder = [OuterWeights {
+        qkv: &encoder_mixer,
+        output: &encoder_output,
+        norm_scale: &norm_scale,
+        norm_bias: &norm_bias,
+    }];
+    let decoder = [OuterWeights {
+        qkv: &decoder_mixer,
+        output: &decoder_output,
+        norm_scale: &norm_scale,
+        norm_bias: &norm_bias,
+    }];
+    let query = packed_matrix(stream, WIDTH, WIDTH, &mut rng)?;
+    let key = packed_matrix(stream, WIDTH, WIDTH, &mut rng)?;
+    let residual = packed_matrix(stream, WIDTH, WIDTH, &mut rng)?;
+    let byte_readout = packed_matrix(stream, BYTE_LOGIT_STRIDE as usize, WIDTH, &mut rng)?;
+    let padding = DeviceBuffer::zeroed(stream, GPT2_N_EMBD - WIDTH)?;
+    let mut scratch = HierarchyScratch::new(&trainer.runtime, 2, STRIDE as u32, WIDTH as u32)?;
+    let embeddings: Vec<_> = (0..2 * STRIDE * WIDTH)
+        .map(|_| (rng.next_u32() % 65) as f32 / 256.0 - 0.125)
+        .collect();
+    let embeddings = DeviceBuffer::from_host(stream, &embeddings)?;
+    let lengths_device = DeviceBuffer::from_host(stream, &lengths)?;
+    let mut targets = [BYTE_PADDING_TARGET; 2 * STRIDE];
+    for (sequence, length) in lengths.into_iter().enumerate() {
+        let start = sequence * STRIDE;
+        for (i, target) in targets[start..start + length as usize - 1]
+            .iter_mut()
+            .enumerate()
+        {
+            *target = (i * 73 % 256) as u32;
+        }
+        targets[start + length as usize - 1] = BYTE_EOS;
+    }
+    let targets = DeviceBuffer::from_host(stream, &targets)?;
+    let adjoints = trainer.backward_hnet(
+        &mut scratch,
+        HierarchyBatch {
+            embeddings: &embeddings,
+            valid_lengths: &lengths_device,
+            targets: &targets,
+            scored_targets: lengths.into_iter().sum(),
+        },
+        HierarchyWeights {
+            encoder: &encoder,
+            decoder: &decoder,
+            stage: StageWeights {
+                query: &query,
+                key: &key,
+                residual: &residual,
+            },
+            width_padding: Some(&padding),
+            byte_readout: &byte_readout,
+        },
+        RatioObjective {
+            target: 4.0,
+            weight: 0.03,
+        },
+        &mut rng,
+    )?;
+    assert!(adjoints.ratio_loss.to_host_vec(stream)?[0].is_finite());
+    let losses = adjoints.byte_losses.to_host_vec(stream)?;
+    let d_embeddings = adjoints.embeddings.to_host_vec(stream)?;
+    for (sequence, length) in lengths.into_iter().enumerate() {
+        let first = sequence * STRIDE;
+        let last = first + length as usize;
+        let end = first + STRIDE;
+        assert!(
+            losses[first..last]
+                .iter()
+                .all(|loss| loss.is_finite() && *loss > 0.0)
+        );
+        assert!(losses[last..end].iter().all(|loss| *loss == 0.0));
+        assert!(
+            d_embeddings[last * WIDTH..end * WIDTH]
+                .iter()
+                .all(|value| *value == 0.0)
+        );
+    }
+    let d_readout = adjoints.byte_readout.to_host_vec(stream)?;
+    assert!(
+        d_readout[(BYTE_EOS as usize + 1) * WIDTH..]
+            .iter()
+            .all(|value| *value == 0.0)
+    );
+    for matrix in [
+        &adjoints.encoder[0].qkv,
+        &adjoints.decoder[0].qkv,
+        &adjoints.stage.query,
+        &adjoints.stage.key,
+        &adjoints.stage.residual,
+        adjoints.width_padding.as_ref().unwrap(),
+    ] {
+        let values = matrix.to_host_vec(stream)?;
+        assert!(values.iter().all(|value| value.is_finite()));
+        assert!(values.iter().any(|value| *value != 0.0));
     }
     Ok(())
 }

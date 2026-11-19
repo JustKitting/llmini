@@ -66,8 +66,7 @@ pub(super) struct OuterTape<'a> {
     chunk_states: DeviceBuffer<u16>,
 }
 
-pub(super) struct OuterAdjoints {
-    pub input: DeviceBuffer<f32>,
+pub(super) struct OuterParameterAdjoints {
     pub qkv: DeviceBuffer<f32>,
     pub output: DeviceBuffer<f32>,
     pub norm_scale: DeviceBuffer<f32>,
@@ -272,7 +271,7 @@ impl OuterTape<'_> {
         gradient: &DeviceBuffer<f32>,
         sign_seed: u32,
         scale_seed: u32,
-    ) -> AppResult<OuterAdjoints> {
+    ) -> AppResult<(DeviceBuffer<f32>, OuterParameterAdjoints)> {
         let shape = self.shape;
         let features = (shape.rows * shape.width) as usize;
         if scratch.shape != shape || gradient.len() != features {
@@ -281,8 +280,8 @@ impl OuterTape<'_> {
         let stream = &runtime.stream;
         let width = shape.width as usize;
         let weights = self.weights;
-        let mut adjoints = OuterAdjoints {
-            input: DeviceBuffer::zeroed(stream, features)?,
+        let mut d_input = DeviceBuffer::zeroed(stream, features)?;
+        let mut adjoints = OuterParameterAdjoints {
             qkv: DeviceBuffer::zeroed(stream, width * shape.qkv as usize)?,
             output: DeviceBuffer::zeroed(stream, width * width)?,
             norm_scale: DeviceBuffer::zeroed(stream, width)?,
@@ -384,11 +383,11 @@ impl OuterTape<'_> {
                 inv_std: &self.inv_std,
                 weight: weights.norm_scale.device(),
                 direct: gradient,
-                d_residual: &mut adjoints.input,
+                d_residual: &mut d_input,
                 output_scale: 1.0,
                 row_count: shape.rows,
                 embedding_dim: shape.width,
             })?;
-        Ok(adjoints)
+        Ok((d_input, adjoints))
     }
 }

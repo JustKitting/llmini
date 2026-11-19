@@ -29,6 +29,44 @@ pub mod kernels {
     use super::*;
 
     #[kernel]
+    pub fn hnet_decoder_input_kernel(
+        restored: &[u16],
+        projected_skip: &[f32],
+        valid_lengths: &[u32],
+        mut input: DisjointSlice<f32>,
+        values: u32,
+        stride: u32,
+        width: u32,
+    ) {
+        let i = thread::blockIdx_x() * thread::blockDim_x() + thread::threadIdx_x();
+        if i < values {
+            let row = i / width;
+            let i = i as usize;
+            let value = if row % stride < valid_lengths[(row / stride) as usize] {
+                cvt_f32_f16(restored[i]) + projected_skip[i]
+            } else {
+                0.0
+            };
+            unsafe { *input.get_unchecked_mut(i) = value };
+        }
+    }
+
+    #[kernel]
+    pub fn hnet_decoder_input_adjoint_kernel(
+        valid_lengths: &[u32],
+        mut gradient: DisjointSlice<f32>,
+        values: u32,
+        stride: u32,
+        width: u32,
+    ) {
+        let i = thread::blockIdx_x() * thread::blockDim_x() + thread::threadIdx_x();
+        let row = i / width;
+        if i < values && row % stride >= valid_lengths[(row / stride) as usize] {
+            unsafe { *gradient.get_unchecked_mut(i as usize) = 0.0 };
+        }
+    }
+
+    #[kernel]
     pub fn hnet_inner_to_residual_kernel(
         represented: &[u16],
         learned_padding: &[u16],

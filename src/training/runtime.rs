@@ -54,11 +54,16 @@ pub struct Runtime {
 }
 
 impl Runtime {
-    #[cfg(test)]
     pub(in crate::training) fn hnet_stage_module(
         &self,
     ) -> Result<rust_kernels_cuda::hnet_stage::HnetStage, cuda_core::DriverError> {
         rust_kernels_cuda::hnet_stage::HnetStage::from_module(self.cuda_module.clone())
+    }
+
+    pub(in crate::training) fn hnet_byte_head_module(
+        &self,
+    ) -> Result<rust_kernels_cuda::hnet_byte_head::ByteHeadModule, cuda_core::DriverError> {
+        rust_kernels_cuda::hnet_byte_head::ByteHeadModule::from_module(self.cuda_module.clone())
     }
 
     #[cfg(test)]
