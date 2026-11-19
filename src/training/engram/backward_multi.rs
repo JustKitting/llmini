@@ -115,6 +115,12 @@ impl Module {
             let sign_seed = self.rng.next_u32();
             let scale_seed = self.rng.next_u32();
             let (before_bias, bias_and_after) = self.ng.split_at_mut(wi + 1);
+            let first = wi == self.cfg.key_index(0);
+            let dinput = if first {
+                &mut scratch.d_mem_key
+            } else {
+                &mut scratch.d_mem_value
+            };
             r.linear.backward_ms_eden(LinearBackwardMsEdenArgs {
                 stream: s,
                 quant_module: &r.quant,
@@ -122,7 +128,7 @@ impl Module {
                 weight_t: LinearBackwardWeightTranspose::Nvfp4(w.nv[wi].device()),
                 input_t: LinearBackwardInputTranspose::RowwiseNvfp4(self.memory_q.rowwise()),
                 scratch: scratch.linear.parts(),
-                dinput: &mut scratch.d_mem_value,
+                dinput,
                 dweight: &mut before_bias[wi],
                 dbias: Some(&mut bias_and_after[0]),
                 token_count: n,
@@ -134,16 +140,9 @@ impl Module {
             })?;
             #[cfg(test)]
             if let Some(verification) = &mut self.memory_adjoint_verification {
-                verification.observe(s, wi, &scratch.d_mem_value, (n * memory) as usize)?;
+                verification.observe(s, wi, dinput, (n * memory) as usize)?;
             }
-            if wi == self.cfg.key_index(0) {
-                copy(
-                    s,
-                    &scratch.d_mem_value,
-                    &scratch.d_mem_key,
-                    (n * memory) as usize,
-                )?;
-            } else {
+            if !first {
                 r.residual.grad_accumulate(ResidualGradAccumulateArgs {
                     stream: s,
                     branch: &scratch.d_mem_value,
