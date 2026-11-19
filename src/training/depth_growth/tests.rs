@@ -1,19 +1,30 @@
 use cuda_core::{CudaStream, DeviceBuffer, memory};
-use gpt2_nvfp4::{GPT2_BATCH_SIZE, GPT2_N_LAYER, GPT2_SEQ_LEN, depth_growth::GrowthTransition};
+use gpt2_nvfp4::{
+    GPT2_BATCH_SIZE, GPT2_N_HEAD, GPT2_N_LAYER, GPT2_SEQ_LEN, depth_growth::GrowthTransition,
+    exclusive_self_attention_enabled,
+};
 
 use super::Trainer;
 use crate::{AppResult, training::TokenDataLoader};
 
 fn prefix<T: Default + Copy>(stream: &CudaStream, buffer: &DeviceBuffer<T>) -> AppResult<[T; 8]> {
-    assert!(buffer.len() >= 8);
-    let mut values = [T::default(); 8];
+    read_span(stream, buffer, 0)
+}
+
+fn read_span<T: Default + Copy, const N: usize>(
+    stream: &CudaStream,
+    buffer: &DeviceBuffer<T>,
+    offset: usize,
+) -> AppResult<[T; N]> {
+    assert!(buffer.len() >= offset + N);
+    let mut values = [T::default(); N];
     stream.context().bind_to_thread()?;
     // This fixed host array remains borrowed until the stream is synchronized.
     unsafe {
         memory::memcpy_dtoh_async(
             values.as_mut_ptr(),
-            buffer.cu_deviceptr(),
-            size_of::<[T; 8]>(),
+            buffer.cu_deviceptr() + (offset * size_of::<T>()) as u64,
+            size_of::<[T; N]>(),
             stream.cu_stream(),
         )?;
     }
@@ -39,7 +50,31 @@ fn block_state(trainer: &Trainer, index: usize) -> AppResult<Vec<u32>> {
     for tensor in [&matrix.momentum, &matrix.variance] {
         bits.extend(prefix(stream, tensor)?.map(u32::from));
     }
+    let xsa = &trainer.buffers.optimizer_state.xsa_alphas;
+    for tensor in [&xsa.z_master, &xsa.x_master, &xsa.first, &xsa.second] {
+        bits.extend(
+            read_span::<_, GPT2_N_HEAD>(stream, tensor, index * GPT2_N_HEAD)?.map(f32::to_bits),
+        );
+    }
     Ok(bits)
+}
+
+fn seed_dormant_xsa_moments(trainer: &mut Trainer, depth: usize) -> AppResult<()> {
+    let stream = &trainer.runtime.stream;
+    let xsa = &mut trainer.buffers.optimizer_state.xsa_alphas;
+    let byte_offset = (depth * GPT2_N_HEAD * size_of::<f32>()) as u64;
+    for (state, value) in [(&mut xsa.first, 0.25_f32), (&mut xsa.second, 0.5_f32)] {
+        unsafe {
+            memory::memcpy_htod_async(
+                state.cu_deviceptr() + byte_offset,
+                &value,
+                size_of::<f32>(),
+                stream.cu_stream(),
+            )?;
+        }
+        stream.synchronize()?;
+    }
+    Ok(())
 }
 
 fn optimizer_clock(trainer: &Trainer) -> (u32, u32, String) {
@@ -82,10 +117,31 @@ fn native_depth_growth_copies_state_and_reduces_only_active_parameters() -> AppR
             assert!(error.to_string().contains("partial growth stage"));
         }
 
+        // An all-zero optimizer state would hide an update to an inactive head.
+        // Set nonzero moments after the initial prefix has been selected.
+        if depth == 4 && exclusive_self_attention_enabled() {
+            seed_dormant_xsa_moments(&mut trainer, depth)?;
+        }
+        let dormant = (depth < GPT2_N_LAYER)
+            .then(|| block_state(&trainer, depth))
+            .transpose()?;
         let window = loader.next_batch()?;
         let batch = trainer.upload_default_batch(&mut upload, &window.tokens)?;
         let stats = trainer.train_step(batch, true)?;
         assert!(stats.finite && !stats.optimizer.skip_non_finite);
+        if depth == 4 {
+            assert!(
+                !stats.optimizer.update_skipped,
+                "first update must exercise the optimizer"
+            );
+        }
+        if let Some(expected) = dormant {
+            assert_eq!(
+                block_state(&trainer, depth)?,
+                expected,
+                "dormant depth {depth}"
+            );
+        }
         assert_eq!(
             trainer.buffers.optimizer_state.step,
             clock.0 + u32::from(!stats.optimizer.update_skipped)

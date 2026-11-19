@@ -1,4 +1,5 @@
 use cuda_core::{CudaStream, DriverError};
+use gpt2_nvfp4::GPT2_N_HEAD;
 use rust_kernels_cuda::optimizer::OptimizerModule;
 
 use crate::training::OptimizerTrace;
@@ -69,10 +70,14 @@ pub(super) fn update_base_adam(args: BaseAdamUpdateArgs<'_>) -> Result<(), Drive
             args.grad_scale,
         );
         let xsa_alphas_ms = if gpt2_nvfp4::exclusive_self_attention_enabled() {
-            adam.update_timed_with_weight_decay(
+            // XSA is a single tensor with contiguous head slices per layer.
+            // Backward clears its full gradient buffer, so scheduled values
+            // outside the active prefix stay zero when the tensor is packed.
+            adam.update_prefix_timed(
                 &mut args.uploaded.xsa_alphas,
                 &mut args.grads.d_xsa_alphas,
                 &mut args.state.xsa_alphas,
+                args.state.active_depth * GPT2_N_HEAD,
                 0.0,
             )?
         } else {

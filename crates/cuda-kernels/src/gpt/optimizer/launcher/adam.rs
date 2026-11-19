@@ -103,7 +103,8 @@ impl OptimizerModule {
         &self,
         args: &mut AdamWUpdateArgs<'_>,
     ) -> Result<(), DriverError> {
-        assert_eq!(args.len % 16, 0);
+        // This kernel updates scalars and an amax. The later pack still uses
+        // the full physical tensor size, including any inactive suffix.
         assert!(args.z_master.len() >= args.len as usize);
         assert!(args.x_master.len() >= args.len as usize);
         assert!(args.grad.len() >= args.len as usize);
