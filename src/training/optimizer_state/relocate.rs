@@ -192,6 +192,7 @@ impl OptimizerStateBuffers {
         }
         self.invalidate_training_weights();
         self.invalidate_scheduled_values();
+        self.update_amax_valid = false;
         Ok(())
     }
 }

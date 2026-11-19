@@ -1,6 +1,6 @@
 use cuda_core::DeviceBuffer;
 use gpt2_nvfp4::{
-    GPT2_N_EMBD, GPT2_VOCAB_SIZE, GPT2_XSA_ALPHA_STORAGE, exclusive_self_attention_enabled,
+    GPT2_N_EMBD, GPT2_N_HEAD, GPT2_VOCAB_SIZE, exclusive_self_attention_enabled,
 };
 
 use crate::training::{
@@ -22,6 +22,7 @@ pub(super) struct HostGradView<'a> {
 pub(super) fn parameter_gradient_views<'a>(
     grads: &'a BackwardBuffers,
     next_latent: &'a NextLatGradBuffers,
+    active_depth: usize,
 ) -> Vec<HostGradView<'a>> {
     let mut rows = Vec::new();
     push_view(
@@ -35,12 +36,12 @@ pub(super) fn parameter_gradient_views<'a>(
             &mut rows,
             "xsa_alphas",
             &grads.d_xsa_alphas,
-            GPT2_XSA_ALPHA_STORAGE,
+            active_depth * GPT2_N_HEAD,
         );
     }
     push_layer_norm_views(&mut rows, "final_norm", &grads.final_norm);
 
-    for (block_index, block) in grads.blocks.iter().enumerate() {
+    for (block_index, block) in grads.blocks.iter().take(active_depth).enumerate() {
         push_block_views(&mut rows, block_index, block);
     }
     push_next_latent_views(&mut rows, next_latent);

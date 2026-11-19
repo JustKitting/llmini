@@ -22,7 +22,7 @@ pub use block::{
 pub use block_attention::{
     BlockAttentionBackwardArgs, BlockAttentionBackwardModules, BlockAttentionBackwardScratch,
     ValueRmsBackwardScratch,
-    BlockAttentionBackwardSeeds, attention_side_backward, attention_side_backward_branch,
+    BlockAttentionBackwardSeeds, attention_side_backward,
 };
 pub use final_head::{
     FinalHeadBackwardArgs, FinalHeadBackwardModules, FinalHeadBackwardScratch,

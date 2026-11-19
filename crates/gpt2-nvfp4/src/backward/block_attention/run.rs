@@ -14,24 +14,21 @@ use crate::backward::{
     layer_norm_backward_add_amax, layer_norm_backward_amax, qkv_projection_backward,
 };
 use crate::types::{BlockBackwardGrads, project_attention_value};
+use crate::config::uses_value_residual_at_depth;
 use crate::{
-    AttentionDims, GPT2_N_LAYER, attention_headwise_gate_enabled, attention_headwise_gate_offset,
-    uses_exclusive_self_attention, uses_value_residual,
+    AttentionDims, attention_headwise_gate_enabled, attention_headwise_gate_offset,
+    uses_exclusive_self_attention,
 };
 
 pub fn attention_side_backward(
     args: BlockAttentionBackwardArgs<'_, '_, '_>,
 ) -> Result<Option<u32>, DriverError> {
-    attention_side_backward_impl(args, true)
+    attention_side_backward_at_depth(args, true, crate::GPT2_N_LAYER)
 }
-pub fn attention_side_backward_branch(
-    args: BlockAttentionBackwardArgs<'_, '_, '_>,
-) -> Result<Option<u32>, DriverError> {
-    attention_side_backward_impl(args, false)
-}
-fn attention_side_backward_impl(
+pub(crate) fn attention_side_backward_at_depth(
     args: BlockAttentionBackwardArgs<'_, '_, '_>,
     add_residual: bool,
+    active_depth: usize,
 ) -> Result<Option<u32>, DriverError> {
     let BlockAttentionBackwardArgs {
         block_index,
@@ -191,7 +188,7 @@ fn attention_side_backward_impl(
             saved.row_count,
             dims,
         )?;
-        if uses_value_residual(block_index) {
+        if uses_value_residual_at_depth(block_index, active_depth) {
             modules.attention.mix_value_residual(
                 rust_kernels_cuda::attention::MixValueResidualArgs {
                     stream,
@@ -235,8 +232,9 @@ fn attention_side_backward_impl(
             !use_full_attention,
         )?;
     }
-    let routes_value_residual = uses_value_residual(block_index);
-    if routes_value_residual && block_index == GPT2_N_LAYER - 1 {
+    let routes_value_residual = uses_value_residual_at_depth(block_index, active_depth);
+    let has_value_residual = uses_value_residual_at_depth(active_depth - 1, active_depth);
+    if routes_value_residual && block_index + 1 == active_depth {
         modules
             .attention
             .initialize_value_residual_grad(InitializeValueResidualGradArgs {
@@ -247,7 +245,7 @@ fn attention_side_backward_impl(
                 embedding_dim: dims.embedding_dim,
                 qkv_dim: dims.qkv_dim,
             })?;
-    } else if block_index == 0 {
+    } else if block_index == 0 && has_value_residual {
         modules
             .attention
             .finish_value_residual_grad(FinishValueResidualGradArgs {

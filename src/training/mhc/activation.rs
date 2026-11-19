@@ -87,13 +87,22 @@ impl Mhc {
         _w: &Weights,
     ) -> Result<(), DriverError> {
         let start = window_start(index);
-        if self.active_window == Some(start) {
+        // A shallow stack still uses the same separately learned HyperHead.
+        // Its input was captured from the active prefix, without the branches
+        // that normally precede the head's physical tape slot.
+        if self.active_window == Some(start)
+            || (index == BOUNDARIES && self.active_boundaries < BOUNDARIES)
+        {
             return Ok(());
         }
         let s = r.stream.as_ref();
         let checkpoint = &self.checkpoints[checkpoint_slot(start)];
         self.tape_units = [None; WINDOW];
-        let end = window_end(start);
+        let end = if self.active_boundaries == BOUNDARIES {
+            window_end(start)
+        } else {
+            window_end(start).min(self.active_boundaries)
+        };
         let fused = self.window_post.as_ref().filter(|_| end - start == WINDOW);
         if let Some(fused) = fused {
             let [first, second, third] = self.replay_inputs.as_mut_slice() else {

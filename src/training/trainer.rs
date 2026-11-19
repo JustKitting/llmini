@@ -25,37 +25,6 @@ pub struct Trainer {
 }
 
 impl Trainer {
-    /// Transfer same-dtype live state before activating a deeper prefix.
-    /// The caller changes the active forward/backward and optimizer range
-    /// after this operation. Embedding, readout, Engram and clocks stay live.
-    pub fn relocate_depth_growth(
-        &mut self,
-        transition: gpt2_nvfp4::depth_growth::GrowthTransition,
-    ) -> AppResult {
-        use super::optimizer_state::relocate::{copy_fp32, copy_muon};
-
-        let stream = self.runtime.stream.as_ref();
-        self.buffers
-            .optimizer_state
-            .copy_growth_blocks(stream, transition)?;
-        if let Some(mhc) = &mut self.mhc {
-            for (source, destination) in transition.copies() {
-                let (before, after) = mhc.units.split_at_mut(destination * 2);
-                for (from, to) in before[source * 2..source * 2 + 2]
-                    .iter()
-                    .zip(after.iter_mut().take(2))
-                {
-                    copy_muon(stream, &from.phi, &mut to.phi)?;
-                    for (from, to) in from.fp.iter().zip(&mut to.fp) {
-                        copy_fp32(stream, from, to)?;
-                    }
-                }
-            }
-        }
-        stream.synchronize()?;
-        Ok(())
-    }
-
     pub fn new(seed: u64) -> AppResult<Self> {
         let memory = gpt2_nvfp4::GPT2_REQUIRES_ENGRAM_MHC || super::engram::multistream_enabled();
         Self::new_architecture(seed, false, memory || super::mhc::enabled(), memory)
@@ -207,37 +176,13 @@ impl Trainer {
             .map(|w| super::mhc::Mhc::new(&runtime, w))
             .transpose()?;
         if engram.is_some() || latent_feedback.is_some() || mhc.is_some() {
-            buffers.muon_tables = super::optimizer_muon::MuonPointerTables::new_with_architectures(
+            buffers.configure_optimizer_graph(
                 stream,
                 &uploaded,
-                &buffers.backward,
-                &buffers.next_latent_grads,
-                &buffers.optimizer_state,
                 engram.as_ref(),
                 latent_feedback.as_ref(),
                 mhc.as_ref(),
             )?;
-            let mut extra = engram
-                .as_ref()
-                .map_or_else(Vec::new, |e| e.named_gradients());
-            if let Some(f) = &latent_feedback {
-                extra.extend(f.named_gradients());
-            }
-            if let Some(m) = &mhc {
-                extra.extend(m.named_gradients());
-            }
-            let recompute = mhc.as_ref().map_or_else(Vec::new, |m| {
-                m.units.iter().map(|u| u.grad.cu_deviceptr()).collect()
-            });
-            buffers.grad_clip =
-                super::grad_clip::GradientClipBuffers::new_with_recomputed_matrices(
-                    stream,
-                    &buffers.backward,
-                    &buffers.next_latent_grads,
-                    &buffers.muon_tables,
-                    &extra,
-                    &recompute,
-                )?;
         }
 
         if std::env::var_os("TRAIN_REPORT_MEMORY").is_some() {

@@ -19,6 +19,7 @@ mod components;
 pub(in crate::training) use components::{BlockState, LayerNormState, LinearState, NextLatState};
 
 pub struct OptimizerStateBuffers {
+    pub(in crate::training) active_depth: usize,
     pub(in crate::training) step: u32,
     pub(in crate::training) schedule_free_weight_sum: f32,
     pub(in crate::training) update_skip: UpdateSkipState,
@@ -29,6 +30,8 @@ pub struct OptimizerStateBuffers {
     pub(in crate::training) blocks: [BlockState; GPT2_N_LAYER],
     adam_schedule_amax_ptrs: DeviceBuffer<u64>,
     adam_schedule_amax_count: u32,
+    base_adam_amax_count: u32,
+    pub(in crate::training) update_amax_valid: bool,
     training_weight_step: Cell<Option<u32>>,
     scheduled_values_valid: Cell<bool>,
 }
@@ -52,6 +55,7 @@ impl OptimizerStateBuffers {
         adam_schedule_amax_ptrs.push(xsa_alphas.schedule_amax_ptr());
         ln_f.push_schedule_amax_ptrs(&mut adam_schedule_amax_ptrs);
         next_latent.push_schedule_amax_ptrs(&mut adam_schedule_amax_ptrs);
+        let base_adam_amax_count = adam_schedule_amax_ptrs.len() as u32;
         for block in &blocks {
             block.push_schedule_amax_ptrs(&mut adam_schedule_amax_ptrs);
         }
@@ -59,6 +63,7 @@ impl OptimizerStateBuffers {
         let adam_schedule_amax_ptrs = DeviceBuffer::from_host(stream, &adam_schedule_amax_ptrs)?;
 
         Ok(Self {
+            active_depth: GPT2_N_LAYER,
             step: 0,
             schedule_free_weight_sum: 0.0,
             update_skip: UpdateSkipState::new(),
@@ -69,13 +74,17 @@ impl OptimizerStateBuffers {
             blocks,
             adam_schedule_amax_ptrs,
             adam_schedule_amax_count,
+            base_adam_amax_count,
+            update_amax_valid: false,
             training_weight_step: Cell::new(None),
             scheduled_values_valid: Cell::new(false),
         })
     }
 
     pub(in crate::training) fn adam_schedule_amax_table(&self) -> (&DeviceBuffer<u64>, u32) {
-        (&self.adam_schedule_amax_ptrs, self.adam_schedule_amax_count)
+        let block_count = self.adam_schedule_amax_count - self.base_adam_amax_count;
+        let count = self.base_adam_amax_count + (block_count / GPT2_N_LAYER as u32) * self.active_depth as u32;
+        (&self.adam_schedule_amax_ptrs, count)
     }
 
     pub(in crate::training) fn advance(&mut self) -> u32 {

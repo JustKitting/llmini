@@ -93,7 +93,8 @@ pub(super) fn forward_at_depth<'a>(
 
     for (block_index, block) in weights.h[..depth].iter().enumerate() {
         hook(block_index, &mut hidden)?;
-        hidden = block.forward_with_boundaries(
+        hidden = block.forward_at_depth(
+            depth,
             BlockForwardArgs {
                 value_rms,
                 value_projection_observer,

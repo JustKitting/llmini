@@ -26,7 +26,7 @@ impl GradientClipBuffers {
         next_latent: &NextLatGradBuffers,
         tables: &MuonPointerTables,
     ) -> AppResult<Vec<Value>> {
-        let mut ranges = layout::named_parameter_ranges(grads, next_latent);
+        let mut ranges = layout::named_parameter_ranges(grads, next_latent, self.active_depth);
         ranges.extend(self.extra_gradients.iter().cloned());
         let mut control_ptrs = HashSet::new();
         for desc in &tables.all.host_symexp_lin_slots {

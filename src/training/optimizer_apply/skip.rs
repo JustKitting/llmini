@@ -15,6 +15,7 @@ pub(super) fn record_skip_decision(
     trace: &mut OptimizerTrace,
     skip: UpdateSkipDecision,
     extra_non_finite: Option<(String, usize, f32)>,
+    active_depth: usize,
 ) -> AppResult<bool> {
     trace.update_skipped = skip.skipped;
     trace.skip_loss_spike = skip.loss_spike;
@@ -26,7 +27,7 @@ pub(super) fn record_skip_decision(
                 "non_finite_gradient optimizer_step_candidate={candidate_step} tensor={name} index={index} value={value:.9e}"
             );
         } else {
-            log_non_finite_gradient(stream, grads, next_latent_grads, candidate_step)?;
+            log_non_finite_gradient(stream, grads, next_latent_grads, candidate_step, active_depth)?;
         }
     }
     Ok(skip.skipped)
@@ -37,8 +38,9 @@ fn log_non_finite_gradient(
     grads: &BackwardBuffers,
     next_latent_grads: &NextLatGradBuffers,
     candidate_step: u32,
+    active_depth: usize,
 ) -> AppResult {
-    if let Some(bad) = first_non_finite_gradient(stream, grads, next_latent_grads)? {
+    if let Some(bad) = first_non_finite_gradient(stream, grads, next_latent_grads, active_depth)? {
         eprintln!(
             "non_finite_gradient optimizer_step_candidate={candidate_step} tensor={} index={} value={:.9e}",
             bad.name, bad.index, bad.value

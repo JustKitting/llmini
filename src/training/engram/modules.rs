@@ -59,12 +59,14 @@ impl Weights {
     }
 }
 pub(in crate::training) struct Engram {
+    pub active_depth: usize,
     pub modules: Vec<Module>,
     backward_scratch: super::backward_scratch::BackwardScratch,
 }
 impl Engram {
     pub fn new(r: &Runtime, w: &Weights) -> Result<Self, DriverError> {
         Ok(Self {
+            active_depth: gpt2_nvfp4::GPT2_N_LAYER,
             backward_scratch: super::backward_scratch::BackwardScratch::new(
                 &r.stream,
                 w.modules
@@ -84,6 +86,7 @@ impl Engram {
     pub fn named_gradients(&self) -> Vec<(&str, &DeviceBuffer<f32>)> {
         self.modules
             .iter()
+            .filter(|e| e.cfg.layer < self.active_depth)
             .flat_map(|e| e.named_gradients())
             .collect()
     }
@@ -143,7 +146,9 @@ impl Engram {
         beta: f32,
     ) -> Result<(), DriverError> {
         for (e, w) in self.modules.iter_mut().zip(&mut w.modules) {
-            e.materialize_training(r, w, s, beta)?;
+            if e.cfg.layer < self.active_depth {
+                e.materialize_training(r, w, s, beta)?;
+            }
         }
         Ok(())
     }
@@ -154,7 +159,9 @@ impl Engram {
         s: &mut OptimizerScratch,
     ) -> Result<(), DriverError> {
         for (e, w) in self.modules.iter_mut().zip(&mut w.modules) {
-            e.materialize_evaluation(r, w, s)?;
+            if e.cfg.layer < self.active_depth {
+                e.materialize_evaluation(r, w, s)?;
+            }
         }
         Ok(())
     }
@@ -168,7 +175,9 @@ impl Engram {
         scale: f32,
     ) -> Result<(), DriverError> {
         for (e, w) in self.modules.iter_mut().zip(&mut w.modules) {
-            e.update(r, w, s, step, average, scale)?;
+            if e.cfg.layer < self.active_depth {
+                e.update(r, w, s, step, average, scale)?;
+            }
         }
         Ok(())
     }

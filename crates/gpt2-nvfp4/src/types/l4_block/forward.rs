@@ -25,6 +25,19 @@ impl Gpt2BlockWeights {
             &mut HiddenStateDevice<'_>,
         ) -> Result<bool, DriverError>,
     ) -> Result<HiddenStateDevice<'a>, DriverError> {
+        self.forward_at_depth(crate::GPT2_N_LAYER, args, boundary)
+    }
+
+    pub(crate) fn forward_at_depth<'a, 'scratch>(
+        &self,
+        active_depth: usize,
+        args: BlockForwardArgs<'a, 'scratch>,
+        boundary: &mut dyn FnMut(
+            usize,
+            bool,
+            &mut HiddenStateDevice<'_>,
+        ) -> Result<bool, DriverError>,
+    ) -> Result<HiddenStateDevice<'a>, DriverError> {
         let qkv = args.qkv;
         let value_residual = args.value_residual;
         let attention_log_sum_exp = args.attention_log_sum_exp;
@@ -92,11 +105,9 @@ impl Gpt2BlockWeights {
             hidden,
             tape: attention_tape,
         };
-        let mut hidden = if isolated_attention {
-            AttentionWeights::forward_branch(attention_args)?
-        } else {
-            AttentionWeights::forward(attention_args)?
-        };
+        let mut hidden = AttentionWeights::forward_at_depth(
+            attention_args, !isolated_attention, active_depth,
+        )?;
         boundary(branch, false, &mut hidden)?;
 
         if let Some(tape) = tape.as_mut() {

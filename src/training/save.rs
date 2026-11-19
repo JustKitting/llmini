@@ -1,6 +1,5 @@
 use std::path::Path;
 
-use super::optimizer_muon::MuonPointerTables;
 use super::optimizer_state::OptimizerStateBuffers;
 use super::Trainer;
 use crate::checkpoint::{load_uploaded_model, save_uploaded_model};
@@ -9,6 +8,9 @@ use crate::AppResult;
 impl Trainer {
     pub fn save_model(&self, path: &Path) -> AppResult {
         self.ensure_ready()?;
+        if self.active_depth() != gpt2_nvfp4::GPT2_N_LAYER {
+            return Err("cannot write a full-depth checkpoint from a partial growth stage".into());
+        }
         save_uploaded_model(self.runtime.stream.as_ref(), &self.uploaded, path)
     }
 
@@ -57,41 +59,16 @@ impl Trainer {
             .as_ref()
             .map(|w| super::mhc::Mhc::new(&self.runtime, w))
             .transpose()?;
-        let muon_tables = MuonPointerTables::new_with_architectures(
+        self.buffers.configure_optimizer_graph(
             stream,
             &self.uploaded,
-            &self.buffers.backward,
-            &self.buffers.next_latent_grads,
-            &self.buffers.optimizer_state,
             engram.as_ref(),
             latent_feedback.as_ref(),
             mhc.as_ref(),
         )?;
-        let mut extra = engram
-            .as_ref()
-            .map_or_else(Vec::new, |e| e.named_gradients());
-        if let Some(f) = &latent_feedback {
-            extra.extend(f.named_gradients());
-        }
-        if let Some(m) = &mhc {
-            extra.extend(m.named_gradients());
-        }
-        let recompute = mhc.as_ref().map_or_else(Vec::new, |m| {
-            m.units.iter().map(|u| u.grad.cu_deviceptr()).collect()
-        });
-        self.buffers.grad_clip =
-            super::grad_clip::GradientClipBuffers::new_with_recomputed_matrices(
-                stream,
-                &self.buffers.backward,
-                &self.buffers.next_latent_grads,
-                &muon_tables,
-                &extra,
-                &recompute,
-            )?;
         self.engram = engram;
         self.latent_feedback = latent_feedback;
         self.mhc = mhc;
-        self.buffers.muon_tables = muon_tables;
         self.architecture_ready = true;
         Ok(())
     }

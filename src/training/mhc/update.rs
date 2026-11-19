@@ -19,7 +19,9 @@ impl Mhc {
             false,
             false,
         );
-        for (unit, weights) in self.units.iter().zip(&mut w.units) {
+        for index in self.active_unit_indices() {
+            let unit = &self.units[index];
+            let weights = &mut w.units[index];
             if evaluation {
                 m.symexp_lin_muon_master(
                     &mut weights.phi,
@@ -44,7 +46,8 @@ impl Mhc {
         scale: f32,
     ) -> Result<(), DriverError> {
         let c = crate::training::optimizer_apply::adam_debug_config(step);
-        for unit in &mut self.units {
+        for index in self.active_unit_indices() {
+            let unit = &mut self.units[index];
             for (state, gradient) in unit.fp.iter_mut().zip(&unit.fg) {
                 r.optimizer.apply_fp32_adamw_update(
                     rust_kernels_cuda::optimizer::Fp32AdamWUpdateArgs {
