@@ -12,7 +12,7 @@ use super::{
     parameters::{OUTER_WIDTH, Parameters, WeightViews},
     snapshot::{BACKBONE_FILE, OUTER_FILE, Snapshot},
 };
-use crate::{AppResult, training::launch::TrainConfig};
+use crate::{AppResult, reference_validation, training::launch::TrainConfig};
 
 const OUTER_LAYERS: usize = 4;
 const RATIO: RatioObjective = RatioObjective {
@@ -215,7 +215,13 @@ fn score_averaged(
     let mut nll = 0.0_f64;
     let mut digest = Sha256::new();
     let mut raw = Vec::new();
-    while let Some(batch) = documents.next_batch(GPT2_BATCH_SIZE as u32, GPT2_SEQ_LEN as u32)? {
+    let continuation_stride =
+        (GPT2_SEQ_LEN * reference_validation::STRIDE / reference_validation::CONTEXT) as u32;
+    while let Some(batch) = documents.next_holdout_batch(
+        GPT2_BATCH_SIZE as u32,
+        GPT2_SEQ_LEN as u32,
+        continuation_stride,
+    )? {
         let losses = trainer.score_hnet_bytes(
             scratch,
             &batch,
@@ -237,6 +243,7 @@ fn score_averaged(
         "byte_ce": nll / targets as f64,
         "bits_per_byte": nll / (std::f64::consts::LN_2 * bytes as f64),
         "scored_targets": targets, "raw_bytes": bytes,
+        "continuation_stride_bytes": continuation_stride,
         "raw_sha256": format!("{:x}", digest.finalize()),
     }))
 }
