@@ -30,6 +30,7 @@ mod forward_tma;
 mod generate;
 mod grad_block;
 mod grad_clip;
+mod hnet;
 mod gradient_inspection;
 mod grads;
 pub(crate) mod latent_feedback;

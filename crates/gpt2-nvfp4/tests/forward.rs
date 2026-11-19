@@ -49,7 +49,7 @@ fn gpt2_forward_runs_through_tied_lm_head() -> TestResult {
     let mut scratch = ForwardScratch::new(&stream)?;
 
     model.forward(Gpt2ForwardArgs {
-        embeddings: TokenEmbeddingArgs {
+        input: gpt2_nvfp4::Gpt2Input::Tokens(TokenEmbeddingArgs {
             module: &embedding_module,
             stream: &stream,
             tokens: &tokens_dev,
@@ -62,7 +62,7 @@ fn gpt2_forward_runs_through_tied_lm_head() -> TestResult {
             normalized_amax: &mut scratch.normalized_amax,
             mean: &mut scratch.mean,
             inv_std: &mut scratch.inv_std,
-        },
+        }),
         attention_module: &attention_module,
         attention_tc_module: &attention_tc_module,
         quant_module: &quant_module,

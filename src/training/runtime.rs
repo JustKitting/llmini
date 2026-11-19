@@ -55,6 +55,13 @@ pub struct Runtime {
 
 impl Runtime {
     #[cfg(test)]
+    pub(in crate::training) fn hnet_stage_module(
+        &self,
+    ) -> Result<rust_kernels_cuda::hnet_stage::HnetStage, cuda_core::DriverError> {
+        rust_kernels_cuda::hnet_stage::HnetStage::from_module(self.cuda_module.clone())
+    }
+
+    #[cfg(test)]
     pub(in crate::training) fn value_rms_point_check_module(
         &self,
     ) -> Result<rust_kernels_cuda::value_rms::ValueRmsModule, cuda_core::DriverError> {

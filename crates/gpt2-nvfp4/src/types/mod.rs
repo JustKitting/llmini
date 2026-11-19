@@ -30,7 +30,7 @@ pub use l3_mlp::{
 pub use l4_block::{BlockForwardArgs, Gpt2BlockWeights};
 pub use l5_layer_norm::{LayerNormForwardArgs, LayerNormTensors, LayerNormWeights};
 pub use linear::LinearWeights;
-pub use model::{Gpt2, Gpt2ForwardArgs, Gpt2Weights};
+pub use model::{Gpt2, Gpt2ForwardArgs, Gpt2Input, Gpt2Weights};
 pub use next_latent::NextLatWeights;
 pub use nvfp4_scratch::{
     HiddenStateNvfp4, MlpActivationNvfp4, RowwiseNvfp4Buffers, RowwiseNvfp4Scratch,

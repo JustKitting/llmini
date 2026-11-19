@@ -8,7 +8,7 @@ use crate::backward::{
     FinalHeadBackwardSeeds, MlpBackwardScratch, MlpBackwardSeeds,
 };
 use crate::types::{
-    AttentionProjectionTensors, CanonTensors, Gpt2BackwardGrads, Gpt2ForwardSaved,
+    AttentionProjectionTensors, BlockForwardSaved, CanonTensors, Gpt2BackwardGrads, Gpt2ForwardSaved,
     LayerNormTensors, MlpProjectionTensors,
 };
 use crate::{GPT2_N_LAYER, Gpt2Rng};
@@ -62,15 +62,25 @@ impl Gpt2BackwardSeeds {
     }
 }
 
+pub enum Gpt2BackwardInput<'a, 'out> {
+    TokenLoss {
+        saved: Gpt2ForwardSaved<'a>,
+        targets: &'a DeviceBuffer<u32>,
+        losses: &'out mut DeviceBuffer<f32>,
+        extra_final_normalized_grad: Option<&'a DeviceBuffer<f32>>,
+        d_lm_head_weight: &'out mut DeviceBuffer<f32>,
+    },
+    Residual {
+        saved: [BlockForwardSaved<'a>; GPT2_N_LAYER],
+        output_gradient: &'a DeviceBuffer<f32>,
+    },
+}
+
 pub struct Gpt2BackwardArgs<'a, 'scratch, 'out> {
     pub stream: &'a CudaStream,
     pub modules: Gpt2BackwardModules<'a>,
-    pub saved: Gpt2ForwardSaved<'a>,
+    pub input: Gpt2BackwardInput<'a, 'out>,
     pub weights: Gpt2BackwardWeights<'a>,
-    pub targets: &'a DeviceBuffer<u32>,
-    pub losses: &'out mut DeviceBuffer<f32>,
-    pub extra_final_normalized_grad: Option<&'a DeviceBuffer<f32>>,
-    pub d_lm_head_weight: &'out mut DeviceBuffer<f32>,
     pub grads: Gpt2BackwardGrads<'out>,
     pub scratch: Gpt2BackwardScratch<'scratch>,
     pub seeds: Gpt2BackwardSeeds,

@@ -1,5 +1,5 @@
 use cuda_core::{CudaStream, DeviceBuffer, DriverError};
-use gpt2_nvfp4::{GPT2_N_LAYER, Gpt2ForwardSaved, Gpt2ForwardTape, HiddenState};
+use gpt2_nvfp4::{BlockForwardSaved, GPT2_N_LAYER, Gpt2ForwardSaved, Gpt2ForwardTape, HiddenState};
 
 use super::device_buffer::block_array;
 use super::tape_block::BlockTapeBuffers;
@@ -33,11 +33,20 @@ impl ForwardTapeBuffers {
             batch_size,
             seq_len,
             row_count,
-            blocks: std::array::from_fn(|i| self.blocks[i].saved(batch_size, seq_len, row_count)),
+            blocks: self.saved_blocks(batch_size, seq_len, row_count),
             final_norm: self.final_norm.saved(row_count),
             lm_head_input_nvfp4: self.lm_head_input.saved(),
             logits,
         }
+    }
+
+    pub(super) fn saved_blocks(
+        &self,
+        batch_size: u32,
+        seq_len: u32,
+        row_count: u32,
+    ) -> [BlockForwardSaved<'_>; GPT2_N_LAYER] {
+        std::array::from_fn(|i| self.blocks[i].saved(batch_size, seq_len, row_count))
     }
 
     pub fn tape(&mut self) -> Gpt2ForwardTape<'_> {

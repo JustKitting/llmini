@@ -90,6 +90,11 @@ pub const fn uses_full_attention(block_index: usize) -> bool {
     block_index % KIMI_FULL_ATTENTION_PERIOD == KIMI_FULL_ATTENTION_PERIOD - 1
 }
 
+pub(crate) const fn full_attention_window(seq_len: u32) -> u32 {
+    let configured = GPT2_FULL_ATTENTION_WINDOW as u32;
+    if seq_len < configured { seq_len } else { configured }
+}
+
 pub const fn uses_block_topk_mlp(block_index: usize) -> bool {
     block_index >= GPT2_MLP_DENSE_PREFIX_LAYERS
 }
@@ -249,6 +254,12 @@ impl Gpt2Config {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn short_context_bounds_the_full_attention_window() {
+        let configured = super::GPT2_FULL_ATTENTION_WINDOW as u32;
+        assert_eq!(super::full_attention_window(configured + 128), configured);
+        assert_eq!(super::full_attention_window(configured / 2), configured / 2);
+    }
     use super::{
         GPT2_FULL_ATTENTION_WINDOW, GPT2_VALUE_RESIDUAL_LAYERS, GPT2_VALUE_RESIDUAL_START_LAYER,
         layer_norm_scale, qk_norm_initial_scale, uses_value_residual,

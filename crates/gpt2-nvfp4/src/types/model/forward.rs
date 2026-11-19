@@ -1,4 +1,4 @@
-use super::args::Gpt2ForwardArgs;
+use super::args::{Gpt2ForwardArgs, Gpt2Input};
 use super::final_logits::{FinalForwardArgs, finish_forward};
 use super::weights::Gpt2Weights;
 use crate::types::{BlockForwardArgs, HiddenStateDevice};
@@ -41,7 +41,7 @@ pub(super) fn forward_with_boundaries<'a>(
         value_projection_observer,
         mlp_paired,
         mlp_projection_observer,
-        embeddings,
+        input,
         attention_module,
         canon_module,
         attention_tc_module,
@@ -73,9 +73,18 @@ pub(super) fn forward_with_boundaries<'a>(
         mut tape,
     } = args;
 
-    let lm_head_weight_device = embeddings.token_embedding;
-
-    let mut hidden = weights.embeddings.forward(embeddings)?;
+    let (mut hidden, lm_head_weight_device) = match input {
+        Gpt2Input::Tokens(embeddings) => {
+            let weight = embeddings.token_embedding;
+            (weights.embeddings.forward(embeddings)?, Some(weight))
+        }
+        Gpt2Input::Residual(hidden) => {
+            if readout {
+                return Err(DriverError(1));
+            }
+            (hidden, None)
+        }
+    };
 
     for (block_index, block) in weights.h.iter().enumerate() {
         hook(block_index, &mut hidden)?;
@@ -133,7 +142,7 @@ pub(super) fn forward_with_boundaries<'a>(
         lm_head_tma_descriptors: tma_descriptors,
         ln_f,
         hidden_nvfp4,
-        lm_head_weight_device,
+        lm_head_weight_device: lm_head_weight_device.expect("token readout supplies the head"),
         logits,
         tape,
         hidden,

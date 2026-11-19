@@ -28,6 +28,50 @@ fn causal_layout(
 pub mod kernels {
     use super::*;
 
+    #[kernel]
+    pub fn hnet_inner_to_residual_kernel(
+        represented: &[u16],
+        lengths: &[u32],
+        mut residual: DisjointSlice<f32>,
+        values: u32,
+        stride: u32,
+        features: u32,
+    ) {
+        let index = thread::blockIdx_x() * thread::blockDim_x() + thread::threadIdx_x();
+        if index < values {
+            let row = index / features;
+            let valid = row % stride < lengths[(row / stride) as usize];
+            let value = if valid {
+                cvt_f32_f16(represented[index as usize])
+            } else {
+                0.0
+            };
+            unsafe { *residual.get_unchecked_mut(index as usize) = value };
+        }
+    }
+
+    #[kernel]
+    pub fn hnet_residual_to_inner_kernel(
+        residual: &[f32],
+        lengths: &[u32],
+        mut represented: DisjointSlice<u16>,
+        values: u32,
+        stride: u32,
+        features: u32,
+    ) {
+        let index = thread::blockIdx_x() * thread::blockDim_x() + thread::threadIdx_x();
+        if index < values {
+            let row = index / features;
+            let valid = row % stride < lengths[(row / stride) as usize];
+            let value = if valid {
+                cvt_rn_f16_f32(residual[index as usize])
+            } else {
+                0
+            };
+            unsafe { *represented.get_unchecked_mut(index as usize) = value };
+        }
+    }
+
     /// Probabilities and indices have layout [batch, outer_stride]. The count
     /// is the actual inner length, including rows whose final chunk is partial.
     #[kernel]

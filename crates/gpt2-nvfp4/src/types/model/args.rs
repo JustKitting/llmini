@@ -12,16 +12,21 @@ use rust_kernels_cuda::nvfp4_tma_matmul::tma::TmaNvfp4DeviceScaleDescriptors;
 
 use crate::GPT2_N_LAYER;
 use crate::types::{
-    AttentionProjectionTensors, CanonTensors, Gpt2ForwardTape, HiddenStateNvfp4, LayerNormTensors,
+    AttentionProjectionTensors, CanonTensors, Gpt2ForwardTape, HiddenStateDevice, HiddenStateNvfp4, LayerNormTensors,
     MlpActivationNvfp4, MlpProjectionTensors, TokenEmbeddingArgs,
 };
+
+pub enum Gpt2Input<'a> {
+    Tokens(TokenEmbeddingArgs<'a>),
+    Residual(HiddenStateDevice<'a>),
+}
 
 pub struct Gpt2ForwardArgs<'a> {
     pub value_rms: &'a rust_kernels_cuda::value_rms::ValueRmsModule,
     pub value_projection_observer: Option<&'a dyn crate::ValueProjectionObserver>,
     pub mlp_paired: &'a mut DeviceBuffer<f32>,
     pub mlp_projection_observer: Option<&'a dyn crate::MlpProjectionObserver>,
-    pub embeddings: TokenEmbeddingArgs<'a>,
+    pub input: Gpt2Input<'a>,
     pub attention_module: &'a AttentionModule,
     pub canon_module: &'a CanonModule,
     pub attention_tc_module: &'a F16TcMatmulModule,

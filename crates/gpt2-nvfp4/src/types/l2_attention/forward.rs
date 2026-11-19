@@ -7,7 +7,7 @@ use rust_kernels_cuda::attention::{
 use super::tensors::AttentionForwardArgs;
 use crate::types::HiddenStateDevice;
 use crate::{
-    AttentionDims, GPT2_FULL_ATTENTION_WINDOW, attention_headwise_gate_offset,
+    AttentionDims, attention_headwise_gate_offset,
     partial_key_offset_enabled, selective_attention_enabled, stable_mask_gamma,
     uses_exclusive_self_attention,
 };
@@ -160,7 +160,7 @@ pub(super) fn forward_impl<'a, 'scratch>(
         head_count: dims.head_count,
         head_dim: dims.head_dim,
         attention_window: if args.use_full_attention {
-            GPT2_FULL_ATTENTION_WINDOW as u32
+            crate::config::full_attention_window(hidden.seq_len)
         } else {
             hidden.seq_len
         },

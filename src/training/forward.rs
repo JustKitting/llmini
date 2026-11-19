@@ -1,10 +1,15 @@
-use gpt2_nvfp4::{GPT2_VOCAB_SIZE, Gpt2ForwardArgs, TokenEmbeddingArgs};
+use gpt2_nvfp4::{GPT2_VOCAB_SIZE, Gpt2ForwardArgs, Gpt2Input, HiddenStateDevice, TokenEmbeddingArgs};
 
 use super::next_latent::{
     NextLatForwardArgs, forward as next_latent_forward, loss_weight as next_latent_loss_weight,
 };
 use super::{TokenBatch, TrainStats, Trainer};
 use crate::AppResult;
+
+pub(super) enum ForwardInput<'a> {
+    Tokens(&'a TokenBatch),
+    Residual { batch_size: u32, seq_len: u32 },
+}
 
 impl Trainer {
     pub fn forward_step(&mut self, batch: &TokenBatch) -> AppResult<TrainStats> {
@@ -56,19 +61,26 @@ impl Trainer {
         }
         let mut stats = TrainStats::default();
         for pass in 0..passes {
-            stats = self.forward_pass(batch, pass > 0, pass + 1 == passes, include_next_latent)?;
+            stats = self.forward_pass(
+                ForwardInput::Tokens(batch), pass > 0, pass + 1 == passes, include_next_latent,
+            )?;
         }
         stats.feedback_passes = passes;
         Ok(stats)
     }
 
-    fn forward_pass(
+    pub(super) fn forward_pass(
         &mut self,
-        batch: &TokenBatch,
+        input: ForwardInput<'_>,
         apply_feedback: bool,
         readout: bool,
         include_next_latent: bool,
     ) -> AppResult<TrainStats> {
+        let (token_batch, batch_size, seq_len) = match input {
+            ForwardInput::Tokens(batch) => (Some(batch), batch.batch_size as u32, batch.seq_len as u32),
+            ForwardInput::Residual { batch_size, seq_len } => (None, batch_size, seq_len),
+        };
+        let row_count = batch_size * seq_len;
         let stream = self.runtime.stream.as_ref();
         let buffers = &mut self.buffers;
         let uploaded = &self.uploaded;
@@ -102,19 +114,32 @@ impl Trainer {
             },
             mlp_paired: &mut buffers.scratch.mlp_paired,
             mlp_projection_observer,
-            embeddings: TokenEmbeddingArgs {
-                module: &self.runtime.embedding,
-                stream,
-                tokens: &batch.tokens,
-                token_embedding: uploaded.token_embedding.device(),
-                batch_size: batch.batch_size as u32,
-                seq_len: batch.seq_len as u32,
-                row_count: batch.token_count as u32,
-                residual: &mut buffers.residual,
-                normalized: &mut buffers.normalized,
-                normalized_amax: &mut buffers.normalized_amax,
-                mean: &mut buffers.mean,
-                inv_std: &mut buffers.inv_std,
+            input: match token_batch {
+                Some(batch) => Gpt2Input::Tokens(TokenEmbeddingArgs {
+                    module: &self.runtime.embedding,
+                    stream,
+                    tokens: &batch.tokens,
+                    token_embedding: uploaded.token_embedding.device(),
+                    batch_size,
+                    seq_len,
+                    row_count,
+                    residual: &mut buffers.residual,
+                    normalized: &mut buffers.normalized,
+                    normalized_amax: &mut buffers.normalized_amax,
+                    mean: &mut buffers.mean,
+                    inv_std: &mut buffers.inv_std,
+                }),
+                None => Gpt2Input::Residual(HiddenStateDevice {
+                    stream,
+                    batch_size,
+                    seq_len,
+                    row_count,
+                    residual: &mut buffers.residual,
+                    normalized: &mut buffers.normalized,
+                    normalized_amax: &mut buffers.normalized_amax,
+                    mean: &mut buffers.mean,
+                    inv_std: &mut buffers.inv_std,
+                }),
             },
             attention_module: &self.runtime.attention,
             canon_module: &self.runtime.canon,
@@ -149,7 +174,7 @@ impl Trainer {
             mlp_route_scores: &mut buffers.mlp_route_scores,
             mlp_route_masks: &mut buffers.mlp_route_masks,
             logits: &mut buffers.logits,
-            tape: readout.then(|| buffers.tape.tape()),
+            tape: (readout || token_batch.is_none()).then(|| buffers.tape.tape()),
         };
         let mut hook = |index: usize,
                         hidden: &mut gpt2_nvfp4::HiddenStateDevice<'_>|
@@ -159,7 +184,9 @@ impl Trainer {
                     f.mix(runtime, w, hidden)?;
                 }
             }
-            if let (Some(e), Some(w)) = (engram.as_mut(), uploaded.engram.as_ref()) {
+            if let (Some(batch), Some(e), Some(w)) =
+                (token_batch, engram.as_mut(), uploaded.engram.as_ref())
+            {
                 if w.streams() == Some(4) {
                     let mut state = mhc.borrow_mut();
                     let m = state.as_mut().expect("validated four-stream backbone");
@@ -200,7 +227,7 @@ impl Trainer {
             self.model.forward_hidden_with_hook(args, &mut hook)?
         };
 
-        if readout && include_next_latent {
+        if readout && include_next_latent && let Some(batch) = token_batch {
             next_latent_forward(NextLatForwardArgs {
                 stream,
                 embedding: &self.runtime.embedding,
@@ -221,8 +248,8 @@ impl Trainer {
         }
 
         Ok(TrainStats {
-            tokens: batch.token_count,
-            logits: batch.token_count * GPT2_VOCAB_SIZE,
+            tokens: row_count as usize,
+            logits: if token_batch.is_some() { row_count as usize * GPT2_VOCAB_SIZE } else { 0 },
             finite: true,
             ..TrainStats::default()
         })

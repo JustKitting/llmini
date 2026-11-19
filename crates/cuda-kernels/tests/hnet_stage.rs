@@ -44,6 +44,7 @@ fn ragged_hnet_stage_matches_causal_forward_and_backward() -> Result<(), Box<dyn
             outer_stride: 5,
             features: 2,
             router_width: 2,
+            inner_alignment: 1,
         },
         RatioObjective {
             target: 4.0,

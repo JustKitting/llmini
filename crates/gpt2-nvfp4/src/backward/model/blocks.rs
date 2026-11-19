@@ -8,13 +8,13 @@ use crate::backward::{
     MlpBackwardScratch, attention_side_backward, attention_side_backward_branch, mlp_side_backward,
     mlp_side_backward_branch,
 };
-use crate::types::{BlockBackwardGrads, Gpt2ForwardSaved};
+use crate::types::{BlockBackwardGrads, BlockForwardSaved};
 use crate::{GPT2_N_LAYER, exclusive_self_attention_enabled, uses_full_attention};
 
 pub(super) struct BlocksBackwardRun<'ctx, 'a, 'scratch, 'out> {
     pub stream: &'a CudaStream,
     pub modules: Gpt2BackwardModules<'a>,
-    pub saved: Gpt2ForwardSaved<'a>,
+    pub saved: [BlockForwardSaved<'a>; GPT2_N_LAYER],
     pub weights: Gpt2BackwardWeights<'a>,
     pub blocks: &'ctx mut [BlockBackwardGrads<'out>; GPT2_N_LAYER],
     pub d_xsa_alphas: &'ctx mut DeviceBuffer<f32>,
@@ -51,7 +51,7 @@ pub(super) fn run_blocks(
         d_residual_amax_chunks = run_block(
             args.stream,
             args.modules,
-            args.saved,
+            args.saved[block_index],
             args.weights,
             current,
             &mut *args.d_xsa_alphas,
@@ -81,7 +81,7 @@ pub(super) fn run_blocks(
 fn run_block<'a, 'scratch, 'out>(
     stream: &'a cuda_core::CudaStream,
     modules: Gpt2BackwardModules<'a>,
-    saved: Gpt2ForwardSaved<'a>,
+    saved: BlockForwardSaved<'a>,
     weights: Gpt2BackwardWeights<'a>,
     current: &mut BlockBackwardGrads<'out>,
     d_xsa_alphas: &mut DeviceBuffer<f32>,
@@ -106,7 +106,7 @@ fn run_block<'a, 'scratch, 'out>(
         block_index,
         stream,
         modules: modules.mlp,
-        saved: saved.blocks[block_index],
+        saved,
         ln_2: weights.block_ln_2[block_index],
         canon_c: weights.block_canon_c[block_index],
         mlp_projections: weights.mlp[block_index],
@@ -137,7 +137,7 @@ fn run_block<'a, 'scratch, 'out>(
         reuse_forward_probs: use_full_attention,
         stream,
         modules: modules.attention,
-        saved: saved.blocks[block_index],
+        saved,
         ln_1: weights.block_ln_1[block_index],
         canon_a: weights.block_canon_a[block_index],
         projections: weights.attention[block_index],

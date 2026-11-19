@@ -3,7 +3,7 @@ use rust_kernels_cuda::attention::CausalAttentionBackwardTcArgs;
 
 use super::types::AttentionCoreBackwardArgs;
 use crate::{
-    AttentionDims, GPT2_ATTENTION_BACKWARD_TILE_BUDGET, GPT2_FULL_ATTENTION_WINDOW,
+    AttentionDims, GPT2_ATTENTION_BACKWARD_TILE_BUDGET,
     partial_key_offset_enabled, selective_attention_enabled,
 };
 
@@ -44,7 +44,7 @@ pub fn causal_attention_backward(
         head_count: dims.head_count,
         head_dim: dims.head_dim,
         attention_window: if args.use_full_attention {
-            GPT2_FULL_ATTENTION_WINDOW as u32
+            crate::config::full_attention_window(args.saved.seq_len)
         } else {
             args.saved.seq_len
         },

@@ -17,7 +17,7 @@ pub use backward::{
     BlockAttentionBackwardArgs, BlockAttentionBackwardModules, BlockAttentionBackwardScratch,
     BlockAttentionBackwardSeeds, BlockMlpBackwardArgs, BlockMlpBackwardModules,
     FinalHeadBackwardArgs, FinalHeadBackwardModules, FinalHeadBackwardScratch,
-    FinalHeadBackwardSeeds, Gpt2BackwardArgs, Gpt2BackwardModules, Gpt2BackwardScratch,
+    FinalHeadBackwardSeeds, Gpt2BackwardArgs, Gpt2BackwardInput, Gpt2BackwardModules, Gpt2BackwardScratch,
     Gpt2BackwardSeeds, Gpt2BackwardWeights, Gpt2LayerNormBackwardAddAmaxArgs,
     Gpt2LayerNormBackwardAmaxArgs, Gpt2LayerNormBackwardArgs,
     Gpt2LayerNormBackwardInputAddAmaxArgs, Gpt2LayerNormBackwardInputAmaxArgs,
@@ -64,7 +64,7 @@ pub use random::Gpt2Rng;
 pub use types::{
     AttentionForwardArgs, AttentionForwardTape, AttentionProjectionTensors, AttentionWeights,
     BlockBackwardGrads, BlockForwardArgs, BlockForwardSaved, BlockForwardTape, CanonTensors,
-    CanonWeights, Gpt2, Gpt2BackwardContext, Gpt2BackwardGrads, Gpt2BlockWeights, Gpt2ForwardArgs,
+    CanonWeights, Gpt2, Gpt2BackwardContext, Gpt2BackwardGrads, Gpt2BlockWeights, Gpt2ForwardArgs, Gpt2Input,
     Gpt2ForwardSaved, Gpt2ForwardTape, Gpt2Weights, HiddenStateDevice, HiddenStateNvfp4,
     LayerNormForwardArgs, LayerNormGrads, LayerNormSaved, LayerNormTape, LayerNormTensors,
     LayerNormWeights, LinearWeights, MlpActivationNvfp4, MlpDownTensors, MlpForwardArgs,

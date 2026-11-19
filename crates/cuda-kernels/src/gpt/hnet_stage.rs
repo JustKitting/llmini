@@ -17,6 +17,7 @@ pub struct StageShape {
     pub outer_stride: u32,
     pub features: u32,
     pub router_width: u32,
+    pub inner_alignment: u32,
 }
 
 #[derive(Clone, Copy)]
@@ -72,6 +73,18 @@ fn area(rows: u32, cols: u32) -> Result<u32, DriverError> {
 }
 
 impl StagePlan<'_> {
+    pub fn batch(&self) -> u32 {
+        self.shape.batch
+    }
+
+    pub fn features(&self) -> u32 {
+        self.shape.features
+    }
+
+    pub fn uses_stream(&self, stream: &CudaStream) -> bool {
+        std::ptr::eq(stream, self.stream)
+    }
+
     pub fn inner_stride(&self) -> u32 {
         self.inner_stride
     }
@@ -114,6 +127,7 @@ impl HnetStage {
             outer_stride,
             features,
             router_width,
+            inner_alignment,
         } = shape;
         let outer_rows = area(batch, outer_stride)?;
         let route_values = area(outer_rows, router_width)?;
@@ -126,6 +140,8 @@ impl HnetStage {
             || objective.target <= 1.0
             || !objective.weight.is_finite()
             || objective.weight < 0.0
+            || inner_alignment == 0
+            || !outer_stride.is_multiple_of(inner_alignment)
         {
             return Err(DriverError(1));
         }
@@ -158,14 +174,15 @@ impl HnetStage {
             batch,
             outer_stride,
         )?;
-        let inner_stride = valid_chunks
+        let maximum = valid_chunks
             .to_host_vec(stream)?
             .into_iter()
             .max()
             .unwrap_or(0);
-        if inner_stride == 0 {
+        if maximum == 0 || maximum > outer_stride {
             return Err(DriverError(1));
         }
+        let inner_stride = maximum.next_multiple_of(inner_alignment);
         self.router.hnet_ratio_loss_kernel(
             stream,
             grid_x_config(1, 32),
@@ -221,6 +238,56 @@ impl HnetStage {
             features,
         )?;
         Ok(chunks)
+    }
+
+    pub fn write_residual(
+        &self,
+        plan: &StagePlan<'_>,
+        represented: &DeviceBuffer<u16>,
+        residual: &mut DeviceBuffer<f32>,
+    ) -> Result<(), DriverError> {
+        let values = plan.inner_values();
+        require(plan.stream, represented, values)?;
+        if residual.len() < values as usize
+            || !Arc::ptr_eq(plan.stream.context(), residual.context())
+        {
+            return Err(DriverError(1));
+        }
+        self.chunk.hnet_inner_to_residual_kernel(
+            plan.stream,
+            linear_config(values, THREADS),
+            represented,
+            &plan.valid_chunks,
+            residual,
+            values,
+            plan.inner_stride,
+            plan.shape.features,
+        )
+    }
+
+    pub fn read_residual(
+        &self,
+        plan: &StagePlan<'_>,
+        residual: &DeviceBuffer<f32>,
+    ) -> Result<DeviceBuffer<u16>, DriverError> {
+        let values = plan.inner_values();
+        if residual.len() < values as usize
+            || !Arc::ptr_eq(plan.stream.context(), residual.context())
+        {
+            return Err(DriverError(1));
+        }
+        let mut represented = DeviceBuffer::zeroed(plan.stream, values as usize)?;
+        self.chunk.hnet_residual_to_inner_kernel(
+            plan.stream,
+            linear_config(values, THREADS),
+            residual,
+            &plan.valid_chunks,
+            &mut represented,
+            values,
+            plan.inner_stride,
+            plan.shape.features,
+        )?;
+        Ok(represented)
     }
 
     pub fn expand<'plan, 'a>(
@@ -286,6 +353,7 @@ impl HnetStage {
             outer_stride,
             features,
             router_width,
+            ..
         } = plan.shape;
         let stream = plan.stream;
         let outer_rows = batch * outer_stride;
