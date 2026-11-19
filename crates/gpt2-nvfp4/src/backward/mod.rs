@@ -44,6 +44,7 @@ pub use mlp::{
 pub use model::{
     Gpt2BackwardArgs, Gpt2BackwardModules, Gpt2BackwardScratch, Gpt2BackwardSeeds,
     Gpt2BackwardWeights, backward as gpt2_backward,
+    backward_at_depth as gpt2_backward_at_depth,
     backward_with_boundaries as gpt2_backward_with_boundaries,
     backward_with_hook as gpt2_backward_with_hook,
 };

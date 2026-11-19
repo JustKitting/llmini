@@ -11,6 +11,30 @@ pub struct Gpt2 {
 }
 
 impl Gpt2 {
+    /// Run an active prefix of a preallocated stack. The readout boundary is
+    /// reported immediately after its last block.
+    pub fn forward_at_depth<'a>(
+        &self,
+        depth: usize,
+        args: Gpt2ForwardArgs<'a>,
+        hook: &mut dyn FnMut(usize, &mut HiddenStateDevice<'_>) -> Result<(), DriverError>,
+        readout: bool,
+        boundary: &mut dyn FnMut(
+            usize,
+            bool,
+            &mut HiddenStateDevice<'_>,
+        ) -> Result<bool, DriverError>,
+    ) -> Result<HiddenStateDevice<'a>, DriverError> {
+        super::forward::forward_at_depth(
+            self.weights().expect("Gpt2 must be initialized"),
+            depth,
+            args,
+            hook,
+            readout,
+            boundary,
+        )
+    }
+
     pub fn forward_with_boundaries<'a>(
         &self,
         args: Gpt2ForwardArgs<'a>,

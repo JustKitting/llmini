@@ -9,14 +9,14 @@ use crate::backward::{
     mlp_side_backward_branch,
 };
 use crate::types::{BlockBackwardGrads, Gpt2ForwardSaved};
-use crate::{GPT2_N_LAYER, exclusive_self_attention_enabled, uses_full_attention};
+use crate::{exclusive_self_attention_enabled, uses_full_attention};
 
 pub(super) struct BlocksBackwardRun<'ctx, 'a, 'scratch, 'out> {
     pub stream: &'a CudaStream,
     pub modules: Gpt2BackwardModules<'a>,
     pub saved: Gpt2ForwardSaved<'a>,
     pub weights: Gpt2BackwardWeights<'a>,
-    pub blocks: &'ctx mut [BlockBackwardGrads<'out>; GPT2_N_LAYER],
+    pub blocks: &'ctx mut [BlockBackwardGrads<'out>],
     pub d_xsa_alphas: &'ctx mut DeviceBuffer<f32>,
     pub d_embedding_residual: &'ctx mut DeviceBuffer<f32>,
     pub d_residual_after_attention: &'ctx mut DeviceBuffer<f32>,
@@ -46,7 +46,7 @@ pub(super) fn run_blocks(
         }
     }
     let mut d_residual_amax_chunks = args.initial_d_residual_amax_chunks;
-    for block_index in (0..GPT2_N_LAYER).rev() {
+    for block_index in (0..args.blocks.len()).rev() {
         let current = &mut args.blocks[block_index];
         d_residual_amax_chunks = run_block(
             args.stream,
