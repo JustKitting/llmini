@@ -278,9 +278,28 @@ fn native_hnet_step_updates_the_outer_and_inner_parameters() -> AppResult {
         before
     );
 
+    trainer.materialize_evaluation_weights()?;
     parameters.materialize(&trainer.runtime, &mut trainer.buffers.optimizer, 1.0)?;
-    let weights = parameters.weights();
-    let weights = weights.hierarchy();
+    let averaged = parameters.weights();
+    let losses = trainer.score_hnet_bytes(
+        &mut scratch,
+        &batch,
+        averaged.embedding,
+        averaged.hierarchy(),
+        RatioObjective {
+            target: 4.0,
+            weight: 0.03,
+        },
+    )?;
+    assert_eq!(trainer.buffers.optimizer_state.step, 1);
+    for (&target, loss) in batch.targets.iter().zip(losses) {
+        if target == u32::MAX {
+            assert_eq!(loss, 0.0);
+        } else {
+            assert!(loss.is_finite() && loss > 0.0);
+        }
+    }
+    let weights = averaged.hierarchy();
     assert!(
         weights
             .width_padding

@@ -22,6 +22,8 @@ mod value_rms;
 pub(crate) use audit::audit_model;
 #[cfg(test)]
 pub(crate) use format::CheckpointReader;
+pub(crate) use format::CheckpointWriter;
 pub use load::load_uploaded_model;
 pub(crate) use load::prepare_reload;
 pub use save::save_uploaded_model;
+pub(crate) use save::tensor::write as write_nvfp4_tensor;

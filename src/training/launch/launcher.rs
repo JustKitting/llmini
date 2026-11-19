@@ -23,6 +23,24 @@ use crate::training::{TokenDataLoader, debug_metrics};
 pub(crate) fn launch_from_args() -> AppResult {
     // Validate arguments before loading a dataset or initializing CUDA.
     let args = TrainArgs::parse();
+    if let Some(path) = args.hnet_training_bytes.as_deref() {
+        let config = args.hnet_config();
+        if super::config::load_model_path().is_some() {
+            return Err("H-Net training starts with fresh weights and optimizer state".into());
+        }
+        if config.latent_feedback || config.engram_mhc || config.mhc {
+            return Err("select H-Net with the standalone full-KDA backbone".into());
+        }
+        let output = RunOutput::new("fineweb-bytes", "hnet")?;
+        return crate::training::hnet::run_hnet_training(
+            path,
+            args.hnet_holdout_bytes
+                .as_deref()
+                .expect("clap requires the H-Net holdout"),
+            output.dir(),
+            config,
+        );
+    }
     if let Some(checkpoint) = args.inspect_feedback_depths.as_deref() {
         return crate::training::feedback_depth_inspection::run(
             checkpoint,

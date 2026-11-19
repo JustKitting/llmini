@@ -27,6 +27,25 @@ pub(super) struct HierarchyBatch<'a> {
     pub scored_targets: u32,
 }
 
+struct EmbeddedBatch {
+    inputs: DeviceBuffer<u32>,
+    targets: DeviceBuffer<u32>,
+    lengths: DeviceBuffer<u32>,
+    embeddings: DeviceBuffer<f32>,
+    scored_targets: u32,
+}
+
+impl EmbeddedBatch {
+    fn view(&self) -> HierarchyBatch<'_> {
+        HierarchyBatch {
+            embeddings: &self.embeddings,
+            valid_lengths: &self.lengths,
+            targets: &self.targets,
+            scored_targets: self.scored_targets,
+        }
+    }
+}
+
 pub(super) struct HierarchyWeights<'a> {
     pub encoder: &'a [OuterWeights<'a>],
     pub decoder: &'a [OuterWeights<'a>],
@@ -103,15 +122,14 @@ impl HierarchyScratch {
 }
 
 impl ByteReadoutScratch {
-    fn readout(
+    fn score(
         &mut self,
         runtime: &Runtime,
         decoded: &DeviceBuffer<f32>,
         batch: &HierarchyBatch<'_>,
         weights: &UploadedNvfp4,
         width: u32,
-        rng: &mut Gpt2Rng,
-    ) -> AppResult<(DeviceBuffer<f32>, DeviceBuffer<f32>, DeviceBuffer<f32>)> {
+    ) -> AppResult<(DeviceBuffer<f32>, RowwiseNvfp4Buffers)> {
         let rows = self.row_amax.len() as u32;
         if weights.scale_k != width || weights.scale_rows != BYTE_LOGIT_STRIDE {
             return Err("H-Net byte readout has the wrong dimensions".into());
@@ -147,6 +165,21 @@ impl ByteReadoutScratch {
             rows,
             valid_targets: batch.scored_targets,
         })?;
+        Ok((losses, saved))
+    }
+
+    fn readout(
+        &mut self,
+        runtime: &Runtime,
+        decoded: &DeviceBuffer<f32>,
+        batch: &HierarchyBatch<'_>,
+        weights: &UploadedNvfp4,
+        width: u32,
+        rng: &mut Gpt2Rng,
+    ) -> AppResult<(DeviceBuffer<f32>, DeviceBuffer<f32>, DeviceBuffer<f32>)> {
+        let (losses, saved) = self.score(runtime, decoded, batch, weights, width)?;
+        let stream = &runtime.stream;
+        let rows = self.row_amax.len() as u32;
         let mut d_weight = DeviceBuffer::zeroed(stream, (width * BYTE_LOGIT_STRIDE) as usize)?;
         let mut d_decoder = DeviceBuffer::zeroed(stream, decoded.len())?;
         runtime.linear.backward_ms_eden(LinearBackwardMsEdenArgs {
@@ -182,53 +215,77 @@ impl Trainer {
     ) -> AppResult<(HierarchyAdjoints, DeviceBuffer<f32>)> {
         let shape = scratch.shape;
         let rows = shape.batch * shape.outer_stride;
-        if batch.lengths.len() != shape.batch as usize
-            || batch.stride != shape.outer_stride
-            || batch.inputs.len() != rows as usize
-            || batch.targets.len() != rows as usize
-            || embedding.scale_rows != BYTE_BOS + 1
-            || embedding.scale_k != shape.features
-        {
-            return Err("byte batch or lookup table has the wrong dimensions for H-Net".into());
-        }
         let stream = self.runtime.stream.clone();
-        let features = rows * shape.features;
-        let inputs = DeviceBuffer::from_host(&stream, &batch.inputs)?;
-        let targets = DeviceBuffer::from_host(&stream, &batch.targets)?;
-        let valid_lengths = DeviceBuffer::from_host(&stream, &batch.lengths)?;
-        let mut embeddings = DeviceBuffer::zeroed(&stream, features as usize)?;
-        self.runtime.embedding.token_embedding(EmbeddingArgs {
-            stream: &stream,
-            tokens: &inputs,
-            token_embedding: embedding.device(),
-            residual: &mut embeddings,
-            hidden_len: features,
-            embedding_dim: shape.features,
-        })?;
-        let adjoints = self.backward_hnet(
-            scratch,
-            HierarchyBatch {
-                embeddings: &embeddings,
-                valid_lengths: &valid_lengths,
-                targets: &targets,
-                scored_targets: batch.scored_targets,
-            },
-            weights,
-            ratio,
-            rng,
-        )?;
+        let embedded = embed_byte_batch(&self.runtime, batch, shape, embedding)?;
+        let adjoints = self.backward_hnet(scratch, embedded.view(), weights, ratio, rng)?;
         let mut lookup = DeviceBuffer::zeroed(&stream, embedding.len)?;
         self.runtime
             .optimizer
             .add_embedding_lookup_grad(EmbeddingLookupGradArgs {
                 stream: &stream,
-                tokens: &inputs,
+                tokens: &embedded.inputs,
                 d_embedding_residual: &adjoints.embeddings,
                 d_token_embedding: &mut lookup,
                 token_count: rows,
                 embedding_dim: shape.features,
             })?;
         Ok((adjoints, lookup))
+    }
+
+    /// The caller materializes the averaged parameters once before scanning the holdout.
+    pub(super) fn score_hnet_bytes(
+        &mut self,
+        scratch: &mut HierarchyScratch,
+        batch: &ByteBatch,
+        embedding: &UploadedNvfp4,
+        weights: HierarchyWeights<'_>,
+        ratio: RatioObjective,
+    ) -> AppResult<Vec<f32>> {
+        let shape = scratch.shape;
+        let embedded = embed_byte_batch(&self.runtime, batch, shape, embedding)?;
+        let (encoded, _) = forward_stack(
+            &self.runtime,
+            &mut scratch.outer,
+            weights.encoder,
+            &embedded.embeddings,
+        )?;
+        let projections =
+            scratch
+                .stage_projection
+                .forward(&self.runtime, weights.stage, &encoded)?;
+        let stream = self.runtime.stream.clone();
+        let stage = &scratch.stage;
+        let plan = stage.route(
+            &stream,
+            &projections.query,
+            &projections.key,
+            &embedded.lengths,
+            shape,
+            ratio,
+        )?;
+        let inner = self.forward_routed_features(
+            stage,
+            &plan,
+            &projections.encoded,
+            weights.width_padding,
+            false,
+        )?;
+        let expanded = stage.expand(&plan, &inner)?;
+        let decoder_input = stage.decoder_input(&expanded, &projections.residual)?;
+        let (decoded, _) = forward_stack(
+            &self.runtime,
+            &mut scratch.outer,
+            weights.decoder,
+            &decoder_input,
+        )?;
+        let (losses, _) = scratch.byte.score(
+            &self.runtime,
+            &decoded,
+            &embedded.view(),
+            weights.byte_readout,
+            shape.features,
+        )?;
+        Ok(losses.to_host_vec(&stream)?)
     }
 
     /// Differentiate the native byte hierarchy. The trunk gradients stay in
@@ -321,6 +378,45 @@ impl Trainer {
             byte_readout,
         })
     }
+}
+
+fn embed_byte_batch(
+    runtime: &Runtime,
+    batch: &ByteBatch,
+    shape: StageShape,
+    embedding: &UploadedNvfp4,
+) -> AppResult<EmbeddedBatch> {
+    let rows = shape.batch * shape.outer_stride;
+    if batch.lengths.len() != shape.batch as usize
+        || batch.stride != shape.outer_stride
+        || batch.inputs.len() != rows as usize
+        || batch.targets.len() != rows as usize
+        || embedding.scale_rows != BYTE_BOS + 1
+        || embedding.scale_k != shape.features
+    {
+        return Err("byte batch or lookup table has the wrong dimensions for H-Net".into());
+    }
+    let stream = &runtime.stream;
+    let features = rows * shape.features;
+    let inputs = DeviceBuffer::from_host(stream, &batch.inputs)?;
+    let targets = DeviceBuffer::from_host(stream, &batch.targets)?;
+    let lengths = DeviceBuffer::from_host(stream, &batch.lengths)?;
+    let mut embeddings = DeviceBuffer::zeroed(stream, features as usize)?;
+    runtime.embedding.token_embedding(EmbeddingArgs {
+        stream,
+        tokens: &inputs,
+        token_embedding: embedding.device(),
+        residual: &mut embeddings,
+        hidden_len: features,
+        embedding_dim: shape.features,
+    })?;
+    Ok(EmbeddedBatch {
+        inputs,
+        targets,
+        lengths,
+        embeddings,
+        scored_targets: batch.scored_targets,
+    })
 }
 
 fn forward_stack<'a>(

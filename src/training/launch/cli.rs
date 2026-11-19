@@ -24,6 +24,17 @@ pub(super) struct TrainArgs {
     #[arg(long, conflicts_with_all = ["dataset", "checkpoint_action"])]
     pub(super) training_shards: Option<PathBuf>,
 
+    /// Train the native H-Net byte hierarchy from framed training documents.
+    #[arg(long, requires = "hnet_holdout_bytes", conflicts_with_all = [
+        "dataset", "training_shards", "checkpoint_action", "latent_feedback", "mhc",
+        "complete_engram", "bounded_swiglu", "value_rms", "stationary_rope"
+    ])]
+    pub(super) hnet_training_bytes: Option<PathBuf>,
+
+    /// Score the full framed byte holdout with the averaged H-Net parameters.
+    #[arg(long, requires = "hnet_training_bytes")]
+    pub(super) hnet_holdout_bytes: Option<PathBuf>,
+
     /// Train the complete latent-feedback architecture (replaces the Engram experiment).
     #[arg(long, conflicts_with_all=["inspect_model","inspect_gradients","evaluate_model","inspect_feedback_depths"])]
     latent_feedback: bool,
@@ -144,6 +155,20 @@ pub(super) struct TrainArgs {
 }
 
 impl TrainArgs {
+    pub(super) fn hnet_config(&self) -> TrainConfig {
+        let mut config = self.config();
+        if self.steps.is_none() && crate::training::env::env_usize("TRAIN_STEPS").is_none() {
+            config.step_cap = 20_000;
+        }
+        if self.max_seconds.is_none()
+            && crate::training::env::env_f64("TRAIN_MAX_SECONDS")
+                .is_none_or(|seconds| seconds <= 0.0 || !seconds.is_finite())
+        {
+            config.max_seconds = f64::INFINITY;
+        }
+        config
+    }
+
     pub(super) fn config(&self) -> TrainConfig {
         let mut config = TrainConfig::from_env();
         if self.latent_feedback {

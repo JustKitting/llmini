@@ -1,3 +1,5 @@
+use std::{fs::File, io::BufWriter, path::Path};
+
 use cuda_core::{CudaStream, DeviceBuffer};
 use gpt2_nvfp4::{GPT2_N_EMBD, Gpt2Rng, KDA_CHUNK_SIZE};
 use rust_kernels_cuda::{
@@ -78,6 +80,36 @@ impl WeightViews<'_> {
 }
 
 impl Parameters {
+    pub fn save_weights(&self, stream: &CudaStream, path: &Path) -> AppResult {
+        use crate::checkpoint::{CheckpointWriter, write_nvfp4_tensor};
+        let parameters = self
+            .encoder
+            .iter()
+            .chain(&self.decoder)
+            .flat_map(|block| {
+                [
+                    &block.qkv,
+                    &block.output,
+                    &block.norm_scale,
+                    &block.norm_bias,
+                ]
+            })
+            .chain([
+                &self.embedding,
+                &self.readout,
+                &self.query,
+                &self.key,
+                &self.residual,
+                &self.padding,
+            ]);
+        let mut writer = CheckpointWriter::new(BufWriter::new(File::create_new(path)?));
+        writer.write_header(u32::try_from(parameters.clone().count())?)?;
+        for parameter in parameters {
+            write_nvfp4_tensor(&mut writer, stream, &parameter.name, &parameter.tensor)?;
+        }
+        writer.finish()
+    }
+
     pub fn new(trainer: &mut Trainer, layers: usize, ratio: f32, seed: u64) -> AppResult<Self> {
         if layers == 0 || !ratio.is_finite() || ratio <= 1.0 {
             return Err(

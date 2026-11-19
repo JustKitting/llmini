@@ -8,10 +8,13 @@ use crate::AppResult;
 
 mod bytes;
 mod hierarchy;
+mod launch;
 mod optimizer;
 mod outer;
 mod parameters;
 mod projection;
+
+pub(super) use launch::run as run_hnet_training;
 
 pub(in crate::training) struct RoutedBackboneTape<'trainer, 'stage, 'plan> {
     trainer: &'trainer mut Trainer,
@@ -28,6 +31,23 @@ impl Trainer {
         encoded: &DeviceBuffer<u16>,
         learned_padding: Option<&DeviceBuffer<u16>>,
     ) -> AppResult<RoutedBackboneTape<'trainer, 'stage, 'plan>> {
+        let output = self.forward_routed_features(stage, plan, encoded, learned_padding, true)?;
+        Ok(RoutedBackboneTape {
+            trainer: self,
+            stage,
+            plan,
+            output,
+        })
+    }
+
+    fn forward_routed_features(
+        &mut self,
+        stage: &HnetStage,
+        plan: &StagePlan<'_>,
+        encoded: &DeviceBuffer<u16>,
+        learned_padding: Option<&DeviceBuffer<u16>>,
+        training: bool,
+    ) -> AppResult<DeviceBuffer<u16>> {
         self.ensure_ready()?;
         if self.engram.is_some() || self.latent_feedback.is_some() {
             return Err(
@@ -45,21 +65,23 @@ impl Trainer {
             return Err("routed chunks do not fit the native backbone shape or stream".into());
         }
 
-        schedule_free::materialize_backbone_training_weights(
-            &self.runtime,
-            &mut self.uploaded,
-            &mut self.buffers.optimizer,
-            &self.buffers.optimizer_state,
-            &self.buffers.backward,
-        )?;
-        if let (Some(mhc), Some(weights)) = (&mut self.mhc, &mut self.uploaded.mhc) {
-            mhc.materialize(
+        if training {
+            schedule_free::materialize_backbone_training_weights(
                 &self.runtime,
-                weights,
+                &mut self.uploaded,
                 &mut self.buffers.optimizer,
-                schedule_free_beta(self.buffers.optimizer_state.next_step()),
-                false,
+                &self.buffers.optimizer_state,
+                &self.buffers.backward,
             )?;
+            if let (Some(mhc), Some(weights)) = (&mut self.mhc, &mut self.uploaded.mhc) {
+                mhc.materialize(
+                    &self.runtime,
+                    weights,
+                    &mut self.buffers.optimizer,
+                    schedule_free_beta(self.buffers.optimizer_state.next_step()),
+                    false,
+                )?;
+            }
         }
         let chunks = stage.gather(plan, encoded)?;
         let inner_width = GPT2_N_EMBD as u32;
@@ -79,13 +101,7 @@ impl Trainer {
             false,
             false,
         )?;
-        let output = stage.read_residual(plan, &self.buffers.residual, inner_width)?;
-        Ok(RoutedBackboneTape {
-            trainer: self,
-            stage,
-            plan,
-            output,
-        })
+        Ok(stage.read_residual(plan, &self.buffers.residual, inner_width)?)
     }
 }
 
