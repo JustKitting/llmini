@@ -243,6 +243,7 @@ fn native_hnet_step_updates_the_outer_and_inner_parameters() -> AppResult {
         bytes::{ByteDocuments, MAGIC},
         hierarchy::HierarchyScratch,
         parameters::{OUTER_WIDTH, Parameters},
+        snapshot::Snapshot,
     };
 
     let mut trainer = Trainer::new_full_kda(720)?;
@@ -304,6 +305,22 @@ fn native_hnet_step_updates_the_outer_and_inner_parameters() -> AppResult {
             weight: 0.03,
         },
     )?;
+    assert_eq!(trainer.buffers.optimizer_state.step, 1);
+    let mut outer_checkpoint = Vec::new();
+    parameters.write_weights(&stream, &mut outer_checkpoint)?;
+    let snapshot = Snapshot::read(&trainer.runtime, outer_checkpoint.as_slice(), 1)?;
+    let saved = snapshot.weights();
+    let saved_losses = trainer.score_hnet_bytes(
+        &mut scratch,
+        &batch,
+        saved.embedding,
+        saved.hierarchy(),
+        RatioObjective {
+            target: 4.0,
+            weight: 0.03,
+        },
+    )?;
+    assert_eq!(losses, saved_losses);
     assert_eq!(trainer.buffers.optimizer_state.step, 1);
     for (&target, loss) in batch.targets.iter().zip(losses) {
         if target == u32::MAX {

@@ -10,6 +10,8 @@ use super::config::TrainConfig;
 #[command(version)]
 #[command(group(clap::ArgGroup::new("checkpoint_action").args(["evaluate_model","inspect_model","inspect_gradients","inspect_feedback_depths"]).multiple(false)))]
 #[command(group(clap::ArgGroup::new("evaluation_input").args(["validation_documents","validation_answers"]).multiple(false)))]
+#[command(group(clap::ArgGroup::new("model_evaluation").args(["evaluate_model","evaluate_hnet"]).multiple(false)))]
+#[command(group(clap::ArgGroup::new("hnet_action").args(["hnet_training_bytes","evaluate_hnet"]).multiple(false)))]
 #[command(group(clap::ArgGroup::new("complete_engram").args(["engram_mhc","bounded_swiglu_engram_mhc","value_rms_engram_mhc","stationary_rope_engram_mhc"]).multiple(true)))]
 pub(super) struct TrainArgs {
     /// Hash-bound native replay record for a verified numerical graph repair.
@@ -32,8 +34,15 @@ pub(super) struct TrainArgs {
     pub(super) hnet_training_bytes: Option<PathBuf>,
 
     /// Score the full framed byte holdout with the averaged H-Net parameters.
-    #[arg(long, requires = "hnet_training_bytes")]
+    #[arg(long, requires = "hnet_action")]
     pub(super) hnet_holdout_bytes: Option<PathBuf>,
+
+    /// Evaluate the saved H-Net backbone and outer weights from a training run directory.
+    #[arg(long, requires = "hnet_holdout_bytes", conflicts_with_all = [
+        "dataset", "training_shards", "checkpoint_action", "steps", "max_seconds", "eval_interval",
+        "latent_feedback", "mhc", "complete_engram", "bounded_swiglu", "value_rms", "stationary_rope"
+    ])]
+    pub(super) evaluate_hnet: Option<PathBuf>,
 
     /// Train the complete latent-feedback architecture (replaces the Engram experiment).
     #[arg(long, conflicts_with_all=["inspect_model","inspect_gradients","evaluate_model","inspect_feedback_depths"])]
@@ -107,8 +116,8 @@ pub(super) struct TrainArgs {
     #[arg(long, requires = "evaluate_model")]
     pub(super) validation_answers: Option<PathBuf>,
 
-    /// JSON destination; defaults to reference_validation.json beside the checkpoint.
-    #[arg(long, requires = "evaluate_model")]
+    /// JSON destination for checkpoint evaluation. H-Net also prints the result.
+    #[arg(long, requires = "model_evaluation")]
     pub(super) evaluation_output: Option<PathBuf>,
 
     /// Inspect CUDA activation tapes of a saved native checkpoint, without training.

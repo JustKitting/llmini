@@ -17,7 +17,9 @@ mod optimizer;
 mod outer;
 mod parameters;
 mod projection;
+mod snapshot;
 
+pub(super) use launch::evaluate as evaluate_hnet;
 pub(super) use launch::run as run_hnet_training;
 
 pub(in crate::training) struct RoutedBackboneTape<'trainer, 'stage, 'plan, 'scale> {

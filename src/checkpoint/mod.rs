@@ -20,7 +20,6 @@ mod stationary_rope_tests;
 mod value_rms;
 
 pub(crate) use audit::audit_model;
-#[cfg(test)]
 pub(crate) use format::CheckpointReader;
 pub(crate) use format::CheckpointWriter;
 pub use load::load_uploaded_model;

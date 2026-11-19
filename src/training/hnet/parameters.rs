@@ -28,6 +28,17 @@ use crate::{
 
 pub(super) const OUTER_WIDTH: usize = 512;
 
+pub(super) fn added_width() -> AppResult<usize> {
+    GPT2_N_EMBD
+        .checked_sub(OUTER_WIDTH)
+        .filter(|&added| added > 0 && added.is_multiple_of(128))
+        .ok_or_else(|| "the native H-Net backbone needs a wider aligned residual".into())
+}
+
+pub(super) fn packed_qkv_width() -> usize {
+    (4 * OUTER_WIDTH + OUTER_WIDTH / KDA_CHUNK_SIZE).next_multiple_of(128)
+}
+
 struct Parameter {
     name: String,
     tensor: UploadedNvfp4,
@@ -63,14 +74,14 @@ pub(super) struct Parameters {
 }
 
 pub(super) struct WeightViews<'a> {
-    encoder: Vec<OuterWeights<'a>>,
-    decoder: Vec<OuterWeights<'a>>,
-    encoder_norm: &'a UploadedNvfp4,
-    backbone_norm: &'a UploadedNvfp4,
-    decoder_norm: &'a UploadedNvfp4,
-    stage: StageWeights<'a>,
-    padding: &'a DeviceBuffer<u16>,
-    readout: &'a UploadedNvfp4,
+    pub encoder: Vec<OuterWeights<'a>>,
+    pub decoder: Vec<OuterWeights<'a>>,
+    pub encoder_norm: &'a UploadedNvfp4,
+    pub backbone_norm: &'a UploadedNvfp4,
+    pub decoder_norm: &'a UploadedNvfp4,
+    pub stage: StageWeights<'a>,
+    pub padding: &'a DeviceBuffer<u16>,
+    pub readout: &'a UploadedNvfp4,
     pub embedding: &'a UploadedNvfp4,
 }
 
@@ -91,6 +102,14 @@ impl WeightViews<'_> {
 
 impl Parameters {
     pub fn save_weights(&self, stream: &CudaStream, path: &Path) -> AppResult {
+        self.write_weights(stream, File::create_new(path)?)
+    }
+
+    pub(super) fn write_weights(
+        &self,
+        stream: &CudaStream,
+        output: impl std::io::Write,
+    ) -> AppResult {
         use crate::checkpoint::{CheckpointWriter, write_nvfp4_tensor};
         let parameters = self
             .encoder
@@ -116,7 +135,7 @@ impl Parameters {
                 &self.residual_bias,
                 &self.padding,
             ]);
-        let mut writer = CheckpointWriter::new(BufWriter::new(File::create_new(path)?));
+        let mut writer = CheckpointWriter::new(BufWriter::new(output));
         writer.write_header(u32::try_from(parameters.clone().count())?)?;
         for parameter in parameters {
             write_nvfp4_tensor(&mut writer, stream, &parameter.name, &parameter.tensor)?;
@@ -135,11 +154,8 @@ impl Parameters {
         let stream = &runtime.stream;
         let optimizer = runtime.hnet_optimizer_module()?;
         let width = OUTER_WIDTH;
-        let added = GPT2_N_EMBD
-            .checked_sub(width)
-            .filter(|&added| added > 0 && added.is_multiple_of(128))
-            .ok_or("the native H-Net backbone needs a wider aligned residual")?;
-        let packed_qkv = (4 * width + width / KDA_CHUNK_SIZE).next_multiple_of(128);
+        let added = added_width()?;
+        let packed_qkv = packed_qkv_width();
         let outer_lr = (ratio * GPT2_N_EMBD as f32 / width as f32).sqrt();
         let mut rng = Gpt2Rng::new(seed);
         let mut initialize = |name: String,
@@ -406,21 +422,12 @@ impl Parameters {
                 .write_view(stream, &parameter.state, beta, &mut self.scheduled)?;
             pack(runtime, scratch, &mut parameter.tensor, &self.scheduled)?;
         }
-        runtime
-            .decode
-            .decode_transpose_f32(Nvfp4DecodeTransposeArgs {
-                stream,
-                input: self.padding.tensor.device(),
-                output: &mut self.scheduled,
-                rows: 1,
-                cols: self.padding.tensor.scale_k,
-            })?;
-        runtime.f16_tc_matmul.fp32_to_f16(F16ConvertArgs {
-            stream,
-            src: &self.scheduled,
-            dst: &mut self.represented_padding,
-            element_count: self.padding.tensor.scale_k,
-        })?;
+        represent_padding(
+            runtime,
+            &self.padding.tensor,
+            &mut self.scheduled,
+            &mut self.represented_padding,
+        )?;
         Ok(())
     }
 
@@ -515,6 +522,31 @@ impl Parameters {
         }
         Ok(())
     }
+}
+
+pub(super) fn represent_padding(
+    runtime: &Runtime,
+    padding: &UploadedNvfp4,
+    scratch: &mut DeviceBuffer<f32>,
+    represented: &mut DeviceBuffer<u16>,
+) -> AppResult {
+    let stream = &runtime.stream;
+    runtime
+        .decode
+        .decode_transpose_f32(Nvfp4DecodeTransposeArgs {
+            stream,
+            input: padding.device(),
+            output: scratch,
+            rows: 1,
+            cols: padding.scale_k,
+        })?;
+    runtime.f16_tc_matmul.fp32_to_f16(F16ConvertArgs {
+        stream,
+        src: scratch,
+        dst: represented,
+        element_count: padding.scale_k,
+    })?;
+    Ok(())
 }
 
 impl OuterBlock {

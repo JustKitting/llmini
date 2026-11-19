@@ -9,7 +9,8 @@ use super::{
     Trainer,
     bytes::ByteDocuments,
     hierarchy::HierarchyScratch,
-    parameters::{OUTER_WIDTH, Parameters},
+    parameters::{OUTER_WIDTH, Parameters, WeightViews},
+    snapshot::{BACKBONE_FILE, OUTER_FILE, Snapshot},
 };
 use crate::{AppResult, training::launch::TrainConfig};
 
@@ -125,8 +126,8 @@ pub(in crate::training) fn run(
     let outer = output.join("hnet-outer.ckpt.partial");
     trainer.save_model(&backbone)?;
     parameters.save_weights(&trainer.runtime.stream, &outer)?;
-    std::fs::rename(backbone, output.join("hnet-backbone.ckpt"))?;
-    std::fs::rename(outer, output.join("hnet-outer.ckpt"))?;
+    std::fs::rename(backbone, output.join(BACKBONE_FILE))?;
+    std::fs::rename(outer, output.join(OUTER_FILE))?;
     let temporary = output.join("holdout.json.partial");
     let metrics_output = File::create_new(&temporary)?;
     serde_json::to_writer_pretty(metrics_output, &report)?;
@@ -144,10 +145,58 @@ fn score_holdout(
     scratch: &mut HierarchyScratch,
     path: &Path,
 ) -> AppResult<serde_json::Value> {
-    let mut documents = open(path)?;
     trainer.materialize_evaluation_weights()?;
     parameters.materialize(&trainer.runtime, &mut trainer.buffers.optimizer, 1.0)?;
-    let weights = parameters.weights();
+    score_averaged(trainer, scratch, path, parameters.weights())
+}
+
+pub(in crate::training) fn evaluate(
+    run: &Path,
+    holdout: &Path,
+    output: Option<&Path>,
+) -> AppResult {
+    let backbone = run.join(BACKBONE_FILE);
+    let outer = run.join(OUTER_FILE);
+    let backbone_sha = crate::reference_validation::sha256(&backbone)?;
+    let outer_sha = crate::reference_validation::sha256(&outer)?;
+    open(holdout)?;
+    let mut trainer = Trainer::new_full_kda(0x47505432)?;
+    trainer.load_model(&backbone)?;
+    let snapshot = Snapshot::load(&trainer.runtime, &outer, OUTER_LAYERS)?;
+    let mut scratch = HierarchyScratch::new(
+        &trainer.runtime,
+        GPT2_BATCH_SIZE as u32,
+        GPT2_SEQ_LEN as u32,
+        OUTER_WIDTH as u32,
+    )?;
+    let metrics = score_averaged(&mut trainer, &mut scratch, holdout, snapshot.weights())?;
+    let report = json!({
+        "backbone_checkpoint": backbone,
+        "backbone_sha256": backbone_sha,
+        "outer_checkpoint": outer,
+        "outer_sha256": outer_sha,
+        "holdout_documents": holdout,
+        "context_bytes": GPT2_SEQ_LEN,
+        "batch_size": GPT2_BATCH_SIZE,
+        "holdout": metrics,
+    });
+    let text = serde_json::to_string_pretty(&report)?;
+    if let Some(path) = output {
+        use std::io::Write;
+        let mut file = File::create_new(path)?;
+        writeln!(file, "{text}")?;
+    }
+    println!("{text}");
+    Ok(())
+}
+
+fn score_averaged(
+    trainer: &mut Trainer,
+    scratch: &mut HierarchyScratch,
+    path: &Path,
+    weights: WeightViews<'_>,
+) -> AppResult<serde_json::Value> {
+    let mut documents = open(path)?;
     let mut bytes = 0_u64;
     let mut targets = 0_u64;
     let mut nll = 0.0_f64;

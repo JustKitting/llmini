@@ -23,6 +23,15 @@ use crate::training::{TokenDataLoader, debug_metrics};
 pub(crate) fn launch_from_args() -> AppResult {
     // Validate arguments before loading a dataset or initializing CUDA.
     let args = TrainArgs::parse();
+    if let Some(run) = args.evaluate_hnet.as_deref() {
+        return crate::training::hnet::evaluate_hnet(
+            run,
+            args.hnet_holdout_bytes
+                .as_deref()
+                .expect("clap requires the H-Net holdout"),
+            args.evaluation_output.as_deref(),
+        );
+    }
     if let Some(path) = args.hnet_training_bytes.as_deref() {
         let config = args.hnet_config();
         if super::config::load_model_path().is_some() {
