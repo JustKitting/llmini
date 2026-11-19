@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     fs::{self, File},
     io::{BufReader, BufWriter, Read, Write},
     num::NonZeroUsize,
@@ -8,6 +9,7 @@ use std::{
 use burn::serde::{Deserialize, Serialize};
 use gpt2_nvfp4::{GPT2_BATCH_SIZE, GPT2_SEQ_LEN};
 use serde_json::json;
+use sha2::{Digest, Sha256};
 
 use crate::AppResult;
 
@@ -21,6 +23,8 @@ const ROTATION: usize = 5;
 struct Manifest {
     tokenizer: String,
     shards: Vec<PathBuf>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    interleaved_shard_sha256: BTreeMap<PathBuf, String>,
 }
 
 struct Shard {
@@ -115,7 +119,12 @@ impl<'a> Pool<'a> {
     }
 }
 
-pub(super) fn prepare(source: &Path, output: &Path, curated_shards: &[NonZeroUsize]) -> AppResult {
+pub(super) fn prepare(
+    source: &Path,
+    output: &Path,
+    curated_shards: &[NonZeroUsize],
+    replacements: &[PathBuf],
+) -> AppResult {
     if GPT2_BATCH_SIZE != 8 {
         return Err("the matched 2,3,3 row schedule uses an eight-row batch".into());
     }
@@ -143,11 +152,26 @@ pub(super) fn prepare(source: &Path, output: &Path, curated_shards: &[NonZeroUsi
         .ok_or("no curated shards")?;
     let end = curated.iter().rposition(|&item| item).unwrap() + 1;
     let source_root = parent(source).canonicalize()?;
-    let shards: Vec<_> = manifest
+    let mut shards: Vec<_> = manifest
         .shards
         .iter()
         .map(|path| Shard::read_layout(source_root.join(path)))
         .collect::<AppResult<_>>()?;
+    if !replacements.is_empty() && replacements.len() != curated_shards.len() {
+        return Err("provide one replacement for each selected shard".into());
+    }
+    for (index, path) in curated_shards.iter().zip(replacements) {
+        let original = &mut shards[index.get() - 1];
+        let replacement = Shard::read_layout(path.canonicalize()?)?;
+        if original.batches != replacement.batches {
+            return Err(format!(
+                "replacement for shard {} has {} batches, expected {}",
+                index, replacement.batches, original.batches
+            )
+            .into());
+        }
+        *original = replacement;
+    }
 
     let middle = &shards[first..end];
     let middle_batches: usize = middle.iter().map(|shard| shard.batches).sum();
@@ -181,10 +205,12 @@ pub(super) fn prepare(source: &Path, output: &Path, curated_shards: &[NonZeroUsi
     fs::create_dir(&output)?;
     let mut row = [0; ROW_BYTES];
     let mut batch = 0;
+    let mut interleaved_shard_sha256 = BTreeMap::new();
     for (index, shard) in middle.iter().enumerate() {
         let name = PathBuf::from(format!("interleaved-{:02}.windows.bin", index + 1));
         let mut writer =
             BufWriter::with_capacity(1024 * 1024, File::create_new(output.join(&name))?);
+        let mut digest = Sha256::new();
         for _ in 0..shard.batches {
             let count = CURATED_ROWS[batch % CURATED_ROWS.len()];
             let rotate = (batch % GPT2_BATCH_SIZE) * ROTATION % GPT2_BATCH_SIZE;
@@ -196,10 +222,12 @@ pub(super) fn prepare(source: &Path, output: &Path, curated_shards: &[NonZeroUsi
                 };
                 pool.read_row(&mut row)?;
                 writer.write_all(&row)?;
+                digest.update(row.as_slice());
             }
             batch += 1;
         }
         writer.flush()?;
+        interleaved_shard_sha256.insert(name.clone(), format!("{:x}", digest.finalize()));
         names.push(name);
     }
     names.extend(
@@ -214,6 +242,7 @@ pub(super) fn prepare(source: &Path, output: &Path, curated_shards: &[NonZeroUsi
         &Manifest {
             tokenizer: manifest.tokenizer,
             shards: names,
+            interleaved_shard_sha256,
         },
     )?;
     file.write_all(b"\n")?;
@@ -224,6 +253,7 @@ pub(super) fn prepare(source: &Path, output: &Path, curated_shards: &[NonZeroUsi
         "{}",
         json!({
             "source_manifest": source,
+            "replacement_shards": replacements,
             "training_manifest": training_manifest,
             "batch_size": GPT2_BATCH_SIZE,
             "sequence_length": GPT2_SEQ_LEN,

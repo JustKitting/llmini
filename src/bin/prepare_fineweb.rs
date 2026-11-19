@@ -52,6 +52,9 @@ enum Command {
         /// 1-based index of a curated shard. Repeat for each curated shard.
         #[arg(long, required = true)]
         curated_shard: Vec<NonZeroUsize>,
+        /// Replace each selected shard, in --curated-shard argument order.
+        #[arg(long)]
+        replacement_shard: Vec<PathBuf>,
         /// New directory for the mixed windows and training.json.
         #[arg(long)]
         output: PathBuf,
@@ -63,10 +66,11 @@ fn main() -> AppResult {
     if let Some(Command::Interleave {
         source,
         curated_shard,
+        replacement_shard,
         output,
     }) = args.command
     {
-        return interleave::prepare(&source, &output, &curated_shard);
+        return interleave::prepare(&source, &output, &curated_shard, &replacement_shard);
     }
     if let (Some(parquet), Some(output), Some(tokens), Some(documents)) = (
         args.curated_parquet,
