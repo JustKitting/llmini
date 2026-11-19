@@ -71,6 +71,8 @@ pub struct MuonTmaFinishArgs<'a> {
     pub qk_clip_factors: &'a DeviceBuffer<f32>,
     pub slot_index: u32,
     pub matrix_len: u32,
+    pub matrix_rows: u32,
+    pub matrix_cols: u32,
     pub polar_cols: u32,
     pub learning_rate: f32,
     pub weight_decay: f32,

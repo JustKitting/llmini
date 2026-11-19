@@ -23,8 +23,9 @@ pub use backward::{
     Gpt2LayerNormBackwardInputAddAmaxArgs, Gpt2LayerNormBackwardInputAmaxArgs,
     Gpt2LayerNormBackwardInputArgs, Gpt2LayerNormBackwardParamArgs, LinearScratch, MlpBackwardArgs,
     MlpBackwardGrads, MlpBackwardModules, MlpBackwardScratch, MlpBackwardSeeds,
-    attention_c_proj_backward, attention_side_backward, causal_attention_backward,
-    final_head_backward, gpt2_backward, layer_norm_backward, layer_norm_backward_add_amax,
+    ValueRmsBackwardScratch, attention_c_proj_backward, attention_side_backward,
+    causal_attention_backward, final_head_backward, gpt2_backward, gpt2_backward_with_boundaries,
+    gpt2_backward_with_hook, layer_norm_backward, layer_norm_backward_add_amax,
     layer_norm_backward_amax, layer_norm_backward_input, layer_norm_backward_input_add_amax,
     layer_norm_backward_input_amax, layer_norm_backward_params, mlp_backward, mlp_side_backward,
     qkv_projection_backward,
@@ -32,26 +33,28 @@ pub use backward::{
 
 pub use config::AttentionDims;
 pub use config::{
-    GPT2_ATTENTION_BACKWARD_TILE_BUDGET, GPT2_BATCH_SIZE, GPT2_CANON_KERNEL_SIZE,
-    GPT2_CANON_WEIGHT_COUNT, GPT2_CONTEXT_LEN, GPT2_FULL_ATTENTION_GATE_OFFSET,
-    GPT2_FULL_ATTENTION_GATED_QKV, GPT2_FULL_ATTENTION_QKV, GPT2_FULL_ATTENTION_WINDOW,
-    GPT2_K_OFFSET, GPT2_KDA_BETA_OFFSET, GPT2_KDA_G_OFFSET, GPT2_KDA_GATE_OFFSET,
-    GPT2_LAYER_NORM_EPSILON, GPT2_MLP, GPT2_MLP_DENSE_PREFIX_LAYERS,
+    GPT2_ATTENTION_BACKWARD_TILE_BUDGET, GPT2_BATCH_SIZE, GPT2_BOUNDED_SWIGLU,
+    GPT2_BOUNDED_SWIGLU_ENGRAM_MHC, GPT2_CANON_KERNEL_SIZE, GPT2_CANON_WEIGHT_COUNT,
+    GPT2_CONTEXT_LEN, GPT2_FULL_ATTENTION_GATE_OFFSET, GPT2_FULL_ATTENTION_GATED_QKV,
+    GPT2_FULL_ATTENTION_QKV, GPT2_FULL_ATTENTION_WINDOW, GPT2_FULL_ATTN_DENSE_DV, GPT2_K_OFFSET,
+    GPT2_KDA_BETA_OFFSET, GPT2_KDA_FULL_STATE_BACKWARD, GPT2_KDA_G_OFFSET, GPT2_KDA_GATE_OFFSET,
+    GPT2_KDA_RATIONAL_OUTPUT_GATE, GPT2_LAYER_NORM_EPSILON, GPT2_MLP, GPT2_MLP_DENSE_PREFIX_LAYERS,
     GPT2_MLP_ROUTE_ACTIVE_FEATURE_TILES, GPT2_MLP_ROUTE_FEATURE_TILES, GPT2_MLP_ROUTE_MASKS,
-    GPT2_MLP_ROUTE_SCORES, GPT2_MLP_ROUTE_TILE, GPT2_MLP_ROUTE_TOKEN_TILES, GPT2_N_EMBD,
-    GPT2_N_HEAD, GPT2_N_LAYER, GPT2_Q_OFFSET, GPT2_QK_SCALE_STORAGE, GPT2_QKV, GPT2_SEQ_LEN,
+    GPT2_MLP_ROUTE_SCORES, GPT2_MLP_ROUTE_TILE, GPT2_MLP_ROUTE_TOKEN_TILES, GPT2_MLP_UP,
+    GPT2_N_EMBD, GPT2_N_HEAD, GPT2_N_LAYER, GPT2_Q_OFFSET, GPT2_QK_SCALE_STORAGE, GPT2_QKV,
+    GPT2_REQUIRES_ENGRAM_MHC, GPT2_SEQ_LEN, GPT2_STATIONARY_ROPE, GPT2_STATIONARY_ROPE_ENGRAM_MHC,
     GPT2_TOKEN_ROWS, GPT2_V_OFFSET, GPT2_VALUE_RESIDUAL_LAYERS, GPT2_VALUE_RESIDUAL_START_LAYER,
-    GPT2_VOCAB_SIZE, GPT2_XSA_ALPHA_STORAGE, Gpt2Config, KDA_CHUNK_SIZE, KDA_DECAY_SCALE,
-    KIMI_FULL_ATTENTION_PERIOD, NEXTLAT_HIDDEN, NEXTLAT_INPUT, attention_headwise_gate_enabled,
-    attention_headwise_gate_offset, attention_trainable_qkv_dim, canon_ac_enabled,
-    exclusive_self_attention_enabled, exclusive_self_attention_kda_enabled, layer_norm_scale,
-    partial_key_offset_enabled, qk_norm_initial_scale, selective_attention_enabled,
-    stable_mask_gamma, uses_block_topk_mlp, uses_exclusive_self_attention, uses_full_attention,
-    uses_value_residual,
+    GPT2_VALUE_RMS, GPT2_VALUE_RMS_ENGRAM_MHC, GPT2_VOCAB_SIZE, GPT2_XSA_ALPHA_STORAGE, Gpt2Config,
+    KDA_CHUNK_SIZE, KDA_DECAY_SCALE, KIMI_FULL_ATTENTION_PERIOD, NEXTLAT_HIDDEN, NEXTLAT_INPUT,
+    attention_headwise_gate_enabled, attention_headwise_gate_offset, attention_trainable_qkv_dim,
+    canon_ac_enabled, exclusive_self_attention_enabled, exclusive_self_attention_kda_enabled,
+    layer_norm_scale, partial_key_offset_enabled, qk_norm_initial_scale,
+    selective_attention_enabled, stable_mask_gamma, uses_block_topk_mlp,
+    uses_exclusive_self_attention, uses_full_attention, uses_value_residual,
 };
 pub use config::{
-    GPT2_EMBEDDING_DIM, GPT2_MLP_DIM, GPT2_TOKEN_ROWS_U32, GPT2_VOCAB_DIM, NEXTLAT_HIDDEN_DIM,
-    NEXTLAT_INPUT_DIM,
+    GPT2_EMBEDDING_DIM, GPT2_MLP_DIM, GPT2_MLP_UP_DIM, GPT2_TOKEN_ROWS_U32, GPT2_VOCAB_DIM,
+    NEXTLAT_HIDDEN_DIM, NEXTLAT_INPUT_DIM,
 };
 
 pub use tensor::{FixedBytes, Nvfp4Shape, Nvfp4Tensor};
@@ -65,8 +68,9 @@ pub use types::{
     Gpt2ForwardSaved, Gpt2ForwardTape, Gpt2Weights, HiddenStateDevice, HiddenStateNvfp4,
     LayerNormForwardArgs, LayerNormGrads, LayerNormSaved, LayerNormTape, LayerNormTensors,
     LayerNormWeights, LinearWeights, MlpActivationNvfp4, MlpDownTensors, MlpForwardArgs,
-    MlpForwardTape, MlpProjectionTensors, MlpScratch, MlpUpTensors, MlpWeights, NextLatWeights,
-    RowwiseNvfp4Buffers, RowwiseNvfp4Scratch, RowwiseNvfp4Tape, TokenEmbeddingArgs,
+    MlpForwardTape, MlpProjectionObserver, MlpProjectionTensors, MlpScratch, MlpUpTensors,
+    MlpWeights, NextLatWeights, RowwiseNvfp4Buffers, RowwiseNvfp4Scratch, RowwiseNvfp4Tape,
+    TokenEmbeddingArgs, ValueProjectionObserver, project_attention_qkv,
 };
 
 pub use types::{

@@ -43,6 +43,24 @@ pub(crate) fn candidate_pair_errors_and_payload_with_inv_scale(
 }
 
 #[inline(always)]
+pub(crate) fn candidate_pair_absolute_error_and_payload(
+    value_lo: f32,
+    value_hi: f32,
+    scale: f32,
+    global_scale: f32,
+    inv_scale: f32,
+) -> (f32, u8) {
+    let dequant_scale = scale * nonzero_global_scale(global_scale);
+    let packed = cvt_rn_satfinite_e2m1x2_f32(value_hi * inv_scale, value_lo * inv_scale);
+    let diff_lo = value_lo - e2m1_value(packed & 0x0f) * dequant_scale;
+    let diff_hi = value_hi - e2m1_value(packed >> 4) * dequant_scale;
+    (
+        crate::float_ptx::abs_f32(diff_lo) + crate::float_ptx::abs_f32(diff_hi),
+        packed,
+    )
+}
+
+#[inline(always)]
 pub(crate) fn local_scale_bits(
     group_amax: f32,
     global_scale: f32,

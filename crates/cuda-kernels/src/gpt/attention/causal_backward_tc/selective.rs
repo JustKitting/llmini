@@ -1,11 +1,17 @@
-use cuda_device::{DisjointSlice, thread};
+use cuda_device::{DisjointSlice, SharedArray, thread};
 
 use crate::attention::CausalAttentionParams;
 use crate::f16_tc_matmul::convert::{cvt_f32_f16, cvt_rn_f16_f32};
 use crate::f16_tc_matmul::cta_tile::{CTA_M, CTA_N};
 
-pub(super) const SELECTIVE_BACKWARD_THREADS_PER_BLOCK: u32 = 32;
+pub(super) const SELECTIVE_BACKWARD_KEYS_PER_BLOCK: u32 = 32;
+pub(super) const SELECTIVE_BACKWARD_QUERY_TILE: u32 = 16;
+pub(super) const SELECTIVE_BACKWARD_THREADS_PER_BLOCK: u32 =
+    SELECTIVE_BACKWARD_KEYS_PER_BLOCK * SELECTIVE_BACKWARD_QUERY_TILE;
+pub(super) const SELECTIVE_BACKWARD_TILE_ELEMENTS: usize =
+    SELECTIVE_BACKWARD_THREADS_PER_BLOCK as usize;
 pub(super) const SELECTIVE_ROW_SUM_THREADS_PER_BLOCK: u32 = 256;
+pub(super) const SELECTIVE_TILE_ACTIVATE_THREADS_PER_BLOCK: u32 = 32;
 
 pub(super) fn selective_attention_row_sums_dense_body(
     ds: &[u16],
@@ -70,8 +76,20 @@ pub(super) fn selective_attention_backward_dense_body(
     row_sums: &[f32],
     ds: DisjointSlice<u16>,
     params: CausalAttentionParams,
+    direct_tile: &mut SharedArray<f32, SELECTIVE_BACKWARD_TILE_ELEMENTS>,
+    row_sum_tile: &mut SharedArray<f32, SELECTIVE_BACKWARD_TILE_ELEMENTS>,
+    selection_tile: &mut SharedArray<u16, SELECTIVE_BACKWARD_TILE_ELEMENTS>,
 ) {
-    selective_attention_backward_impl::<false>(selection_mask_tape, &[], row_sums, ds, params);
+    selective_attention_backward_impl::<false>(
+        selection_mask_tape,
+        &[],
+        row_sums,
+        ds,
+        params,
+        direct_tile,
+        row_sum_tile,
+        selection_tile,
+    );
 }
 
 pub(super) fn selective_attention_backward_sparse_body(
@@ -80,6 +98,9 @@ pub(super) fn selective_attention_backward_sparse_body(
     row_sums: &[f32],
     ds: DisjointSlice<u16>,
     params: CausalAttentionParams,
+    direct_tile: &mut SharedArray<f32, SELECTIVE_BACKWARD_TILE_ELEMENTS>,
+    row_sum_tile: &mut SharedArray<f32, SELECTIVE_BACKWARD_TILE_ELEMENTS>,
+    selection_tile: &mut SharedArray<u16, SELECTIVE_BACKWARD_TILE_ELEMENTS>,
 ) {
     selective_attention_backward_impl::<true>(
         selection_mask_tape,
@@ -87,6 +108,9 @@ pub(super) fn selective_attention_backward_sparse_body(
         row_sums,
         ds,
         params,
+        direct_tile,
+        row_sum_tile,
+        selection_tile,
     );
 }
 
@@ -96,10 +120,11 @@ fn selective_attention_backward_impl<const SPARSE: bool>(
     row_sums: &[f32],
     mut ds: DisjointSlice<u16>,
     params: CausalAttentionParams,
+    direct_tile: &mut SharedArray<f32, SELECTIVE_BACKWARD_TILE_ELEMENTS>,
+    row_sum_tile: &mut SharedArray<f32, SELECTIVE_BACKWARD_TILE_ELEMENTS>,
+    selection_tile: &mut SharedArray<u16, SELECTIVE_BACKWARD_TILE_ELEMENTS>,
 ) {
-    let key_tiles = params
-        .seq_len
-        .div_ceil(SELECTIVE_BACKWARD_THREADS_PER_BLOCK);
+    let key_tiles = params.seq_len.div_ceil(SELECTIVE_BACKWARD_KEYS_PER_BLOCK);
     let block = thread::blockIdx_x();
     let batch = block / key_tiles;
     if batch >= params.batch_size {
@@ -107,9 +132,12 @@ fn selective_attention_backward_impl<const SPARSE: bool>(
     }
 
     let key_tile = block - batch * key_tiles;
-    let key_base = key_tile * SELECTIVE_BACKWARD_THREADS_PER_BLOCK;
-    let key = key_base + thread::threadIdx_x();
-    let last_key_unclamped = key_base + SELECTIVE_BACKWARD_THREADS_PER_BLOCK - 1;
+    let key_base = key_tile * SELECTIVE_BACKWARD_KEYS_PER_BLOCK;
+    let tid = thread::threadIdx_x();
+    let lane = tid & 31;
+    let query_offset = tid >> 5;
+    let key = key_base + lane;
+    let last_key_unclamped = key_base + SELECTIVE_BACKWARD_KEYS_PER_BLOCK - 1;
     let last_key = if last_key_unclamped < params.seq_len {
         last_key_unclamped
     } else {
@@ -123,37 +151,74 @@ fn selective_attention_backward_impl<const SPARSE: bool>(
     };
     let tape_base = params.row_count as usize * params.qkv_dim as usize;
     let mut future_logit_grad = 0.0_f32;
-    let mut query = last_query + 1;
-    while query > key_base {
-        query -= 1;
-        let row = batch * params.seq_len + query;
-        let visible = key < params.seq_len
-            && query >= key
-            && query - key < params.attention_window
-            && row < params.row_count;
-        if visible {
-            let distance = query - key;
-            let packed_index = packed_mask_index(batch, query, distance, &params);
-            let head_zero_index = score_index(batch, 0, query, key, &params);
+    let mut query_end = last_query + 1;
+    while query_end > key_base {
+        let unbounded_query_base = if query_end > SELECTIVE_BACKWARD_QUERY_TILE {
+            query_end - SELECTIVE_BACKWARD_QUERY_TILE
+        } else {
+            0
+        };
+        let query_base = if unbounded_query_base > key_base {
+            unbounded_query_base
+        } else {
+            key_base
+        };
+        let load_query = query_base + query_offset;
+        let load_row = batch * params.seq_len + load_query;
+        let load_visible = key < params.seq_len
+            && load_query < query_end
+            && load_query >= key
+            && load_query - key < params.attention_window
+            && load_row < params.row_count;
+        if load_visible {
+            let distance = load_query - key;
+            let packed_index = packed_mask_index(batch, load_query, distance, &params);
+            let head_zero_index = score_index(batch, 0, load_query, key, &params);
             let direct_active =
-                !SPARSE || tile_scale(tile_scales, batch, 0, query, key, &params) != 0.0;
-            let direct_selection_head_grad = if direct_active {
+                !SPARSE || tile_scale(tile_scales, batch, 0, load_query, key, &params) != 0.0;
+            direct_tile[tid as usize] = if direct_active {
                 cvt_f32_f16(unsafe { *ds.as_mut_ptr().add(head_zero_index) })
             } else {
                 0.0
             };
-            let selection_grad =
-                if key != 0 && query != key && selection_mask_tape[tape_base + packed_index] != 0 {
-                    -future_logit_grad
-                } else {
-                    0.0
-                };
-            unsafe {
-                *ds.get_unchecked_mut(head_zero_index) =
-                    cvt_rn_f16_f32(direct_selection_head_grad + selection_grad);
-            }
-            future_logit_grad += row_sums[packed_index];
+            row_sum_tile[tid as usize] = row_sums[packed_index];
+            selection_tile[tid as usize] = selection_mask_tape[tape_base + packed_index];
+        } else {
+            direct_tile[tid as usize] = 0.0;
+            row_sum_tile[tid as usize] = 0.0;
+            selection_tile[tid as usize] = 0;
         }
+        thread::sync_threads();
+
+        if query_offset == 0 {
+            let mut query = query_end;
+            while query > query_base {
+                query -= 1;
+                let row = batch * params.seq_len + query;
+                let visible = key < params.seq_len
+                    && query >= key
+                    && query - key < params.attention_window
+                    && row < params.row_count;
+                if visible {
+                    let head_zero_index = score_index(batch, 0, query, key, &params);
+                    let tile_index =
+                        ((query - query_base) * SELECTIVE_BACKWARD_KEYS_PER_BLOCK + lane) as usize;
+                    let selection_grad =
+                        if key != 0 && query != key && selection_tile[tile_index] != 0 {
+                            -future_logit_grad
+                        } else {
+                            0.0
+                        };
+                    unsafe {
+                        *ds.get_unchecked_mut(head_zero_index) =
+                            cvt_rn_f16_f32(direct_tile[tile_index] + selection_grad);
+                    }
+                    future_logit_grad += row_sum_tile[tile_index];
+                }
+            }
+        }
+        thread::sync_threads();
+        query_end = query_base;
     }
 }
 
@@ -171,7 +236,8 @@ pub(super) fn activate_selective_head_tiles_body(
     mut tile_scales: DisjointSlice<f32>,
     params: CausalAttentionParams,
 ) {
-    let index = thread::blockIdx_x() * SELECTIVE_BACKWARD_THREADS_PER_BLOCK + thread::threadIdx_x();
+    let index =
+        thread::blockIdx_x() * SELECTIVE_TILE_ACTIVATE_THREADS_PER_BLOCK + thread::threadIdx_x();
     let tiles = params.seq_len.div_ceil(CTA_M);
     let tiles_per_batch = tiles * tiles;
     let total = params.batch_size * tiles_per_batch;

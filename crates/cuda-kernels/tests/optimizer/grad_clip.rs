@@ -16,6 +16,7 @@ fn global_clip_scales_all_gradient_buffers_together() -> Result<(), Box<dyn Erro
         DeviceBuffer::from_host(&stream, &[first.cu_deviceptr(), second.cu_deviceptr()])?;
     let chunk_lens = DeviceBuffer::from_host(&stream, &[4_u32, 4])?;
     let mut chunk_sums = DeviceBuffer::<f32>::zeroed(&stream, 2)?;
+    let extra_sums = DeviceBuffer::from_host(&stream, &[27.0_f32])?;
     let mut scale = DeviceBuffer::<f32>::zeroed(&stream, 1)?;
     let mut norm = DeviceBuffer::<f32>::zeroed(&stream, 1)?;
 
@@ -24,16 +25,18 @@ fn global_clip_scales_all_gradient_buffers_together() -> Result<(), Box<dyn Erro
         chunk_ptrs: &chunk_ptrs,
         chunk_lens: &chunk_lens,
         chunk_sums: &mut chunk_sums,
+        extra_sums: &extra_sums,
         scale: &mut scale,
         norm: &mut norm,
         chunk_count: 2,
-        max_norm: 6.5,
+        extra_sum_count: 1,
+        max_norm: 7.0,
         apply: true,
     })?;
 
     assert_slice_close(&first.to_host_vec(&stream)?, &[1.5, 2.0, 0.0, 0.0], 1.0e-6);
     assert_slice_close(&second.to_host_vec(&stream)?, &[6.0, 0.0, 0.0, 0.0], 1.0e-6);
     assert_slice_close(&scale.to_host_vec(&stream)?, &[0.5], 1.0e-6);
-    assert_slice_close(&norm.to_host_vec(&stream)?, &[13.0], 1.0e-6);
+    assert_slice_close(&norm.to_host_vec(&stream)?, &[14.0], 1.0e-6);
     Ok(())
 }

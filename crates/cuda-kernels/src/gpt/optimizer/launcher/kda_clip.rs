@@ -68,7 +68,10 @@ impl OptimizerModule {
         assert!(args.momentum.len() >= len as usize);
         assert!(args.scores.len() >= args.head_count as usize);
         assert!(args.bytes.len() >= len as usize / 2);
-        assert!(args.scales.len() >= len as usize / 16);
+        assert!(
+            args.scales.len()
+                >= crate::nvfp4::csf::encoded_len(args.qkv_dim as usize, args.input_dim as usize)
+        );
 
         self.apply.kda_clip.kda_muon_qk_clip_kernel(
             args.stream,

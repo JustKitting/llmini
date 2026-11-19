@@ -2,7 +2,7 @@ use cuda_device::DisjointSlice;
 
 use crate::f16_tc_matmul::convert::{cvt_f32_f16, cvt_rn_f16_f32};
 use crate::float_ptx::fma_f32;
-use crate::nvfp4::nvfp4_value;
+use crate::nvfp4::{nvfp4_value, nvfp4_vector_value};
 
 #[inline(always)]
 pub fn f32_column(values: &[f32], row_base: usize, col: u32, row_len: u32) -> f32 {
@@ -38,6 +38,22 @@ pub fn nvfp4_column(
     }
 }
 
+#[inline(always)]
+pub fn nvfp4_vector_column(
+    bytes: &[u8],
+    scales: &[u8],
+    global_scale: f32,
+    row_base: usize,
+    col: u32,
+    row_len: u32,
+) -> f32 {
+    if col < row_len {
+        nvfp4_vector_value(bytes, scales, global_scale, row_base + col as usize)
+    } else {
+        0.
+    }
+}
+
 #[expect(clippy::too_many_arguments, reason = "CUDA ABI uses explicit buffers")]
 #[inline(always)]
 pub fn nvfp4_affine_normalized_column(
@@ -53,13 +69,13 @@ pub fn nvfp4_affine_normalized_column(
     bias_global_scale: f32,
 ) -> f32 {
     if col < row_len {
-        let weight = nvfp4_value(
+        let weight = nvfp4_vector_value(
             weight_bytes,
             weight_scales,
             weight_global_scale,
             col as usize,
         );
-        let bias = nvfp4_value(bias_bytes, bias_scales, bias_global_scale, col as usize);
+        let bias = nvfp4_vector_value(bias_bytes, bias_scales, bias_global_scale, col as usize);
         fma_f32(centered * inv_std, weight, bias)
     } else {
         0.0

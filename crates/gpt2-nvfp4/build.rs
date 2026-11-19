@@ -7,6 +7,37 @@ use build_support::{Baseline, emit_rerun_metadata, env_usize};
 
 fn main() {
     let baseline = Baseline::load();
+    let bounded_swiglu = build_support::bounded_swiglu();
+    let mlp_initializer = match env::var("GPT2_MLP_INITIALIZER") {
+        Ok(value) => value,
+        Err(env::VarError::NotPresent) => "legacy".into(),
+        Err(error) => panic!("invalid GPT2_MLP_INITIALIZER: {error}"),
+    };
+    let mlp_reference_normal_init = match mlp_initializer.as_str() {
+        "legacy" => false,
+        "reference-normal-nvfp4" => true,
+        other => panic!("unsupported GPT2_MLP_INITIALIZER={other}"),
+    };
+    assert!(
+        !mlp_reference_normal_init || bounded_swiglu,
+        "reference-normal-nvfp4 initialization requires bounded-swiglu"
+    );
+    let value_rms = build_support::value_rms();
+    let full_kda_backward = build_support::full_kda_backward();
+    let stationary_rope = build_support::stationary_rope();
+    let kda_rational_output_gate = match env::var("GPT2_KDA_OUTPUT_GATE").as_deref() {
+        Ok("sigmoid") | Err(env::VarError::NotPresent) => false,
+        Ok("rational") => true,
+        other => panic!("unsupported GPT2_KDA_OUTPUT_GATE={other:?}; use sigmoid or rational"),
+    };
+    assert!(
+        !(stationary_rope && (bounded_swiglu || value_rms)) || full_kda_backward,
+        "stationary RoPE with numerical components requires the complete full-credit Engram/mHC graph"
+    );
+    assert!(
+        !(bounded_swiglu && value_rms) || full_kda_backward,
+        "bounded SwiGLU with value RMS requires the complete full-credit Engram/mHC graph"
+    );
     let seq_len = env_usize("GPT2_SEQ_LEN")
         .or_else(|| baseline.usize("GPT2_SEQ_LEN"))
         .unwrap_or(2048);
@@ -25,6 +56,19 @@ fn main() {
     let full_attention_window = env_usize("GPT2_FULL_ATTENTION_WINDOW")
         .or_else(|| baseline.usize("GPT2_FULL_ATTENTION_WINDOW"))
         .unwrap_or(seq_len);
+    let budget_name = "GPT2_ATTENTION_BACKWARD_TILE_BUDGET";
+    let budget_override = env::var(budget_name).ok();
+    let backward_tile_budget = budget_override
+        .as_deref()
+        .or_else(|| baseline.value(budget_name))
+        .unwrap_or("12")
+        .parse::<f32>()
+        .expect("GPT2_ATTENTION_BACKWARD_TILE_BUDGET must be a number");
+    let dense_value_gradient = match env::var("GPT2_FULL_ATTN_DENSE_DV").as_deref() {
+        Ok("0") | Err(env::VarError::NotPresent) => false,
+        Ok("1") => true,
+        other => panic!("unsupported GPT2_FULL_ATTN_DENSE_DV={other:?}; use 0 or 1"),
+    };
 
     assert!(
         seq_len >= 2048,
@@ -54,14 +98,26 @@ fn main() {
         0,
         "GPT2_FULL_ATTENTION_WINDOW must be aligned to the 128-token attention CTA"
     );
+    assert!(
+        backward_tile_budget.is_finite() && backward_tile_budget >= 0.0,
+        "GPT2_ATTENTION_BACKWARD_TILE_BUDGET must be finite and nonnegative"
+    );
 
     emit_rerun_metadata(&[
+        "GPT2_MLP_KIND",
+        "GPT2_MLP_INITIALIZER",
+        "GPT2_VALUE_RMS",
+        "GPT2_KDA_BACKWARD",
+        "GPT2_KDA_OUTPUT_GATE",
+        "GPT2_POSITION_KIND",
         "GPT2_SEQ_LEN",
         "GPT2_BATCH_SIZE",
         "GPT2_N_LAYER",
         "GPT2_N_HEAD",
         "GPT2_N_EMBD",
         "GPT2_FULL_ATTENTION_WINDOW",
+        budget_name,
+        "GPT2_FULL_ATTN_DENSE_DV",
     ]);
 
     let out = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR must be set"));
@@ -73,7 +129,15 @@ fn main() {
              pub const GPT2_N_LAYER: usize = {n_layer};\n\
              pub const GPT2_N_HEAD: usize = {n_head};\n\
              pub const GPT2_N_EMBD: usize = {n_embd};\n\
-             pub const GPT2_FULL_ATTENTION_WINDOW: usize = {full_attention_window};\n"
+             pub const GPT2_FULL_ATTENTION_WINDOW: usize = {full_attention_window};\n\
+             pub const GPT2_ATTENTION_BACKWARD_TILE_BUDGET: f32 = {backward_tile_budget:?};\n\
+             pub const GPT2_FULL_ATTN_DENSE_DV: bool = {dense_value_gradient};\n\
+             pub const GPT2_BOUNDED_SWIGLU: bool = {bounded_swiglu};\n\
+             pub const GPT2_MLP_REFERENCE_NORMAL_INIT: bool = {mlp_reference_normal_init};\n\
+             pub const GPT2_VALUE_RMS: bool = {value_rms};\n\
+             pub const GPT2_KDA_FULL_STATE_BACKWARD: bool = {full_kda_backward};\n\
+             pub const GPT2_KDA_RATIONAL_OUTPUT_GATE: bool = {kda_rational_output_gate};\n\
+             pub const GPT2_STATIONARY_ROPE: bool = {stationary_rope};\n"
         ),
     )
     .expect("failed to write generated GPT-2 shape");

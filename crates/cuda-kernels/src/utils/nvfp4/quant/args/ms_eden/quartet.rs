@@ -21,7 +21,7 @@ pub struct QuartetBackwardMsEdenDeviceScaleQuantArgs<'a, 'out> {
     pub x: &'a DeviceBuffer<f32>,
     pub out_fp4: &'out mut DeviceBuffer<u8>,
     pub out_scales: &'out mut DeviceBuffer<u8>,
-    pub out_global_scales: &'out mut DeviceBuffer<f32>,
+
     pub out_chunk_amax: &'out mut DeviceBuffer<f32>,
     pub out_global_scale: &'out mut DeviceBuffer<f32>,
     pub row_count: u32,
@@ -41,7 +41,7 @@ impl QuartetBackwardMsEdenDeviceScaleQuantArgs<'_, '_> {
             x: self.x,
             out_fp4: &mut *self.out_fp4,
             out_scales: &mut *self.out_scales,
-            out_global_scales: &mut *self.out_global_scales,
+
             out_chunk_amax: &mut *self.out_chunk_amax,
             global_scale: &*self.out_global_scale,
             row_count: self.row_count,

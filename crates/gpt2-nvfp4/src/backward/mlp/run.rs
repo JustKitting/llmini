@@ -6,12 +6,15 @@ use crate::backward::linear::{
 };
 use crate::{
     GPT2_EMBEDDING_DIM, GPT2_MLP_DIM, GPT2_MLP_ROUTE_ACTIVE_FEATURE_TILES,
-    GPT2_MLP_ROUTE_FEATURE_TILES, GPT2_MLP_ROUTE_TOKEN_TILES, uses_block_topk_mlp,
+    GPT2_MLP_ROUTE_FEATURE_TILES, uses_block_topk_mlp,
 };
 use cuda_core::DriverError;
 use rust_kernels_cuda::linear_backward::LinearBackwardRoute;
 
 pub fn backward(args: MlpBackwardArgs<'_, '_, '_>) -> Result<(), DriverError> {
+    if crate::GPT2_BOUNDED_SWIGLU {
+        return super::bounded::backward(args);
+    }
     let MlpBackwardArgs {
         block_index,
         stream,
@@ -64,7 +67,7 @@ pub fn backward(args: MlpBackwardArgs<'_, '_, '_>) -> Result<(), DriverError> {
             &mut *up_linear.e_h.chunk_amax,
             LinearBackwardRoute::mlp_down(
                 saved.mlp_route_masks,
-                GPT2_MLP_ROUTE_TOKEN_TILES as u32,
+                saved.row_count / crate::GPT2_MLP_ROUTE_TILE as u32,
                 GPT2_MLP_ROUTE_FEATURE_TILES as u32,
                 GPT2_MLP_ROUTE_ACTIVE_FEATURE_TILES as u32,
             ),
@@ -103,7 +106,7 @@ pub fn backward(args: MlpBackwardArgs<'_, '_, '_>) -> Result<(), DriverError> {
             up_pass,
             LinearBackwardRoute::mlp_up(
                 saved.mlp_route_masks,
-                GPT2_MLP_ROUTE_TOKEN_TILES as u32,
+                saved.row_count / crate::GPT2_MLP_ROUTE_TILE as u32,
                 GPT2_MLP_ROUTE_FEATURE_TILES as u32,
                 GPT2_MLP_ROUTE_ACTIVE_FEATURE_TILES as u32,
             ),

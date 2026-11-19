@@ -155,7 +155,7 @@ mod module {
                 let pre = *pre_slot + bias;
                 let relu = max_f32(pre, 0.0);
                 *pre_slot = pre;
-                *out.get_unchecked_mut(index as usize) = relu * relu;
+                *out.get_unchecked_mut(index as usize) = crate::activation::centered_relu2_from_positive(relu);
             }
             index += stride;
         }

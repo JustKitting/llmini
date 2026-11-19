@@ -6,8 +6,9 @@ mod ms_eden;
 mod ms_eden_transpose;
 
 pub use basic::{
-    Nvfp4QuantArgs, Nvfp4QuantPaddedArgs, Nvfp4QuantPairTransposeExactArgs, Nvfp4QuantRowwiseArgs,
-    Nvfp4QuantRowwiseDerivedAmaxArgs, Nvfp4QuantTransposePaddedArgs, RowAmaxArgs, TensorAmaxArgs,
+    Nvfp4QuantArgs, Nvfp4QuantPaddedArgs, Nvfp4QuantPairTransposeExactArgs,
+    Nvfp4QuantPairTransposePaddedArgs, Nvfp4QuantRowwiseArgs, Nvfp4QuantRowwiseDerivedAmaxArgs,
+    Nvfp4QuantTransposePaddedArgs, RowAmaxArgs, TensorAmaxArgs,
 };
 pub use ms_eden::{
     MsEdenDeviceScaleQuantArgs, MsEdenPairDeviceScaleQuantArgs, MsEdenQuantArgs,

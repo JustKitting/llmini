@@ -1,7 +1,7 @@
 use cuda_core::{CudaStream, DriverError};
-use rust_kernels_cuda::optimizer::{Fp32AdamWUpdateArgs, OptimizerModule};
+use rust_kernels_cuda::optimizer::OptimizerModule;
 
-use super::super::optimizer_state::{MuonState, OptimizerStateBuffers, SymExpLinScalarState};
+use super::super::optimizer_muon::MuonPointerTables;
 use super::adam::{ADAM_BETA1, ADAM_BETA2, ADAM_EPS, ADAM_WEIGHT_DECAY, adam_learning_rate};
 
 const EXPONENTIAL_LR_START: f32 = 50.0;
@@ -15,7 +15,7 @@ const PAPER_WIDTH_2048_STEPS: u32 = 150_000;
 pub(super) fn update_global_scales(
     stream: &CudaStream,
     optimizer: &OptimizerModule,
-    state: &mut OptimizerStateBuffers,
+    tables: &MuonPointerTables,
     step: u32,
     average_coefficient: f32,
     grad_scale: f32,
@@ -24,75 +24,6 @@ pub(super) fn update_global_scales(
         return Ok(());
     }
 
-    for block in &mut state.blocks {
-        update_matrix(
-            stream,
-            optimizer,
-            &mut block.attn_qkv.weight_muon,
-            step,
-            average_coefficient,
-            grad_scale,
-        )?;
-        update_matrix(
-            stream,
-            optimizer,
-            &mut block.attn_c_proj.weight_muon,
-            step,
-            average_coefficient,
-            grad_scale,
-        )?;
-        update_matrix(
-            stream,
-            optimizer,
-            &mut block.mlp_up.weight_muon,
-            step,
-            average_coefficient,
-            grad_scale,
-        )?;
-        update_matrix(
-            stream,
-            optimizer,
-            &mut block.mlp_down.weight_muon,
-            step,
-            average_coefficient,
-            grad_scale,
-        )?;
-    }
-
-    update_matrix(
-        stream,
-        optimizer,
-        &mut state.next_latent.input_projection.weight_muon,
-        step,
-        average_coefficient,
-        grad_scale,
-    )?;
-    update_matrix(
-        stream,
-        optimizer,
-        &mut state.next_latent.transition.weight_muon,
-        step,
-        average_coefficient,
-        grad_scale,
-    )?;
-    update_matrix(
-        stream,
-        optimizer,
-        &mut state.next_latent.output_projection.weight_muon,
-        step,
-        average_coefficient,
-        grad_scale,
-    )
-}
-
-fn update_matrix(
-    stream: &CudaStream,
-    optimizer: &OptimizerModule,
-    state: &mut MuonState,
-    step: u32,
-    average_coefficient: f32,
-    grad_scale: f32,
-) -> Result<(), DriverError> {
     let anneal_steps = super::super::env::env_usize("TRAIN_SYMEXP_LIN_ANNEAL_STEPS")
         .and_then(|value| u32::try_from(value).ok())
         .unwrap_or(PAPER_WIDTH_2048_STEPS)
@@ -101,68 +32,29 @@ fn update_matrix(
     // a separately tuned 12.5x multiplier to Adam-only model tensors, which must
     // not be multiplied by k a second time for the SEL controls.
     let base_lr = adam_learning_rate(step) / super::super::learning_rate::adam_scale();
-    update_scalar(
+    let exponential_linear_learning_rate = base_lr
+        * log_cosine_multiplier(step, anneal_steps, EXPONENTIAL_LR_START, EXPONENTIAL_LR_END);
+    debug_assert_eq!(
+        exponential_linear_learning_rate,
+        base_lr * log_cosine_multiplier(step, anneal_steps, LINEAR_LR_START, LINEAR_LR_END)
+    );
+    let curvature_learning_rate =
+        base_lr * log_cosine_multiplier(step, anneal_steps, CURVATURE_LR_START, CURVATURE_LR_END);
+    optimizer.symexp_lin_scale_adamw_update(
         stream,
-        optimizer,
-        &mut state.symexp_lin.exponential,
-        step,
-        average_coefficient,
+        tables.symexp_lin_slots(),
+        tables.slot_count as u32,
         grad_scale,
-        base_lr
-            * log_cosine_multiplier(step, anneal_steps, EXPONENTIAL_LR_START, EXPONENTIAL_LR_END),
+        exponential_linear_learning_rate,
+        curvature_learning_rate,
         ADAM_WEIGHT_DECAY,
-    )?;
-    update_scalar(
-        stream,
-        optimizer,
-        &mut state.symexp_lin.linear,
-        step,
+        ADAM_BETA1,
+        ADAM_BETA2,
+        1.0 - ADAM_BETA1.powi(step as i32),
+        1.0 - ADAM_BETA2.powi(step as i32),
+        ADAM_EPS,
         average_coefficient,
-        grad_scale,
-        base_lr * log_cosine_multiplier(step, anneal_steps, LINEAR_LR_START, LINEAR_LR_END),
-        ADAM_WEIGHT_DECAY,
-    )?;
-    update_scalar(
-        stream,
-        optimizer,
-        &mut state.symexp_lin.curvature,
-        step,
-        average_coefficient,
-        grad_scale,
-        base_lr * log_cosine_multiplier(step, anneal_steps, CURVATURE_LR_START, CURVATURE_LR_END),
-        0.0,
     )
-}
-
-#[expect(clippy::too_many_arguments)]
-fn update_scalar(
-    stream: &CudaStream,
-    optimizer: &OptimizerModule,
-    state: &mut SymExpLinScalarState,
-    step: u32,
-    average_coefficient: f32,
-    grad_scale: f32,
-    learning_rate: f32,
-    weight_decay: f32,
-) -> Result<(), DriverError> {
-    optimizer.apply_fp32_adamw_update(Fp32AdamWUpdateArgs {
-        stream,
-        z_master: &mut state.z_master,
-        x_master: &mut state.x_master,
-        grad: &state.grad,
-        grad_scale,
-        first_moment: &mut state.first,
-        second_moment: &mut state.second,
-        len: 1,
-        learning_rate,
-        weight_decay,
-        beta1: ADAM_BETA1,
-        beta2: ADAM_BETA2,
-        beta1_correction: 1.0 - ADAM_BETA1.powi(step as i32),
-        beta2_correction: 1.0 - ADAM_BETA2.powi(step as i32),
-        eps: ADAM_EPS,
-        average_coefficient,
-    })
 }
 
 fn log_cosine_multiplier(step: u32, anneal_steps: u32, start: f32, end: f32) -> f32 {

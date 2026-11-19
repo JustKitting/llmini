@@ -27,10 +27,6 @@ impl MsEdenPackGrid {
     pub fn config(self) -> LaunchConfig {
         grid_config(self.grid_dim)
     }
-
-    pub fn is_exact(self) -> bool {
-        self.chunk_count.is_multiple_of(WARPS_PER_BLOCK)
-    }
 }
 
 pub(in crate::nvfp4_quant) fn grid_config(grid_x: u32) -> LaunchConfig {
@@ -55,23 +51,10 @@ pub(in crate::nvfp4_quant) fn four_six_bounded_transpose_tiled_config(
     crate::launch::launch_config((source_cols / 64, source_rows / 16, 1), THREADS_PER_BLOCK)
 }
 
-pub(in crate::nvfp4_quant) fn ms_eden_rowwise_transpose_tiled_config(
-    source_rows: u32,
-    source_cols: u32,
-) -> LaunchConfig {
-    crate::launch::launch_config((source_rows / 32, source_cols / 8, 1), THREADS_PER_BLOCK)
-}
-
 pub(in crate::nvfp4_quant) fn four_six_rowwise_pow2(row_len: u32, group_count: u32) -> bool {
     row_len.is_power_of_two() && group_count.is_multiple_of(GROUPS_PER_BLOCK)
 }
 
 pub(in crate::nvfp4_quant) fn tensor_amax_chunk_count(element_count: u32) -> u32 {
     element_count.div_ceil(kernels::row_amax::TENSOR_AMAX_VALUES_PER_BLOCK)
-}
-
-pub(super) fn ms_eden_chunks(row_len: u32) -> Option<u32> {
-    row_len
-        .is_multiple_of(MS_EDEN_CHUNK_LEN)
-        .then_some(row_len / MS_EDEN_CHUNK_LEN)
 }

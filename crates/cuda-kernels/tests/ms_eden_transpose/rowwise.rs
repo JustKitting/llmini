@@ -44,8 +44,8 @@ fn rowwise_nvfp4_transpose_ms_eden_matches_materialized_decode() -> TestResult {
 #[ignore = "requires generated sm_120a PTX"]
 #[test]
 fn rowwise_nvfp4_transpose_no_chunk_no_pad_matches_materialized_decode() -> TestResult {
-    const LOCAL_ROWS: usize = 32;
-    const LOCAL_COLS: usize = 16;
+    const LOCAL_ROWS: usize = 128;
+    const LOCAL_COLS: usize = 128;
 
     let (_, stream, ptx) = common::cuda_test_context()?;
     let decode = Nvfp4DecodeModule::from_module(ptx.clone())?;

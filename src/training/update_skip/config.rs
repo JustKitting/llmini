@@ -5,6 +5,7 @@ const ROLLING_INTERVAL_ENV: &str = "TRAIN_SKIP_ROLLING_INTERVAL";
 const SIGMA_FACTOR_ENV: &str = "TRAIN_SKIP_SIGMA_FACTOR";
 const USE_LOSS_ENV: &str = "TRAIN_SKIP_USE_LOSS";
 const USE_GRAD_NORM_ENV: &str = "TRAIN_SKIP_USE_GRAD_NORM";
+const CAP_GRAD_HISTORY_ENV: &str = "TRAIN_SKIP_CAP_GRAD_HISTORY";
 
 const DEFAULT_ENABLED: bool = true;
 const DEFAULT_ROLLING_INTERVAL: usize = 128;
@@ -17,6 +18,7 @@ pub(super) struct UpdateSkipConfig {
     pub(super) sigma_factor: f32,
     pub(super) use_loss: bool,
     pub(super) use_grad_norm: bool,
+    pub(super) cap_grad_history: bool,
 }
 
 impl UpdateSkipConfig {
@@ -32,6 +34,7 @@ impl UpdateSkipConfig {
                 .max(0.0),
             use_loss: env_bool(USE_LOSS_ENV).unwrap_or(true),
             use_grad_norm: env_bool(USE_GRAD_NORM_ENV).unwrap_or(true),
+            cap_grad_history: env_bool(CAP_GRAD_HISTORY_ENV).unwrap_or(false),
         }
     }
 
@@ -43,6 +46,7 @@ impl UpdateSkipConfig {
             sigma_factor: 2.0,
             use_loss: true,
             use_grad_norm: true,
+            cap_grad_history: false,
         }
     }
 }

@@ -15,6 +15,14 @@ const WARPS_PER_BLOCK: u32 = THREADS_PER_BLOCK / 32;
 const XSA_MAX_ROW_TILES: u32 = 128;
 const XSA_NORM_EPS: f32 = 1.0e-4;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub enum AttentionOutputGate {
+    Disabled,
+    Sigmoid,
+    Rational,
+}
+
 pub struct HeadwiseAttentionGateForwardArgs<'a, 'out> {
     pub stream: &'a CudaStream,
     pub qkv: &'a DeviceBuffer<f32>,
@@ -27,6 +35,7 @@ pub struct HeadwiseAttentionGateForwardArgs<'a, 'out> {
     pub head_count: u32,
     pub head_dim: u32,
     pub gate_offset: u32,
+    pub gate: AttentionOutputGate,
 }
 
 pub struct HeadwiseAttentionGateBackwardArgs<'a, 'out> {
@@ -43,6 +52,7 @@ pub struct HeadwiseAttentionGateBackwardArgs<'a, 'out> {
     pub head_count: u32,
     pub head_dim: u32,
     pub gate_offset: u32,
+    pub gate: AttentionOutputGate,
 }
 
 pub struct ExclusiveSelfAttentionForwardArgs<'a, 'out> {
@@ -60,7 +70,7 @@ pub struct ExclusiveSelfAttentionForwardArgs<'a, 'out> {
     pub value_offset: u32,
     pub gate_offset: u32,
     pub alpha_offset: u32,
-    pub apply_headwise_gate: bool,
+    pub gate: AttentionOutputGate,
     pub kda_value_activation: bool,
 }
 
@@ -70,6 +80,7 @@ pub struct ExclusiveSelfAttentionBackwardArgs<'a, 'out> {
     pub raw_out_f16: &'a DeviceBuffer<u16>,
     pub d_out: &'out mut DeviceBuffer<f32>,
     pub d_qkv: &'out mut DeviceBuffer<f32>,
+    pub d_qkv_chunk_amax: &'out mut DeviceBuffer<f32>,
     pub d_xsa_alphas: &'out mut DeviceBuffer<f32>,
     pub xsa_alphas: Nvfp4DeviceTensor<'a>,
     pub row_count: u32,
@@ -79,8 +90,9 @@ pub struct ExclusiveSelfAttentionBackwardArgs<'a, 'out> {
     pub head_dim: u32,
     pub value_offset: u32,
     pub gate_offset: u32,
+    pub gate_amax_offset: u32,
     pub alpha_offset: u32,
-    pub apply_headwise_gate: bool,
+    pub gate: AttentionOutputGate,
     pub kda_value_activation: bool,
 }
 
@@ -89,6 +101,7 @@ impl AttentionModule {
         &self,
         args: HeadwiseAttentionGateForwardArgs<'_, '_>,
     ) -> Result<(), DriverError> {
+        assert_ne!(args.gate, AttentionOutputGate::Disabled);
         assert_eq!(args.embedding_dim, args.head_count * args.head_dim);
         assert!(args.gate_offset + args.head_count <= args.qkv_dim);
         let element_count = args.row_count * args.embedding_dim;
@@ -98,7 +111,7 @@ impl AttentionModule {
                 assert!(qkv_f16.len() >= (args.row_count * args.qkv_dim) as usize);
                 assert!(raw_out_f16.len() >= element_count as usize);
                 self.headwise_gate
-                    .headwise_attention_gate_forward_save_f16_kernel(
+                    .attention_output_gate_forward_save_f16_kernel(
                         args.stream,
                         config,
                         args.qkv,
@@ -111,9 +124,10 @@ impl AttentionModule {
                         args.head_count,
                         args.head_dim,
                         args.gate_offset,
+                        args.gate as u32,
                     )
             }
-            (None, None) => self.headwise_gate.headwise_attention_gate_forward_kernel(
+            (None, None) => self.headwise_gate.attention_output_gate_forward_kernel(
                 args.stream,
                 config,
                 args.qkv,
@@ -124,6 +138,7 @@ impl AttentionModule {
                 args.head_count,
                 args.head_dim,
                 args.gate_offset,
+                args.gate as u32,
             ),
             _ => panic!("headwise gate training tape must save both QKV logits and raw output"),
         }
@@ -133,12 +148,13 @@ impl AttentionModule {
         &self,
         args: HeadwiseAttentionGateBackwardArgs<'_, '_>,
     ) -> Result<(), DriverError> {
+        assert_ne!(args.gate, AttentionOutputGate::Disabled);
         assert_eq!(args.embedding_dim, args.head_count * args.head_dim);
         assert!(args.gate_offset + args.head_count <= args.qkv_dim);
         assert!(args.qkv_f16.len() >= (args.row_count * args.qkv_dim) as usize);
         assert!(args.raw_out_f16.len() >= (args.row_count * args.embedding_dim) as usize);
         assert!(args.d_qkv_chunk_amax.len() >= (args.gate_amax_offset + args.row_count) as usize);
-        self.headwise_gate.headwise_attention_gate_backward_kernel(
+        self.headwise_gate.attention_output_gate_backward_kernel(
             args.stream,
             linear_config(args.row_count * THREADS_PER_BLOCK, THREADS_PER_BLOCK),
             args.qkv_f16,
@@ -153,6 +169,7 @@ impl AttentionModule {
             args.head_count,
             args.head_dim,
             args.gate_offset,
+            args.gate as u32,
         )
     }
 
@@ -169,13 +186,13 @@ impl AttentionModule {
             args.value_offset,
             args.gate_offset,
             args.alpha_offset,
-            args.apply_headwise_gate,
+            args.gate != AttentionOutputGate::Disabled,
             args.qkv.len(),
             args.out.len(),
             args.xsa_alphas,
         );
         let config = xsa_config(args.row_count, args.head_count);
-        let apply_headwise_gate = u32::from(args.apply_headwise_gate);
+        let output_gate_kind = args.gate as u32;
         let kda_value_activation = u32::from(args.kda_value_activation);
         match (args.qkv_f16, args.raw_out_f16) {
             (Some(qkv_f16), Some(raw_out_f16)) => {
@@ -200,7 +217,7 @@ impl AttentionModule {
                         args.value_offset,
                         args.gate_offset,
                         args.alpha_offset,
-                        apply_headwise_gate,
+                        output_gate_kind,
                         kda_value_activation,
                     )
             }
@@ -220,7 +237,7 @@ impl AttentionModule {
                 args.value_offset,
                 args.gate_offset,
                 args.alpha_offset,
-                apply_headwise_gate,
+                output_gate_kind,
                 kda_value_activation,
             ),
             _ => panic!("XSA training tape must save both QKV logits and raw output"),
@@ -230,7 +247,7 @@ impl AttentionModule {
     pub fn exclusive_self_attention_backward(
         &self,
         args: ExclusiveSelfAttentionBackwardArgs<'_, '_>,
-    ) -> Result<(), DriverError> {
+    ) -> Result<u32, DriverError> {
         validate_xsa_shape(
             args.row_count,
             args.embedding_dim,
@@ -240,7 +257,7 @@ impl AttentionModule {
             args.value_offset,
             args.gate_offset,
             args.alpha_offset,
-            args.apply_headwise_gate,
+            args.gate != AttentionOutputGate::Disabled,
             args.qkv_f16.len(),
             args.d_out.len(),
             args.xsa_alphas,
@@ -248,28 +265,34 @@ impl AttentionModule {
         assert!(args.raw_out_f16.len() >= (args.row_count * args.embedding_dim) as usize);
         assert!(args.d_qkv.len() >= (args.row_count * args.qkv_dim) as usize);
         assert!(args.d_xsa_alphas.len() >= (args.alpha_offset + args.head_count) as usize);
-        self.headwise_gate.exclusive_self_attention_backward_kernel(
-            args.stream,
-            xsa_config(args.row_count, args.head_count),
-            args.qkv_f16,
-            args.raw_out_f16,
-            args.d_out,
-            args.d_qkv,
-            args.d_xsa_alphas,
-            args.xsa_alphas.bytes,
-            args.xsa_alphas.scales,
-            args.xsa_alphas.global_scale,
-            args.row_count,
-            args.embedding_dim,
-            args.qkv_dim,
-            args.head_count,
-            args.head_dim,
-            args.value_offset,
-            args.gate_offset,
-            args.alpha_offset,
-            u32::from(args.apply_headwise_gate),
-            u32::from(args.kda_value_activation),
-        )
+        let amax_chunk_count = xsa_amax_chunk_count(args.row_count, args.head_count);
+        assert!(args.d_qkv_chunk_amax.len() >= (args.gate_amax_offset + amax_chunk_count) as usize);
+        self.headwise_gate
+            .exclusive_self_attention_backward_kernel(
+                args.stream,
+                xsa_config(args.row_count, args.head_count),
+                args.qkv_f16,
+                args.raw_out_f16,
+                args.d_out,
+                args.d_qkv,
+                args.d_qkv_chunk_amax,
+                args.d_xsa_alphas,
+                args.xsa_alphas.bytes,
+                args.xsa_alphas.scales,
+                args.xsa_alphas.global_scale,
+                args.row_count,
+                args.embedding_dim,
+                args.qkv_dim,
+                args.head_count,
+                args.head_dim,
+                args.value_offset,
+                args.gate_offset,
+                args.gate_amax_offset,
+                args.alpha_offset,
+                args.gate as u32,
+                u32::from(args.kda_value_activation),
+            )?;
+        Ok(amax_chunk_count)
     }
 }
 
@@ -310,9 +333,41 @@ fn xsa_config(row_count: u32, head_count: u32) -> LaunchConfig {
     launch_config((row_tiles, head_count, 1), THREADS_PER_BLOCK)
 }
 
+fn xsa_amax_chunk_count(row_count: u32, head_count: u32) -> u32 {
+    row_count.div_ceil(WARPS_PER_BLOCK).min(XSA_MAX_ROW_TILES) * head_count
+}
+
 #[inline(always)]
 fn sigmoid(value: f32) -> f32 {
     1.0 / (1.0 + exp_f32(-value))
+}
+
+#[inline(always)]
+fn sigmoid_grad(value: f32) -> f32 {
+    // The rounded sigmoid can be one while its derivative is representable.
+    let tail = exp_f32(-abs_f32(value));
+    let inv = 1.0 / (1.0 + tail);
+    tail * inv * inv
+}
+
+#[inline(always)]
+fn output_gate(value: f32, kind: u32) -> f32 {
+    if kind == AttentionOutputGate::Rational as u32 {
+        let tail = 1.0 / (2.0 + abs_f32(value));
+        if value < 0.0 { tail } else { 1.0 - tail }
+    } else {
+        sigmoid(value)
+    }
+}
+
+#[inline(always)]
+fn output_gate_grad(value: f32, kind: u32) -> f32 {
+    if kind == AttentionOutputGate::Rational as u32 {
+        let tail = 1.0 / (2.0 + abs_f32(value));
+        tail * tail
+    } else {
+        sigmoid_grad(value)
+    }
 }
 
 #[inline(always)]
@@ -347,6 +402,7 @@ fn forward_body(
     _head_count: u32,
     head_dim: u32,
     gate_offset: u32,
+    output_gate_kind: u32,
 ) {
     let Some((index, gate_index, _)) = gate_position(
         row_count * embedding_dim,
@@ -358,7 +414,7 @@ fn forward_body(
         return;
     };
     unsafe {
-        *out.get_unchecked_mut(index) *= sigmoid(qkv[gate_index]);
+        *out.get_unchecked_mut(index) *= output_gate(qkv[gate_index], output_gate_kind);
     }
 }
 
@@ -377,6 +433,7 @@ fn forward_save_body(
     _head_count: u32,
     head_dim: u32,
     gate_offset: u32,
+    output_gate_kind: u32,
 ) {
     let Some((index, gate_index, head_dim_index)) = gate_position(
         row_count * embedding_dim,
@@ -390,7 +447,7 @@ fn forward_save_body(
     let raw = unsafe { *out.as_mut_ptr().add(index) };
     let gate_logit = qkv[gate_index];
     unsafe {
-        *out.get_unchecked_mut(index) = raw * sigmoid(gate_logit);
+        *out.get_unchecked_mut(index) = raw * output_gate(gate_logit, output_gate_kind);
         *raw_out_f16.get_unchecked_mut(index) = cvt_rn_f16_f32(raw);
         if head_dim_index == 0 {
             *qkv_f16.get_unchecked_mut(gate_index) = cvt_rn_f16_f32(gate_logit);
@@ -415,6 +472,7 @@ fn backward_body(
     head_count: u32,
     head_dim: u32,
     gate_offset: u32,
+    output_gate_kind: u32,
     gate_warp_amax: &mut SharedArray<f32, 8>,
 ) {
     let row = thread::blockIdx_x();
@@ -428,9 +486,14 @@ fn backward_body(
     let mut head = warp_in_block;
     while head < head_count {
         let gate_index = (row * qkv_dim + gate_offset + head) as usize;
+        let gate_logit = if lane == 0 {
+            cvt_f32_f16(qkv_f16[gate_index])
+        } else {
+            0.0
+        };
         let gate = warp::shuffle_f32(
             if lane == 0 {
-                sigmoid(cvt_f32_f16(qkv_f16[gate_index]))
+                output_gate(gate_logit, output_gate_kind)
             } else {
                 0.0
             },
@@ -447,8 +510,9 @@ fn backward_body(
             }
             dim += 32;
         }
-        let gate_grad = warp_sum_f32(dot) * gate * (1.0 - gate);
+        let dot = warp_sum_f32(dot);
         if lane == 0 {
+            let gate_grad = dot * output_gate_grad(gate_logit, output_gate_kind);
             unsafe {
                 *d_qkv.get_unchecked_mut(gate_index) = gate_grad;
             }
@@ -528,7 +592,7 @@ fn xsa_forward_body(
     value_offset: u32,
     gate_offset: u32,
     alpha_offset: u32,
-    apply_headwise_gate: u32,
+    output_gate_kind: u32,
     kda_value_activation: u32,
 ) {
     let head = thread::blockIdx_y();
@@ -547,6 +611,48 @@ fn xsa_forward_body(
         head,
     );
     while row < row_count {
+        if head_dim == 64 {
+            let hidden_base = row * embedding_dim + head * head_dim;
+            let value_base = row * qkv_dim + value_offset + head * head_dim;
+            let value_index_0 = (value_base + lane) as usize;
+            let value_index_1 = (value_base + lane + 32) as usize;
+            let raw_value_0 = qkv[value_index_0];
+            let raw_value_1 = qkv[value_index_1];
+            let value_0 = xsa_value(raw_value_0, kda_value_activation);
+            let value_1 = xsa_value(raw_value_1, kda_value_activation);
+            let mut value_sumsq = 0.0;
+            value_sumsq += value_0 * value_0;
+            value_sumsq += value_1 * value_1;
+            let value_norm = max_f32(sqrt_f32(warp_sum_f32(value_sumsq)), XSA_NORM_EPS);
+            let value_norm_inv = 1.0 / value_norm;
+            let unit_value_0 = value_0 * value_norm_inv;
+            let unit_value_1 = value_1 * value_norm_inv;
+
+            let hidden_index_0 = (hidden_base + lane) as usize;
+            let hidden_index_1 = (hidden_base + lane + 32) as usize;
+            let raw_0 = unsafe { *out.as_mut_ptr().add(hidden_index_0) };
+            let raw_1 = unsafe { *out.as_mut_ptr().add(hidden_index_1) };
+            let mut projection = 0.0;
+            projection += raw_0 * unit_value_0;
+            projection += raw_1 * unit_value_1;
+            let projection = warp_sum_f32(projection);
+            let gate_index = (row * qkv_dim + gate_offset + head) as usize;
+            let gate = if output_gate_kind != AttentionOutputGate::Disabled as u32 {
+                output_gate(qkv[gate_index], output_gate_kind)
+            } else {
+                1.0
+            };
+
+            unsafe {
+                *out.get_unchecked_mut(hidden_index_0) =
+                    (raw_0 - alpha * projection * unit_value_0) * gate;
+                *out.get_unchecked_mut(hidden_index_1) =
+                    (raw_1 - alpha * projection * unit_value_1) * gate;
+            }
+            row += row_stride;
+            continue;
+        }
+
         let hidden_base = row * embedding_dim + head * head_dim;
         let value_base = row * qkv_dim + value_offset + head * head_dim;
         let mut value_sumsq = 0.0;
@@ -568,8 +674,11 @@ fn xsa_forward_body(
             dim += 32;
         }
         let projection = warp_sum_f32(projection);
-        let gate = if apply_headwise_gate != 0 {
-            sigmoid(qkv[(row * qkv_dim + gate_offset + head) as usize])
+        let gate = if output_gate_kind != AttentionOutputGate::Disabled as u32 {
+            output_gate(
+                qkv[(row * qkv_dim + gate_offset + head) as usize],
+                output_gate_kind,
+            )
         } else {
             1.0
         };
@@ -609,7 +718,7 @@ fn xsa_forward_save_body(
     value_offset: u32,
     gate_offset: u32,
     alpha_offset: u32,
-    apply_headwise_gate: u32,
+    output_gate_kind: u32,
     kda_value_activation: u32,
 ) {
     let head = thread::blockIdx_y();
@@ -628,6 +737,55 @@ fn xsa_forward_save_body(
         head,
     );
     while row < row_count {
+        if head_dim == 64 {
+            let hidden_base = row * embedding_dim + head * head_dim;
+            let value_base = row * qkv_dim + value_offset + head * head_dim;
+            let value_index_0 = (value_base + lane) as usize;
+            let value_index_1 = (value_base + lane + 32) as usize;
+            let raw_value_0 = qkv[value_index_0];
+            let raw_value_1 = qkv[value_index_1];
+            let value_0 = xsa_value(raw_value_0, kda_value_activation);
+            let value_1 = xsa_value(raw_value_1, kda_value_activation);
+            let mut value_sumsq = 0.0;
+            value_sumsq += value_0 * value_0;
+            value_sumsq += value_1 * value_1;
+            let value_norm = max_f32(sqrt_f32(warp_sum_f32(value_sumsq)), XSA_NORM_EPS);
+            let value_norm_inv = 1.0 / value_norm;
+            let unit_value_0 = value_0 * value_norm_inv;
+            let unit_value_1 = value_1 * value_norm_inv;
+
+            let hidden_index_0 = (hidden_base + lane) as usize;
+            let hidden_index_1 = (hidden_base + lane + 32) as usize;
+            let raw_0 = unsafe { *out.as_mut_ptr().add(hidden_index_0) };
+            let raw_1 = unsafe { *out.as_mut_ptr().add(hidden_index_1) };
+            let mut projection = 0.0;
+            projection += raw_0 * unit_value_0;
+            projection += raw_1 * unit_value_1;
+            let projection = warp_sum_f32(projection);
+            let gate_index = (row * qkv_dim + gate_offset + head) as usize;
+            let gate = if output_gate_kind != AttentionOutputGate::Disabled as u32 {
+                output_gate(qkv[gate_index], output_gate_kind)
+            } else {
+                1.0
+            };
+
+            unsafe {
+                *raw_out_f16.get_unchecked_mut(hidden_index_0) = cvt_rn_f16_f32(raw_0);
+                *raw_out_f16.get_unchecked_mut(hidden_index_1) = cvt_rn_f16_f32(raw_1);
+                *out.get_unchecked_mut(hidden_index_0) =
+                    (raw_0 - alpha * projection * unit_value_0) * gate;
+                *out.get_unchecked_mut(hidden_index_1) =
+                    (raw_1 - alpha * projection * unit_value_1) * gate;
+            }
+            if lane == 0 && output_gate_kind != AttentionOutputGate::Disabled as u32 {
+                unsafe {
+                    *qkv_f16.get_unchecked_mut(gate_index) = cvt_rn_f16_f32(qkv[gate_index]);
+                }
+            }
+            row += row_stride;
+            continue;
+        }
+
         let hidden_base = row * embedding_dim + head * head_dim;
         let value_base = row * qkv_dim + value_offset + head * head_dim;
         let mut value_sumsq = 0.0;
@@ -650,8 +808,8 @@ fn xsa_forward_save_body(
         }
         let projection = warp_sum_f32(projection);
         let gate_index = (row * qkv_dim + gate_offset + head) as usize;
-        let gate = if apply_headwise_gate != 0 {
-            sigmoid(qkv[gate_index])
+        let gate = if output_gate_kind != AttentionOutputGate::Disabled as u32 {
+            output_gate(qkv[gate_index], output_gate_kind)
         } else {
             1.0
         };
@@ -668,7 +826,7 @@ fn xsa_forward_save_body(
             }
             dim += 32;
         }
-        if lane == 0 && apply_headwise_gate != 0 {
+        if lane == 0 && output_gate_kind != AttentionOutputGate::Disabled as u32 {
             unsafe {
                 *qkv_f16.get_unchecked_mut(gate_index) = cvt_rn_f16_f32(qkv[gate_index]);
             }
@@ -686,6 +844,7 @@ fn xsa_backward_body(
     raw_out_f16: &[u16],
     mut d_out: DisjointSlice<f32>,
     mut d_qkv: DisjointSlice<f32>,
+    mut d_qkv_chunk_amax: DisjointSlice<f32>,
     mut d_xsa_alphas: DisjointSlice<f32>,
     alpha_bytes: &[u8],
     alpha_scales: &[u8],
@@ -697,9 +856,11 @@ fn xsa_backward_body(
     head_dim: u32,
     value_offset: u32,
     gate_offset: u32,
+    gate_amax_offset: u32,
     alpha_offset: u32,
-    apply_headwise_gate: u32,
+    output_gate_kind: u32,
     kda_value_activation: u32,
+    gate_warp_amax: &mut SharedArray<f32, 8>,
 ) {
     let head = thread::blockIdx_y();
     if head >= head_count {
@@ -717,8 +878,123 @@ fn xsa_backward_body(
         head,
     );
     let mut alpha_grad_sum = 0.0;
+    let mut gate_amax = 0.0;
 
     while row < row_count {
+        if head_dim == 64 {
+            let hidden_base = row * embedding_dim + head * head_dim;
+            let value_base = row * qkv_dim + value_offset + head * head_dim;
+            let value_index_0 = (value_base + lane) as usize;
+            let value_index_1 = (value_base + lane + 32) as usize;
+            let raw_value_0 = cvt_f32_f16(qkv_f16[value_index_0]);
+            let raw_value_1 = cvt_f32_f16(qkv_f16[value_index_1]);
+            let value_0 = xsa_value(raw_value_0, kda_value_activation);
+            let value_1 = xsa_value(raw_value_1, kda_value_activation);
+            let mut value_sumsq = 0.0;
+            value_sumsq += value_0 * value_0;
+            value_sumsq += value_1 * value_1;
+            let raw_value_norm = sqrt_f32(warp_sum_f32(value_sumsq));
+            let value_norm = max_f32(raw_value_norm, XSA_NORM_EPS);
+            // Below the floor, u=v/epsilon has a constant denominator.
+            let norm_active = raw_value_norm >= XSA_NORM_EPS;
+            let value_norm_inv = 1.0 / value_norm;
+            let unit_value_0 = value_0 * value_norm_inv;
+            let unit_value_1 = value_1 * value_norm_inv;
+
+            let hidden_index_0 = (hidden_base + lane) as usize;
+            let hidden_index_1 = (hidden_base + lane + 32) as usize;
+            let raw_0 = cvt_f32_f16(raw_out_f16[hidden_index_0]);
+            let raw_1 = cvt_f32_f16(raw_out_f16[hidden_index_1]);
+            let mut projection = 0.0;
+            projection += raw_0 * unit_value_0;
+            projection += raw_1 * unit_value_1;
+            let projection = warp_sum_f32(projection);
+            let gate_index = (row * qkv_dim + gate_offset + head) as usize;
+            let (gate_logit, gate) = if output_gate_kind != AttentionOutputGate::Disabled as u32 {
+                let logit = cvt_f32_f16(qkv_f16[gate_index]);
+                (logit, output_gate(logit, output_gate_kind))
+            } else {
+                (0.0, 1.0)
+            };
+
+            let upstream_0 = unsafe { *d_out.as_mut_ptr().add(hidden_index_0) };
+            let upstream_1 = unsafe { *d_out.as_mut_ptr().add(hidden_index_1) };
+            let exclusive_0 = raw_0 - alpha * projection * unit_value_0;
+            let exclusive_1 = raw_1 - alpha * projection * unit_value_1;
+            let mut gate_dot = 0.0;
+            let mut grad_projection = 0.0;
+            gate_dot += upstream_0 * exclusive_0;
+            grad_projection += upstream_0 * gate * unit_value_0;
+            gate_dot += upstream_1 * exclusive_1;
+            grad_projection += upstream_1 * gate * unit_value_1;
+            let gate_dot = warp_sum_f32(gate_dot);
+            let grad_projection = warp_sum_f32(grad_projection);
+
+            let dz_0 = upstream_0 * gate;
+            let dz_1 = upstream_1 * gate;
+            let direct_value_grad_0 = alpha
+                * (-grad_projection * raw_0 - projection * dz_0
+                    + if norm_active {
+                        2.0 * projection * grad_projection * unit_value_0
+                    } else {
+                        0.0
+                    })
+                * value_norm_inv;
+            let direct_value_grad_1 = alpha
+                * (-grad_projection * raw_1 - projection * dz_1
+                    + if norm_active {
+                        2.0 * projection * grad_projection * unit_value_1
+                    } else {
+                        0.0
+                    })
+                * value_norm_inv;
+            let raw_value_grad_0 = if kda_value_activation != 0 {
+                direct_value_grad_0 * silu_grad(raw_value_0)
+            } else {
+                direct_value_grad_0
+            };
+            let raw_value_grad_1 = if kda_value_activation != 0 {
+                direct_value_grad_1 * silu_grad(raw_value_1)
+            } else {
+                direct_value_grad_1
+            };
+            unsafe {
+                *d_out.get_unchecked_mut(hidden_index_0) =
+                    dz_0 - alpha * grad_projection * unit_value_0;
+                *d_out.get_unchecked_mut(hidden_index_1) =
+                    dz_1 - alpha * grad_projection * unit_value_1;
+                *d_qkv.get_unchecked_mut(value_index_0) = raw_value_grad_0;
+                *d_qkv.get_unchecked_mut(value_index_1) = raw_value_grad_1;
+            }
+            if lane == 0 {
+                if output_gate_kind != AttentionOutputGate::Disabled as u32 {
+                    let gate_grad = gate_dot * output_gate_grad(gate_logit, output_gate_kind);
+                    unsafe {
+                        *d_qkv.get_unchecked_mut(gate_index) = gate_grad;
+                    }
+                    gate_amax = max_f32(gate_amax, abs_f32(gate_grad));
+                }
+                alpha_grad_sum += -(1.0 - alpha * alpha) * projection * grad_projection;
+            }
+
+            if head == 0 {
+                let padding_start = if output_gate_kind != AttentionOutputGate::Disabled as u32 {
+                    gate_offset + head_count
+                } else {
+                    gate_offset
+                };
+                let mut padding_col = padding_start + lane;
+                while padding_col < qkv_dim {
+                    unsafe {
+                        *d_qkv.get_unchecked_mut((row * qkv_dim + padding_col) as usize) = 0.0;
+                    }
+                    padding_col += 32;
+                }
+            }
+            row += row_stride;
+            continue;
+        }
+
         let hidden_base = row * embedding_dim + head * head_dim;
         let value_base = row * qkv_dim + value_offset + head * head_dim;
         let mut value_sumsq = 0.0;
@@ -729,7 +1005,9 @@ fn xsa_backward_body(
             value_sumsq += value * value;
             dim += 32;
         }
-        let value_norm = max_f32(sqrt_f32(warp_sum_f32(value_sumsq)), XSA_NORM_EPS);
+        let raw_value_norm = sqrt_f32(warp_sum_f32(value_sumsq));
+        let value_norm = max_f32(raw_value_norm, XSA_NORM_EPS);
+        let norm_active = raw_value_norm >= XSA_NORM_EPS;
         let value_norm_inv = 1.0 / value_norm;
 
         let mut projection = 0.0;
@@ -743,10 +1021,11 @@ fn xsa_backward_body(
         }
         let projection = warp_sum_f32(projection);
         let gate_index = (row * qkv_dim + gate_offset + head) as usize;
-        let gate = if apply_headwise_gate != 0 {
-            sigmoid(cvt_f32_f16(qkv_f16[gate_index]))
+        let (gate_logit, gate) = if output_gate_kind != AttentionOutputGate::Disabled as u32 {
+            let logit = cvt_f32_f16(qkv_f16[gate_index]);
+            (logit, output_gate(logit, output_gate_kind))
         } else {
-            1.0
+            (0.0, 1.0)
         };
 
         let mut gate_dot = 0.0;
@@ -777,7 +1056,11 @@ fn xsa_backward_body(
             let raw = cvt_f32_f16(raw_out_f16[hidden_index]);
             let direct_value_grad = alpha
                 * (-grad_projection * raw - projection * dz
-                    + 2.0 * projection * grad_projection * value)
+                    + if norm_active {
+                        2.0 * projection * grad_projection * value
+                    } else {
+                        0.0
+                    })
                 * value_norm_inv;
             let raw_value_grad = if kda_value_activation != 0 {
                 direct_value_grad * silu_grad(raw_value)
@@ -791,16 +1074,18 @@ fn xsa_backward_body(
             dim += 32;
         }
         if lane == 0 {
-            if apply_headwise_gate != 0 {
+            if output_gate_kind != AttentionOutputGate::Disabled as u32 {
+                let gate_grad = gate_dot * output_gate_grad(gate_logit, output_gate_kind);
                 unsafe {
-                    *d_qkv.get_unchecked_mut(gate_index) = gate_dot * gate * (1.0 - gate);
+                    *d_qkv.get_unchecked_mut(gate_index) = gate_grad;
                 }
+                gate_amax = max_f32(gate_amax, abs_f32(gate_grad));
             }
             alpha_grad_sum += -(1.0 - alpha * alpha) * projection * grad_projection;
         }
 
         if head == 0 {
-            let padding_start = if apply_headwise_gate != 0 {
+            let padding_start = if output_gate_kind != AttentionOutputGate::Disabled as u32 {
                 gate_offset + head_count
             } else {
                 gate_offset
@@ -814,6 +1099,24 @@ fn xsa_backward_body(
             }
         }
         row += row_stride;
+    }
+
+    if lane == 0 {
+        gate_warp_amax[warp_in_block as usize] = gate_amax;
+    }
+    thread::sync_threads();
+    if thread::threadIdx_x() == 0 {
+        let mut block_amax = 0.0;
+        let mut warp_index = 0;
+        while warp_index < 8 {
+            block_amax = max_f32(block_amax, gate_warp_amax[warp_index]);
+            warp_index += 1;
+        }
+        let chunk =
+            gate_amax_offset + thread::blockIdx_y() * thread::gridDim_x() + thread::blockIdx_x();
+        unsafe {
+            *d_qkv_chunk_amax.get_unchecked_mut(chunk as usize) = block_amax;
+        }
     }
 
     if lane == 0 {
@@ -833,7 +1136,7 @@ pub(super) mod kernels {
     use super::*;
 
     #[kernel]
-    pub fn headwise_attention_gate_forward_kernel(
+    pub fn attention_output_gate_forward_kernel(
         qkv: &[f32],
         out: DisjointSlice<f32>,
         row_count: u32,
@@ -842,6 +1145,7 @@ pub(super) mod kernels {
         head_count: u32,
         head_dim: u32,
         gate_offset: u32,
+        output_gate_kind: u32,
     ) {
         forward_body(
             qkv,
@@ -852,11 +1156,12 @@ pub(super) mod kernels {
             head_count,
             head_dim,
             gate_offset,
+            output_gate_kind,
         );
     }
 
     #[kernel]
-    pub fn headwise_attention_gate_forward_save_f16_kernel(
+    pub fn attention_output_gate_forward_save_f16_kernel(
         qkv: &[f32],
         out: DisjointSlice<f32>,
         qkv_f16: DisjointSlice<u16>,
@@ -867,6 +1172,7 @@ pub(super) mod kernels {
         head_count: u32,
         head_dim: u32,
         gate_offset: u32,
+        output_gate_kind: u32,
     ) {
         forward_save_body(
             qkv,
@@ -879,11 +1185,12 @@ pub(super) mod kernels {
             head_count,
             head_dim,
             gate_offset,
+            output_gate_kind,
         );
     }
 
     #[kernel]
-    pub fn headwise_attention_gate_backward_kernel(
+    pub fn attention_output_gate_backward_kernel(
         qkv_f16: &[u16],
         raw_out_f16: &[u16],
         d_out: DisjointSlice<f32>,
@@ -896,6 +1203,7 @@ pub(super) mod kernels {
         head_count: u32,
         head_dim: u32,
         gate_offset: u32,
+        output_gate_kind: u32,
     ) {
         static mut GATE_WARP_AMAX: SharedArray<f32, 8> = SharedArray::UNINIT;
         backward_body(
@@ -911,6 +1219,7 @@ pub(super) mod kernels {
             head_count,
             head_dim,
             gate_offset,
+            output_gate_kind,
             unsafe { &mut GATE_WARP_AMAX },
         );
     }
@@ -930,7 +1239,7 @@ pub(super) mod kernels {
         value_offset: u32,
         gate_offset: u32,
         alpha_offset: u32,
-        apply_headwise_gate: u32,
+        output_gate_kind: u32,
         kda_value_activation: u32,
     ) {
         xsa_forward_body(
@@ -947,7 +1256,7 @@ pub(super) mod kernels {
             value_offset,
             gate_offset,
             alpha_offset,
-            apply_headwise_gate,
+            output_gate_kind,
             kda_value_activation,
         );
     }
@@ -969,7 +1278,7 @@ pub(super) mod kernels {
         value_offset: u32,
         gate_offset: u32,
         alpha_offset: u32,
-        apply_headwise_gate: u32,
+        output_gate_kind: u32,
         kda_value_activation: u32,
     ) {
         xsa_forward_save_body(
@@ -988,7 +1297,7 @@ pub(super) mod kernels {
             value_offset,
             gate_offset,
             alpha_offset,
-            apply_headwise_gate,
+            output_gate_kind,
             kda_value_activation,
         );
     }
@@ -999,6 +1308,7 @@ pub(super) mod kernels {
         raw_out_f16: &[u16],
         d_out: DisjointSlice<f32>,
         d_qkv: DisjointSlice<f32>,
+        d_qkv_chunk_amax: DisjointSlice<f32>,
         d_xsa_alphas: DisjointSlice<f32>,
         alpha_bytes: &[u8],
         alpha_scales: &[u8],
@@ -1010,15 +1320,18 @@ pub(super) mod kernels {
         head_dim: u32,
         value_offset: u32,
         gate_offset: u32,
+        gate_amax_offset: u32,
         alpha_offset: u32,
-        apply_headwise_gate: u32,
+        output_gate_kind: u32,
         kda_value_activation: u32,
     ) {
+        static mut GATE_WARP_AMAX: SharedArray<f32, 8> = SharedArray::UNINIT;
         xsa_backward_body(
             qkv_f16,
             raw_out_f16,
             d_out,
             d_qkv,
+            d_qkv_chunk_amax,
             d_xsa_alphas,
             alpha_bytes,
             alpha_scales,
@@ -1030,9 +1343,11 @@ pub(super) mod kernels {
             head_dim,
             value_offset,
             gate_offset,
+            gate_amax_offset,
             alpha_offset,
-            apply_headwise_gate,
+            output_gate_kind,
             kda_value_activation,
+            unsafe { &mut GATE_WARP_AMAX },
         );
     }
 }

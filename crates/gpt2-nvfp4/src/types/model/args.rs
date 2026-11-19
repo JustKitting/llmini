@@ -6,10 +6,9 @@ use rust_kernels_cuda::layer_norm::LayerNormModule;
 use rust_kernels_cuda::lm_head::LmHeadModule;
 use rust_kernels_cuda::mlp::MlpModule;
 use rust_kernels_cuda::nvfp4_quant::Nvfp4QuantModule;
-use rust_kernels_cuda::nvfp4_tma_matmul::{
-    launcher::Nvfp4GemmModule, pad::TmaMatrixPadModule, scale_pack::Sm120ScalePackModule,
-    tma::TmaNvfp4DeviceScaleDescriptors,
-};
+use rust_kernels_cuda::nvfp4_tma_matmul::launcher::Nvfp4GemmModule;
+use rust_kernels_cuda::nvfp4_tma_matmul::pad::TmaMatrixPadModule;
+use rust_kernels_cuda::nvfp4_tma_matmul::tma::TmaNvfp4DeviceScaleDescriptors;
 
 use crate::GPT2_N_LAYER;
 use crate::types::{
@@ -18,6 +17,10 @@ use crate::types::{
 };
 
 pub struct Gpt2ForwardArgs<'a> {
+    pub value_rms: &'a rust_kernels_cuda::value_rms::ValueRmsModule,
+    pub value_projection_observer: Option<&'a dyn crate::ValueProjectionObserver>,
+    pub mlp_paired: &'a mut DeviceBuffer<f32>,
+    pub mlp_projection_observer: Option<&'a dyn crate::MlpProjectionObserver>,
     pub embeddings: TokenEmbeddingArgs<'a>,
     pub attention_module: &'a AttentionModule,
     pub canon_module: &'a CanonModule,
@@ -27,12 +30,8 @@ pub struct Gpt2ForwardArgs<'a> {
     pub mlp_module: &'a MlpModule,
     pub lm_head_module: &'a LmHeadModule,
     pub tma_module: &'a Nvfp4GemmModule,
-    pub tma_scale_pack: &'a Sm120ScalePackModule,
     pub tma_pad: &'a TmaMatrixPadModule,
     pub tma_descriptors: &'a mut TmaNvfp4DeviceScaleDescriptors,
-    pub tma_input_scale_packed: &'a mut DeviceBuffer<u8>,
-    pub tma_wide_input_scale_packed: &'a mut DeviceBuffer<u8>,
-    pub tma_weight_scale_packed: &'a mut DeviceBuffer<u8>,
     pub tma_weight_bytes_padded: &'a mut DeviceBuffer<u8>,
     pub hidden_nvfp4: HiddenStateNvfp4<'a>,
     pub attention_tc_scratch: CausalAttentionTcScratch<'a>,

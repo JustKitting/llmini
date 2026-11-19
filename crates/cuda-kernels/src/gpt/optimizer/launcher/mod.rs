@@ -40,6 +40,21 @@ impl OptimizerModule {
         &self.tma
     }
 
+    pub fn verify_storage_layout(&self, stream: &CudaStream) -> Result<(), DriverError> {
+        let mut actual = DeviceBuffer::zeroed(stream, 1)?;
+        self.apply.storage.muon_storage_layout_signature_kernel(
+            stream,
+            crate::launch::launch_config((1, 1, 1), 32),
+            &mut actual,
+        )?;
+        let actual = actual.to_host_vec(stream)?;
+        if actual != [super::storage::MUON_STORAGE_LAYOUT_VERSION] {
+            eprintln!("Muon executable/PTX storage layout mismatch: {actual:?}");
+            return Err(DriverError(1));
+        }
+        Ok(())
+    }
+
     pub fn tma_scale_pack(&self) -> &Sm120ScalePackModule {
         &self.tma_scale_pack
     }

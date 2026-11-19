@@ -1,3 +1,4 @@
+use rust_kernels_cuda::nvfp4_tma_matmul::launcher::Nvfp4GemmModule;
 mod hidden;
 mod output;
 
@@ -6,10 +7,7 @@ pub(super) use output::output_and_loss;
 
 use cuda_core::{CudaStream, DeviceBuffer, DriverError};
 use rust_kernels_cuda::nvfp4::{Nvfp4DeviceTensor, Nvfp4RowwiseDeviceTensor};
-use rust_kernels_cuda::nvfp4_tma_matmul::{
-    launcher::Nvfp4GemmModule, scale_pack::Sm120ScalePackModule,
-    tma::TmaNvfp4DeviceScaleDescriptors,
-};
+use rust_kernels_cuda::nvfp4_tma_matmul::tma::TmaNvfp4DeviceScaleDescriptors;
 
 #[expect(
     clippy::too_many_arguments,
@@ -18,10 +16,7 @@ use rust_kernels_cuda::nvfp4_tma_matmul::{
 fn project_affine_tma(
     stream: &CudaStream,
     tma: &Nvfp4GemmModule,
-    scale_pack: &Sm120ScalePackModule,
     descriptors: &mut TmaNvfp4DeviceScaleDescriptors,
-    input_scale_packed: &mut DeviceBuffer<u8>,
-    weight_scale_packed: &mut DeviceBuffer<u8>,
     input: Nvfp4RowwiseDeviceTensor<'_>,
     weight: Nvfp4DeviceTensor<'_>,
     bias: Nvfp4DeviceTensor<'_>,
@@ -30,26 +25,12 @@ fn project_affine_tma(
     input_dim: u32,
     output_dim: u32,
 ) -> Result<(), DriverError> {
-    scale_pack.pack(
-        stream,
-        input.scales,
-        input_scale_packed,
-        token_count,
-        input_dim,
-    )?;
-    scale_pack.pack(
-        stream,
-        weight.scales,
-        weight_scale_packed,
-        output_dim,
-        input_dim,
-    )?;
-    tma.prepare_tma_nvfp4_device_scales_into(
+    tma.prepare_tma_nvfp4_csf_weight_into(
         stream,
         input.bytes,
-        input_scale_packed,
+        input.scales,
         weight.bytes,
-        weight_scale_packed,
+        weight.scales,
         token_count,
         input_dim,
         output_dim,

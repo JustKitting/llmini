@@ -5,10 +5,10 @@ pub struct MsEdenPairDeviceScaleQuantArgs<'a, 'out> {
     pub x: &'a DeviceBuffer<f32>,
     pub out_fp4: &'out mut DeviceBuffer<u8>,
     pub out_scales: &'out mut DeviceBuffer<u8>,
-    pub out_global_scales: &'out mut DeviceBuffer<f32>,
+
     pub transpose_out_fp4: &'out mut DeviceBuffer<u8>,
     pub transpose_out_scales: &'out mut DeviceBuffer<u8>,
-    pub transpose_out_global_scales: &'out mut DeviceBuffer<f32>,
+
     pub out_chunk_amax: &'out mut DeviceBuffer<f32>,
     pub out_global_scale: &'out mut DeviceBuffer<f32>,
     pub row_count: u32,

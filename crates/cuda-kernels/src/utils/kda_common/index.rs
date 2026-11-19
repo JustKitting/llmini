@@ -4,7 +4,16 @@ pub(crate) use crate::attention::layout::{
 };
 
 use super::activation::beta_offset;
-use super::shape::{chunk_count, state_elems};
+use super::shape::chunk_count;
+
+/// Each chunk owns enough bytes for FP32 U. Its native FP16 Kpos occupies
+/// the first half of those bytes until the joint W/U kernel overwrites it.
+/// Keeping that ownership stride prevents expansion into another CTA's input.
+#[inline(always)]
+pub(crate) fn kpos_half_arena_index(compact: usize) -> usize {
+    const CHUNK_ELEMS: usize = 64 * 64;
+    (compact / CHUNK_ELEMS) * (2 * CHUNK_ELEMS) + compact % CHUNK_ELEMS
+}
 
 #[inline(always)]
 pub(crate) fn beta_compact_index(
@@ -14,28 +23,6 @@ pub(crate) fn beta_compact_index(
     params: &CausalAttentionParams,
 ) -> usize {
     ((batch * params.head_count + head) * params.seq_len + token) as usize
-}
-
-#[inline(always)]
-pub(crate) fn chunk_matrix_index(
-    bh: u32,
-    chunk: u32,
-    row: u32,
-    col: u32,
-    params: &CausalAttentionParams,
-) -> usize {
-    (((bh * chunk_count(params) + chunk) * params.chunk_size + row) * params.chunk_size + col)
-        as usize
-}
-
-#[inline(always)]
-pub(crate) fn chunk_state_index(
-    bh: u32,
-    chunk: u32,
-    state_index: u32,
-    params: &CausalAttentionParams,
-) -> usize {
-    ((bh * chunk_count(params) + chunk) * state_elems(params) + state_index) as usize
 }
 
 #[inline(always)]

@@ -36,7 +36,7 @@ fn fp32_transpose_ms_eden_matches_materialized_transpose() -> TestResult {
         x: &x_t_dev,
         out_fp4: &mut materialized.bytes,
         out_scales: &mut materialized.scales,
-        out_global_scales: &mut materialized.global_scales,
+
         out_chunk_amax: &mut materialized.chunk_amax,
         global_scale: &global_scale,
         row_count: COLS as u32,
@@ -52,7 +52,7 @@ fn fp32_transpose_ms_eden_matches_materialized_transpose() -> TestResult {
         x: &x_dev,
         out_fp4: &mut direct.bytes,
         out_scales: &mut direct.scales,
-        out_global_scales: &mut direct.global_scales,
+
         out_chunk_amax: &mut direct.chunk_amax,
         global_scale: &global_scale,
         source_rows: ROWS as u32,
@@ -70,8 +70,8 @@ fn fp32_transpose_ms_eden_matches_materialized_transpose() -> TestResult {
 #[ignore = "requires generated sm_120a PTX"]
 #[test]
 fn fp32_pair_tiled_matches_independent_row_and_transpose_quantization() -> TestResult {
-    const LOCAL_ROWS: usize = 64;
-    const LOCAL_COLS: usize = 32;
+    const LOCAL_ROWS: usize = 128;
+    const LOCAL_COLS: usize = 128;
     const TRANSPOSE_SCALE_SEED: u32 = SCALE_SEED ^ 0x85eb_ca6b;
 
     let (_, stream, ptx) = common::cuda_test_context()?;
@@ -97,10 +97,10 @@ fn fp32_pair_tiled_matches_independent_row_and_transpose_quantization() -> TestR
                 x: &x_dev,
                 out_fp4: &mut pair_row.bytes,
                 out_scales: &mut pair_row.scales,
-                out_global_scales: &mut pair_row.global_scales,
+
                 transpose_out_fp4: &mut pair_transpose.bytes,
                 transpose_out_scales: &mut pair_transpose.scales,
-                transpose_out_global_scales: &mut pair_transpose.global_scales,
+
                 out_chunk_amax: &mut pair_row.chunk_amax,
                 out_global_scale: &mut pair_row.global_scale,
                 row_count: LOCAL_ROWS as u32,
@@ -121,7 +121,7 @@ fn fp32_pair_tiled_matches_independent_row_and_transpose_quantization() -> TestR
         x: &x_dev,
         out_fp4: &mut row_reference.bytes,
         out_scales: &mut row_reference.scales,
-        out_global_scales: &mut row_reference.global_scales,
+
         out_chunk_amax: &mut row_reference.chunk_amax,
         global_scale: &pair_row.global_scale,
         row_count: LOCAL_ROWS as u32,
@@ -137,7 +137,7 @@ fn fp32_pair_tiled_matches_independent_row_and_transpose_quantization() -> TestR
             x: &x_dev,
             out_fp4: &mut transpose_reference.bytes,
             out_scales: &mut transpose_reference.scales,
-            out_global_scales: &mut transpose_reference.global_scales,
+
             out_chunk_amax: &mut transpose_reference.chunk_amax,
             global_scale: &pair_row.global_scale,
             source_rows: LOCAL_ROWS as u32,

@@ -4,11 +4,11 @@ use cuda_core::CudaStream;
 
 use super::super::format::CheckpointTensor;
 use crate::{
-    AppResult,
     upload::{UploadedCanon, UploadedNvfp4},
+    AppResult,
 };
 
-pub(super) fn take_uploaded(
+pub(crate) fn take_uploaded(
     stream: &CudaStream,
     tensors: &mut HashMap<String, CheckpointTensor>,
     name: &str,
@@ -26,20 +26,24 @@ pub(super) fn take_uploaded(
     )
 }
 
-pub(super) fn take_uploaded_fp32(
+pub(crate) fn take_uploaded_fp32(
     stream: &CudaStream,
     tensors: &mut HashMap<String, CheckpointTensor>,
     name: &str,
 ) -> AppResult<UploadedCanon> {
+    take_uploaded_fp32_len(stream, tensors, name, gpt2_nvfp4::GPT2_CANON_WEIGHT_COUNT)
+}
+
+pub(crate) fn take_uploaded_fp32_len(
+    stream: &CudaStream,
+    tensors: &mut HashMap<String, CheckpointTensor>,
+    name: &str,
+    expected: usize,
+) -> AppResult<UploadedCanon> {
     let tensor = tensors
         .remove(name)
         .ok_or_else(|| format!("checkpoint is missing tensor {name}"))?;
-    validate_len(
-        name,
-        "values",
-        tensor.len,
-        gpt2_nvfp4::GPT2_CANON_WEIGHT_COUNT,
-    )?;
+    validate_len(name, "values", tensor.len, expected)?;
     validate_len(
         name,
         "bytes",
@@ -55,9 +59,22 @@ pub(super) fn take_uploaded_fp32(
     UploadedCanon::from_host(stream, &values)
 }
 
-fn validate(name: &str, tensor: &CheckpointTensor) -> AppResult {
+pub(super) fn validate(name: &str, tensor: &CheckpointTensor) -> AppResult {
     validate_len(name, "bytes", tensor.bytes.len(), tensor.len / 2)?;
-    validate_len(name, "scales", tensor.scales.len(), tensor.len / 16)
+    if tensor.scales.len() < 128 {
+        return Err(format!("{name}: missing CSF header").into());
+    }
+    let k = u32::from_le_bytes(tensor.scales[0..4].try_into()?) as usize;
+    let rows = u32::from_le_bytes(tensor.scales[4..8].try_into()?) as usize;
+    if k == 0 || k % 128 != 0 || rows != tensor.len.div_ceil(k) {
+        return Err(format!("{name}: invalid CSF shape").into());
+    }
+    validate_len(
+        name,
+        "scales",
+        tensor.scales.len(),
+        rust_kernels_cuda::nvfp4::csf::encoded_len(rows, k),
+    )
 }
 
 fn validate_len(name: &str, field: &str, actual: usize, expected: usize) -> AppResult {

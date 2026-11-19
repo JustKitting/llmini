@@ -43,10 +43,6 @@ impl LaunchDims {
     pub(crate) fn chc(self) -> MatmulShape {
         MatmulShape(self.chunk_size, self.head_dim, self.chunk_size)
     }
-
-    pub(crate) fn ccc(self) -> MatmulShape {
-        MatmulShape(self.chunk_size, self.chunk_size, self.chunk_size)
-    }
 }
 
 pub(crate) fn chunk_dim_config(

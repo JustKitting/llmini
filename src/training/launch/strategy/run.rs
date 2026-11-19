@@ -2,6 +2,7 @@ use burn::train::{
     EventProcessorTraining, Interrupter, LearnerEvent, SupervisedTrainingEventProcessor,
     TrainLoader, ValidLoader,
 };
+use std::time::Instant;
 
 use super::{
     CudaTrainingStrategy, TRAIN_EPOCH,
@@ -12,10 +13,48 @@ use super::{
 };
 use crate::AppResult;
 use crate::training::launch::{
-    CudaLearningComponents,
+    CudaLearningComponents, TrainConfig,
     config::{load_model_path, should_eval_step, should_log_step},
 };
 use crate::training::{Trainer, debug_metrics};
+
+impl TrainConfig {
+    pub(in crate::training) fn create_trainer(&self) -> AppResult<Trainer> {
+        if gpt2_nvfp4::GPT2_REQUIRES_ENGRAM_MHC && !self.engram_mhc {
+            return Err(
+                "this composite full-credit build requires the complete Engram/mHC factory".into(),
+            );
+        }
+        if gpt2_nvfp4::GPT2_KDA_FULL_STATE_BACKWARD
+            && (self.latent_feedback || (self.mhc && !self.engram_mhc))
+        {
+            return Err("full recurrent KDA credit supports the standalone backbone or complete four-stream Engram/mHC graph".into());
+        }
+        if self.engram_mhc {
+            if self.engram_four_grams {
+                Trainer::new_engram_mhc_with_four_grams(self.seed, self.engram_table_params)
+            } else if let Some(requested) = self.engram_table_params {
+                Trainer::new_engram_mhc_with_table_budget(self.seed, requested)
+            } else {
+                Trainer::new_engram_mhc(self.seed)
+            }
+        } else if gpt2_nvfp4::GPT2_STATIONARY_ROPE {
+            Trainer::new_stationary_rope(self.seed)
+        } else if gpt2_nvfp4::GPT2_VALUE_RMS {
+            Trainer::new_value_rms(self.seed)
+        } else if gpt2_nvfp4::GPT2_BOUNDED_SWIGLU {
+            Trainer::new_bounded_swiglu(self.seed)
+        } else if gpt2_nvfp4::GPT2_KDA_FULL_STATE_BACKWARD {
+            Trainer::new_full_kda(self.seed)
+        } else if self.mhc {
+            Trainer::new_mhc(self.seed)
+        } else if self.latent_feedback {
+            Trainer::new_feedback(self.seed)
+        } else {
+            Trainer::new(self.seed)
+        }
+    }
+}
 
 impl CudaTrainingStrategy {
     pub(super) fn run_training(
@@ -25,7 +64,14 @@ impl CudaTrainingStrategy {
         processor: &mut SupervisedTrainingEventProcessor<CudaLearningComponents>,
         interrupter: &Interrupter,
     ) -> AppResult {
-        let mut trainer = Trainer::new(self.config.seed)?;
+        crate::training::diagnostics::kda_clip::initialize(self.run_output.dir())?;
+        let gradient_interval =
+            crate::training::env::env_usize("TRAIN_GRADIENT_COMPONENT_INTERVAL")
+                .filter(|&interval| interval > 0);
+        let mut gradient_log = gradient_interval
+            .map(|_| std::fs::File::create(self.run_output.path("gradient_components.jsonl")))
+            .transpose()?;
+        let mut trainer = self.config.create_trainer()?;
         if let Some(path) = load_model_path() {
             trainer.load_model(&path)?;
             println!("loaded_model={}", path.display());
@@ -34,7 +80,7 @@ impl CudaTrainingStrategy {
         let validation = validation_input(dataloader_valid)?;
         let mut train_batch = trainer.reusable_default_batch()?;
         let mut debug_logger = debug_metrics::DebugTraceLogger::new(self.run_output.path("debug"))?;
-        let wall_clock = WallClockBudget::new(self.config.max_seconds);
+        let mut wall_clock = WallClockBudget::new(self.config.max_seconds);
         let mut completed_steps = 0usize;
         let mut train_iter = dataloader_train.iter();
 
@@ -45,6 +91,64 @@ impl CudaTrainingStrategy {
             let batch = trainer.upload_default_batch(&mut train_batch, &window.tokens)?;
             let stats = trainer.train_step(batch, log_step)?;
             completed_steps = step + 1;
+
+            let numerical_failure = super::super::config::env_bool("TRAIN_STOP_ON_NONFINITE")
+                .unwrap_or(false)
+                && (!stats.finite || stats.optimizer.skip_non_finite);
+            if numerical_failure {
+                eprintln!("numerical_failure_capture_started completed_steps={completed_steps}");
+                // Capture before publishing the bad metric: external monitors must
+                // not terminate the CUDA context while its state is being read.
+                trainer.write_numerical_failure_dump(
+                    batch,
+                    &self.run_output.path("numerical_failure_state.tsv"),
+                )?;
+                trainer.save_model(&self.run_output.path("numerical_failure_weights.ckpt"))?;
+                eprintln!("numerical_failure_capture_complete completed_steps={completed_steps}");
+            }
+
+            if let (Some(interval), Some(file)) = (gradient_interval, gradient_log.as_mut()) {
+                if completed_steps == 1
+                    || completed_steps % interval == 0
+                    || completed_steps == self.config.step_cap
+                    || stats.optimizer.update_skipped
+                {
+                    use std::io::Write;
+                    let mut snapshot = trainer.completed_gradient_components(
+                        completed_steps,
+                        stats.optimizer.grad_norm,
+                    )?;
+                    snapshot["source_file"] = serde_json::json!(window.source);
+                    snapshot["window_offset"] = serde_json::json!(window.offset);
+                    snapshot["update_skipped"] = serde_json::json!(stats.optimizer.update_skipped);
+                    snapshot["skip_grad_norm_spike"] =
+                        serde_json::json!(stats.optimizer.skip_grad_norm_spike);
+                    snapshot["skip_loss_spike"] =
+                        serde_json::json!(stats.optimizer.skip_loss_spike);
+                    snapshot["skip_non_finite"] =
+                        serde_json::json!(stats.optimizer.skip_non_finite);
+                    if stats.optimizer.skip_grad_norm_spike
+                        && crate::training::symexp_lin::learn_scales()
+                    {
+                        // A rejected update returns before advancing the optimizer.
+                        snapshot["next_latent_output_transform"] =
+                            crate::training::symexp_lin::rejected_next_latent_output_transform(
+                                &trainer,
+                            )?;
+                    }
+                    snapshot["capture_reason"] =
+                        serde_json::json!(if stats.optimizer.update_skipped {
+                            "rejected_update"
+                        } else {
+                            "periodic"
+                        });
+                    serde_json::to_writer(&mut *file, &snapshot)?;
+                    writeln!(file)?;
+                    file.flush()?;
+                    // Accounting results stay in the diagnostic record. Actual
+                    // nonfinite training uses the stop-and-capture path above.
+                }
+            }
 
             if log_step {
                 process_train_step(
@@ -57,8 +161,25 @@ impl CudaTrainingStrategy {
                 )?;
             }
 
+            if numerical_failure {
+                processor.process_train(LearnerEvent::EndEpoch(TRAIN_EPOCH));
+                return Err(format!(
+                    "nonfinite training at attempted step {completed_steps}; state captured"
+                )
+                .into());
+            }
+
             if should_eval_step(step, self.config.step_cap, self.config.eval_interval) {
-                process_validation(&mut trainer, processor, &validation, step, completed_steps)?;
+                let eval_start = Instant::now();
+                process_validation(
+                    &mut trainer,
+                    processor,
+                    &validation,
+                    step,
+                    completed_steps,
+                    self.config.eval_repeats,
+                )?;
+                wall_clock.exclude(eval_start.elapsed());
             }
 
             if let Some(reason) = stop_reason(interrupter, &wall_clock) {
@@ -77,17 +198,22 @@ impl CudaTrainingStrategy {
             &validation,
             completed_steps.saturating_sub(1),
             completed_steps,
+            self.config.eval_repeats,
         )?;
         processor.process_train(LearnerEvent::EndEpoch(TRAIN_EPOCH));
         processor.process_valid(LearnerEvent::EndEpoch(TRAIN_EPOCH));
         println!(
-            "heldout_eval split=val val_loss={:.6} val_bits_per_byte={:.6} val_target_tokens={} val_target_bytes={} train_elapsed_s={:.3} eval_elapsed_s={:.3} completed_steps={completed_steps}",
+            "heldout_eval split=val val_loss={:.6} val_loss_min={:.6} val_loss_max={:.6} val_loss_spread={:.6} val_bits_per_byte={:.6} val_target_tokens={} val_target_bytes={} train_elapsed_s={:.3} eval_elapsed_s={:.3} eval_repeats={} completed_steps={completed_steps}",
             final_eval.val_loss,
+            final_eval.val_loss_min,
+            final_eval.val_loss_max,
+            final_eval.val_loss_spread,
             final_eval.val_bits_per_byte,
             final_eval.target_token_count,
             final_eval.target_byte_count,
             train_elapsed_s,
             final_eval.eval_elapsed_s,
+            self.config.eval_repeats,
         );
         if let Some(summary) = crate::training::symexp_lin::scale_summary(&trainer)? {
             println!("{summary}");

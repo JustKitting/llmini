@@ -10,6 +10,17 @@ pub struct OptimizerScratch {
 }
 
 impl OptimizerScratch {
+    pub(in crate::training) fn ensure_nvfp4_capacity(
+        &mut self,
+        stream: &CudaStream,
+        len: usize,
+    ) -> Result<(), DriverError> {
+        let count = nvfp4_tensor_amax_chunks(len);
+        if self.chunk_amax.len() < count {
+            self.chunk_amax = DeviceBuffer::zeroed(stream, count)?;
+        }
+        Ok(())
+    }
     pub fn new(stream: &CudaStream) -> Result<Self, DriverError> {
         Ok(Self {
             amax: DeviceBuffer::zeroed(stream, 1)?,

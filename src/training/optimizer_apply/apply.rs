@@ -37,16 +37,13 @@ pub fn apply_weight_updates(args: WeightUpdateArgs<'_>) -> AppResult<WeightUpdat
     trace.embedding_lookup_ms =
         timed_ms(|| add_embedding_lookup_grad(stream, optimizer, batch, grads, next_latent_grads))?;
 
-    super::super::symexp_lin::apply_gradient_chain_rule(
-        runtime,
-        muon_tables,
-        grads,
-        next_latent_grads,
-        state,
-        super::super::learning_rate::schedule_free_beta(candidate_step),
-    )?;
-
-    let grad_clip = grad_clip.clip(stream, optimizer)?;
+    let clip_result = grad_clip.clip(stream, optimizer)?;
+    let extra_non_finite = if clip_result.norm.is_finite() {
+        None
+    } else {
+        grad_clip.first_non_finite_extra(stream)?
+    };
+    let grad_clip = clip_result;
     trace.grad_norm = grad_clip.norm;
 
     let skip_decision = state.should_skip_update(observed_loss, grad_clip.norm);
@@ -57,8 +54,11 @@ pub fn apply_weight_updates(args: WeightUpdateArgs<'_>) -> AppResult<WeightUpdat
         candidate_step,
         &mut trace,
         skip_decision,
+        extra_non_finite,
     )? {
         return Ok(WeightUpdateResult {
+            grad_scale: grad_clip.scale,
+            average_coefficient: 0.0,
             trace,
             diagnostics: None,
         });
@@ -82,11 +82,14 @@ pub fn apply_weight_updates(args: WeightUpdateArgs<'_>) -> AppResult<WeightUpdat
         })
         .transpose()?;
 
+    let (adam_schedule_amax_ptrs, adam_schedule_amax_count) = state.adam_schedule_amax_table();
+    optimizer.zero_f32_pointer_table(stream, adam_schedule_amax_ptrs, adam_schedule_amax_count)?;
+
     trace.adam_ms += timed_ms(|| {
         super::symexp_lin::update_global_scales(
             stream,
             optimizer,
-            state,
+            muon_tables,
             step,
             average_coefficient,
             grad_clip.scale,
@@ -120,7 +123,15 @@ pub fn apply_weight_updates(args: WeightUpdateArgs<'_>) -> AppResult<WeightUpdat
         trace: &mut trace,
     })?;
 
-    prepare_kda_muon_clip_factors(stream, runtime, tape, qk_norm_max, scratch, &mut trace)?;
+    prepare_kda_muon_clip_factors(
+        stream,
+        runtime,
+        tape,
+        qk_norm_max,
+        scratch,
+        &mut trace,
+        step,
+    )?;
     update_muon_groups(
         stream,
         runtime,
@@ -132,9 +143,16 @@ pub fn apply_weight_updates(args: WeightUpdateArgs<'_>) -> AppResult<WeightUpdat
         grad_clip.scale,
         &mut trace,
     )?;
+    state.mark_scheduled_values_ready();
     if diagnostics.is_some() {
         super::super::schedule_free::materialize_training_weights(
-            stream, runtime, uploaded, scratch, state,
+            stream,
+            runtime,
+            uploaded,
+            scratch,
+            state,
+            grads,
+            next_latent_grads,
         )?;
     }
 
@@ -142,5 +160,10 @@ pub fn apply_weight_updates(args: WeightUpdateArgs<'_>) -> AppResult<WeightUpdat
         .map(|pending| pending.finish(stream, uploaded))
         .transpose()?;
 
-    Ok(WeightUpdateResult { trace, diagnostics })
+    Ok(WeightUpdateResult {
+        trace,
+        diagnostics,
+        grad_scale: grad_clip.scale,
+        average_coefficient,
+    })
 }

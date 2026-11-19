@@ -16,30 +16,6 @@ pub(super) fn store_lower(
 }
 
 #[inline(always)]
-pub(super) fn store_strict_lower(
-    acc: [f32; 4],
-    tile: CtaTile,
-    warp_n: u32,
-    out: &mut DisjointSlice<f32>,
-    rows: u32,
-    cols: u32,
-) {
-    store_tile::<true, false>(acc, tile, warp_n, out, rows, cols);
-}
-
-#[inline(always)]
-pub(super) fn store_strict_neg(
-    acc: [f32; 4],
-    tile: CtaTile,
-    warp_n: u32,
-    out: &mut DisjointSlice<f32>,
-    rows: u32,
-    cols: u32,
-) {
-    store_tile::<true, true>(acc, tile, warp_n, out, rows, cols);
-}
-
-#[inline(always)]
 fn store_tile<const STRICT: bool, const NEGATE: bool>(
     acc: [f32; 4],
     tile: CtaTile,

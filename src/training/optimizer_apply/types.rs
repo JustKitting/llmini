@@ -26,6 +26,8 @@ pub struct WeightUpdateArgs<'a> {
 }
 
 pub struct WeightUpdateResult {
+    pub grad_scale: f32,
+    pub average_coefficient: f32,
     pub trace: OptimizerTrace,
     pub diagnostics: Option<TrainingDiagnostics>,
 }

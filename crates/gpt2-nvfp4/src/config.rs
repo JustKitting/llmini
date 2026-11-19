@@ -1,5 +1,12 @@
 pub const GPT2_VOCAB_SIZE: usize = llama2_tokenizer::VOCAB_SIZE;
 include!(concat!(env!("OUT_DIR"), "/gpt2_shape.rs"));
+pub const GPT2_BOUNDED_SWIGLU_ENGRAM_MHC: bool =
+    GPT2_BOUNDED_SWIGLU && GPT2_KDA_FULL_STATE_BACKWARD;
+pub const GPT2_VALUE_RMS_ENGRAM_MHC: bool = GPT2_VALUE_RMS && GPT2_KDA_FULL_STATE_BACKWARD;
+pub const GPT2_STATIONARY_ROPE_ENGRAM_MHC: bool =
+    GPT2_STATIONARY_ROPE && GPT2_KDA_FULL_STATE_BACKWARD;
+pub const GPT2_REQUIRES_ENGRAM_MHC: bool =
+    GPT2_BOUNDED_SWIGLU_ENGRAM_MHC || GPT2_VALUE_RMS_ENGRAM_MHC || GPT2_STATIONARY_ROPE_ENGRAM_MHC;
 
 pub const GPT2_TOKEN_ROWS: usize = GPT2_BATCH_SIZE * GPT2_SEQ_LEN;
 pub const GPT2_CONTEXT_LEN: usize = GPT2_SEQ_LEN;
@@ -8,13 +15,23 @@ pub const GPT2_LAYER_NORM_EPSILON: f32 = 1.0e-5;
 pub const GPT2_CANON_KERNEL_SIZE: usize = 4;
 pub const GPT2_CANON_WEIGHT_COUNT: usize = GPT2_N_EMBD * GPT2_CANON_KERNEL_SIZE;
 
-pub const GPT2_MLP: usize = 4 * GPT2_N_EMBD;
+pub const GPT2_MLP: usize = if GPT2_BOUNDED_SWIGLU {
+    5504
+} else {
+    4 * GPT2_N_EMBD
+};
+pub const GPT2_MLP_UP: usize = if GPT2_BOUNDED_SWIGLU {
+    2 * GPT2_MLP
+} else {
+    GPT2_MLP
+};
 pub const GPT2_MLP_ROUTE_TILE: usize = 128;
 pub const GPT2_MLP_ROUTE_FEATURE_TILES: usize = GPT2_MLP / GPT2_MLP_ROUTE_TILE;
 pub const GPT2_MLP_ROUTE_TOKEN_TILES: usize = GPT2_TOKEN_ROWS / GPT2_MLP_ROUTE_TILE;
 pub const GPT2_MLP_ROUTE_ACTIVE_FEATURE_TILES: usize = 3 * GPT2_MLP_ROUTE_FEATURE_TILES / 4;
 pub const GPT2_MLP_ROUTE_SCORES: usize = GPT2_MLP_ROUTE_TOKEN_TILES * GPT2_MLP_ROUTE_FEATURE_TILES;
-pub const GPT2_MLP_ROUTE_MASKS: usize = GPT2_MLP_ROUTE_TOKEN_TILES + GPT2_MLP_ROUTE_FEATURE_TILES;
+pub const GPT2_MLP_ROUTE_MASKS: usize = GPT2_MLP_ROUTE_TOKEN_TILES
+    + GPT2_MLP_ROUTE_FEATURE_TILES * GPT2_MLP_ROUTE_TOKEN_TILES.div_ceil(64);
 pub const GPT2_MLP_DENSE_PREFIX_LAYERS: usize = 1;
 pub const GPT2_VALUE_RESIDUAL_LAYERS: usize = 3 * GPT2_N_LAYER / 8;
 pub const GPT2_VALUE_RESIDUAL_START_LAYER: usize = GPT2_N_LAYER - GPT2_VALUE_RESIDUAL_LAYERS;
@@ -23,11 +40,11 @@ pub const GPT2_FULL_ATTENTION_GATED_QKV: usize =
     align_up(GPT2_FULL_ATTENTION_QKV + GPT2_N_HEAD, 128);
 pub const GPT2_QK_SCALE_STORAGE: usize = 16;
 pub const GPT2_XSA_ALPHA_STORAGE: usize = GPT2_N_LAYER * GPT2_N_HEAD;
-pub const GPT2_ATTENTION_BACKWARD_TILE_BUDGET: f32 = 12.0;
 pub const GPT2_KDA_ACTIVE_QKV: usize = 4 * GPT2_N_EMBD + GPT2_N_HEAD;
 pub const GPT2_QKV: usize = align_kda_qkv(GPT2_KDA_ACTIVE_QKV);
 pub const GPT2_EMBEDDING_DIM: u32 = GPT2_N_EMBD as u32;
 pub const GPT2_MLP_DIM: u32 = GPT2_MLP as u32;
+pub const GPT2_MLP_UP_DIM: u32 = GPT2_MLP_UP as u32;
 pub const GPT2_TOKEN_ROWS_U32: u32 = GPT2_TOKEN_ROWS as u32;
 pub const GPT2_VOCAB_DIM: u32 = GPT2_VOCAB_SIZE as u32;
 pub const GPT2_Q_OFFSET: usize = 0;
@@ -50,10 +67,13 @@ const _: () = {
     assert!(GPT2_MLP_ROUTE_TILE == 128);
     assert!(GPT2_MLP.is_multiple_of(GPT2_MLP_ROUTE_TILE));
     assert!(GPT2_TOKEN_ROWS.is_multiple_of(GPT2_MLP_ROUTE_TILE));
-    assert!(GPT2_MLP_ROUTE_FEATURE_TILES == 64);
-    assert!(GPT2_MLP_ROUTE_TOKEN_TILES == 64);
-    assert!(GPT2_MLP_ROUTE_ACTIVE_FEATURE_TILES == 48);
-    assert!(GPT2_MLP_ROUTE_SCORES == 4096);
+    assert!(GPT2_MLP_ROUTE_FEATURE_TILES <= 64);
+    assert!(!GPT2_BOUNDED_SWIGLU || GPT2_N_EMBD == 2048);
+    assert!(!GPT2_VALUE_RMS || (GPT2_N_EMBD == 2048 && GPT2_N_HEAD == 32));
+    assert!(!GPT2_STATIONARY_ROPE || (GPT2_N_EMBD / GPT2_N_HEAD == 64));
+    assert!(GPT2_MLP_ROUTE_FEATURE_TILES == if GPT2_BOUNDED_SWIGLU { 43 } else { 64 });
+    assert!(GPT2_MLP_ROUTE_TOKEN_TILES > 0 && GPT2_MLP_ROUTE_TOKEN_TILES <= 128);
+    assert!(GPT2_MLP_ROUTE_ACTIVE_FEATURE_TILES == if GPT2_BOUNDED_SWIGLU { 32 } else { 48 });
     assert!(GPT2_VALUE_RESIDUAL_LAYERS > 0);
     assert!(GPT2_VALUE_RESIDUAL_START_LAYER > 0);
 };
@@ -117,6 +137,20 @@ pub fn attention_headwise_gate_enabled() -> bool {
     env_bool("TRAIN_ATTENTION_HEADWISE_GATE", true)
 }
 
+pub(crate) fn attention_output_gate(
+    use_full_attention: bool,
+) -> rust_kernels_cuda::attention::AttentionOutputGate {
+    use rust_kernels_cuda::attention::AttentionOutputGate;
+
+    if !attention_headwise_gate_enabled() {
+        AttentionOutputGate::Disabled
+    } else if GPT2_KDA_RATIONAL_OUTPUT_GATE && !use_full_attention {
+        AttentionOutputGate::Rational
+    } else {
+        AttentionOutputGate::Sigmoid
+    }
+}
+
 pub fn exclusive_self_attention_enabled() -> bool {
     env_bool("TRAIN_XSA", true)
 }
@@ -126,7 +160,7 @@ pub fn exclusive_self_attention_kda_enabled() -> bool {
 }
 
 pub fn partial_key_offset_enabled() -> bool {
-    env_bool("TRAIN_PARTIAL_KEY_OFFSET", true)
+    GPT2_STATIONARY_ROPE || env_bool("TRAIN_PARTIAL_KEY_OFFSET", true)
 }
 
 pub fn selective_attention_enabled() -> bool {

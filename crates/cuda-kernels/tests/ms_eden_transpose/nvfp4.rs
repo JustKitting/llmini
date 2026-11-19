@@ -1,8 +1,6 @@
 use cuda_core::DeviceBuffer;
 use rust_kernels_cuda::nvfp4::{Nvfp4DecodeModule, Nvfp4DecodeTransposeArgs};
-use rust_kernels_cuda::nvfp4_quant::{
-    Nvfp4QuantArgs, Nvfp4QuantModule, Nvfp4TransposeMsEdenDeviceScaleQuantArgs,
-};
+use rust_kernels_cuda::nvfp4_quant::{Nvfp4QuantModule, Nvfp4TransposeMsEdenDeviceScaleQuantArgs};
 
 use super::TestResult;
 use super::common;
@@ -23,15 +21,7 @@ fn nvfp4_transpose_ms_eden_matches_materialized_decode() -> TestResult {
     let mut materialized = QuantScratch::new(&stream)?;
     let mut direct = QuantScratch::new(&stream)?;
 
-    quant.fp32_to_nvfp4_four_six(Nvfp4QuantArgs {
-        stream: &stream,
-        x: &x_dev,
-        amax: &amax,
-        out_fp4: &mut source.bytes,
-        out_scales: &mut source.scales,
-        out_global_scale: &mut source.global_scale,
-        group_count: (ROWS * COLS / 16) as u32,
-    })?;
+    source.quantize(&stream, &quant, &x_dev, &amax, ROWS, COLS)?;
 
     let source_tensor = source.tensor();
     decode.decode_transpose_f32(Nvfp4DecodeTransposeArgs {
@@ -50,7 +40,7 @@ fn nvfp4_transpose_ms_eden_matches_materialized_decode() -> TestResult {
             input: source_tensor,
             out_fp4: &mut direct.bytes,
             out_scales: &mut direct.scales,
-            out_global_scales: &mut direct.global_scales,
+
             out_chunk_amax: &mut direct.chunk_amax,
             out_global_scale: &mut direct.global_scale,
             source_rows: ROWS as u32,
@@ -68,13 +58,13 @@ fn nvfp4_transpose_ms_eden_matches_materialized_decode() -> TestResult {
 #[ignore = "requires generated sm_120a PTX"]
 #[test]
 fn nvfp4_transpose_no_pad_pow2_tiled_matches_materialized_decode() -> TestResult {
-    assert_nvfp4_transpose_no_pad_tiled_matches_materialized_decode(64, 32)
+    assert_nvfp4_transpose_no_pad_tiled_matches_materialized_decode(128, 128)
 }
 
 #[ignore = "requires generated sm_120a PTX"]
 #[test]
 fn nvfp4_transpose_no_pad_row_mul_tiled_matches_materialized_decode() -> TestResult {
-    assert_nvfp4_transpose_no_pad_tiled_matches_materialized_decode(96, 32)
+    assert_nvfp4_transpose_no_pad_tiled_matches_materialized_decode(384, 128)
 }
 
 fn assert_nvfp4_transpose_no_pad_tiled_matches_materialized_decode(
@@ -98,15 +88,7 @@ fn assert_nvfp4_transpose_no_pad_tiled_matches_materialized_decode(
     let mut materialized = QuantScratch::new_exact(&stream, local_cols, local_rows)?;
     let mut direct = QuantScratch::new_exact(&stream, local_cols, local_rows)?;
 
-    quant.fp32_to_nvfp4_four_six(Nvfp4QuantArgs {
-        stream: &stream,
-        x: &x_dev,
-        amax: &amax,
-        out_fp4: &mut source.bytes,
-        out_scales: &mut source.scales,
-        out_global_scale: &mut source.global_scale,
-        group_count: (local_rows * local_cols / 16) as u32,
-    })?;
+    source.quantize(&stream, &quant, &x_dev, &amax, local_rows, local_cols)?;
 
     let source_tensor = source.tensor();
     decode.decode_transpose_f32(Nvfp4DecodeTransposeArgs {
@@ -125,7 +107,7 @@ fn assert_nvfp4_transpose_no_pad_tiled_matches_materialized_decode(
             input: source_tensor,
             out_fp4: &mut direct.bytes,
             out_scales: &mut direct.scales,
-            out_global_scales: &mut direct.global_scales,
+
             out_chunk_amax: &mut direct.chunk_amax,
             out_global_scale: &mut direct.global_scale,
             source_rows: local_rows as u32,

@@ -12,23 +12,27 @@ use super::super::optimizer_state::{
     AdamState, Fp32AdamState, MuonState, SymExpLinState, TokenEmbeddingState,
 };
 
-pub(super) struct Materializer<'a> {
+pub(in crate::training) struct Materializer<'a> {
     stream: &'a CudaStream,
     optimizer: &'a OptimizerModule,
     f32_ops: &'a F32MatrixOpsModule,
     scratch: &'a mut OptimizerScratch,
     beta: f32,
     symexp_lin_beta: f32,
+    reuse_adam_amax: bool,
+    scheduled_values_valid: bool,
 }
 
 impl<'a> Materializer<'a> {
-    pub(super) fn new(
+    pub(in crate::training) fn new(
         stream: &'a CudaStream,
         optimizer: &'a OptimizerModule,
         f32_ops: &'a F32MatrixOpsModule,
         scratch: &'a mut OptimizerScratch,
         beta: f32,
         symexp_lin_beta: f32,
+        reuse_adam_amax: bool,
+        scheduled_values_valid: bool,
     ) -> Self {
         Self {
             stream,
@@ -37,10 +41,12 @@ impl<'a> Materializer<'a> {
             scratch,
             beta,
             symexp_lin_beta,
+            reuse_adam_amax,
+            scheduled_values_valid,
         }
     }
 
-    pub(super) fn fp32_adam(
+    pub(in crate::training) fn fp32_adam(
         &self,
         tensor: &mut UploadedCanon,
         state: &Fp32AdamState,
@@ -54,7 +60,7 @@ impl<'a> Materializer<'a> {
         )
     }
 
-    pub(super) fn fp32_master(
+    pub(in crate::training) fn fp32_master(
         &self,
         tensor: &mut UploadedCanon,
         master: &DeviceBuffer<f32>,
@@ -62,11 +68,23 @@ impl<'a> Materializer<'a> {
         self.fp32_linear(tensor, master, master, 1.0, 0.0)
     }
 
-    pub(super) fn adam(
+    pub(in crate::training) fn adam(
         &mut self,
         tensor: &mut UploadedNvfp4,
         state: &AdamState,
+        precomputed_values: &DeviceBuffer<f32>,
     ) -> Result<(), DriverError> {
+        if self.reuse_adam_amax {
+            return self.tensor_precomputed(
+                tensor,
+                &state.z_master,
+                &state.x_master,
+                &state.schedule_amax,
+                0.0,
+                None,
+                Some(precomputed_values),
+            );
+        }
         self.tensor(tensor, &state.z_master, &state.x_master, 0.0, None)
     }
 
@@ -74,25 +92,25 @@ impl<'a> Materializer<'a> {
         &mut self,
         tensor: &mut UploadedNvfp4,
         state: &TokenEmbeddingState,
+        precomputed_values: &DeviceBuffer<f32>,
     ) -> Result<(), DriverError> {
+        if self.reuse_adam_amax {
+            if let Some(state) = state.as_adam() {
+                return self.tensor_precomputed(
+                    tensor,
+                    &state.z_master,
+                    &state.x_master,
+                    &state.schedule_amax,
+                    0.0,
+                    None,
+                    Some(precomputed_values),
+                );
+            }
+        }
         self.tensor(tensor, state.z_master(), state.x_master(), 0.0, None)
     }
 
-    pub(super) fn symexp_lin_adam(
-        &mut self,
-        tensor: &mut UploadedNvfp4,
-        state: &AdamState,
-    ) -> Result<(), DriverError> {
-        self.tensor(
-            tensor,
-            &state.z_master,
-            &state.x_master,
-            self.symexp_lin_beta,
-            None,
-        )
-    }
-
-    pub(super) fn muon(
+    pub(in crate::training) fn muon(
         &mut self,
         tensor: &mut UploadedNvfp4,
         state: &MuonState,
@@ -111,6 +129,7 @@ impl<'a> Materializer<'a> {
         &mut self,
         tensor: &mut UploadedNvfp4,
         state: &MuonState,
+        precomputed_values: &DeviceBuffer<f32>,
     ) -> Result<(), DriverError> {
         let scales = Self::scale_refs(&state.symexp_lin);
         self.optimizer.materialize_schedule_free_precomputed(
@@ -121,8 +140,11 @@ impl<'a> Materializer<'a> {
                 global_scale: &mut tensor.global_scale,
                 z_master: &state.z_master,
                 x_master: &state.x_master,
+                precomputed_values: self.scheduled_values_valid.then_some(precomputed_values),
                 amax: &state.schedule_amax,
                 len: tensor.len as u32,
+                scale_rows: tensor.scale_rows,
+                scale_k: tensor.scale_k,
                 beta: self.beta,
                 symexp_lin_beta: self.symexp_lin_beta,
                 symexp_lin_scales: scales,
@@ -130,7 +152,7 @@ impl<'a> Materializer<'a> {
         )
     }
 
-    pub(super) fn master(
+    pub(in crate::training) fn master(
         &mut self,
         tensor: &mut UploadedNvfp4,
         master: &DeviceBuffer<f32>,
@@ -147,32 +169,7 @@ impl<'a> Materializer<'a> {
         )
     }
 
-    pub(super) fn symexp_lin_master(
-        &mut self,
-        tensor: &mut UploadedNvfp4,
-        master: &DeviceBuffer<f32>,
-    ) -> Result<(), DriverError> {
-        if self.symexp_lin_beta == 0.0 {
-            return self.master(tensor, master);
-        }
-        self.optimizer
-            .materialize_schedule_free(ScheduleFreeMaterializeArgs {
-                stream: self.stream,
-                bytes: &mut tensor.bytes,
-                scales: &mut tensor.scales,
-                global_scale: &mut tensor.global_scale,
-                z_master: master,
-                x_master: master,
-                amax: &mut self.scratch.amax,
-                chunk_amax: &mut self.scratch.chunk_amax,
-                len: tensor.len as u32,
-                beta: 0.0,
-                symexp_lin_beta: self.symexp_lin_beta,
-                symexp_lin_scales: None,
-            })
-    }
-
-    pub(super) fn symexp_lin_muon_master(
+    pub(in crate::training) fn symexp_lin_muon_master(
         &mut self,
         tensor: &mut UploadedNvfp4,
         master: &DeviceBuffer<f32>,
@@ -193,6 +190,8 @@ impl<'a> Materializer<'a> {
                 amax: &mut self.scratch.amax,
                 chunk_amax: &mut self.scratch.chunk_amax,
                 len: tensor.len as u32,
+                scale_rows: tensor.scale_rows,
+                scale_k: tensor.scale_k,
                 beta: 1.0,
                 symexp_lin_beta: self.symexp_lin_beta,
                 symexp_lin_scales: scales,
@@ -218,10 +217,42 @@ impl<'a> Materializer<'a> {
                 amax: &mut self.scratch.amax,
                 chunk_amax: &mut self.scratch.chunk_amax,
                 len: tensor.len as u32,
+                scale_rows: tensor.scale_rows,
+                scale_k: tensor.scale_k,
                 beta: self.beta,
                 symexp_lin_beta,
                 symexp_lin_scales,
             })
+    }
+
+    fn tensor_precomputed(
+        &mut self,
+        tensor: &mut UploadedNvfp4,
+        z_master: &DeviceBuffer<f32>,
+        x_master: &DeviceBuffer<f32>,
+        schedule_amax: &DeviceBuffer<f32>,
+        symexp_lin_beta: f32,
+        symexp_lin_scales: Option<SymExpLinScaleRefs<'_>>,
+        precomputed_values: Option<&DeviceBuffer<f32>>,
+    ) -> Result<(), DriverError> {
+        self.optimizer.materialize_schedule_free_precomputed(
+            ScheduleFreeMaterializePrecomputedArgs {
+                stream: self.stream,
+                bytes: &mut tensor.bytes,
+                scales: &mut tensor.scales,
+                global_scale: &mut tensor.global_scale,
+                z_master,
+                x_master,
+                precomputed_values: precomputed_values.filter(|_| self.scheduled_values_valid),
+                amax: schedule_amax,
+                len: tensor.len as u32,
+                scale_rows: tensor.scale_rows,
+                scale_k: tensor.scale_k,
+                beta: self.beta,
+                symexp_lin_beta,
+                symexp_lin_scales,
+            },
+        )
     }
 
     fn fp32_linear(

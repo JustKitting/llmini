@@ -93,3 +93,16 @@ pub fn abs_f32(x: f32) -> f32 {
 pub fn max_f32(a: f32, b: f32) -> f32 {
     ptx_f32!("max.f32 %0, %1, %2;", in("f") a, in("f") b,)
 }
+
+/// Loss-only exponent path: preserve representable FP32 subnormal tails.
+#[inline(always)]
+pub fn exp_preserve_subnormal_f32(x:f32)->f32 {
+    ptx_f32!("ex2.approx.f32 %0, %1;", in("f") x * core::f32::consts::LOG2_E,)
+}
+
+/// Compensate the rounding in 1+x, including the case where it rounds to1.
+#[inline(always)]
+pub fn log1p_f32(x:f32)->f32 {
+    let u=1.0+x;
+    if u==1.0 {x}else{ln_f32(u)*(x/(u-1.0))}
+}

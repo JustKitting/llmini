@@ -86,8 +86,7 @@ impl CausalAttentionParams {
         if self.partial_key_offset == 0 {
             return false;
         }
-        let quarter = self.head_dim / 4;
-        (dim >= quarter && dim < 2 * quarter) || dim >= 3 * quarter
+        crate::position::key_offset_dim(dim,self.head_dim)
     }
 
     #[inline(always)]
@@ -140,7 +139,8 @@ mod tests {
     fn partial_key_offset_shifts_only_the_middle_and_final_quarters() {
         let params = params(16).with_partial_key_offset(true);
         for dim in 0..64 {
-            let shifted = (16..32).contains(&dim) || (48..64).contains(&dim);
+            let shifted = if crate::position::STATIONARY_ROPE {dim>=32}
+                else {(16..32).contains(&dim) || (48..64).contains(&dim)};
             assert_eq!(params.key_offset_dim(dim), shifted, "dim={dim}");
             assert_eq!(
                 params.key_source_token(0, dim),

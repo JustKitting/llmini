@@ -2,7 +2,6 @@ use super::super::super::super::threads::{WARP_SIZE, WARPS_PER_BLOCK};
 use super::super::super::super::work_grid::WorkGrid;
 use crate::device_ptr::{read_f32, write_f32};
 use crate::f16_tc_matmul::convert::load_f32x2_global;
-use crate::f16_tc_matmul::cta_tile::CTA_THREADS;
 use crate::float_ptx::{fma_f32, sqrt_f32};
 use cuda_device::{SharedArray, grid, thread};
 
@@ -67,6 +66,7 @@ pub(crate) fn reduce_source_sumsq_chunks_to_inv_norm(
     chunks: *mut f32,
     warp_sums: &mut SharedArray<f32, { WARPS_PER_BLOCK as usize }>,
     chunk_count: u32,
+    chunk_stride: u32,
 ) {
     let tid = thread::threadIdx_x();
     let lane = tid & (WARP_SIZE - 1);
@@ -74,8 +74,8 @@ pub(crate) fn reduce_source_sumsq_chunks_to_inv_norm(
     let mut local = 0.0;
     let mut chunk = tid;
     while chunk < chunk_count {
-        local += read_f32(chunks, chunk);
-        chunk += CTA_THREADS;
+        local += read_f32(chunks, chunk * chunk_stride);
+        chunk += thread::blockDim_x();
     }
     let sum = crate::block_reduce::block_sum_shared_f32(warp_sums, local, lane, warp_in_block);
     if tid == 0 {
@@ -130,7 +130,7 @@ fn normalize_source_to_x_from_chunks(
     let stride = work.stride();
 
     if work.block() == 0 {
-        reduce_source_sumsq_chunks_to_inv_norm(job.chunks, warp_sums, work.blocks());
+        reduce_source_sumsq_chunks_to_inv_norm(job.chunks, warp_sums, work.blocks(), 1);
     }
     grid::sync();
 

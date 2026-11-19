@@ -1,5 +1,4 @@
-use cuda_core::{CudaStream, DeviceBuffer, DriverError};
-use rust_kernels_cuda::nvfp4::Nvfp4RowwiseDeviceTensor;
+use cuda_core::DeviceBuffer;
 
 use crate::types::RowwiseNvfp4Tape;
 
@@ -9,27 +8,9 @@ pub struct AttentionForwardTape<'scratch> {
     pub attention_out_f16: &'scratch mut DeviceBuffer<u16>,
     pub headwise_gate_input_f16: Option<&'scratch mut DeviceBuffer<u16>>,
     pub attention_probs_f16: Option<&'scratch mut DeviceBuffer<u16>>,
-    pub kda_v_new: Option<&'scratch mut DeviceBuffer<f32>>,
-    pub kda_akk_inv: Option<&'scratch mut DeviceBuffer<f32>>,
-    pub kda_w: Option<&'scratch mut DeviceBuffer<f32>>,
-    pub kda_aqk: Option<&'scratch mut DeviceBuffer<f32>>,
+    pub kda_v_new: Option<&'scratch mut DeviceBuffer<u16>>,
+    pub kda_akk_inv: Option<&'scratch mut DeviceBuffer<u16>>,
+    pub kda_w: Option<&'scratch mut DeviceBuffer<u16>>,
+    pub kda_aqk: Option<&'scratch mut DeviceBuffer<u16>>,
     pub c_proj_input_nvfp4: RowwiseNvfp4Tape<'scratch>,
-}
-
-impl<'scratch> AttentionForwardTape<'scratch> {
-    pub(crate) fn save_qkv_input(
-        &mut self,
-        stream: &CudaStream,
-        input: Nvfp4RowwiseDeviceTensor<'_>,
-    ) -> Result<(), DriverError> {
-        self.qkv_input_nvfp4.save(stream, input)
-    }
-
-    pub(crate) fn save_c_proj_input(
-        &mut self,
-        stream: &CudaStream,
-        input: Nvfp4RowwiseDeviceTensor<'_>,
-    ) -> Result<(), DriverError> {
-        self.c_proj_input_nvfp4.save(stream, input)
-    }
 }

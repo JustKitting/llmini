@@ -20,18 +20,12 @@ impl UploadedCanon {
         }
     }
 
-    pub(crate) fn zero(stream: &CudaStream) -> AppResult<Self> {
-        Ok(Self {
-            weight: DeviceBuffer::from_host(
-                stream,
-                &vec![0.0; gpt2_nvfp4::GPT2_CANON_WEIGHT_COUNT],
-            )?,
-        })
-    }
-
     pub(crate) fn from_host(stream: &CudaStream, weight: &[f32]) -> AppResult<Self> {
-        Ok(Self {
-            weight: DeviceBuffer::from_host(stream, weight)?,
-        })
+        let uploaded = DeviceBuffer::from_host(stream, weight);
+        // The caller may supply a temporary initialization array.
+        let synchronized = stream.synchronize();
+        let weight = uploaded?;
+        synchronized?;
+        Ok(Self { weight })
     }
 }

@@ -1,6 +1,6 @@
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
-use cuda_core::{CudaModule, DriverError};
+use cuda_core::{CudaModule, CudaStream, DeviceBuffer, DriverError, LaunchConfig};
 
 use super::args::{
     MlpBlockTopKRouteArgs, MlpDownResidualArgs, MlpUpRelu2Args, Relu2BackwardArgs,
@@ -14,6 +14,10 @@ use crate::mma::{
 
 pub struct MlpModule {
     module: kernels::LoadedModule,
+    bounded: Option<crate::bounded_swiglu::kernels::LoadedModule>,
+    graph: Option<crate::bounded_swiglu::graph::LoadedModule>,
+    precision: Option<crate::bounded_swiglu::precision_graph::LoadedModule>,
+    graph_verified: OnceLock<bool>,
 }
 
 macro_rules! projection_launcher {
@@ -48,9 +52,147 @@ macro_rules! relu2_backward_launcher {
 
 impl MlpModule {
     pub fn from_module(module: Arc<CudaModule>) -> Result<Self, DriverError> {
+        let bounded = if super::config::BOUNDED_SWIGLU {
+            Some(crate::bounded_swiglu::kernels::from_module(module.clone())?)
+        } else {
+            None
+        };
+        let graph = crate::bounded_swiglu::graph::from_module(module.clone()).ok();
+        let precision = if super::config::BOUNDED_SWIGLU {
+            if !crate::module_exports::contains(
+                &module,
+                b"bounded_swiglu_precision_signature_kernel",
+            )? {
+                eprintln!(
+                    "bounded SwiGLU requires the FP16-input precision signature; refusing the old FP32-input prototype"
+                );
+                return Err(DriverError(1));
+            }
+            Some(crate::bounded_swiglu::precision_graph::from_module(
+                module.clone(),
+            )?)
+        } else {
+            None
+        };
         Ok(Self {
             module: kernels::from_module(module)?,
+            bounded,
+            graph,
+            precision,
+            graph_verified: OnceLock::new(),
         })
+    }
+
+    pub fn verify_graph(&self, stream: &CudaStream) -> Result<(), DriverError> {
+        let verified = *self.graph_verified.get_or_init(|| {
+            let Some(graph) = &self.graph else {
+                return !super::config::BOUNDED_SWIGLU
+                    && !crate::nvfp4_quant::ACTIVATION_MAE_FOUR_SIX;
+            };
+            let result = (|| -> Result<Vec<u32>, DriverError> {
+                let mut out = DeviceBuffer::zeroed(stream, 4)?;
+                graph.mlp_graph_signature_kernel(
+                    stream,
+                    LaunchConfig {
+                        grid_dim: (1, 1, 1),
+                        block_dim: (32, 1, 1),
+                        shared_mem_bytes: 0,
+                    },
+                    &mut out,
+                )?;
+                let mut actual = out.to_host_vec(stream)?;
+                if let Some(precision) = &self.precision {
+                    let mut input_policy = DeviceBuffer::zeroed(stream, 2)?;
+                    precision.bounded_swiglu_precision_signature_kernel(
+                        stream,
+                        LaunchConfig {
+                            grid_dim: (1, 1, 1),
+                            block_dim: (32, 1, 1),
+                            shared_mem_bytes: 0,
+                        },
+                        &mut input_policy,
+                    )?;
+                    actual.extend(input_policy.to_host_vec(stream)?);
+                }
+                Ok(actual)
+            })();
+            let mut expected = vec![
+                super::config::BOUNDED_SWIGLU as u32,
+                super::config::FEATURE_TILES,
+                super::config::ACTIVE_FEATURE_TILES,
+                crate::nvfp4_quant::ACTIVATION_MAE_FOUR_SIX as u32,
+            ];
+            if super::config::BOUNDED_SWIGLU {
+                expected.extend([
+                    crate::bounded_swiglu::PRECISION_POLICY_VERSION,
+                    crate::bounded_swiglu::ACTIVATION_INPUT_BITS,
+                ]);
+            }
+            match result {
+                Ok(actual) if actual == expected => true,
+                other => {
+                    eprintln!(
+                        "MLP executable/PTX graph mismatch expected={expected:?} observed={other:?}"
+                    );
+                    false
+                }
+            }
+        });
+        if verified {
+            Ok(())
+        } else {
+            Err(DriverError(1))
+        }
+    }
+
+    pub fn bounded_forward(
+        &self,
+        stream: &CudaStream,
+        paired: &DeviceBuffer<f32>,
+        out: &mut DeviceBuffer<f32>,
+        n: u32,
+        h: u32,
+    ) -> Result<(), DriverError> {
+        self.verify_graph(stream)?;
+        if paired.len() < (n * 2 * h) as usize || out.len() < (n * h) as usize {
+            return Err(DriverError(1));
+        }
+        self.bounded
+            .as_ref()
+            .ok_or(DriverError(1))?
+            .bounded_swiglu_forward_kernel(stream, linear_config(n * h, 256), paired, out, n, h)
+    }
+
+    pub fn bounded_backward(
+        &self,
+        stream: &CudaStream,
+        paired: &mut DeviceBuffer<f32>,
+        upstream: &DeviceBuffer<f32>,
+        masks: &DeviceBuffer<u64>,
+        n: u32,
+        h: u32,
+        routed: bool,
+    ) -> Result<(), DriverError> {
+        self.verify_graph(stream)?;
+        if paired.len() < (n * 2 * h) as usize
+            || upstream.len() < (n * h) as usize
+            || (routed && masks.len() < n.div_ceil(128) as usize)
+        {
+            return Err(DriverError(1));
+        }
+        self.bounded
+            .as_ref()
+            .ok_or(DriverError(1))?
+            .bounded_swiglu_backward_kernel(
+                stream,
+                linear_config(n * h, 256),
+                paired,
+                upstream,
+                masks,
+                n,
+                h,
+                routed,
+            )
     }
 
     projection_launcher!(
@@ -91,16 +233,19 @@ impl MlpModule {
     }
 
     pub fn block_topk_route(&self, args: MlpBlockTopKRouteArgs<'_, '_>) -> Result<(), DriverError> {
+        self.verify_graph(args.stream)?;
+        assert!(args.seq_len > 0 && args.seq_len % kernels::BLOCK_TOPK_TILE == 0);
+        assert_eq!(args.token_count % args.seq_len, 0);
         let token_tiles = args.token_count / kernels::BLOCK_TOPK_TILE;
         let feature_tiles = args.feature_count / kernels::BLOCK_TOPK_TILE;
-        assert_eq!(token_tiles, kernels::BLOCK_TOPK_TOKEN_TILES);
+        assert!(token_tiles > 0 && token_tiles <= kernels::BLOCK_TOPK_TOKEN_TILES);
         assert_eq!(feature_tiles, kernels::BLOCK_TOPK_FEATURE_TILES);
         assert!(
             args.scores.len() >= (token_tiles * feature_tiles) as usize,
             "block-Top-K score scratch is too small"
         );
         assert!(
-            args.masks.len() >= (token_tiles + feature_tiles) as usize,
+            args.masks.len() >= (token_tiles + feature_tiles * token_tiles.div_ceil(64)) as usize,
             "block-Top-K dual-layout mask buffer is too small"
         );
 
@@ -115,6 +260,7 @@ impl MlpModule {
             args.activation.global_scales,
             args.scores,
             args.token_count,
+            args.seq_len,
             args.feature_count,
         )?;
         self.module.mlp_block_topk_masks_kernel(

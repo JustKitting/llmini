@@ -97,38 +97,35 @@ fn tokenize_parquet(
     tokenizer: &TrainingTokenizer,
     writer: &mut ShardWriter,
 ) -> AppResult<TokenizationStats> {
-    let reader = ParquetRecordBatchReaderBuilder::try_new(File::open(path)?)?
-        .with_batch_size(1024)
-        .build()?;
     let mut stats = TokenizationStats::default();
-
-    for batch in reader {
-        let batch = batch?;
-        tokenize_batch(&batch, tokenizer, writer, &mut stats)?;
-        if writer.has_required_train_and_val_shards() {
-            break;
-        }
-    }
+    visit_parquet_text(path, |text| {
+        let token_count = tokenize_doc(text, tokenizer, writer)?;
+        stats.record(text, token_count);
+        Ok(!writer.has_required_train_and_val_shards())
+    })?;
     Ok(stats)
 }
 
-fn tokenize_batch(
-    batch: &RecordBatch,
-    tokenizer: &TrainingTokenizer,
-    writer: &mut ShardWriter,
-    stats: &mut TokenizationStats,
+/// Visit the nonempty text column in file order. Return false to stop reading.
+pub fn visit_parquet_text(
+    path: &Path,
+    mut visit: impl FnMut(&str) -> AppResult<bool>,
 ) -> AppResult<()> {
-    let texts = string_column(batch, "text")?;
-    for row in 0..batch.num_rows() {
-        if let Some(text) = texts
-            .get(row)
-            .map(str::trim)
-            .filter(|text| !text.is_empty())
-        {
-            let token_count = tokenize_doc(text, tokenizer, writer)?;
-            stats.record(text, token_count);
-            if writer.has_required_train_and_val_shards() {
-                break;
+    let reader = ParquetRecordBatchReaderBuilder::try_new(File::open(path)?)?
+        .with_batch_size(1024)
+        .build()?;
+    for batch in reader {
+        let batch = batch?;
+        let texts = string_column(&batch, "text")?;
+        for row in 0..batch.num_rows() {
+            if let Some(text) = texts
+                .get(row)
+                .map(str::trim)
+                .filter(|text| !text.is_empty())
+            {
+                if !visit(text)? {
+                    return Ok(());
+                }
             }
         }
     }

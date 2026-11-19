@@ -61,9 +61,12 @@ macro_rules! cta_bt_matmul_lower_body_fn {
 
 macro_rules! cta_rhs_matmul_body_fn {
     ($name:ident, $rhs:ident: $rhs_ty:ty, $stage:path) => {
+        cta_rhs_matmul_body_fn!(@typed $name, f32, $rhs:$rhs_ty, f32, $stage, $crate::f16_tc_matmul::cta_store::store);
+    };
+    (@typed $name:ident, $lhs_ty:ty, $rhs:ident:$rhs_ty:ty, $out_ty:ty, $stage:path, $store:path) => {
         pub(super) fn $name(
-            a: &[f32], $rhs: &[$rhs_ty],
-            mut out: cuda_device::DisjointSlice<f32>,
+            a: &[$lhs_ty], $rhs: &[$rhs_ty],
+            mut out: cuda_device::DisjointSlice<$out_ty>,
             a_tile: &mut $crate::f16_tc_matmul::CtaATile,
             b_tile: &mut $crate::f16_tc_matmul::CtaBTile,
             dims: $crate::f16_tc_matmul::cta_tile::CtaMatmulDims,
@@ -74,7 +77,7 @@ macro_rules! cta_rhs_matmul_body_fn {
             cta_accumulate_k_loop2!(tile, a_tile, b_tile, dims.k, k_base, [acc0, acc1]; {
                 $stage(a, $rhs, a_tile, b_tile, tile, dims, k_base);
             });
-            cta_store2!($crate::f16_tc_matmul::cta_store::store, tile, &mut out, dims, acc0, acc1);
+            cta_store2!($store, tile, &mut out, dims, acc0, acc1);
         }
     };
 }

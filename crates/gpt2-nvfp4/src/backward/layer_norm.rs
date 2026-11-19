@@ -113,25 +113,26 @@ pub struct Gpt2LayerNormBackwardAddAmaxArgs<'a, 'out> {
 pub fn layer_norm_backward_input(
     args: Gpt2LayerNormBackwardInputArgs<'_, '_>,
 ) -> Result<(), DriverError> {
-    args.module.backward_input(LayerNormBackwardInputArgs {
-        stream: args.stream,
-        residual: args.saved.residual,
-        d_normalized: args.d_normalized,
-        mean: args.saved.mean,
-        inv_std: args.saved.inv_std,
-        weight: args.weights.weight,
-        d_residual: args.d_residual,
-        output_scale: args.output_scale,
-        row_count: args.saved.row_count,
-        embedding_dim: GPT2_EMBEDDING_DIM,
-    })
+    args.module
+        .backward_input_xhat_f16(LayerNormBackwardInputArgs {
+            stream: args.stream,
+            residual: args.saved.residual,
+            d_normalized: args.d_normalized,
+            mean: args.saved.mean,
+            inv_std: args.saved.inv_std,
+            weight: args.weights.weight,
+            d_residual: args.d_residual,
+            output_scale: args.output_scale,
+            row_count: args.saved.row_count,
+            embedding_dim: GPT2_EMBEDDING_DIM,
+        })
 }
 
 pub fn layer_norm_backward_input_add(
     args: Gpt2LayerNormBackwardInputAddArgs<'_, '_>,
 ) -> Result<(), DriverError> {
     args.module
-        .backward_input_add(LayerNormBackwardInputAddArgs {
+        .backward_input_add_xhat_f16(LayerNormBackwardInputAddArgs {
             stream: args.stream,
             residual: args.saved.residual,
             d_normalized: args.d_normalized,
@@ -150,7 +151,7 @@ pub fn layer_norm_backward_input_amax(
     args: Gpt2LayerNormBackwardInputAmaxArgs<'_, '_>,
 ) -> Result<u32, DriverError> {
     args.module
-        .backward_input_amax(LayerNormBackwardInputAmaxArgs {
+        .backward_input_amax_xhat_f16(LayerNormBackwardInputAmaxArgs {
             stream: args.stream,
             residual: args.saved.residual,
             d_normalized: args.d_normalized,
@@ -169,7 +170,7 @@ pub fn layer_norm_backward_input_add_amax(
     args: Gpt2LayerNormBackwardInputAddAmaxArgs<'_, '_>,
 ) -> Result<u32, DriverError> {
     args.module
-        .backward_input_add_amax(LayerNormBackwardInputAddAmaxArgs {
+        .backward_input_add_amax_xhat_f16(LayerNormBackwardInputAddAmaxArgs {
             stream: args.stream,
             residual: args.saved.residual,
             d_normalized: args.d_normalized,
@@ -188,18 +189,19 @@ pub fn layer_norm_backward_input_add_amax(
 pub fn layer_norm_backward_params(
     args: Gpt2LayerNormBackwardParamArgs<'_, '_>,
 ) -> Result<(), DriverError> {
-    args.module.backward_params(LayerNormBackwardParamArgs {
-        stream: args.stream,
-        residual: args.saved.residual,
-        d_normalized: args.d_normalized,
-        mean: args.saved.mean,
-        inv_std: args.saved.inv_std,
-        d_weight: args.d_weight,
-        d_bias: args.d_bias,
-        output_scale: args.output_scale,
-        row_count: args.saved.row_count,
-        embedding_dim: GPT2_EMBEDDING_DIM,
-    })
+    args.module
+        .backward_params_xhat_f16(LayerNormBackwardParamArgs {
+            stream: args.stream,
+            residual: args.saved.residual,
+            d_normalized: args.d_normalized,
+            mean: args.saved.mean,
+            inv_std: args.saved.inv_std,
+            d_weight: args.d_weight,
+            d_bias: args.d_bias,
+            output_scale: args.output_scale,
+            row_count: args.saved.row_count,
+            embedding_dim: GPT2_EMBEDDING_DIM,
+        })
 }
 
 pub fn layer_norm_backward(args: Gpt2LayerNormBackwardArgs<'_, '_>) -> Result<(), DriverError> {

@@ -66,7 +66,7 @@ pub(super) fn load_b_scale4(
     let col = tile_col + group;
     if col < params.output_dim {
         let scale_base = col * (params.input_dim / SCALE_GROUP) + k_base / SCALE_GROUP;
-        load_scale4(scales, scale_base as usize)
+        crate::nvfp4::csf::scale4(scales, scale_base as usize)
     } else {
         E4M3_ONE_PACKED4
     }

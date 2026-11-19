@@ -53,7 +53,7 @@ fn stage_tiles_impl<const CHECK_BOUNDS: bool>(
     );
 }
 
-fn stage_matrix_tile<const CHECK_BOUNDS: bool, const TILE_ELEMS: usize>(
+pub(super) fn stage_matrix_tile<const CHECK_BOUNDS: bool, const TILE_ELEMS: usize>(
     src: &[u16],
     dst: &mut SharedArray<u16, TILE_ELEMS>,
     tile: CtaTile,
@@ -125,5 +125,5 @@ fn load_packed2<const N: usize, const ALIGN: usize>(
     tile: &SharedArray<u16, N, ALIGN>,
     offset: u32,
 ) -> u32 {
-    (tile[offset as usize] as u32) | ((tile[offset as usize + 1] as u32) << 16)
+    unsafe { *(tile.as_ptr().add(offset as usize) as *const u32) }
 }

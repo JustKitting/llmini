@@ -1,6 +1,7 @@
 use cuda_core::DriverError;
 
 use super::gather::TC_BACKWARD_THREADS_PER_BLOCK;
+use super::kda::KDA_INTRA_THREADS_PER_BLOCK;
 use super::types::{CausalAttentionBackwardTcArgs, CausalAttentionBackwardTcScratch};
 use crate::attention::AttentionModule;
 use crate::f16_tc_matmul::cta_tile::CTA_ULTRA_WIDE_THREADS;
@@ -39,6 +40,11 @@ impl AttentionModule {
         assert_eq!(
             args.head_dim, KDA_HEAD_DIM,
             "KDA path currently expects head_dim=64"
+        );
+        assert_eq!(
+            args.seq_len % KDA_HEAD_DIM,
+            0,
+            "KDA path requires full 64-token chunks"
         );
         let params = args.params();
         let CausalAttentionBackwardTcArgs {
@@ -89,16 +95,16 @@ impl AttentionModule {
             k_f32: kg,
             v_f32: vbeta,
             g_f32: g,
-            q: _q_half,
-            k: _k_half,
-            v: _v_half,
-            d_out: _d_out_half,
-            scores: chunk_matrix,
-            dot: aqk_or_dm,
+            q: vnew_half,
+            k: w_half,
+            v: aqk_half,
+            d_out: dout_half,
+            scores: _chunk_matrix,
+            dot: daqk_storage,
             p: local_grad,
             ds: dkg_from_state,
             p_half: _p_half,
-            ds_half: _ds_half,
+            ds_half: inverse_half,
             d_q: kneg_vnew_dqg_dv,
             d_k: kpos_u_dw,
             d_v: w_du_dq,
@@ -106,19 +112,31 @@ impl AttentionModule {
             kda_d_k: d_kneg_from_inverse,
             kda_d_v: dout_daqk_dvbeta,
             kda_d_g: dh_states_or_kneg,
-            kda_d_beta: d_beta,
+            kda_d_beta: state_decay_grad,
         } = scratch;
+        // p_half retains zero masked entries for the final full-attention
+        // layer's tile-mass sampling across iterations. Its bytes are not dead.
+        // Dot has no live FP32 value in KDA, so dAQK owns native-half bytes here.
+        let mut daqk_half = unsafe {
+            kda_launch::BorrowedHalfScratch::new(&*daqk_storage, dims.chunk_matrix_elems as usize)
+        };
         let bwd_elementwise = &self.causal_attention_backward_tc.kda_elementwise;
         let bwd_tc = &self.causal_attention_backward_tc.kda_tc;
         let fwd = &self.causal_attention_tc.kda;
         let threads = TC_BACKWARD_THREADS_PER_BLOCK;
         let chunkwise_cfg = grid_x_config(dims.batch_head, CTA_ULTRA_WIDE_THREADS);
-        let chunk_cfg = kda_launch::chunk_dim_config(dims.batch_head, dims.chunks, threads);
+        let intra_chunk_cfg =
+            kda_launch::chunk_dim_config(dims.batch_head, dims.chunks, KDA_INTRA_THREADS_PER_BLOCK);
+        let cumsum_cfg = kda_launch::chunk_dim_config(dims.batch_head, dims.chunks, KDA_HEAD_DIM);
         let tc_chunk_cfg =
             kda_launch::chunk_dim_config(dims.batch_head, dims.chunks, KDA_WIDE_THREADS_PER_BLOCK);
-        let matrix_cfg = grid_x_config(dims.chunk_batch, threads);
         let finish_element_count = dims.batch_head * seq_len * 32;
         let finish_chunk_count = finish_element_count.div_ceil(threads);
+        assert_eq!(
+            finish_chunk_count,
+            dims.chunk_batch * (threads / 32),
+            "KDA fused backward amax layout requires full 64-token chunks"
+        );
         assert!(d_qkv_chunk_amax.len() >= finish_chunk_count as usize);
         macro_rules! launch {
             ($target:ident.$kernel:ident($config:expr; $($arg:expr),* $(,)?)) => {
@@ -131,146 +149,140 @@ impl AttentionModule {
             };
         }
 
-        launch!(bwd_elementwise.prepare_kda_backward_inputs_kernel(linear_config(dims.batch_head * seq_len * 32, threads); qkv, qg, kg, vbeta, g, beta));
-        launch!(bwd_elementwise.chunk_cumsum_kda_backward_g_kernel(chunk_cfg; g));
-        if kda_v_new.is_some() && kda_akk_inv.is_some() && kda_w.is_some() && kda_aqk.is_some() {
-            launch!(fwd.make_kda_qg_kg_vbeta_kernel(linear_config(dims.compact_elems, threads); qg, kg, vbeta, g, beta));
+        // These upper halves are dead before preparation. Native Kpos/Kneg
+        // remain read-only through the fused producer-to-scalar kernel.
+        let mut kneg_half = unsafe {
+            kda_launch::BorrowedHalfScratch::range(
+                &*local_grad,
+                dims.compact_elems as usize,
+                dims.compact_elems as usize,
+            )
+        };
+        let mut kpos_half = unsafe {
+            kda_launch::BorrowedHalfScratch::range(
+                &*w_du_dq,
+                dims.compact_elems as usize,
+                dims.compact_elems as usize,
+            )
+        };
+        let has_cached_forward_state =
+            kda_v_new.is_some() && kda_akk_inv.is_some() && kda_w.is_some() && kda_aqk.is_some();
+        if has_cached_forward_state {
+            launch!(bwd_elementwise.prepare_transform_kda_backward_cached_kernel(kda_launch::chunk_dim_config(dims.batch_head, dims.chunks, KDA_WIDE_THREADS_PER_BLOCK); qkv, qg, kg, vbeta, g, beta, &mut *kpos_half, &mut *kneg_half));
         } else {
-            launch!(fwd.make_kda_qg_kneg_kg_kpos_vbeta_kernel(linear_config(dims.compact_elems, threads); qg, kg, vbeta, g, beta, kneg_vnew_dqg_dv, kpos_u_dw));
+            launch!(bwd_elementwise.prepare_kda_backward_inputs_kernel(linear_config(dims.batch_head * seq_len * 32, threads); qkv, qg, kg, vbeta, g, beta));
+            launch!(bwd_elementwise.chunk_cumsum_kda_backward_g_kernel(cumsum_cfg; g));
+            launch!(fwd.make_kda_qg_kneg_kg_kpos_vbeta_kernel(linear_config(dims.compact_elems, threads); qg, kg, vbeta, g, beta, kneg_vnew_dqg_dv, kpos_u_dw, &mut *kpos_half, &mut *kneg_half));
         }
         if kda_akk_inv.is_none() {
-            mm!(f32_input_strict_causal(
-                kpos_u_dw,
-                kneg_vnew_dqg_dv,
-                chunk_matrix,
-                dims.cch()
-            ));
-            launch!(fwd.solve_kda_akk_inv_kernel(matrix_cfg; chunk_matrix));
+            mm.fused_inverse(kpos_u_dw, kneg_vnew_dqg_dv, &mut *inverse_half, dims.cch())?;
         }
         let w = {
-            let akk_inv = kda_akk_inv.unwrap_or(&*chunk_matrix);
+            let akk_inv = kda_akk_inv.unwrap_or(&*inverse_half);
             match kda_w {
                 Some(w) => w,
                 None => {
-                    mm!(f32_rhs(akk_inv, kpos_u_dw, w_du_dq, dims.chc()));
-                    &*w_du_dq
+                    mm.half_a_f32_rhs_half_out(akk_inv, kpos_u_dw, &mut *w_half, dims.chc())?;
+                    &*w_half
                 }
             }
         };
+        // kneg must remain live until AQK is reconstructed below. Native FP16
+        // v_new uses the otherwise idle half buffer instead of overwriting it.
         if kda_v_new.is_none() {
-            let akk_inv = kda_akk_inv.unwrap_or(&*chunk_matrix);
-            mm!(f32_rhs(akk_inv, vbeta, kpos_u_dw, dims.chc()));
-            launch!(bwd_tc.chunk_kda_vnew_from_state_kernel(tc_chunk_cfg; w, kpos_u_dw, chunk_states, kneg_vnew_dqg_dv));
+            let akk_inv = kda_akk_inv.unwrap_or(&*inverse_half);
+            mm!(half_a_f32_rhs(akk_inv, vbeta, kpos_u_dw, dims.chc()));
+            launch!(bwd_tc.chunk_kda_vnew_from_state_kernel(tc_chunk_cfg; w, kpos_u_dw, chunk_states, &mut *vnew_half));
         }
         let aqk = match kda_aqk {
             Some(aqk) => aqk,
             None => {
-                mm!(f32_input_causal(
-                    qg,
-                    kneg_vnew_dqg_dv,
-                    aqk_or_dm,
-                    dims.cch()
-                ));
-                &*aqk_or_dm
+                mm.f32_causal_half_out(qg, kneg_vnew_dqg_dv, &mut *aqk_half, dims.cch())?;
+                &*aqk_half
             }
         };
-        launch!(bwd_elementwise.gather_kda_dout_kernel(linear_config(dims.compact_elems, threads); d_out, dout_daqk_dvbeta));
+        launch!(bwd_elementwise.gather_kda_dout_kernel(linear_config(dims.compact_elems, threads); d_out, &mut *dout_half));
         {
-            let v_new = kda_v_new.unwrap_or(&*kneg_vnew_dqg_dv);
-            mm!(f32_input_causal(
-                dout_daqk_dvbeta,
+            let v_new = kda_v_new.unwrap_or(&*vnew_half);
+            mm!(half_causal_half_out(
+                &*dout_half,
                 v_new,
-                local_grad,
+                &mut *daqk_half,
                 dims.cch()
             ));
         }
-        mm!(f32_a_transposed_rhs(
-            aqk,
-            dout_daqk_dvbeta,
-            kpos_u_dw,
-            dims.chc()
-        ));
+        // All three views occupy existing arenas only after their previous
+        // values die. Exported gradients are born as native half; the two
+        // recurrent carries and all scalar gradient math stay FP32.
+        let mut du_half = unsafe {
+            kda_launch::BorrowedHalfScratch::new(&*kpos_u_dw, dims.compact_elems as usize)
+        };
+        let mut dw_half =
+            unsafe { kda_launch::BorrowedHalfScratch::new(&*w_du_dq, dims.compact_elems as usize) };
+        let mut dh_half = unsafe {
+            kda_launch::BorrowedHalfScratch::new(&*dh_states_or_kneg, dims.compact_elems as usize)
+        };
         if detach_chunk_state {
-            fwd.zero_kda_f32_kernel(
-                stream,
-                linear_config(dims.compact_elems, threads),
-                &mut *dkg_from_state,
-                dims.compact_elems,
-            )?;
+            // The actual trainer uses this API: keep the projection parallel
+            // across chunks and consume its native dU in the same CTA.
+            launch!(bwd_tc.chunk_kda_project_du_dw_dqg_kernel(tc_chunk_cfg; aqk, &*dout_half, chunk_states, &mut *du_half, &mut *dw_half, kneg_vnew_dqg_dv));
         } else {
-            launch!(bwd_tc.chunkwise_kda_backward_kernel(chunkwise_cfg; qg, kg, kpos_u_dw, w, aqk, g, chunk_states, d_out, dh_states_or_kneg, local_grad));
-            let v_new = kda_v_new.unwrap_or(&*kneg_vnew_dqg_dv);
-            launch!(bwd_tc.chunk_kda_dkg_from_vnew_dh_kernel(tc_chunk_cfg; v_new, dh_states_or_kneg, dkg_from_state));
+            launch!(bwd_tc.chunkwise_kda_backward_kernel(chunkwise_cfg; qg, kg, &mut *du_half, w, g, aqk, &*dout_half, &mut *dh_half));
+            // dG_last also receives the direct exp(G_last)*H_entry carry.
+            // Preserve it before dH's arena becomes the inverse backprojection.
+            let fix = self.full_state_decay_module()?;
+            assert!(state_decay_grad.len() >= (dims.chunk_batch * head_dim) as usize);
+            let capture_cfg = kda_launch::chunk_dim_config(dims.batch_head, dims.chunks, threads);
+            launch!(fix.capture_full_state_decay_grad_kernel(capture_cfg; chunk_states, &*dh_half, g, &mut *state_decay_grad));
+            let v_new = kda_v_new.unwrap_or(&*vnew_half);
+            launch!(bwd_tc.chunk_kda_dkg_from_vnew_dh_kernel(tc_chunk_cfg; v_new, &*dh_half, dkg_from_state));
+            launch!(bwd_tc.chunk_kda_dw_dqg_from_state_kernel(tc_chunk_cfg; &*du_half, &*dout_half, chunk_states, &mut *dw_half, kneg_vnew_dqg_dv));
         }
-        launch!(bwd_tc.chunk_kda_dw_dqg_from_state_kernel(tc_chunk_cfg; kpos_u_dw, dout_daqk_dvbeta, chunk_states, w_du_dq, kneg_vnew_dqg_dv));
-        launch!(bwd_elementwise.make_kda_backward_kneg_from_kg_kernel(linear_config(dims.compact_elems, threads); kg, g, dh_states_or_kneg));
-        mm!(f32_input_accumulate(
-            local_grad,
-            dh_states_or_kneg,
-            kneg_vnew_dqg_dv,
+        // dAQK[token,source] multiplies Kneg[source,feature]. The generic
+        // half_input_accumulate API takes B-transposed storage and silently
+        // computes the wrong product here when both axes happen to be64.
+        // Stage the native RHS with its actual layout in both backward modes.
+        let repair = self.full_state_decay_module()?;
+        let query_cfg =
+            kda_launch::chunk_dim_config(dims.batch_head, dims.chunks, KDA_WIDE_THREADS_PER_BLOCK);
+        launch!(repair.accumulate_kda_dqg_rhs_kernel(query_cfg; &*daqk_half, &*kneg_half, kneg_vnew_dqg_dv));
+        mm!(half_a_transposed_f32_rhs(
+            &*daqk_half,
+            qg,
+            dka_dg,
             dims.chc()
         ));
-        mm!(f32_a_transposed_rhs(local_grad, qg, dka_dg, dims.chc()));
         {
-            let akk_inv = kda_akk_inv.unwrap_or(&*chunk_matrix);
-            mm!(f32_a_transposed_rhs(
+            let akk_inv = kda_akk_inv.unwrap_or(&*inverse_half);
+            mm.half_a_transposed_dual_rhs(
                 akk_inv,
-                w_du_dq,
+                &*dw_half,
+                &*du_half,
                 dh_states_or_kneg,
-                dims.chc()
-            ));
-            mm!(f32_a_transposed_rhs(
-                akk_inv,
-                kpos_u_dw,
                 dout_daqk_dvbeta,
-                dims.chc()
-            ));
+                dims.chc(),
+            )?;
         }
-        launch!(bwd_tc.chunk_intra_kda_dm_kernel(tc_chunk_cfg; kg, vbeta, g, beta, kpos_u_dw, w_du_dq, aqk_or_dm));
-        match kda_akk_inv {
-            Some(akk_inv) => {
-                mm!(f32_input(aqk_or_dm, akk_inv, local_grad, dims.ccc()));
-                mm!(f32_a_transposed_rhs_strict_neg(
-                    akk_inv,
-                    local_grad,
-                    chunk_matrix,
-                    dims.ccc()
-                ));
-            }
-            None => {
-                mm!(f32_input(aqk_or_dm, chunk_matrix, local_grad, dims.ccc()));
-                mm!(f32_a_transposed_rhs(
-                    chunk_matrix,
-                    local_grad,
-                    aqk_or_dm,
-                    dims.ccc()
-                ));
-                launch!(bwd_elementwise.make_kda_strict_neg_matrix_kernel(linear_config(dims.chunk_matrix_elems, threads); aqk_or_dm, chunk_matrix));
-            }
+        // dM and both inverse products stay in one native-half shared arena.
+        // Both backprojections remain FP32 inside the same CTA and become
+        // its prefix scratch in place. Q norms use dead dAQK/dot bytes and K
+        // norms use dead dedicated dK bytes. Both are disjoint from Kpos/Kneg;
+        // writing them into M here would race another chunk's live M reads.
+        let akk_inv = kda_akk_inv.unwrap_or(&*inverse_half);
+        launch!(bwd_tc.chunk_intra_kda_backward_kernel(intra_chunk_cfg; qkv, qg, kg, vbeta, g, beta, kneg_vnew_dqg_dv, dkg_from_state, dka_dg, dh_states_or_kneg, dout_daqk_dvbeta, akk_inv, &*du_half, &*dw_half, &*kneg_half, &*kpos_half, daqk_storage, d_kneg_from_inverse, d_qkv, d_qkv_chunk_amax, u32::from(accumulate_value_grad), u32::from(detach_chunk_state)));
+        if !detach_chunk_state {
+            let fix = self.full_state_decay_module()?;
+            let correction_cfg =
+                kda_launch::chunk_dim_config(dims.batch_head, dims.chunks, threads);
+            launch!(fix.add_full_state_decay_grad_and_amax_kernel(correction_cfg; qkv, &*state_decay_grad, &mut *d_qkv, &mut *d_qkv_chunk_amax));
         }
-        launch!(bwd_elementwise.make_kda_backward_kneg_kpos_from_kg_kernel(linear_config(dims.compact_elems, threads); kg, g, beta, kpos_u_dw, aqk_or_dm));
-        mm!(f32_rhs(
-            chunk_matrix,
-            kpos_u_dw,
-            d_kneg_from_inverse,
-            dims.chc()
-        ));
-        mm!(f32_a_transposed_rhs(
-            chunk_matrix,
-            aqk_or_dm,
-            local_grad,
-            dims.chc()
-        ));
-        launch!(bwd_tc.chunk_intra_kda_backward_kernel(chunk_cfg; qg, kg, vbeta, g, beta, kneg_vnew_dqg_dv, dkg_from_state, dka_dg, dh_states_or_kneg, dout_daqk_dvbeta, d_kneg_from_inverse, local_grad, w_du_dq, chunk_matrix, d_beta));
-        // After chunk_intra_kda_backward_kernel these reused buffers hold final compact gradients.
-        // qg and kg are dead after the final gradient pass, so reuse their leading
-        // batch-head rows for the post-SiLU norms already computed by that pass.
-        launch!(bwd_elementwise.finish_kda_backward_kernel(grid_x_config(finish_chunk_count, threads); qkv, w_du_dq, chunk_matrix, kneg_vnew_dqg_dv, dka_dg, d_beta, qg, kg, d_qkv, d_qkv_chunk_amax, u32::from(accumulate_value_grad)));
+        // The fused intra kernel stores the final Q/K norms in its otherwise-dead
+        // compact Q/K scratch buffers after producing dQKV directly.
         bwd_elementwise.reduce_kda_qk_norm_max_kernel(
             stream,
             grid_x_config(head_count, KDA_NORM_REDUCE_THREADS_PER_BLOCK),
-            &*qg,
-            &*kg,
+            &*daqk_storage,
+            &*d_kneg_from_inverse,
             qk_norm_max,
             qk_norm_offset,
             params.row_count,

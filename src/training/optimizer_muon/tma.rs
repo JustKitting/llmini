@@ -1,10 +1,7 @@
 use cuda_core::{CudaStream, DeviceBuffer, DriverError};
-use rust_kernels_cuda::f32_matrix_ops::{
-    F32Linear3Args, F32Linear3SqrtBoundAmaxArgs, F32Linear3SqrtBoundRowSumsqArgs,
-    F32ScaleInPlaceByAmaxArgs,
-};
+use rust_kernels_cuda::f32_matrix_ops::F32ScaleInPlaceByAmaxArgs;
 use rust_kernels_cuda::nvfp4_quant::{
-    Nvfp4QuantPaddedArgs, Nvfp4QuantPairTransposeExactArgs, Nvfp4QuantTransposePaddedArgs,
+    Nvfp4QuantPaddedArgs, Nvfp4QuantPairTransposePaddedArgs, Nvfp4QuantTransposePaddedArgs,
     TensorAmaxArgs,
 };
 use rust_kernels_cuda::nvfp4_tma_matmul::kernels::{TILE_K, TILE_M, TILE_N};
@@ -160,13 +157,22 @@ pub(in crate::training) fn apply_muon_tma(args: MuonTmaArgs<'_>) -> Result<(), D
             slots: &args.table.slots,
             symexp_lin_slots: &args.table.symexp_lin_slots,
             polar_update,
-            polar_bound_amax: &args.scratch.tma.bound_amax,
+            // Deferred final row norms occupy the current X-amax slot after
+            // the per-round scalar-role swap; the old Gram bound stays live
+            // through the entire step kernel.
+            polar_bound_amax: if defer_bounds {
+                &args.scratch.tma.a.amax
+            } else {
+                &args.scratch.tma.bound_amax
+            },
             polar_chunks: &mut args.scratch.polar_chunks,
             normuon_factors: &mut args.scratch.normuon_factors,
             normuon_chunks: &mut args.scratch.normuon_chunks,
             qk_clip_factors: args.qk_clip_factors,
             slot_index: slot_index as u32,
             matrix_len: desc.rows * desc.cols,
+            matrix_rows: desc.rows,
+            matrix_cols: desc.cols,
             polar_cols,
             learning_rate,
             weight_decay: MUON_WEIGHT_DECAY,
@@ -240,6 +246,9 @@ fn run_tma_polar_loop(
                 defer_bounds,
             )?;
         }
+        // Host ownership only: both physical scalar allocations stay live.
+        // The next producer now reads the last step's amax (or final norm).
+        std::mem::swap(&mut scratch.tma.a.amax, &mut scratch.tma.b.amax);
     }
     Ok(())
 }
@@ -273,7 +282,7 @@ fn run_tma_polar_iteration(
         tma.reborrow(),
         polar_rows,
         polar_cols,
-        iter == 0 || defer_bounds,
+        true,
         defer_bounds,
     )?;
     trace_buffer(
@@ -296,179 +305,73 @@ fn run_tma_polar_iteration(
         polar_cols,
         defer_bounds,
     )?;
-    trace_buffer(
-        stream,
-        trace,
-        slot_index,
-        if defer_bounds {
-            "source_bound_deferred"
-        } else {
-            "source_bounded"
-        },
-        source,
-        polar_rows * polar_cols,
-        Some(iter),
-        desc,
-    )?;
-    trace_buffer(
-        stream,
-        trace,
-        slot_index,
-        if defer_bounds {
-            "gram_bound_deferred"
-        } else {
-            "gram_bounded"
-        },
-        gram,
-        polar_rows * polar_rows,
-        Some(iter),
-        desc,
-    )?;
 
     let coeffs = muon_polar_coefficients(iter);
-    let action_dims = TmaDims::new(polar_rows, polar_cols, polar_rows);
+    let dims = TmaDims::new(polar_rows, polar_cols, polar_rows);
+    // This is the only lazy-bound rebase of the retained X transpose. Packing
+    // the polynomial factor below must not rebase its global scale again.
     prepare_tma_a_padded(
         stream,
         runtime,
         gram,
         &mut tma,
-        action_dims,
+        dims,
         polar_rows,
         polar_rows,
         defer_bounds,
     )?;
     if !defer_bounds {
         prepare_tma_b_sqrt_bounded_transposed(
-            stream,
-            runtime,
-            source,
-            &mut tma,
-            action_dims,
-            polar_rows,
-            polar_cols,
-            false,
+            stream, runtime, source, &mut tma, dims, polar_rows, polar_cols, false,
         )?;
     }
-    run_tma_gemm_prepared_and_b_amax(stream, runtime, ax, &mut tma, action_dims)?;
+    run_tma_gram_factor(
+        stream,
+        runtime,
+        gram,
+        ax,
+        &mut tma,
+        polar_rows,
+        coeffs.b,
+        coeffs.c,
+        defer_bounds,
+    )?;
     trace_buffer(
         stream,
         trace,
         slot_index,
-        "ax_gx",
+        "gram_factor",
         ax,
-        polar_rows * polar_cols,
+        polar_rows * polar_rows,
         Some(iter),
         desc,
     )?;
-    prepare_tma_b_transposed_precomputed_amax(
+    quantize_operand_padded_with_amax(
         stream,
         runtime,
         ax,
+        tma.a.reborrow(),
+        polar_rows,
+        polar_rows,
+        dims.m,
+        dims.k,
+        tma.b.amax,
+    )?;
+
+    let final_iteration = iter + 1 == POLAR_ITERATIONS;
+    run_tma_polar_step(
+        stream,
+        runtime,
+        source,
+        target,
         &mut tma,
-        action_dims,
+        dims,
         polar_rows,
         polar_cols,
+        coeffs.a,
+        defer_bounds,
+        final_iteration && defer_bounds,
     )?;
-    let final_iteration = iter + 1 == POLAR_ITERATIONS;
-    let fused_linear3 = defer_bounds && !final_iteration && !trace.enabled;
-    let fused_final_row_sumsq = defer_bounds && final_iteration && !trace.enabled;
-    if fused_linear3 {
-        run_tma_gemm_prepared_linear3_amax(
-            stream,
-            runtime,
-            source,
-            ax,
-            target,
-            &mut tma,
-            action_dims,
-            coeffs.a,
-            coeffs.b,
-            coeffs.c,
-        )?;
-    } else if fused_final_row_sumsq {
-        run_tma_gemm_prepared_linear3_row_sumsq(
-            stream,
-            runtime,
-            source,
-            ax,
-            target,
-            &mut tma,
-            action_dims,
-            coeffs.a,
-            coeffs.b,
-            coeffs.c,
-        )?;
-    } else {
-        run_tma_gemm_prepared(stream, runtime, target, &mut tma, action_dims)?;
-        trace_buffer(
-            stream,
-            trace,
-            slot_index,
-            "target_ggx",
-            target,
-            polar_rows * polar_cols,
-            Some(iter),
-            desc,
-        )?;
-        if defer_bounds && final_iteration {
-            runtime
-                .f32_ops
-                .linear3_sqrt_bound_a_row_sumsq(F32Linear3SqrtBoundRowSumsqArgs {
-                    stream,
-                    a: source,
-                    b: ax,
-                    c_out: target,
-                    bound_amax: &*tma.bound_amax,
-                    row_sumsq: tma.b.chunk_amax,
-                    rows: polar_rows,
-                    cols: polar_cols,
-                    a_scale: coeffs.a,
-                    b_scale: coeffs.b,
-                    c_scale: coeffs.c,
-                })?;
-            // For a Gram matrix XX^T, every off-diagonal magnitude is bounded by
-            // the largest diagonal, so its tensor amax is the maximum row sumsq.
-            runtime.quant.tensor_amax_from_chunks_f32(
-                stream,
-                &*tma.b.chunk_amax,
-                tma.bound_amax,
-                polar_rows,
-            )?;
-        } else if defer_bounds {
-            let chunk_count =
-                runtime
-                    .f32_ops
-                    .linear3_sqrt_bound_a_with_amax(F32Linear3SqrtBoundAmaxArgs {
-                        stream,
-                        a: source,
-                        b: ax,
-                        c_out: target,
-                        bound_amax: &*tma.bound_amax,
-                        chunk_amax: tma.a.chunk_amax,
-                        len: polar_rows * polar_cols,
-                        a_scale: coeffs.a,
-                        b_scale: coeffs.b,
-                        c_scale: coeffs.c,
-                    })?;
-            runtime.quant.tensor_amax_from_chunks_f32(
-                stream,
-                &*tma.a.chunk_amax,
-                tma.a.amax,
-                chunk_count,
-            )?;
-        } else {
-            runtime.f32_ops.linear3(F32Linear3Args {
-                stream,
-                a: source,
-                b: ax,
-                c_out: target,
-                len: polar_rows * polar_cols,
-                a_scale: coeffs.a,
-                b_scale: coeffs.b,
-                c_scale: coeffs.c,
-            })?;
-        }
-    }
     trace_buffer(
         stream,
         trace,
@@ -480,6 +383,9 @@ fn run_tma_polar_iteration(
         desc,
     )?;
     if final_iteration && !defer_bounds {
+        // The target amax was emitted into B's scalar. Use it for the
+        // materialized final Gram before the outer ownership swap.
+        std::mem::swap(&mut tma.a.amax, &mut tma.b.amax);
         tma_matmul_self_transpose(
             stream,
             runtime,
@@ -488,18 +394,8 @@ fn run_tma_polar_iteration(
             tma.reborrow(),
             polar_rows,
             polar_cols,
+            true,
             false,
-            false,
-        )?;
-        trace_buffer(
-            stream,
-            trace,
-            slot_index,
-            "final_gram_xxt",
-            gram,
-            polar_rows * polar_rows,
-            Some(iter),
-            desc,
         )?;
         bound_source_and_gram(
             stream,
@@ -591,6 +487,7 @@ fn tma_matmul_self_transpose(
             k,
             dims.m,
             dims.k,
+            tma.bound_amax,
         )?;
     } else if source_amax_precomputed {
         quantize_operand_padded_with_amax(
@@ -602,6 +499,7 @@ fn tma_matmul_self_transpose(
             k,
             dims.m,
             dims.k,
+            tma.bound_amax,
         )?;
     } else {
         quantize_operand_padded(
@@ -613,6 +511,7 @@ fn tma_matmul_self_transpose(
             k,
             dims.m,
             dims.k,
+            tma.bound_amax,
         )?;
     }
     run_tma_gemm_self_prepared_and_bound_amax(stream, runtime, out, &mut tma, dims)
@@ -638,6 +537,7 @@ fn prepare_tma_a_padded(
             cols,
             dims.m,
             dims.k,
+            tma.b.amax,
         );
     }
 
@@ -656,9 +556,9 @@ fn prepare_tma_a_padded(
     if defer_bound {
         runtime
             .quant
-            .fp32_to_nvfp4_four_six_exact_lazy_bounded_amax_packed_scales_rebase(
+            .fp32_to_nvfp4_four_six_exact_lazy_bounded_amax_packed_scales_rebase_and_clear_source_amax(
                 args,
-                &*tma.a.amax,
+                tma.a.amax,
                 tma.b.global_scale,
             )
     } else {
@@ -678,27 +578,6 @@ fn prepare_tma_b_transposed(
     cols: u32,
 ) -> Result<(), DriverError> {
     quantize_operand_transposed_padded(
-        stream,
-        runtime,
-        input,
-        tma.b.reborrow(),
-        rows,
-        cols,
-        dims.n,
-        dims.k,
-    )
-}
-
-fn prepare_tma_b_transposed_precomputed_amax(
-    stream: &CudaStream,
-    runtime: &Runtime,
-    input: &DeviceBuffer<f32>,
-    tma: &mut TmaScratchRefs<'_>,
-    dims: TmaDims,
-    rows: u32,
-    cols: u32,
-) -> Result<(), DriverError> {
-    quantize_operand_transposed_padded_with_amax(
         stream,
         runtime,
         input,
@@ -762,234 +641,140 @@ fn prepare_tma_b_sqrt_bounded_transposed(
     )
 }
 
-fn run_tma_gemm_prepared(
+#[expect(
+    clippy::too_many_arguments,
+    reason = "fused Gram polynomial has explicit buffers and coefficients"
+)]
+fn run_tma_gram_factor(
     stream: &CudaStream,
     runtime: &Runtime,
-    out: &mut DeviceBuffer<f32>,
+    gram: &DeviceBuffer<f32>,
+    factor: &mut DeviceBuffer<f32>,
     tma: &mut TmaScratchRefs<'_>,
-    dims: TmaDims,
+    dim: u32,
+    b_scale: f32,
+    c_scale: f32,
+    defer_bound: bool,
 ) -> Result<(), DriverError> {
-    if dims.is_exact() {
+    let dims = TmaDims::new(dim, dim, dim);
+    if !defer_bound {
+        // Aligned deferred producers consume/clear this scalar themselves.
         runtime
             .optimizer
             .tma_gemm()
-            .prepare_tma_nvfp4_device_scales_into(
-                stream,
-                &*tma.a.bytes,
-                &*tma.a.scale_packed,
-                &*tma.b.bytes,
-                &*tma.b.scale_packed,
-                dims.m,
-                dims.k,
-                dims.n,
-                tma.descriptors,
-            )?;
-        return runtime
+            .clear_output_amax(stream, tma.a.amax)?;
+    }
+    runtime
+        .optimizer
+        .tma_gemm()
+        .prepare_tma_nvfp4_device_scales_into(
+            stream,
+            &*tma.a.bytes,
+            &*tma.a.scale_packed,
+            &*tma.a.bytes,
+            &*tma.a.scale_packed,
+            dims.m,
+            dims.k,
+            dims.n,
+            tma.descriptors,
+        )?;
+    // Groupwise FP4 quantization need not preserve G's symmetry. Deliberately
+    // use QG*QG^T as the symmetric square approximation and mirror its tiles.
+    runtime
+        .optimizer
+        .tma_gemm()
+        .gemm_tma_nvfp4_device_scales_and_global_scale_buffers_gram_factor_with_precleared_output_amax(
+            stream,
+            &*tma.descriptors,
+            gram,
+            &*tma.bound_amax,
+            dim,
+            b_scale,
+            c_scale,
+            defer_bound,
+            factor,
+            tma.a.amax,
+            dims.m,
+            dims.k,
+            &*tma.a.global_scale,
+        )
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "fused polar step has explicit compact output and bounds"
+)]
+fn run_tma_polar_step(
+    stream: &CudaStream,
+    runtime: &Runtime,
+    source: &DeviceBuffer<f32>,
+    out: &mut DeviceBuffer<f32>,
+    tma: &mut TmaScratchRefs<'_>,
+    dims: TmaDims,
+    rows: u32,
+    cols: u32,
+    a_scale: f32,
+    defer_bound: bool,
+    final_row_sumsq: bool,
+) -> Result<(), DriverError> {
+    runtime
+        .optimizer
+        .tma_gemm()
+        .prepare_tma_nvfp4_polar_scales_into(
+            stream,
+            &*tma.a.bytes,
+            &*tma.a.scale_packed,
+            &*tma.b.bytes,
+            &*tma.b.scale_packed,
+            dims.m,
+            dims.k,
+            dims.n,
+            tma.descriptors,
+        )?;
+    if final_row_sumsq {
+        runtime
             .optimizer
             .tma_gemm()
-            .gemm_tma_nvfp4_device_scales_and_global_scale_buffers(
+            .gemm_tma_nvfp4_device_scales_and_global_scale_buffers_polar_step_with_precleared_row_sumsq(
                 stream,
                 &*tma.descriptors,
+                source,
                 out,
+                &*tma.bound_amax,
+                tma.b.amax,
+                tma.out_padded,
                 dims.m,
                 dims.k,
                 dims.n,
                 &*tma.a.global_scale,
                 &*tma.b.global_scale,
-            );
+                a_scale,
+                rows,
+                cols,
+                defer_bound,
+            )
+    } else {
+        runtime
+            .optimizer
+            .tma_gemm()
+            .gemm_tma_nvfp4_device_scales_and_global_scale_buffers_polar_step_with_precleared_output_amax(
+                stream,
+                &*tma.descriptors,
+                source,
+                out,
+                &*tma.bound_amax,
+                tma.b.amax,
+                dims.m,
+                dims.k,
+                dims.n,
+                &*tma.a.global_scale,
+                &*tma.b.global_scale,
+                a_scale,
+                rows,
+                cols,
+                defer_bound,
+            )
     }
-    runtime
-        .optimizer
-        .tma_gemm()
-        .prepare_tma_nvfp4_device_scales_into(
-            stream,
-            &*tma.a.bytes,
-            &*tma.a.scale_packed,
-            &*tma.b.bytes,
-            &*tma.b.scale_packed,
-            dims.m,
-            dims.k,
-            dims.n,
-            tma.descriptors,
-        )?;
-    runtime
-        .optimizer
-        .tma_gemm()
-        .gemm_tma_nvfp4_device_scales_and_global_scale_buffers(
-            stream,
-            &*tma.descriptors,
-            tma.out_padded,
-            dims.m,
-            dims.k,
-            dims.n,
-            &*tma.a.global_scale,
-            &*tma.b.global_scale,
-        )?;
-    crop_tma_out(stream, runtime, out, tma.out_padded, dims)
-}
-
-#[expect(
-    clippy::too_many_arguments,
-    reason = "fused Muon action uses explicit operands and coefficients"
-)]
-fn run_tma_gemm_prepared_linear3_amax(
-    stream: &CudaStream,
-    runtime: &Runtime,
-    source: &DeviceBuffer<f32>,
-    action: &DeviceBuffer<f32>,
-    out: &mut DeviceBuffer<f32>,
-    tma: &mut TmaScratchRefs<'_>,
-    dims: TmaDims,
-    a_scale: f32,
-    b_scale: f32,
-    c_scale: f32,
-) -> Result<(), DriverError> {
-    debug_assert!(dims.is_exact());
-    runtime
-        .optimizer
-        .tma_gemm()
-        .prepare_tma_nvfp4_device_scales_into(
-            stream,
-            &*tma.a.bytes,
-            &*tma.a.scale_packed,
-            &*tma.b.bytes,
-            &*tma.b.scale_packed,
-            dims.m,
-            dims.k,
-            dims.n,
-            tma.descriptors,
-        )?;
-    let chunk_count = runtime
-        .optimizer
-        .tma_gemm()
-        .gemm_tma_nvfp4_device_scales_and_global_scale_buffers_linear3_with_output_amax(
-            stream,
-            &*tma.descriptors,
-            source,
-            action,
-            out,
-            &*tma.bound_amax,
-            tma.a.chunk_amax,
-            dims.m,
-            dims.k,
-            dims.n,
-            &*tma.a.global_scale,
-            &*tma.b.global_scale,
-            a_scale,
-            b_scale,
-            c_scale,
-        )?;
-    runtime
-        .quant
-        .tensor_amax_from_chunks_f32(stream, &*tma.a.chunk_amax, tma.a.amax, chunk_count)
-}
-
-#[expect(
-    clippy::too_many_arguments,
-    reason = "fused Muon action uses explicit operands and coefficients"
-)]
-fn run_tma_gemm_prepared_linear3_row_sumsq(
-    stream: &CudaStream,
-    runtime: &Runtime,
-    source: &DeviceBuffer<f32>,
-    action: &DeviceBuffer<f32>,
-    out: &mut DeviceBuffer<f32>,
-    tma: &mut TmaScratchRefs<'_>,
-    dims: TmaDims,
-    a_scale: f32,
-    b_scale: f32,
-    c_scale: f32,
-) -> Result<(), DriverError> {
-    debug_assert!(dims.is_exact());
-    runtime
-        .optimizer
-        .tma_gemm()
-        .prepare_tma_nvfp4_device_scales_into(
-            stream,
-            &*tma.a.bytes,
-            &*tma.a.scale_packed,
-            &*tma.b.bytes,
-            &*tma.b.scale_packed,
-            dims.m,
-            dims.k,
-            dims.n,
-            tma.descriptors,
-        )?;
-    runtime
-        .optimizer
-        .tma_gemm()
-        .gemm_tma_nvfp4_device_scales_and_global_scale_buffers_linear3_with_row_sumsq(
-            stream,
-            &*tma.descriptors,
-            source,
-            action,
-            out,
-            &*tma.bound_amax,
-            tma.out_padded,
-            tma.b.chunk_amax,
-            dims.m,
-            dims.k,
-            dims.n,
-            &*tma.a.global_scale,
-            &*tma.b.global_scale,
-            a_scale,
-            b_scale,
-            c_scale,
-        )?;
-    runtime
-        .quant
-        .tensor_amax_from_chunks_f32(stream, &*tma.b.chunk_amax, tma.bound_amax, dims.m)
-}
-
-fn run_tma_gemm_prepared_and_b_amax(
-    stream: &CudaStream,
-    runtime: &Runtime,
-    out: &mut DeviceBuffer<f32>,
-    tma: &mut TmaScratchRefs<'_>,
-    dims: TmaDims,
-) -> Result<(), DriverError> {
-    if !dims.is_exact() {
-        run_tma_gemm_prepared(stream, runtime, out, tma, dims)?;
-        return runtime.quant.tensor_amax_f32(TensorAmaxArgs {
-            stream,
-            x: out,
-            chunk_amax: tma.b.chunk_amax,
-            out: tma.b.amax,
-            element_count: dims.logical_m * dims.logical_n,
-        });
-    }
-
-    runtime
-        .optimizer
-        .tma_gemm()
-        .prepare_tma_nvfp4_device_scales_into(
-            stream,
-            &*tma.a.bytes,
-            &*tma.a.scale_packed,
-            &*tma.b.bytes,
-            &*tma.b.scale_packed,
-            dims.m,
-            dims.k,
-            dims.n,
-            tma.descriptors,
-        )?;
-    let chunk_count = runtime
-        .optimizer
-        .tma_gemm()
-        .gemm_tma_nvfp4_device_scales_and_global_scale_buffers_with_output_amax(
-            stream,
-            &*tma.descriptors,
-            out,
-            tma.b.chunk_amax,
-            dims.m,
-            dims.k,
-            dims.n,
-            &*tma.a.global_scale,
-            &*tma.b.global_scale,
-        )?;
-    runtime
-        .quant
-        .tensor_amax_from_chunks_f32(stream, &*tma.b.chunk_amax, tma.b.amax, chunk_count)
 }
 
 fn run_tma_gemm_self_prepared(
@@ -1090,24 +875,18 @@ fn run_tma_gemm_self_prepared_and_bound_amax(
             dims.n,
             tma.descriptors,
         )?;
-    let chunk_count = runtime
+    runtime
         .optimizer
         .tma_gemm()
-        .gemm_tma_nvfp4_device_scales_and_global_scale_buffers_symmetric_with_output_amax(
+        .gemm_tma_nvfp4_device_scales_and_global_scale_buffers_symmetric_with_precleared_output_amax(
             stream,
             &*tma.descriptors,
             out,
-            tma.b.chunk_amax,
+            tma.bound_amax,
             dims.m,
             dims.k,
             &*tma.a.global_scale,
-        )?;
-    runtime.quant.tensor_amax_from_chunks_f32(
-        stream,
-        &*tma.b.chunk_amax,
-        tma.bound_amax,
-        chunk_count,
-    )
+        )
 }
 
 fn crop_tma_out(
@@ -1141,30 +920,28 @@ fn quantize_operand_pair_padded_with_amax(
     cols: u32,
     padded_rows: u32,
     padded_cols: u32,
+    next_amax: &mut DeviceBuffer<f32>,
 ) -> Result<(), DriverError> {
-    assert_eq!(rows, padded_rows);
-    assert_eq!(cols, padded_cols);
-    assert!(rows.is_power_of_two());
-    assert!(rows.is_multiple_of(16));
-    assert!(cols.is_multiple_of(64));
+    assert_eq!(padded_rows, ceil_to(rows, TILE_K));
 
     runtime
         .quant
-        .fp32_pair_to_nvfp4_four_six_exact_pow2_tiled_packed_scales(
-            Nvfp4QuantPairTransposeExactArgs {
-                stream,
-                x: input,
-                amax: &*row.amax,
-                out_fp4: row.bytes,
-                out_scales: row.scale_packed,
-                out_global_scale: row.global_scale,
-                transpose_out_fp4: transpose.bytes,
-                transpose_out_scales: transpose.scale_packed,
-                transpose_out_global_scale: transpose.global_scale,
-                source_rows: rows,
-                source_cols: cols,
-            },
-        )
+        .fp32_pair_to_nvfp4_four_six_tiled_padded_packed_scales(Nvfp4QuantPairTransposePaddedArgs {
+            stream,
+            x: input,
+            amax: &*row.amax,
+            out_fp4: row.bytes,
+            out_scales: row.scale_packed,
+            out_global_scale: row.global_scale,
+            transpose_out_fp4: transpose.bytes,
+            transpose_out_scales: transpose.scale_packed,
+            transpose_out_global_scale: transpose.global_scale,
+            next_gram_amax: next_amax,
+            source_rows: rows,
+            source_cols: cols,
+            padded_rows,
+            padded_cols,
+        })
 }
 
 fn quantize_operand_padded(
@@ -1176,6 +953,7 @@ fn quantize_operand_padded(
     cols: u32,
     padded_rows: u32,
     padded_cols: u32,
+    next_amax: &mut DeviceBuffer<f32>,
 ) -> Result<(), DriverError> {
     let mut scratch = scratch;
     let elements = rows * cols;
@@ -1195,6 +973,7 @@ fn quantize_operand_padded(
         cols,
         padded_rows,
         padded_cols,
+        next_amax,
     )
 }
 
@@ -1211,27 +990,22 @@ fn quantize_operand_padded_with_amax(
     cols: u32,
     padded_rows: u32,
     padded_cols: u32,
+    next_amax: &mut DeviceBuffer<f32>,
 ) -> Result<(), DriverError> {
-    runtime
-        .quant
-        .fp32_to_nvfp4_four_six_padded(Nvfp4QuantPaddedArgs {
+    runtime.quant.fp32_to_nvfp4_four_six_padded_packed_scales(
+        Nvfp4QuantPaddedArgs {
             stream,
             x: input,
             amax: scratch.amax,
             out_fp4: scratch.bytes,
-            out_scales: scratch.scales,
+            out_scales: scratch.scale_packed,
             out_global_scale: scratch.global_scale,
             rows,
             cols,
             padded_rows,
             padded_cols,
-        })?;
-    runtime.optimizer.tma_scale_pack().pack(
-        stream,
-        &*scratch.scales,
-        scratch.scale_packed,
-        padded_rows,
-        padded_cols,
+        },
+        next_amax,
     )
 }
 
@@ -1335,10 +1109,9 @@ fn can_defer_polar_bounds(rows: u32, cols: u32) -> bool {
     let dims = TmaDims::new(rows, cols, rows);
     rows == dims.m
         && rows == dims.k
-        && cols == dims.n
         && rows.is_power_of_two()
         && rows.is_multiple_of(16)
-        && cols.is_multiple_of(64)
+        && cols.is_multiple_of(16)
 }
 
 #[derive(Clone, Copy)]
@@ -1501,3 +1274,7 @@ fn trace_buffer(
     );
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "tma_tests.rs"]
+mod tests;

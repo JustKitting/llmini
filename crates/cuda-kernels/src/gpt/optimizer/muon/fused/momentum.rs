@@ -2,16 +2,16 @@ use super::super::super::work_grid::WorkGrid;
 use super::types::MuonMatrixShape;
 use crate::device_ptr::write_f32;
 use crate::f16_tc_matmul::convert::{
-    load_bf16_global, load_bf16x2_global, load_f32x2_global, load_f32x2_global_read_only,
-    store_bf16_global, store_bf16x2_global, store_f32x2_global,
+    load_bf16_global, load_bf16x2_global, load_f32x2_global_read_only, store_bf16_global,
+    store_bf16x2_global, store_f32x2_global,
 };
-use crate::float_ptx::{max_f32, sqrt_f32};
+use crate::float_ptx::{fma_f32, max_f32, sqrt_f32};
 
 const MUON_VS_EPSILON: f32 = 1.0e-8;
 
 pub(super) fn momentum_orient(
     grad: *const f32,
-    momentum: *mut f32,
+    momentum: *mut u16,
     variance: *mut u16,
     oriented: *mut f32,
     work: WorkGrid,
@@ -22,9 +22,9 @@ pub(super) fn momentum_orient(
     nesterov: bool,
     variance_adaptive: bool,
     bias_correction_inv: f32,
-) {
+) -> f32 {
     if variance_adaptive {
-        momentum_orient_variance_adaptive(
+        return momentum_orient_variance_adaptive(
             grad,
             momentum,
             variance,
@@ -37,40 +37,41 @@ pub(super) fn momentum_orient(
             nesterov,
             bias_correction_inv,
         );
-        return;
     }
 
     let len = shape.len();
+    let mut local_sumsq = 0.0;
     let mut index = work.thread();
     while index < len {
         let row = index / shape.cols;
         let col = index - row * shape.cols;
         let g = unsafe { *grad.add(index as usize) } * grad_scale;
         unsafe {
-            let momentum_ptr = momentum.add(index as usize);
-            let previous_momentum = *momentum_ptr;
+            let previous_momentum = load_bf16_global(momentum, index as usize);
             let next_momentum = mu * previous_momentum + (1.0 - mu) * g;
             let update = if nesterov {
                 mu * next_momentum + (1.0 - mu) * g
             } else {
                 next_momentum
             };
-            *momentum_ptr = next_momentum;
+            store_bf16_global(momentum, index as usize, next_momentum);
             let dst = if transposed {
                 col * shape.rows + row
             } else {
                 index
             };
             write_f32(oriented, dst, update);
+            local_sumsq = fma_f32(update, update, local_sumsq);
         }
         index += work.stride();
     }
+    local_sumsq
 }
 
 #[expect(clippy::too_many_arguments, reason = "fused CUDA path")]
 fn momentum_orient_variance_adaptive(
     grad: *const f32,
-    momentum: *mut f32,
+    momentum: *mut u16,
     variance: *mut u16,
     oriented: *mut f32,
     work: WorkGrid,
@@ -80,18 +81,19 @@ fn momentum_orient_variance_adaptive(
     transposed: bool,
     nesterov: bool,
     bias_correction_inv: f32,
-) {
+) -> f32 {
     let len = shape.len();
     let one_minus_mu = 1.0 - mu;
     let variance_factor = mu * one_minus_mu;
     let nesterov_factor = mu / one_minus_mu;
     let mut index = work.thread() * 2;
     let stride = work.stride() * 2;
+    let mut local_sumsq = 0.0;
 
     while index + 1 < len {
         let i = index as usize;
         let (raw_g0, raw_g1) = load_f32x2_global_read_only(grad, i);
-        let (previous_momentum0, previous_momentum1) = load_f32x2_global(momentum, i);
+        let (previous_momentum0, previous_momentum1) = load_bf16x2_global(momentum, i);
         let (previous_variance0, previous_variance1) = load_bf16x2_global(variance, i);
         let g0 = raw_g0 * grad_scale;
         let g1 = raw_g1 * grad_scale;
@@ -118,7 +120,7 @@ fn momentum_orient_variance_adaptive(
         let update1 = numerator1
             / (sqrt_f32(max_f32(next_variance1 * bias_correction_inv, 0.0)) + MUON_VS_EPSILON);
 
-        store_f32x2_global(momentum, i, next_momentum0, next_momentum1);
+        store_bf16x2_global(momentum, i, next_momentum0, next_momentum1);
         store_bf16x2_global(variance, i, next_variance0, next_variance1);
         if transposed {
             let row0 = index / shape.cols;
@@ -131,11 +133,13 @@ fn momentum_orient_variance_adaptive(
         } else {
             store_f32x2_global(oriented, i, update0, update1);
         }
+        local_sumsq = fma_f32(update0, update0, local_sumsq);
+        local_sumsq = fma_f32(update1, update1, local_sumsq);
         index += stride;
     }
 
     if index < len {
-        momentum_orient_variance_adaptive_tail(
+        let update = momentum_orient_variance_adaptive_tail(
             grad,
             momentum,
             variance,
@@ -148,13 +152,15 @@ fn momentum_orient_variance_adaptive(
             bias_correction_inv,
             index,
         );
+        local_sumsq = fma_f32(update, update, local_sumsq);
     }
+    local_sumsq
 }
 
 #[expect(clippy::too_many_arguments, reason = "fused CUDA tail path")]
 fn momentum_orient_variance_adaptive_tail(
     grad: *const f32,
-    momentum: *mut f32,
+    momentum: *mut u16,
     variance: *mut u16,
     oriented: *mut f32,
     shape: MuonMatrixShape,
@@ -164,13 +170,12 @@ fn momentum_orient_variance_adaptive_tail(
     nesterov: bool,
     bias_correction_inv: f32,
     index: u32,
-) {
+) -> f32 {
     let row = index / shape.cols;
     let col = index - row * shape.cols;
     unsafe {
         let g = *grad.add(index as usize) * grad_scale;
-        let momentum_ptr = momentum.add(index as usize);
-        let previous_momentum = *momentum_ptr;
+        let previous_momentum = load_bf16_global(momentum, index as usize);
         let next_momentum = mu * previous_momentum + (1.0 - mu) * g;
         let innovation = previous_momentum - g;
         let next_variance = mu * load_bf16_global(variance, index as usize)
@@ -183,7 +188,7 @@ fn momentum_orient_variance_adaptive_tail(
         };
         let update = numerator
             / (sqrt_f32(max_f32(next_variance * bias_correction_inv, 0.0)) + MUON_VS_EPSILON);
-        *momentum_ptr = next_momentum;
+        store_bf16_global(momentum, index as usize, next_momentum);
         store_bf16_global(variance, index as usize, next_variance);
         let dst = if transposed {
             col * shape.rows + row
@@ -191,5 +196,6 @@ fn momentum_orient_variance_adaptive_tail(
             index
         };
         write_f32(oriented, dst, update);
+        update
     }
 }

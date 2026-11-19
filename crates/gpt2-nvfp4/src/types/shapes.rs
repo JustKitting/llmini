@@ -2,8 +2,9 @@
 mod init;
 
 use crate::{
-    FixedBytes, GPT2_MLP, GPT2_N_EMBD, GPT2_QK_SCALE_STORAGE, GPT2_QKV, GPT2_VOCAB_SIZE,
-    GPT2_XSA_ALPHA_STORAGE, NEXTLAT_HIDDEN, NEXTLAT_INPUT, Nvfp4Shape, Nvfp4Tensor,
+    FixedBytes, GPT2_MLP, GPT2_MLP_UP, GPT2_N_EMBD, GPT2_QK_SCALE_STORAGE, GPT2_QKV,
+    GPT2_VOCAB_SIZE, GPT2_XSA_ALPHA_STORAGE, NEXTLAT_HIDDEN, NEXTLAT_INPUT, Nvfp4Shape,
+    Nvfp4Tensor,
 };
 
 use super::LinearWeights;
@@ -50,8 +51,8 @@ nvfp4_shape!(QkvVectorShape, 1, GPT2_QKV);
 nvfp4_shape!(QkScaleShape, 1, GPT2_QK_SCALE_STORAGE);
 nvfp4_shape!(XsaAlphaShape, 1, GPT2_XSA_ALPHA_STORAGE);
 nvfp4_shape!(ResidualWeightShape, GPT2_N_EMBD, GPT2_N_EMBD);
-nvfp4_shape!(MlpUpWeightShape, GPT2_N_EMBD, GPT2_MLP);
-nvfp4_shape!(MlpVectorShape, 1, GPT2_MLP);
+nvfp4_shape!(MlpUpWeightShape, GPT2_N_EMBD, GPT2_MLP_UP);
+nvfp4_shape!(MlpVectorShape, 1, GPT2_MLP_UP);
 nvfp4_shape!(MlpDownWeightShape, GPT2_MLP, GPT2_N_EMBD);
 nvfp4_shape!(NextLatInputShape, 1, NEXTLAT_INPUT);
 nvfp4_shape!(NextLatHiddenShape, 1, NEXTLAT_HIDDEN);

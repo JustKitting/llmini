@@ -51,7 +51,10 @@ fn compare_shape(
     assert_eq!(split.variance, cooperative.variance);
     assert_eq!(split.oriented, cooperative.oriented);
     assert_eq!(split.polar_x, cooperative.polar_x);
-    assert_eq!(split.polar_chunks, cooperative.polar_chunks);
+    // The tail contains reduction partials whose layout depends on the launch
+    // geometry. Only the final inverse norm in slot zero is consumed by the
+    // scale kernel; finish subsequently overwrites the scratch buffer.
+    assert_eq!(split.polar_chunks[0], cooperative.polar_chunks[0]);
     for (chunk, &got) in split.polar_x_chunk_amax.iter().enumerate() {
         let start = chunk * 2048;
         let end = (start + 2048).min(split.polar_x.len());
@@ -94,7 +97,9 @@ fn run_prepare(
     let variance_bits = common::f32_slice_to_bf16_bits(&variance_values);
     let stored_variance_values = common::bf16_bits_slice_to_f32(&variance_bits);
     let grad = DeviceBuffer::from_host(stream, &grad_values)?;
-    let momentum = DeviceBuffer::from_host(stream, &momentum_values)?;
+    let momentum_bits = common::f32_slice_to_bf16_bits(&momentum_values);
+    let momentum_values = common::bf16_bits_slice_to_f32(&momentum_bits);
+    let momentum = DeviceBuffer::from_host(stream, &momentum_bits)?;
     let variance = DeviceBuffer::from_host(stream, &variance_bits)?;
     let z_master = DeviceBuffer::<f32>::zeroed(stream, 1)?;
     let x_master = DeviceBuffer::<f32>::zeroed(stream, 1)?;
@@ -124,80 +129,83 @@ fn run_prepare(
     let mut polar_x = DeviceBuffer::<f32>::zeroed(stream, len)?;
     let mut polar_chunks = DeviceBuffer::<f32>::zeroed(stream, 2 * MUON_COOPERATIVE_BLOCKS)?;
     let mut polar_x_chunk_amax = DeviceBuffer::<f32>::zeroed(stream, len.div_ceil(2048))?;
-    let args = MuonTmaPrepareArgs {
-        stream,
-        slots: &slots,
-        oriented: &mut oriented,
-        polar_x: &mut polar_x,
-        polar_chunks: &mut polar_chunks,
-        polar_x_chunk_amax: &mut polar_x_chunk_amax,
-        slot_index: 0,
-        matrix_len: len as u32,
-        mu: 0.9,
-        grad_scale: 0.125,
-        nesterov: nesterov as u32,
-        variance_adaptive: variance_adaptive as u32,
-        bias_correction_inv: if variance_adaptive {
-            1.0 / (1.0 - 0.9_f32.powi(3))
-        } else {
-            1.0
-        },
-    };
-    if cooperative {
-        module.muon_tma_prepare_polar_cooperative_reference(args)?;
-    } else {
-        module.muon_tma_prepare_polar(args)?;
-    }
-    let actual_momentum = momentum.to_host_vec(stream)?;
-    let actual_variance = variance.to_host_vec(stream)?;
-    let actual_oriented = oriented.to_host_vec(stream)?;
-    let mut expected_momentum = vec![0.0_f32; len];
-    let mut expected_variance = stored_variance_values.clone();
-    let mut expected_oriented = vec![0.0_f32; len];
-    let bias_correction_inv = 1.0 / (1.0 - 0.9_f32.powi(3));
-    for index in 0..len {
-        let g = grad_values[index] * 0.125;
-        let next = 0.9 * momentum_values[index] + 0.1 * g;
-        let update = if variance_adaptive {
-            let innovation = momentum_values[index] - g;
-            let next_variance =
-                0.9 * stored_variance_values[index] + 0.9 * 0.1 * innovation * innovation;
-            expected_variance[index] =
-                common::bf16_bits_to_f32(common::f32_to_bf16_bits(next_variance));
-            let corrected_momentum = next * bias_correction_inv;
-            let numerator = if nesterov {
-                g + 9.0 * corrected_momentum
+    // Each iteration reads the BF16 state written by the preceding iteration.
+    let mut expected_momentum = momentum_values;
+    let mut expected_variance = stored_variance_values;
+    for step in 3..9 {
+        let args = MuonTmaPrepareArgs {
+            stream,
+            slots: &slots,
+            oriented: &mut oriented,
+            polar_x: &mut polar_x,
+            polar_chunks: &mut polar_chunks,
+            polar_x_chunk_amax: &mut polar_x_chunk_amax,
+            slot_index: 0,
+            matrix_len: len as u32,
+            mu: 0.9,
+            grad_scale: 0.125,
+            nesterov: nesterov as u32,
+            variance_adaptive: variance_adaptive as u32,
+            bias_correction_inv: if variance_adaptive {
+                1.0 / (1.0 - 0.9_f32.powi(step))
             } else {
-                corrected_momentum
-            };
-            numerator / ((next_variance * bias_correction_inv).sqrt() + 1.0e-8)
-        } else if nesterov {
-            0.9 * next + 0.1 * g
-        } else {
-            next
+                1.0
+            },
         };
-        expected_momentum[index] = next;
-        let row = index / cols;
-        let col = index % cols;
-        let dst = if rows > cols { col * rows + row } else { index };
-        expected_oriented[dst] = update;
+        if cooperative {
+            module.muon_tma_prepare_polar_cooperative_reference(args)?;
+        } else {
+            module.muon_tma_prepare_polar(args)?;
+        }
+        let actual_momentum = common::bf16_bits_slice_to_f32(&momentum.to_host_vec(stream)?);
+        let actual_variance = variance.to_host_vec(stream)?;
+        let actual_oriented = oriented.to_host_vec(stream)?;
+        let mut expected_oriented = vec![0.0_f32; len];
+        let bias_correction_inv = 1.0 / (1.0 - 0.9_f32.powi(step));
+        for index in 0..len {
+            let g = grad_values[index] * 0.125;
+            let next = 0.9 * expected_momentum[index] + (1.0 - 0.9) * g;
+            let update = if variance_adaptive {
+                let innovation = expected_momentum[index] - g;
+                let next_variance =
+                    0.9 * expected_variance[index] + 0.9 * (1.0 - 0.9) * innovation * innovation;
+                expected_variance[index] =
+                    common::bf16_bits_to_f32(common::f32_to_bf16_bits(next_variance));
+                let corrected_momentum = next * bias_correction_inv;
+                let numerator = if nesterov {
+                    g + (0.9 / (1.0 - 0.9)) * corrected_momentum
+                } else {
+                    corrected_momentum
+                };
+                numerator / ((next_variance * bias_correction_inv).sqrt() + 1.0e-8)
+            } else if nesterov {
+                0.9 * next + (1.0 - 0.9) * g
+            } else {
+                next
+            };
+            expected_momentum[index] = common::bf16_bits_to_f32(common::f32_to_bf16_bits(next));
+            let row = index / cols;
+            let col = index % cols;
+            let dst = if rows > cols { col * rows + row } else { index };
+            expected_oriented[dst] = update;
+        }
+        common::assert_slice_close(&actual_momentum, &expected_momentum, 0.0);
+        common::assert_slice_close(
+            &common::bf16_bits_slice_to_f32(&actual_variance),
+            &expected_variance,
+            0.0,
+        );
+        common::assert_slice_close(
+            &actual_oriented,
+            &expected_oriented,
+            if variance_adaptive { 5.0e-5 } else { 1.0e-6 },
+        );
     }
-    common::assert_slice_close(&actual_momentum, &expected_momentum, 1.0e-6);
-    common::assert_slice_close(
-        &common::bf16_bits_slice_to_f32(&actual_variance),
-        &expected_variance,
-        0.0,
-    );
-    common::assert_slice_close(
-        &actual_oriented,
-        &expected_oriented,
-        if variance_adaptive { 5.0e-5 } else { 1.0e-6 },
-    );
 
     Ok(PrepareOutput {
-        momentum: actual_momentum,
-        variance: actual_variance,
-        oriented: actual_oriented,
+        momentum: common::bf16_bits_slice_to_f32(&momentum.to_host_vec(stream)?),
+        variance: variance.to_host_vec(stream)?,
+        oriented: oriented.to_host_vec(stream)?,
         polar_x: polar_x.to_host_vec(stream)?,
         polar_chunks: polar_chunks.to_host_vec(stream)?,
         polar_x_chunk_amax: polar_x_chunk_amax.to_host_vec(stream)?,

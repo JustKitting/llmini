@@ -3,10 +3,10 @@ use cuda_device::{DisjointSlice, SharedArray, cuda_module, kernel};
 use super::super::gather::{gather_qk_v_f16_body, gather_qknorm_v_f16_body, gather_qkv_body};
 use super::super::scatter::{scatter_output_body, scatter_output_save_f16_body};
 use super::super::selective::{
-    apply_selective_attention_mask_body, selective_attention_mask_body,
-    selective_attention_mask_save_tape_body,
+    SELECTIVE_ATTENTION_SCORE_TILE_ELEMENTS, apply_selective_attention_mask_body,
+    selective_attention_mask_body, selective_attention_mask_save_tape_body,
 };
-use super::super::softmax::{softmax_body, softmax_f16_body};
+use super::super::softmax::{softmax_body, softmax_f16_body, softmax_selective_f16_body};
 use crate::attention::CausalAttentionParams;
 
 #[cuda_module]
@@ -71,7 +71,8 @@ pub(super) mod module {
         log_sum_exp: DisjointSlice<f32>,
         params: CausalAttentionParams,
     ) {
-        static mut REDUCE: SharedArray<f32, 8> = SharedArray::UNINIT;
+        static mut REDUCE: SharedArray<f32, { super::super::super::softmax::REDUCE_ELEMENTS }> =
+            SharedArray::UNINIT;
         softmax_body(scores, probs, log_sum_exp, params, unsafe { &mut REDUCE });
     }
 
@@ -82,8 +83,24 @@ pub(super) mod module {
         log_sum_exp: DisjointSlice<f32>,
         params: CausalAttentionParams,
     ) {
-        static mut REDUCE: SharedArray<f32, 8> = SharedArray::UNINIT;
+        static mut REDUCE: SharedArray<f32, { super::super::super::softmax::REDUCE_ELEMENTS }> =
+            SharedArray::UNINIT;
         softmax_f16_body(scores, probs, log_sum_exp, params, unsafe { &mut REDUCE });
+    }
+
+    #[kernel]
+    pub fn attention_softmax_selective_forward_f16_kernel(
+        scores: &[f32],
+        mask_values: &[f32],
+        probs: DisjointSlice<u16>,
+        log_sum_exp: DisjointSlice<f32>,
+        params: CausalAttentionParams,
+    ) {
+        static mut REDUCE: SharedArray<f32, { super::super::super::softmax::REDUCE_ELEMENTS }> =
+            SharedArray::UNINIT;
+        softmax_selective_f16_body(scores, mask_values, probs, log_sum_exp, params, unsafe {
+            &mut REDUCE
+        });
     }
 
     #[kernel]
@@ -92,7 +109,9 @@ pub(super) mod module {
         mask_values: DisjointSlice<f32>,
         params: CausalAttentionParams,
     ) {
-        selective_attention_mask_body(scores, mask_values, params);
+        static mut SCORE_TILE: SharedArray<f32, SELECTIVE_ATTENTION_SCORE_TILE_ELEMENTS> =
+            SharedArray::UNINIT;
+        selective_attention_mask_body(scores, mask_values, params, unsafe { &mut SCORE_TILE });
     }
 
     #[kernel]
@@ -102,7 +121,15 @@ pub(super) mod module {
         selection_mask_tape: DisjointSlice<u16>,
         params: CausalAttentionParams,
     ) {
-        selective_attention_mask_save_tape_body(scores, mask_values, selection_mask_tape, params);
+        static mut SCORE_TILE: SharedArray<f32, SELECTIVE_ATTENTION_SCORE_TILE_ELEMENTS> =
+            SharedArray::UNINIT;
+        selective_attention_mask_save_tape_body(
+            scores,
+            mask_values,
+            selection_mask_tape,
+            params,
+            unsafe { &mut SCORE_TILE },
+        );
     }
 
     #[kernel]

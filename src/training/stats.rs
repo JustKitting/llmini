@@ -4,6 +4,7 @@ use super::diagnostics;
 pub struct TrainStats {
     pub tokens: usize,
     pub logits: usize,
+    pub feedback_passes: usize,
     pub finite: bool,
     pub nonzero: bool,
     pub loss: f32,

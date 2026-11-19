@@ -2,9 +2,10 @@ use cuda_device::{DisjointSlice, SharedArray, cuda_module, kernel, thread};
 
 use super::super::gather::TC_BACKWARD_THREADS_PER_BLOCK;
 use super::super::kda::{
-    FinishKdaGrads, add_kda_compact_body, chunk_cumsum_g_body, finish_kda_backward_body,
-    gather_kda_dout_body, make_kda_kneg_from_kg_body, make_kda_kneg_kpos_from_kg_body,
-    make_kda_kpos_from_kg_body, make_kda_strict_neg_matrix_body, prepare_kda_backward_inputs_body,
+    FinishKdaGrads, KDA_FUSED_BACKWARD_BETA_ELEMS, KDA_FUSED_BACKWARD_TILE_ELEMS,
+    add_kda_compact_body, chunk_cumsum_g_body, finish_kda_backward_body, gather_kda_dout_body,
+    make_kda_strict_neg_matrix_body, prepare_kda_backward_inputs_body,
+    prepare_transform_kda_backward_cached_body,
 };
 use crate::attention::CausalAttentionParams;
 use crate::block_reduce::{block_max_pair_leader_f32, block_max_store_f32};
@@ -40,9 +41,45 @@ pub(super) mod module {
     }
 
     #[kernel]
+    pub fn prepare_transform_kda_backward_cached_kernel(
+        qkv: &[u16],
+        q: DisjointSlice<f32>,
+        k: DisjointSlice<f32>,
+        v: DisjointSlice<f32>,
+        g: DisjointSlice<f32>,
+        beta: DisjointSlice<f32>,
+        native_kpos: DisjointSlice<u16>,
+        native_kneg: DisjointSlice<u16>,
+        params: CausalAttentionParams,
+    ) {
+        static mut Q_TILE: SharedArray<f32, KDA_FUSED_BACKWARD_TILE_ELEMS> = SharedArray::UNINIT;
+        static mut K_TILE: SharedArray<f32, KDA_FUSED_BACKWARD_TILE_ELEMS> = SharedArray::UNINIT;
+        static mut G_TILE: SharedArray<f32, KDA_FUSED_BACKWARD_TILE_ELEMS> = SharedArray::UNINIT;
+        static mut BETA_TILE: SharedArray<f32, KDA_FUSED_BACKWARD_BETA_ELEMS> = SharedArray::UNINIT;
+
+        unsafe {
+            prepare_transform_kda_backward_cached_body(
+                qkv,
+                q,
+                k,
+                v,
+                g,
+                beta,
+                native_kpos,
+                native_kneg,
+                &mut Q_TILE,
+                &mut K_TILE,
+                &mut G_TILE,
+                &mut BETA_TILE,
+                params,
+            );
+        }
+    }
+
+    #[kernel]
     pub fn gather_kda_dout_kernel(
         d_out: &[f32],
-        compact_out: DisjointSlice<f32>,
+        compact_out: DisjointSlice<u16>,
         params: CausalAttentionParams,
     ) {
         gather_kda_dout_body(d_out, compact_out, params);
@@ -55,39 +92,6 @@ pub(super) mod module {
         params: CausalAttentionParams,
     ) {
         add_kda_compact_body(dst, src, params);
-    }
-
-    #[kernel]
-    pub fn make_kda_backward_kneg_from_kg_kernel(
-        kg: &[f32],
-        g: &[f32],
-        kneg: DisjointSlice<f32>,
-        params: CausalAttentionParams,
-    ) {
-        make_kda_kneg_from_kg_body(kg, g, kneg, params);
-    }
-
-    #[kernel]
-    pub fn make_kda_backward_kpos_from_kg_kernel(
-        kg: &[f32],
-        g: &[f32],
-        beta: &[f32],
-        kpos: DisjointSlice<f32>,
-        params: CausalAttentionParams,
-    ) {
-        make_kda_kpos_from_kg_body(kg, g, beta, kpos, params);
-    }
-
-    #[kernel]
-    pub fn make_kda_backward_kneg_kpos_from_kg_kernel(
-        kg: &[f32],
-        g: &[f32],
-        beta: &[f32],
-        kneg: DisjointSlice<f32>,
-        kpos: DisjointSlice<f32>,
-        params: CausalAttentionParams,
-    ) {
-        make_kda_kneg_kpos_from_kg_body(kg, g, beta, kneg, kpos, params);
     }
 
     #[kernel]

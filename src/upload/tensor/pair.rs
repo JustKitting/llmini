@@ -32,7 +32,7 @@ impl UploadedPair {
         linear: &LinearWeights<W, B>,
     ) -> AppResult<Self> {
         Ok(Self {
-            weight: upload_nvfp4(stream, &linear.weight)?,
+            weight: super::nvfp4::upload_nvfp4_k(stream, &linear.weight, W::ROWS)?,
             bias: upload_nvfp4(stream, &linear.bias)?,
         })
     }

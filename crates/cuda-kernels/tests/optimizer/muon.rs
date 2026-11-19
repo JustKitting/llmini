@@ -59,6 +59,12 @@ fn muon_tma_hyperball_preserves_fast_weight_radius() -> Result<(), Box<dyn Error
     tma_finish::run_hyperball_update_case()
 }
 
+#[ignore = "requires generated sm_120a PTX; optimizer kernel regression only"]
+#[test]
+fn muon_tma_hyperball_applies_qk_clip_in_both_orientations() -> Result<(), Box<dyn Error>> {
+    tma_finish::run_hyperball_qk_clip_case()
+}
+
 #[ignore = "requires generated sm_120a PTX"]
 #[test]
 fn muon_tma_hyperball_matches_rectangular_orientations() -> Result<(), Box<dyn Error>> {

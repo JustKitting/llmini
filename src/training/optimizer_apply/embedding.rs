@@ -6,7 +6,7 @@ use super::super::TokenBatch;
 use super::super::grads::BackwardBuffers;
 use super::super::next_latent::NextLatGradBuffers;
 
-pub(super) fn add_embedding_lookup_grad(
+pub(in crate::training) fn add_embedding_lookup_grad(
     stream: &CudaStream,
     optimizer: &OptimizerModule,
     batch: &TokenBatch,

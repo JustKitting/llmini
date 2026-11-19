@@ -7,7 +7,7 @@ pub struct AdamWUpdateArgs<'a> {
     pub global_scale: &'a mut DeviceBuffer<f32>,
     pub z_master: &'a mut DeviceBuffer<f32>,
     pub x_master: &'a mut DeviceBuffer<f32>,
-    pub grad: &'a DeviceBuffer<f32>,
+    pub grad: &'a mut DeviceBuffer<f32>,
     pub grad_scale: f32,
     pub first_moment: &'a mut DeviceBuffer<f32>,
     pub second_moment: &'a mut DeviceBuffer<f32>,
@@ -22,6 +22,7 @@ pub struct AdamWUpdateArgs<'a> {
     pub beta2_correction: f32,
     pub eps: f32,
     pub average_coefficient: f32,
+    pub schedule_beta: f32,
 }
 
 pub struct Fp32AdamWUpdateArgs<'a> {

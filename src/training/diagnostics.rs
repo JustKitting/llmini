@@ -1,3 +1,5 @@
+mod failure;
+pub(in crate::training) mod kda_clip;
 mod pending;
 mod types;
 mod update;

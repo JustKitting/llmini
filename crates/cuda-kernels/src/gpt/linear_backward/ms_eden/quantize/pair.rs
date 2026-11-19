@@ -19,10 +19,10 @@ impl<'a> QuantizeContext<'a> {
             x: e,
             out_fp4: &mut *scratch.e_h.bytes,
             out_scales: &mut *scratch.e_h.scales,
-            out_global_scales: &mut *scratch.e_h.global_scales,
+
             transpose_out_fp4: &mut *scratch.e_t_h.bytes,
             transpose_out_scales: &mut *scratch.e_t_h.scales,
-            transpose_out_global_scales: &mut *scratch.e_t_h.global_scales,
+
             out_chunk_amax: &mut *scratch.e_h.chunk_amax,
             out_global_scale: &mut *scratch.e_h.global_scale,
             row_count: self.token_count,

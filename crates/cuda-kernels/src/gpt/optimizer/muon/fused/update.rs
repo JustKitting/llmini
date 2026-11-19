@@ -12,16 +12,17 @@ use super::super::super::work_grid::WorkGrid;
 
 mod chunk;
 mod one;
-use one::update_one_sign;
+use one::update_sign_pair;
 
 const UPDATE_VALUES_PER_CHUNK: u32 = crate::nvfp4_quant::NVFP4_TENSOR_AMAX_VALUES_PER_BLOCK as u32;
 
 #[expect(clippy::too_many_arguments, reason = "CUDA ABI uses explicit buffers")]
 pub(super) fn update_master_chunks(
     u: *const f32,
+    schedule_values: *mut f32,
     z_master: *mut f32,
     x_master: *mut f32,
-    momentum: *mut f32,
+    momentum: *mut u16,
     variance: *mut u16,
     block_amax: *mut f32,
     normuon_factors: *const f32,
@@ -54,16 +55,17 @@ pub(super) fn update_master_chunks(
 
     while chunk < chunk_count {
         let base = chunk * UPDATE_VALUES_PER_CHUNK;
-        let qk_clip_factor = if qk_clip_factor_offset != u32::MAX && chunk < 2 * rows {
-            debug_assert_eq!(rows, UPDATE_VALUES_PER_CHUNK);
+        let qk_clip_factor = if qk_clip_factor_offset != u32::MAX && chunk < 2 * cols {
+            debug_assert_eq!(cols, UPDATE_VALUES_PER_CHUNK);
             debug_assert!(qk_clip_head_dim > 0);
-            let head = (chunk % rows) / qk_clip_head_dim;
+            let head = (chunk % cols) / qk_clip_head_dim;
             load_f32_global_read_only(qk_clip_factors, (qk_clip_factor_offset + head) as usize)
         } else {
             1.0
         };
         let local_amax = chunk::update_eight_amax(
             u,
+            schedule_values,
             z_master,
             x_master,
             momentum,
@@ -106,16 +108,16 @@ pub(super) fn update_master_chunks(
 
 #[expect(clippy::too_many_arguments, reason = "CUDA ABI uses explicit buffers")]
 pub(super) fn update_sign_master_chunks(
-    grad: *const f32,
+    grad: *mut f32,
     z_master: *mut f32,
     x_master: *mut f32,
-    momentum: *mut f32,
+    momentum: *mut u16,
     variance: *mut u16,
     block_amax: *mut f32,
     qk_clip_factors: *const f32,
     qk_clip_factor_offset: u32,
     qk_clip_head_dim: u32,
-    rows: u32,
+    input_dim: u32,
     len: u32,
     mu: f32,
     grad_scale: f32,
@@ -139,15 +141,15 @@ pub(super) fn update_sign_master_chunks(
 
     while chunk < chunk_count {
         let base = chunk * UPDATE_VALUES_PER_CHUNK;
-        let qk_clip_factor = if qk_clip_factor_offset != u32::MAX && chunk < 2 * rows {
-            debug_assert_eq!(rows, UPDATE_VALUES_PER_CHUNK);
+        let qk_clip_factor = if qk_clip_factor_offset != u32::MAX && chunk < 2 * input_dim {
+            debug_assert_eq!(input_dim, UPDATE_VALUES_PER_CHUNK);
             debug_assert!(qk_clip_head_dim > 0);
-            let head = (chunk % rows) / qk_clip_head_dim;
+            let head = (chunk % input_dim) / qk_clip_head_dim;
             load_f32_global_read_only(qk_clip_factors, (qk_clip_factor_offset + head) as usize)
         } else {
             1.0
         };
-        let v0 = update_one_sign(
+        let (v0, v1) = update_sign_pair(
             grad,
             z_master,
             x_master,
@@ -163,9 +165,9 @@ pub(super) fn update_sign_master_chunks(
             schedule_beta,
             symexp_lin,
             qk_clip_factor,
-            base + tid,
+            base + 2 * tid,
         );
-        let v1 = update_one_sign(
+        let (v2, v3) = update_sign_pair(
             grad,
             z_master,
             x_master,
@@ -181,9 +183,9 @@ pub(super) fn update_sign_master_chunks(
             schedule_beta,
             symexp_lin,
             qk_clip_factor,
-            base + tid + CTA_THREADS,
+            base + 2 * tid + 2 * CTA_THREADS,
         );
-        let v2 = update_one_sign(
+        let (v4, v5) = update_sign_pair(
             grad,
             z_master,
             x_master,
@@ -199,9 +201,9 @@ pub(super) fn update_sign_master_chunks(
             schedule_beta,
             symexp_lin,
             qk_clip_factor,
-            base + tid + 2 * CTA_THREADS,
+            base + 2 * tid + 4 * CTA_THREADS,
         );
-        let v3 = update_one_sign(
+        let (v6, v7) = update_sign_pair(
             grad,
             z_master,
             x_master,
@@ -217,79 +219,7 @@ pub(super) fn update_sign_master_chunks(
             schedule_beta,
             symexp_lin,
             qk_clip_factor,
-            base + tid + 3 * CTA_THREADS,
-        );
-        let v4 = update_one_sign(
-            grad,
-            z_master,
-            x_master,
-            momentum,
-            variance,
-            len,
-            mu,
-            grad_scale,
-            variance_adaptive,
-            learning_rate,
-            weight_decay,
-            average_coefficient,
-            schedule_beta,
-            symexp_lin,
-            qk_clip_factor,
-            base + tid + 4 * CTA_THREADS,
-        );
-        let v5 = update_one_sign(
-            grad,
-            z_master,
-            x_master,
-            momentum,
-            variance,
-            len,
-            mu,
-            grad_scale,
-            variance_adaptive,
-            learning_rate,
-            weight_decay,
-            average_coefficient,
-            schedule_beta,
-            symexp_lin,
-            qk_clip_factor,
-            base + tid + 5 * CTA_THREADS,
-        );
-        let v6 = update_one_sign(
-            grad,
-            z_master,
-            x_master,
-            momentum,
-            variance,
-            len,
-            mu,
-            grad_scale,
-            variance_adaptive,
-            learning_rate,
-            weight_decay,
-            average_coefficient,
-            schedule_beta,
-            symexp_lin,
-            qk_clip_factor,
-            base + tid + 6 * CTA_THREADS,
-        );
-        let v7 = update_one_sign(
-            grad,
-            z_master,
-            x_master,
-            momentum,
-            variance,
-            len,
-            mu,
-            grad_scale,
-            variance_adaptive,
-            learning_rate,
-            weight_decay,
-            average_coefficient,
-            schedule_beta,
-            symexp_lin,
-            qk_clip_factor,
-            base + tid + 7 * CTA_THREADS,
+            base + 2 * tid + 6 * CTA_THREADS,
         );
         local_master_amax = max_f32(
             local_master_amax,

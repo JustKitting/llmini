@@ -3,7 +3,7 @@ use crate::nvfp4::nvfp4_rowwise_value;
 
 use super::input_position::padded_chunk_position;
 use super::input_values::nvfp4_value_at;
-use super::random::random_sign;
+use super::random::apply_random_sign;
 
 #[expect(clippy::too_many_arguments, reason = "CUDA ABI uses explicit buffers")]
 #[inline(always)]
@@ -25,7 +25,7 @@ pub(super) fn nvfp4_transposed_hadamard_input(
     } else {
         0.0
     };
-    input * random_sign(seed, input_col)
+    apply_random_sign(input, seed, input_col)
 }
 
 #[expect(clippy::too_many_arguments, reason = "CUDA ABI uses explicit buffers")]
@@ -54,7 +54,7 @@ pub(super) fn rowwise_transposed_hadamard_input(
     } else {
         0.0
     };
-    input * random_sign(seed, input_col)
+    apply_random_sign(input, seed, input_col)
 }
 
 #[inline(always)]
@@ -73,7 +73,7 @@ pub(super) fn hadamard_input(
     } else {
         0.0
     };
-    input * random_sign(seed, input_col)
+    apply_random_sign(input, seed, input_col)
 }
 
 #[inline(always)]
@@ -93,5 +93,5 @@ pub(super) fn transposed_hadamard_input(
     } else {
         0.0
     };
-    input * random_sign(seed, input_col)
+    apply_random_sign(input, seed, input_col)
 }

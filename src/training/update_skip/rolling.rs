@@ -6,6 +6,11 @@ pub(super) struct RollingHistory {
     min_len: usize,
 }
 
+pub(super) struct SpikeLimit {
+    pub(super) upper: f32,
+    pub(super) has_spread: bool,
+}
+
 impl RollingHistory {
     pub(super) fn new(max_len: usize) -> Self {
         Self {
@@ -23,10 +28,16 @@ impl RollingHistory {
     }
 
     pub(super) fn is_spike(&self, value: f32, sigma_factor: f32) -> bool {
-        let Some((mean, variance)) = self.stats() else {
-            return false;
-        };
-        value > mean + sigma_factor * variance.sqrt()
+        self.spike_limit(sigma_factor)
+            .is_some_and(|limit| value > limit.upper)
+    }
+
+    pub(super) fn spike_limit(&self, sigma_factor: f32) -> Option<SpikeLimit> {
+        let (mean, variance) = self.stats()?;
+        Some(SpikeLimit {
+            upper: mean + sigma_factor * variance.sqrt(),
+            has_spread: variance > 0.0,
+        })
     }
 
     fn stats(&self) -> Option<(f32, f32)> {

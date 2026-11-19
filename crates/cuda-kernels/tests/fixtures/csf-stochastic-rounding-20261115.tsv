@@ -1,0 +1,19 @@
+# Current seeded stochastic recipe. Reference captured only with preserved PTX
+# SHA256 16ca641357b34ca0ee190e50fa9e285fd4cc721b1d24afcbed743e802efae99e.
+# Exact original cases, all packed payloads, decoded local scales, row globals.
+row-128-128 9728 bcf16cba877ecc99
+transpose-128-128 9728 7227e3fd8e2b18ce
+pair-row-false-128-128 9728 bcf16cba877ecc99
+pair-transpose-false-128-128 9728 8a68eb6f3e80f21b
+pair-row-true-128-128 9728 bcf16cba877ecc99
+pair-transpose-true-128-128 9728 8a68eb6f3e80f21b
+nvfp4-transpose-128-128 9728 aa5a5c2dfa1538ad
+rowwise-transpose-128-128 9728 1ec195c95b31ba71
+row-256-2048 295936 c709fbbe4b75a872
+transpose-256-2048 303104 5565c2444413a950
+pair-row-false-256-2048 295936 c709fbbe4b75a872
+pair-transpose-false-256-2048 303104 5a504ef15bd7c9b5
+pair-row-true-256-2048 295936 c709fbbe4b75a872
+pair-transpose-true-256-2048 303104 5a504ef15bd7c9b5
+nvfp4-transpose-256-2048 303104 01b9ca89c9937bdf
+rowwise-transpose-256-2048 303104 13e13338df0f97ad

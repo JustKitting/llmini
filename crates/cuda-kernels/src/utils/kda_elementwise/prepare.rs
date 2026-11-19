@@ -4,7 +4,7 @@ use crate::attention::CausalAttentionParams;
 use crate::f16_tc_matmul::convert::cvt_rn_f16_f32;
 use crate::kda_common::{
     batch_head, beta_compact_index, beta_index, beta_offset, compact_index, g_offset, k_offset,
-    q_offset, qkv_index, safe_denom, sigmoid, silu, softplus, v_offset,
+    q_offset, qkv_index, safe_denom, sigmoid, softplus, v_offset, value_activation,
 };
 
 use super::context::{KdaQkAct, KdaQkNormAcc, KdaQkvRead, KdaWarpCtx, kda_warp_ctx, read_qk_act};
@@ -128,9 +128,9 @@ fn write_prepared<T: KdaQkvRead>(
     let raw_v = T::read(qkv, v_index);
     let raw_g = T::read(qkv, g_index);
     unsafe {
-        *out.q.get_unchecked_mut(compact) = qk.q_act * q_inv;
-        *out.k.get_unchecked_mut(compact) = qk.k_act * k_inv;
-        *out.v.get_unchecked_mut(compact) = silu(raw_v);
+        *out.q.get_unchecked_mut(compact) = qk.q_act() * q_inv;
+        *out.k.get_unchecked_mut(compact) = qk.k_act() * k_inv;
+        *out.v.get_unchecked_mut(compact) = value_activation(raw_v);
         *out.g.get_unchecked_mut(compact) = -params.decay_scale * softplus(raw_g);
     }
     store_qkv_f16(qkv_f16, q_index, qk.raw_q);

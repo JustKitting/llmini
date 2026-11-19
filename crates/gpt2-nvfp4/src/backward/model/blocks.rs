@@ -5,7 +5,8 @@ use cuda_core::{CudaStream, DeviceBuffer, DriverError, memory};
 use super::types::{Gpt2BackwardModules, Gpt2BackwardSeeds, Gpt2BackwardWeights};
 use crate::backward::{
     BlockAttentionBackwardArgs, BlockAttentionBackwardScratch, BlockMlpBackwardArgs,
-    MlpBackwardScratch, attention_side_backward, mlp_side_backward,
+    MlpBackwardScratch, attention_side_backward, attention_side_backward_branch, mlp_side_backward,
+    mlp_side_backward_branch,
 };
 use crate::types::{BlockBackwardGrads, Gpt2ForwardSaved};
 use crate::{GPT2_N_LAYER, exclusive_self_attention_enabled, uses_full_attention};
@@ -25,11 +26,15 @@ pub(super) struct BlocksBackwardRun<'ctx, 'a, 'scratch, 'out> {
     pub d_mlp_up: &'ctx mut DeviceBuffer<f32>,
     pub attention_scratch: &'ctx mut BlockAttentionBackwardScratch<'scratch>,
     pub mlp_scratch: &'ctx mut MlpBackwardScratch<'scratch>,
-    pub initial_d_residual_amax_chunks: u32,
+    pub initial_d_residual_amax_chunks: Option<u32>,
     pub seeds: Gpt2BackwardSeeds,
 }
 
-pub(super) fn run_blocks(args: BlocksBackwardRun<'_, '_, '_, '_>) -> Result<(), DriverError> {
+pub(super) fn run_blocks(
+    args: BlocksBackwardRun<'_, '_, '_, '_>,
+    hook: &mut dyn FnMut(usize, &mut DeviceBuffer<f32>) -> Result<bool, DriverError>,
+    boundary: &mut dyn FnMut(usize, bool, &mut DeviceBuffer<f32>) -> Result<bool, DriverError>,
+) -> Result<(), DriverError> {
     if exclusive_self_attention_enabled() {
         unsafe {
             memory::memset_d8_async(
@@ -40,7 +45,7 @@ pub(super) fn run_blocks(args: BlocksBackwardRun<'_, '_, '_, '_>) -> Result<(), 
             )?;
         }
     }
-    let mut d_residual_amax_chunks = Some(args.initial_d_residual_amax_chunks);
+    let mut d_residual_amax_chunks = args.initial_d_residual_amax_chunks;
     for block_index in (0..GPT2_N_LAYER).rev() {
         let current = &mut args.blocks[block_index];
         d_residual_amax_chunks = run_block(
@@ -61,7 +66,12 @@ pub(super) fn run_blocks(args: BlocksBackwardRun<'_, '_, '_, '_>) -> Result<(), 
             d_residual_amax_chunks,
             args.seeds,
             block_index,
+            boundary,
         )?;
+        if hook(block_index, &mut *args.d_embedding_residual)? {
+            // The hook changed the residual gradient; recompute its actual amax.
+            d_residual_amax_chunks = None;
+        }
     }
 
     Ok(())
@@ -86,10 +96,13 @@ fn run_block<'a, 'scratch, 'out>(
     precomputed_d_residual_amax_chunks: Option<u32>,
     seeds: Gpt2BackwardSeeds,
     block_index: usize,
+    boundary: &mut dyn FnMut(usize, bool, &mut DeviceBuffer<f32>) -> Result<bool, DriverError>,
 ) -> Result<Option<u32>, DriverError> {
     let mut grads = current.reborrow();
     let use_full_attention = uses_full_attention(block_index);
-    let d_residual_after_attention_amax_chunks = mlp_side_backward(BlockMlpBackwardArgs {
+    let branch = block_index * 2;
+    let isolated_mlp = boundary(branch + 1, true, d_residual)?;
+    let mlp_args = BlockMlpBackwardArgs {
         block_index,
         stream,
         modules: modules.mlp,
@@ -98,7 +111,11 @@ fn run_block<'a, 'scratch, 'out>(
         canon_c: weights.block_canon_c[block_index],
         mlp_projections: weights.mlp[block_index],
         d_residual_out: &*d_residual,
-        precomputed_d_residual_amax_chunks,
+        precomputed_d_residual_amax_chunks: if isolated_mlp {
+            None
+        } else {
+            precomputed_d_residual_amax_chunks
+        },
         d_residual_after_attention: &mut *d_residual_after_attention,
         d_residual_after_attention_chunk_amax: &mut *attention_scratch.c_proj.linear.e_h.chunk_amax,
         d_hidden: &mut *d_hidden,
@@ -106,8 +123,15 @@ fn run_block<'a, 'scratch, 'out>(
         grads: grads.reborrow(),
         scratch: mlp_scratch.reborrow(),
         seeds: seeds.mlp[block_index],
-    })?;
-    attention_side_backward(BlockAttentionBackwardArgs {
+    };
+    let d_residual_after_attention_amax_chunks = if isolated_mlp {
+        mlp_side_backward_branch(mlp_args)?
+    } else {
+        mlp_side_backward(mlp_args)?
+    };
+    let changed = boundary(branch + 1, false, d_residual_after_attention)?;
+    let isolated_attention = boundary(branch, true, d_residual_after_attention)?;
+    let attention_args = BlockAttentionBackwardArgs {
         block_index,
         use_full_attention,
         reuse_forward_probs: use_full_attention,
@@ -118,10 +142,12 @@ fn run_block<'a, 'scratch, 'out>(
         canon_a: weights.block_canon_a[block_index],
         projections: weights.attention[block_index],
         d_residual_after_attention: &*d_residual_after_attention,
-        precomputed_d_residual_after_attention_amax_chunks: Some(
-            d_residual_after_attention_amax_chunks,
-        ),
-        d_residual_in: d_residual,
+        precomputed_d_residual_after_attention_amax_chunks: if changed || isolated_attention {
+            None
+        } else {
+            Some(d_residual_after_attention_amax_chunks)
+        },
+        d_residual_in: &mut *d_residual,
         d_residual_in_chunk_amax: &mut *mlp_scratch.down_linear.e_h.chunk_amax,
         d_hidden,
         d_qkv,
@@ -130,5 +156,15 @@ fn run_block<'a, 'scratch, 'out>(
         grads: grads.reborrow(),
         scratch: attention_scratch.reborrow(),
         seeds: seeds.attention[block_index],
+    };
+    let amax = if isolated_attention {
+        attention_side_backward_branch(attention_args)?
+    } else {
+        attention_side_backward(attention_args)?
+    };
+    Ok(if boundary(branch, false, d_residual)? {
+        None
+    } else {
+        amax
     })
 }

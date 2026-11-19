@@ -36,6 +36,9 @@ impl_output_item!(CudaTrainOutput);
 #[derive(Clone)]
 pub(in crate::training) struct CudaValidOutput {
     pub(in crate::training::launch) val_loss: f32,
+    pub(in crate::training::launch) val_loss_min: f32,
+    pub(in crate::training::launch) val_loss_max: f32,
+    pub(in crate::training::launch) val_loss_spread: f32,
     pub(in crate::training::launch) val_bits_per_byte: f64,
     pub(in crate::training::launch) eval_elapsed_s: f64,
     pub(in crate::training::launch) window_count: usize,

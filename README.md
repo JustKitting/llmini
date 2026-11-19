@@ -74,22 +74,88 @@ Build the CUDA kernels for Blackwell:
 cargo oxide build --arch sm_120a
 ```
 
-Run the default training loop:
+Run the native executable directly:
 
 ```bash
-CUDA_DEVICE_INDEX=0 TRAIN_DATASET=synth TRAIN_MAX_SECONDS=900 cargo run --release --bin run_rebuilt
+./target/release/rust-kernels --dataset fineweb --max-seconds 900
 ```
 
-Run a short screen:
+Run a sustained stability session:
 
 ```bash
-CUDA_DEVICE_INDEX=0 TRAIN_DATASET=synth TRAIN_MAX_SECONDS=30 cargo run --release --bin run_rebuilt
+./target/release/rust-kernels --dataset fineweb --steps 30000 --max-seconds 21600 --eval-interval 1000
 ```
 
-Run a coupled sweep:
+The default CUDA device is GPU 0. Command-line options override their corresponding
+`TRAIN_*` environment settings. Existing environment settings remain supported.
+Runs use the normal timestamped `target/runs` directories.
+
+Inspect a saved checkpoint's activation tails and NVFP4 representation through
+the CUDA forward path, with zero optimizer updates:
 
 ```bash
-CUDA_DEVICE_INDEX=0 cargo run --release --bin sweep -- --trials 12 --max-seconds 900 --screen-max-seconds 30
+CUDA_DEVICE_INDEX=0 ./target/release/rust-kernels --inspect-model target/runs/RUN/model.ckpt
+```
+
+Attribute a saved checkpoint's gradient norm through native CUDA forward/backward,
+with zero optimizer updates:
+
+```bash
+CUDA_DEVICE_INDEX=0 ./target/release/rust-kernels --inspect-gradients target/runs/RUN/model.ckpt
+```
+
+This writes `gradient_inspection.json`, using the existing GPU clipping reductions
+to separate matrix, learned SymExpLin control and ordinary parameter contributions.
+It verifies exact checkpoint replay before/after the probe. The checkpoint contains
+averaged model weights; this does not replay an unsaved training/optimizer state.
+
+Set `TRAIN_GRADIENT_COMPONENT_INTERVAL=1000` on a training command to record
+live pre-update gradient contributions in `gradient_components.jsonl` at the
+first attempt, every1000 attempts and the last attempt. This reads the existing
+CUDA clipping reductions and performs no additional training updates.
+
+Evaluate a saved native checkpoint on the reserved NanoGPT reference text:
+
+```bash
+./target/release/rust-kernels --evaluate-model target/runs/RUN/model.ckpt --validation-documents data/fineweb/reference/documents.bin
+```
+
+This performs CUDA evaluation with zero optimizer updates and writes
+`reference_validation.json` beside the checkpoint. It checks native held-out
+replay, causality and every scored target before reporting BPB. The result states
+the context, sliding stride and comparison limits; it does not replace the
+training run's fixed validation metric. Run it after training releases GPU 0.
+When the checkpoint has Source/Window_offset metrics, the result also includes a
+fixed 32-stratum sample of already-seen training batches, scored with the frozen
+checkpoint and reported separately from held-out metrics.
+
+For a numerical graph repair that changes an old checkpoint's replay CE, the
+native checkpoint actions accept `--replay-provenance PATH`. This requires a
+verified native replay record bound to the unchanged checkpoint, current PTX,
+original producer CE, reference documents and strict causality checks. Reports
+retain the original producer result separately from repaired-graph scoring.
+Without that option the historical CE replay gate remains unchanged. See
+[the trained latent-feedback causality repair](notes/latent_feedback_causality_20261115.md).
+
+Prepare those documents with the project's Rust data preparer:
+
+```bash
+cargo build --release --bin prepare_fineweb
+./target/release/prepare_fineweb --reference-tokens /path/to/fineweb_val_000000.bin --reference-vocab /path/to/gpt2-vocab.json --reference-output data/fineweb/reference
+```
+
+Inputs are the [official token shard](https://huggingface.co/datasets/kjj0/fineweb10B-gpt2/resolve/main/fineweb_val_000000.bin)
+and [GPT-2 vocabulary](https://huggingface.co/openai-community/gpt2/resolve/main/vocab.json).
+The preparer verifies the recorded source, vocabulary and tokenizer SHA256
+identities, preserves exactly 46,515,256 raw benchmark bytes and verifies the
+prepared document identity. Text/EOS targets are scored once; added BOS and
+padding are excluded. The final partial document receives no invented EOS.
+
+Cargo also selects the native training executable by default:
+
+```bash
+cargo run --release -- --dataset fineweb --steps 30000 --max-seconds 21600 --eval-interval 1000
+./target/release/rust-kernels --help
 ```
 
 Run focused CUDA tests, for example:

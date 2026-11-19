@@ -3,6 +3,7 @@ mod apply;
 mod base;
 mod block;
 mod embedding;
+pub(in crate::training) use embedding::add_embedding_lookup_grad;
 pub(in crate::training) mod ember;
 mod kda_clip;
 mod layer_norm;

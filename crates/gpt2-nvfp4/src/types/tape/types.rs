@@ -15,10 +15,10 @@ pub struct BlockForwardTape<'a> {
     pub attention_out: &'a mut DeviceBuffer<u16>,
     pub headwise_gate_input: Option<&'a mut DeviceBuffer<u16>>,
     pub attention_probs: Option<&'a mut DeviceBuffer<u16>>,
-    pub kda_v_new: Option<&'a mut DeviceBuffer<f32>>,
-    pub kda_akk_inv: Option<&'a mut DeviceBuffer<f32>>,
-    pub kda_w: Option<&'a mut DeviceBuffer<f32>>,
-    pub kda_aqk: Option<&'a mut DeviceBuffer<f32>>,
+    pub kda_v_new: Option<&'a mut DeviceBuffer<u16>>,
+    pub kda_akk_inv: Option<&'a mut DeviceBuffer<u16>>,
+    pub kda_w: Option<&'a mut DeviceBuffer<u16>>,
+    pub kda_aqk: Option<&'a mut DeviceBuffer<u16>>,
     pub attention_log_sum_exp: &'a mut DeviceBuffer<f32>,
     pub c_proj_input_nvfp4: RowwiseNvfp4Tape<'a>,
     pub ln_2: LayerNormTape<'a>,
@@ -29,6 +29,7 @@ pub struct BlockForwardTape<'a> {
 }
 
 pub struct LayerNormTape<'a> {
+    /// Unweighted standardized input, saved by the bounded xhat producer.
     pub residual: &'a mut DeviceBuffer<u16>,
     pub mean: &'a mut DeviceBuffer<f32>,
     pub inv_std: &'a mut DeviceBuffer<f32>,

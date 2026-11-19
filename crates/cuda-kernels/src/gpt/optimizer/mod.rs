@@ -20,6 +20,7 @@ mod launcher;
 mod modules;
 mod muon;
 mod schedule_free;
+mod storage;
 mod symexp_lin;
 mod threads;
 mod work_grid;
@@ -37,5 +38,6 @@ pub use launcher::OptimizerModule;
 pub use muon::polar::fused::{
     Coefficients as MuonPolarCoefficients, coefficients as muon_polar_coefficients,
 };
+pub use storage::MUON_STORAGE_LAYOUT_VERSION;
 
 include!(concat!(env!("OUT_DIR"), "/optimizer_config.rs"));

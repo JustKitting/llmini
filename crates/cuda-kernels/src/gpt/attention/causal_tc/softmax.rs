@@ -12,6 +12,8 @@ use index::{log_sum_exp_index, score, score_index};
 use reduce::{block_reduce_max, block_reduce_sum};
 
 pub(super) const WARPS_PER_BLOCK: usize = (TC_FORWARD_THREADS_PER_BLOCK / 32) as usize;
+// The maximum remains live while the sum reuses the per-warp slots.
+pub(super) const REDUCE_ELEMENTS: usize = WARPS_PER_BLOCK + 1;
 pub(super) const NEG_INFINITY: f32 = -3.4028235e38_f32;
 
 #[derive(Clone, Copy)]
@@ -28,7 +30,7 @@ pub(super) fn softmax_body(
     mut probs: DisjointSlice<f32>,
     mut log_sum_exp: DisjointSlice<f32>,
     params: CausalAttentionParams,
-    reduce: &mut SharedArray<f32, WARPS_PER_BLOCK>,
+    reduce: &mut SharedArray<f32, REDUCE_ELEMENTS>,
 ) {
     let query = thread::blockIdx_x();
     let head = thread::blockIdx_y();
@@ -53,8 +55,8 @@ pub(super) fn softmax_body(
         return;
     }
 
-    let max_score = query_max(scores, ctx, reduce);
-    let denom = safe_positive_denom(query_denom(scores, ctx, max_score, reduce));
+    let max_score = query_max::<false>(scores, &[], ctx, reduce);
+    let denom = safe_positive_denom(query_denom::<false>(scores, &[], ctx, max_score, reduce));
     if tid == 0 {
         unsafe {
             *log_sum_exp.get_unchecked_mut(log_sum_exp_index(batch, query, head, ctx.params)) =
@@ -65,7 +67,7 @@ pub(super) fn softmax_body(
     let mut key = tid;
     while key < params.seq_len {
         let prob = if params.key_is_visible(query, key) {
-            exp_f32(score(scores, batch, head, query, key, ctx.params) - max_score) / denom
+            exp_f32(masked_score::<false>(scores, &[], ctx, key) - max_score) / denom
         } else {
             0.0
         };
@@ -78,10 +80,32 @@ pub(super) fn softmax_body(
 
 pub(super) fn softmax_f16_body(
     scores: &[f32],
+    probs: DisjointSlice<u16>,
+    log_sum_exp: DisjointSlice<f32>,
+    params: CausalAttentionParams,
+    reduce: &mut SharedArray<f32, REDUCE_ELEMENTS>,
+) {
+    softmax_f16_impl::<false>(scores, &[], probs, log_sum_exp, params, reduce);
+}
+
+pub(super) fn softmax_selective_f16_body(
+    scores: &[f32],
+    mask_values: &[f32],
+    probs: DisjointSlice<u16>,
+    log_sum_exp: DisjointSlice<f32>,
+    params: CausalAttentionParams,
+    reduce: &mut SharedArray<f32, REDUCE_ELEMENTS>,
+) {
+    softmax_f16_impl::<true>(scores, mask_values, probs, log_sum_exp, params, reduce);
+}
+
+fn softmax_f16_impl<const SELECTIVE: bool>(
+    scores: &[f32],
+    mask_values: &[f32],
     mut probs: DisjointSlice<u16>,
     mut log_sum_exp: DisjointSlice<f32>,
     params: CausalAttentionParams,
-    reduce: &mut SharedArray<f32, WARPS_PER_BLOCK>,
+    reduce: &mut SharedArray<f32, REDUCE_ELEMENTS>,
 ) {
     let query = thread::blockIdx_x();
     let head = thread::blockIdx_y();
@@ -106,8 +130,14 @@ pub(super) fn softmax_f16_body(
         return;
     }
 
-    let max_score = query_max(scores, ctx, reduce);
-    let denom = safe_positive_denom(query_denom(scores, ctx, max_score, reduce));
+    let max_score = query_max::<SELECTIVE>(scores, mask_values, ctx, reduce);
+    let denom = safe_positive_denom(query_denom::<SELECTIVE>(
+        scores,
+        mask_values,
+        ctx,
+        max_score,
+        reduce,
+    ));
     if tid == 0 {
         unsafe {
             *log_sum_exp.get_unchecked_mut(log_sum_exp_index(batch, query, head, ctx.params)) =
@@ -116,17 +146,20 @@ pub(super) fn softmax_f16_body(
     }
 
     let first_key = params.first_visible_key(query);
-    let mut key = tid;
-    while key < first_key {
-        unsafe {
-            *probs.get_unchecked_mut(score_index(batch, head, query, key, ctx.params)) = 0;
+    if !SELECTIVE {
+        let mut key = tid;
+        while key < first_key {
+            unsafe {
+                *probs.get_unchecked_mut(score_index(batch, head, query, key, ctx.params)) = 0;
+            }
+            key += TC_FORWARD_THREADS_PER_BLOCK;
         }
-        key += TC_FORWARD_THREADS_PER_BLOCK;
     }
 
     let mut key = first_key + tid;
     while key <= query {
-        let prob = exp_f32(score(scores, batch, head, query, key, ctx.params) - max_score) / denom;
+        let prob =
+            exp_f32(masked_score::<SELECTIVE>(scores, mask_values, ctx, key) - max_score) / denom;
         unsafe {
             *probs.get_unchecked_mut(score_index(batch, head, query, key, ctx.params)) =
                 cvt_rn_f16_f32(prob);
@@ -159,10 +192,11 @@ fn zero_prob_row_f16(probs: &mut DisjointSlice<u16>, ctx: SoftmaxRow<'_>) {
     }
 }
 
-fn query_max(
+fn query_max<const SELECTIVE: bool>(
     scores: &[f32],
+    mask_values: &[f32],
     ctx: SoftmaxRow<'_>,
-    reduce: &mut SharedArray<f32, WARPS_PER_BLOCK>,
+    reduce: &mut SharedArray<f32, REDUCE_ELEMENTS>,
 ) -> f32 {
     let mut local = if ctx.tid == 0 {
         stable_mask_max(ctx.query, ctx.params)
@@ -173,18 +207,19 @@ fn query_max(
     while key <= ctx.query {
         local = max_f32(
             local,
-            score(scores, ctx.batch, ctx.head, ctx.query, key, ctx.params),
+            masked_score::<SELECTIVE>(scores, mask_values, ctx, key),
         );
         key += TC_FORWARD_THREADS_PER_BLOCK;
     }
     block_reduce_max(local, ctx.tid, reduce)
 }
 
-fn query_denom(
+fn query_denom<const SELECTIVE: bool>(
     scores: &[f32],
+    mask_values: &[f32],
     ctx: SoftmaxRow<'_>,
     max_score: f32,
-    reduce: &mut SharedArray<f32, WARPS_PER_BLOCK>,
+    reduce: &mut SharedArray<f32, REDUCE_ELEMENTS>,
 ) -> f32 {
     let mut local = if ctx.tid == 0 {
         stable_mask_mass(ctx.query, max_score, ctx.params)
@@ -193,11 +228,30 @@ fn query_denom(
     };
     let mut key = ctx.params.first_visible_key(ctx.query) + ctx.tid;
     while key <= ctx.query {
-        local +=
-            exp_f32(score(scores, ctx.batch, ctx.head, ctx.query, key, ctx.params) - max_score);
+        local += exp_f32(masked_score::<SELECTIVE>(scores, mask_values, ctx, key) - max_score);
         key += TC_FORWARD_THREADS_PER_BLOCK;
     }
     block_reduce_sum(local, ctx.tid, reduce)
+}
+
+#[inline(always)]
+fn masked_score<const SELECTIVE: bool>(
+    scores: &[f32],
+    mask_values: &[f32],
+    ctx: SoftmaxRow<'_>,
+    key: u32,
+) -> f32 {
+    if SELECTIVE {
+        let distance = ctx.query - key;
+        let packed_index = ((ctx.batch * ctx.params.seq_len + ctx.query)
+            * ctx.params.attention_window
+            + distance) as usize;
+        (scores[score_index(ctx.batch, ctx.head, ctx.query, key, ctx.params)]
+            - mask_values[packed_index])
+            * ctx.params.scale
+    } else {
+        score(scores, ctx.batch, ctx.head, ctx.query, key, ctx.params)
+    }
 }
 
 #[inline(always)]

@@ -15,16 +15,30 @@ pub(super) fn process_validation(
     validation: &CudaValidationInput,
     step: usize,
     completed_steps: usize,
+    eval_repeats: usize,
 ) -> AppResult<CudaValidOutput> {
     let eval_start = Instant::now();
     trainer.materialize_evaluation_weights()?;
-    let val_loss = trainer.eval_loss_windows(&validation.tokens, validation.window_count)?;
+    let mut val_loss_sum = 0.0_f64;
+    let mut val_loss_min = f32::INFINITY;
+    let mut val_loss_max = f32::NEG_INFINITY;
+    for _ in 0..eval_repeats {
+        let loss = trainer.eval_loss_windows(&validation.tokens, validation.window_count)?;
+        val_loss_sum += f64::from(loss);
+        val_loss_min = val_loss_min.min(loss);
+        val_loss_max = val_loss_max.max(loss);
+    }
+    let val_loss = (val_loss_sum / eval_repeats as f64) as f32;
+    let val_loss_spread = val_loss_max - val_loss_min;
     let target_token_count = validation.window_count * gpt2_nvfp4::GPT2_SEQ_LEN;
     let val_bits_per_byte = f64::from(val_loss) * target_token_count as f64
         / validation.target_byte_count as f64
         / std::f64::consts::LN_2;
     let output = CudaValidOutput {
         val_loss,
+        val_loss_min,
+        val_loss_max,
+        val_loss_spread,
         val_bits_per_byte,
         eval_elapsed_s: eval_start.elapsed().as_secs_f64(),
         window_count: validation.window_count,

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use cuda_core::CudaStream;
-use gpt2_nvfp4::{GPT2_N_LAYER, GPT2_XSA_ALPHA_STORAGE};
+use gpt2_nvfp4::GPT2_N_LAYER;
 
 use super::{
     super::format::CheckpointTensor,
@@ -9,7 +9,7 @@ use super::{
 };
 use crate::{
     AppResult,
-    upload::{UploadedBlock, UploadedCanon, UploadedModel, UploadedNextLat, UploadedPair},
+    upload::{UploadedBlock, UploadedModel, UploadedNextLat, UploadedPair},
 };
 
 pub(super) fn load_model(
@@ -17,30 +17,15 @@ pub(super) fn load_model(
     tensors: &mut HashMap<String, CheckpointTensor>,
 ) -> AppResult<UploadedModel> {
     Ok(UploadedModel {
+        mhc: None,
+        engram: None,
+        latent_feedback: None,
         token_embedding: take_uploaded(stream, tensors, "token_embedding")?,
-        xsa_alphas: take_xsa_alphas(stream, tensors)?,
+        xsa_alphas: take_uploaded(stream, tensors, "xsa_alphas")?,
         blocks: load_blocks(stream, tensors)?,
         ln_f: load_pair(stream, tensors, "ln_f")?,
         next_latent: load_next_latent(stream, tensors)?,
     })
-}
-
-fn take_xsa_alphas(
-    stream: &CudaStream,
-    tensors: &mut HashMap<String, CheckpointTensor>,
-) -> AppResult<crate::upload::UploadedNvfp4> {
-    if tensors.contains_key("xsa_alphas") {
-        return take_uploaded(stream, tensors, "xsa_alphas");
-    }
-    // Version-2 checkpoints written before gated XSA have one fewer tensor.
-    // A zero alpha reproduces their exact attention function at load time.
-    crate::upload::UploadedNvfp4::from_host(
-        stream,
-        &vec![0; GPT2_XSA_ALPHA_STORAGE / 2],
-        &vec![0x38; GPT2_XSA_ALPHA_STORAGE / 16],
-        1.0,
-        GPT2_XSA_ALPHA_STORAGE,
-    )
 }
 
 fn load_blocks(
@@ -51,7 +36,11 @@ fn load_blocks(
     for index in 0..GPT2_N_LAYER {
         blocks.push(UploadedBlock {
             ln_1: load_pair(stream, tensors, &format!("blocks.{index}.ln_1"))?,
-            canon_a: take_canon(stream, tensors, &format!("blocks.{index}.canon_a.weight"))?,
+            canon_a: take_uploaded_fp32(
+                stream,
+                tensors,
+                &format!("blocks.{index}.canon_a.weight"),
+            )?,
             attn_qkv: load_pair(stream, tensors, &format!("blocks.{index}.attn_qkv"))?,
             attn_qk_scale: take_uploaded(
                 stream,
@@ -60,24 +49,16 @@ fn load_blocks(
             )?,
             attn_c_proj: load_pair(stream, tensors, &format!("blocks.{index}.attn_c_proj"))?,
             ln_2: load_pair(stream, tensors, &format!("blocks.{index}.ln_2"))?,
-            canon_c: take_canon(stream, tensors, &format!("blocks.{index}.canon_c.weight"))?,
+            canon_c: take_uploaded_fp32(
+                stream,
+                tensors,
+                &format!("blocks.{index}.canon_c.weight"),
+            )?,
             mlp_up: load_pair(stream, tensors, &format!("blocks.{index}.mlp_up"))?,
             mlp_down: load_pair(stream, tensors, &format!("blocks.{index}.mlp_down"))?,
         });
     }
     Ok(blocks)
-}
-
-fn take_canon(
-    stream: &CudaStream,
-    tensors: &mut HashMap<String, CheckpointTensor>,
-    name: &str,
-) -> AppResult<UploadedCanon> {
-    if tensors.contains_key(name) {
-        take_uploaded_fp32(stream, tensors, name)
-    } else {
-        UploadedCanon::zero(stream)
-    }
 }
 
 fn load_pair(

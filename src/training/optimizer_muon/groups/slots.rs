@@ -1,7 +1,7 @@
 use std::cmp::Reverse;
 
 use gpt2_nvfp4::{
-    AttentionDims, GPT2_MLP, GPT2_N_EMBD, GPT2_N_LAYER, NEXTLAT_HIDDEN, NEXTLAT_INPUT,
+    AttentionDims, GPT2_MLP, GPT2_MLP_UP, GPT2_N_EMBD, GPT2_N_LAYER, NEXTLAT_HIDDEN, NEXTLAT_INPUT,
     attention_trainable_qkv_dim, uses_full_attention,
 };
 use rust_kernels_cuda::optimizer::MUON_MATRIX_PHASES;
@@ -22,8 +22,32 @@ pub(super) fn build_slots(
     next_latent_grads: &NextLatGradBuffers,
     state: &OptimizerStateBuffers,
     padding: &MuonPaddingBuffers,
+    engram: Option<&crate::training::engram::Engram>,
+    feedback: Option<&crate::training::latent_feedback::Feedback>,
+    mhc: Option<&crate::training::mhc::Mhc>,
 ) -> Vec<HostPtrs> {
     let mut rows = all_slots(uploaded, grads, next_latent_grads, state);
+    if let (Some(e), Some(w)) = (engram, uploaded.engram.as_ref()) {
+        for (e, w) in e.modules.iter().zip(&w.modules) {
+            for (slot, tensor) in w.cfg.projector_indices().into_iter().enumerate() {
+                rows.push(
+                    ptrs::linear(&w.nv[tensor], &e.ng[tensor], &e.projector_states[slot])
+                        .shape(w.cfg.memory(), GPT2_N_EMBD),
+                );
+            }
+        }
+    }
+    if let (Some(f), Some(w)) = (feedback, uploaded.latent_feedback.as_ref()) {
+        rows.push(ptrs::linear(&w.weight, &f.grad, &f.state).shape(GPT2_N_EMBD, GPT2_N_EMBD));
+    }
+    if let (Some(m), Some(w)) = (mhc, uploaded.mhc.as_ref()) {
+        for (u, w) in m.units.iter().zip(&w.units) {
+            rows.push(
+                ptrs::linear(&w.phi, &u.grad, &u.phi)
+                    .shape(crate::training::mhc::WIDTH, crate::training::mhc::PAD),
+            );
+        }
+    }
     schedule_slots(&mut rows);
     pad_slots(&mut rows, padding);
     rows
@@ -50,7 +74,7 @@ fn all_slots(
     append(&mut rows, GPT2_N_EMBD, GPT2_N_EMBD, |i| {
         ptrs::c_proj(uploaded, grads, state, i)
     });
-    append(&mut rows, GPT2_N_EMBD, GPT2_MLP, |i| {
+    append(&mut rows, GPT2_N_EMBD, GPT2_MLP_UP, |i| {
         ptrs::mlp_up(uploaded, grads, state, i)
     });
     append(&mut rows, GPT2_MLP, GPT2_N_EMBD, |i| {
@@ -84,11 +108,11 @@ fn pad_slots(rows: &mut Vec<HostPtrs>, padding: &MuonPaddingBuffers) {
     }
 }
 
-fn append<F>(rows: &mut Vec<HostPtrs>, row_count: usize, col_count: usize, ptrs: F)
+fn append<F>(rows: &mut Vec<HostPtrs>, input_dim: usize, output_dim: usize, ptrs: F)
 where
     F: Fn(usize) -> HostPtrs,
 {
     for i in 0..GPT2_N_LAYER {
-        rows.push(ptrs(i).shape(row_count, col_count));
+        rows.push(ptrs(i).shape(input_dim, output_dim));
     }
 }

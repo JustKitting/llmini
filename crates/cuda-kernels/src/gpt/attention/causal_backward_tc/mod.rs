@@ -1,3 +1,4 @@
+pub(super) mod full_state_decay;
 mod gather;
 mod kda;
 pub(super) mod kernels;
@@ -13,5 +14,6 @@ mod selective;
 mod softmax_d;
 mod sparse_probs;
 mod types;
+pub(crate) use kda::exact_kda_raw_finish_body;
 
 pub use types::{CausalAttentionBackwardTcArgs, CausalAttentionBackwardTcScratch};

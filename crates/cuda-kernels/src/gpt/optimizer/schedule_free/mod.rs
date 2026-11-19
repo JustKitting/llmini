@@ -11,14 +11,14 @@ pub(super) mod module {
     use cuda_device::{DisjointSlice, kernel};
 
     use super::super::symexp_lin::ScalePointers;
-    use super::amax::schedule_free_chunk_amax_body;
+    use super::amax::schedule_free_amax_body;
     use super::four_six::schedule_free_four_six_body;
 
     #[kernel]
-    pub fn schedule_free_chunk_amax_kernel(
+    pub fn schedule_free_amax_kernel(
         z_master: &[f32],
         x_master: &[f32],
-        mut out: DisjointSlice<f32>,
+        output_amax: &[f32],
         beta: f32,
         symexp_lin_beta: f32,
         exponential_z: u64,
@@ -29,10 +29,10 @@ pub(super) mod module {
         curvature_x: u64,
         len: u32,
     ) {
-        schedule_free_chunk_amax_body(
+        schedule_free_amax_body(
             z_master,
             x_master,
-            &mut out,
+            output_amax,
             beta,
             symexp_lin_beta,
             ScalePointers {

@@ -11,10 +11,7 @@ pub(in crate::training::next_latent) fn output_and_loss(
     project_affine_tma(
         args.stream,
         args.tma,
-        args.tma_scale_pack,
         &mut args.buffers.tma_descriptors,
-        &mut args.buffers.tma_input_scale_packed,
-        &mut args.buffers.tma_weight_scale_packed,
         args.buffers.act2_quant.rowwise(),
         args.weights.output_projection.weight.device(),
         args.weights.output_projection.bias.device(),

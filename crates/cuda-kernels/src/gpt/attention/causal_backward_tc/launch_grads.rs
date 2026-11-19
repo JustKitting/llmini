@@ -37,18 +37,7 @@ pub(super) fn run_grad_matmuls(
         ctx.attention_window,
     )?;
     let probs_half = forward_probs_f16.unwrap_or(&*scratch.p_half);
-    run_tc_matmul_a_transposed_rhs(
-        ctx.stream,
-        ctx.tc_module,
-        probs_half,
-        scratch.d_out,
-        scratch.d_v,
-        ctx.batch_head,
-        ctx.seq_len,
-        ctx.head_dim,
-        ctx.seq_len,
-        ctx.attention_window,
-    )
+    run_v_grad_matmul(ctx, probs_half, scratch.d_out, None, scratch.d_v)
 }
 
 #[expect(
@@ -66,9 +55,16 @@ pub(super) fn run_grad_matmuls_sparse(
     d_q: &mut DeviceBuffer<f32>,
     d_k: &mut DeviceBuffer<f32>,
     d_v: &mut DeviceBuffer<f32>,
+    dense_value_gradient: bool,
 ) -> Result<(), DriverError> {
     run_qk_grad_matmuls_sparse(ctx, ds, q, k, tile_scales, d_q, d_k)?;
-    run_v_grad_matmul_sparse(ctx, probs, d_out, tile_scales, d_v)
+    run_v_grad_matmul(
+        ctx,
+        probs,
+        d_out,
+        (!dense_value_gradient).then_some(tile_scales),
+        d_v,
+    )
 }
 
 #[expect(
@@ -112,19 +108,33 @@ pub(super) fn run_qk_grad_matmuls_sparse(
     )
 }
 
-pub(super) fn run_v_grad_matmul_sparse(
+pub(super) fn run_v_grad_matmul(
     ctx: &AttentionTcMatmulContext<'_>,
     probs: &DeviceBuffer<u16>,
     d_out: &DeviceBuffer<u16>,
-    tile_scales: &DeviceBuffer<f32>,
+    tile_scales: Option<&DeviceBuffer<f32>>,
     d_v: &mut DeviceBuffer<f32>,
 ) -> Result<(), DriverError> {
-    run_tc_matmul_a_transposed_rhs_sparse_scaled(
+    if let Some(tile_scales) = tile_scales {
+        return run_tc_matmul_a_transposed_rhs_sparse_scaled(
+            ctx.stream,
+            ctx.tc_module,
+            probs,
+            d_out,
+            tile_scales,
+            d_v,
+            ctx.batch_head,
+            ctx.seq_len,
+            ctx.head_dim,
+            ctx.seq_len,
+            ctx.attention_window,
+        );
+    }
+    run_tc_matmul_a_transposed_rhs(
         ctx.stream,
         ctx.tc_module,
         probs,
         d_out,
-        tile_scales,
         d_v,
         ctx.batch_head,
         ctx.seq_len,

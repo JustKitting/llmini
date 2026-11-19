@@ -14,7 +14,7 @@ mod assert;
 pub(in super::super) struct QuantScratch {
     pub(in super::super) bytes: DeviceBuffer<u8>,
     pub(in super::super) scales: DeviceBuffer<u8>,
-    pub(in super::super) global_scales: DeviceBuffer<f32>,
+
     pub(in super::super) chunk_amax: DeviceBuffer<f32>,
     pub(in super::super) global_scale: DeviceBuffer<f32>,
 }
@@ -24,7 +24,7 @@ impl QuantScratch {
         Ok(Self {
             bytes: DeviceBuffer::zeroed(stream, nvfp4_tc_matmul_bytes(COLS as u32, ROWS as u32))?,
             scales: DeviceBuffer::zeroed(stream, nvfp4_tc_matmul_scales(COLS as u32, ROWS as u32))?,
-            global_scales: DeviceBuffer::zeroed(stream, COLS)?,
+
             chunk_amax: DeviceBuffer::zeroed(
                 stream,
                 nvfp4_tc_matmul_chunks(COLS as u32, ROWS as u32),
@@ -42,8 +42,11 @@ impl QuantScratch {
 
         Ok(Self {
             bytes: DeviceBuffer::zeroed(stream, element_count / 2)?,
-            scales: DeviceBuffer::zeroed(stream, element_count / 16)?,
-            global_scales: DeviceBuffer::zeroed(stream, row_count)?,
+            scales: DeviceBuffer::zeroed(
+                stream,
+                rust_kernels_cuda::nvfp4::csf::rowwise_encoded_len(row_count, row_len),
+            )?,
+
             chunk_amax: DeviceBuffer::zeroed(stream, element_count / 32)?,
             global_scale: DeviceBuffer::zeroed(stream, 1)?,
         })
@@ -62,7 +65,7 @@ impl QuantScratch {
             x,
             out_fp4: &mut self.bytes,
             out_scales: &mut self.scales,
-            out_global_scales: &mut self.global_scales,
+
             out_chunk_amax: &mut self.chunk_amax,
             out_global_scale: &mut self.global_scale,
             row_count: row_count as u32,
@@ -86,7 +89,7 @@ impl QuantScratch {
             input,
             out_fp4: &mut self.bytes,
             out_scales: &mut self.scales,
-            out_global_scales: &mut self.global_scales,
+
             out_chunk_amax: &mut self.chunk_amax,
             out_global_scale: &mut self.global_scale,
             source_rows: source_rows as u32,

@@ -1,4 +1,3 @@
-use cuda_core::CudaStream;
 use gpt2_nvfp4::{Gpt2BackwardWeights, Gpt2Weights};
 
 use crate::AppResult;
@@ -8,6 +7,9 @@ use super::{
 };
 
 pub struct UploadedModel {
+    pub(crate) mhc: Option<crate::training::mhc::Weights>,
+    pub(crate) engram: Option<crate::training::engram::Weights>,
+    pub(crate) latent_feedback: Option<crate::training::latent_feedback::Weights>,
     pub token_embedding: UploadedNvfp4,
     pub xsa_alphas: UploadedNvfp4,
     pub blocks: Vec<UploadedBlock>,
@@ -16,8 +18,24 @@ pub struct UploadedModel {
 }
 
 impl UploadedModel {
-    pub fn new(stream: &CudaStream, weights: &Gpt2Weights) -> AppResult<Self> {
+    pub fn new(
+        runtime: &crate::training::runtime::Runtime,
+        weights: &Gpt2Weights,
+    ) -> AppResult<Self> {
+        Self::new_with_engram(runtime, weights, crate::training::engram::enabled())
+    }
+    pub(crate) fn new_with_engram(
+        runtime: &crate::training::runtime::Runtime,
+        weights: &Gpt2Weights,
+        engram: bool,
+    ) -> AppResult<Self> {
+        let stream = runtime.stream.as_ref();
         Ok(Self {
+            mhc: None,
+            latent_feedback: None,
+            engram: engram
+                .then(|| crate::training::engram::Weights::new(runtime))
+                .transpose()?,
             token_embedding: upload_nvfp4(stream, &weights.embeddings.wte)?,
             xsa_alphas: upload_nvfp4(stream, &weights.xsa_alphas)?,
             blocks: weights

@@ -204,4 +204,76 @@ pub(super) mod kernels {
             d_weight d_bias output_scale row_count embedding_dim
         );
     }
+
+    #[kernel]
+    pub fn layer_norm_backward_params_tiled_xhat_f16_kernel(
+        residual: &[u16],
+        d_normalized: &[f32],
+        mean: &[f32],
+        inv_std: &[f32],
+        mut d_weight: DisjointSlice<f32>,
+        mut d_bias: DisjointSlice<f32>,
+        output_scale: f32,
+        row_count: u32,
+        embedding_dim: u32,
+    ) {
+        static mut WEIGHT_PARTIALS: SharedArray<f32, { PARAM_THREADS_PER_BLOCK as usize }> =
+            SharedArray::UNINIT;
+        static mut BIAS_PARTIALS: SharedArray<f32, { PARAM_THREADS_PER_BLOCK as usize }> =
+            SharedArray::UNINIT;
+
+        let block = thread::blockIdx_x();
+        let partition = block % PARAM_ROW_PARTITIONS;
+        let col_tile = block / PARAM_ROW_PARTITIONS;
+        let (tid, lane, warp_in_block) = thread_lane_warp();
+        let col = col_tile * PARAM_TILE_COLS + lane;
+        let mut weight_local = 0.0f32;
+        let mut bias_local = 0.0f32;
+        let mut row = partition * WARPS_PER_BLOCK + warp_in_block;
+
+        if col < embedding_dim {
+            while row < row_count {
+                let row_base = row as usize * embedding_dim as usize;
+                let grad = d_normalized[row_base + col as usize] * output_scale;
+                let row_mean =
+                    warp::shuffle_f32(if lane == 0 { mean[row as usize] } else { 0.0 }, 0);
+                let row_inv_std = warp::shuffle_f32(
+                    if lane == 0 {
+                        inv_std[row as usize]
+                    } else {
+                        0.0
+                    },
+                    0,
+                );
+                let xhat = f16_column(residual, row_base, col, embedding_dim);
+                weight_local += grad * xhat;
+                bias_local += grad;
+                row += PARAM_TILED_ROW_STRIDE;
+            }
+        }
+
+        unsafe {
+            WEIGHT_PARTIALS[tid as usize] = weight_local;
+            BIAS_PARTIALS[tid as usize] = bias_local;
+        }
+        thread::sync_threads();
+
+        if warp_in_block == 0 && col < embedding_dim {
+            let mut weight_sum = 0.0f32;
+            let mut bias_sum = 0.0f32;
+            let mut partial_warp = 0u32;
+            while partial_warp < WARPS_PER_BLOCK {
+                let index = (partial_warp * WARP_SIZE + lane) as usize;
+                unsafe {
+                    weight_sum += WEIGHT_PARTIALS[index];
+                    bias_sum += BIAS_PARTIALS[index];
+                }
+                partial_warp += 1;
+            }
+            unsafe {
+                atomic_add_f32(d_weight.as_mut_ptr().add(col as usize), weight_sum);
+                atomic_add_f32(d_bias.as_mut_ptr().add(col as usize), bias_sum);
+            }
+        }
+    }
 }

@@ -49,5 +49,6 @@ pub struct MlpBlockTopKRouteArgs<'a, 'out> {
     pub scores: &'out mut DeviceBuffer<f32>,
     pub masks: &'out mut DeviceBuffer<u64>,
     pub token_count: u32,
+    pub seq_len: u32,
     pub feature_count: u32,
 }

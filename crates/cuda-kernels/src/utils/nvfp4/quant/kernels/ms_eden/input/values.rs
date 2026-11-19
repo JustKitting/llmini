@@ -43,15 +43,13 @@ pub(super) fn rowwise_value_at(
 }
 
 #[inline(always)]
-pub(super) fn nvfp4_rowwise_value_at_pow2(
+pub(super) fn rowwise_value_at_pow2_index(
     bytes: &[u8],
     scales: &[u8],
     global_scales: &[f32],
     row_len_shift: u32,
-    row: u32,
-    col: u32,
+    index: u32,
 ) -> f32 {
-    let index = (row << row_len_shift) + col;
     let byte = bytes[(index >> 1) as usize];
     let payload = if index & 1 == 0 {
         byte & 0x0f
@@ -60,8 +58,16 @@ pub(super) fn nvfp4_rowwise_value_at_pow2(
     };
 
     e2m1_value(payload)
-        * e4m3_value(scales[(index >> 4) as usize] as u16)
-        * global_scales[row as usize]
+        * e4m3_value(unsafe {
+            crate::nvfp4::csf::matrix_scale_at_data(
+                scales.as_ptr(),
+                global_scales.len() as u32,
+                (1u32 << row_len_shift).div_ceil(128) * 128,
+                index >> row_len_shift,
+                (index & ((1u32 << row_len_shift) - 1)) / 16,
+            )
+        } as u16)
+        * global_scales[(index >> row_len_shift) as usize]
 }
 
 #[inline(always)]
@@ -75,6 +81,28 @@ pub(super) fn checked_rowwise_abs_value(
 ) -> f32 {
     if index < element_count {
         abs_f32(rowwise_value_at(bytes, scales, global_scales, cols, index))
+    } else {
+        0.0
+    }
+}
+
+#[inline(always)]
+pub(super) fn checked_rowwise_pow2_abs_value(
+    bytes: &[u8],
+    scales: &[u8],
+    global_scales: &[f32],
+    row_len_shift: u32,
+    index: u32,
+    element_count: u32,
+) -> f32 {
+    if index < element_count {
+        abs_f32(rowwise_value_at_pow2_index(
+            bytes,
+            scales,
+            global_scales,
+            row_len_shift,
+            index,
+        ))
     } else {
         0.0
     }

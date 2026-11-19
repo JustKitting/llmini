@@ -1,15 +1,9 @@
 use cuda_core::DriverError;
 
-#[path = "ms_eden_pair/exact.rs"]
-mod exact;
-#[path = "ms_eden_pair/fallback.rs"]
-mod fallback;
-
 use cuda_core::DeviceBuffer;
 
 use super::args::MsEdenPairDeviceScaleQuantArgs;
 use super::launcher::Nvfp4QuantModule;
-use super::shape::MsEdenPackGrid;
 
 impl Nvfp4QuantModule {
     pub fn fp32_pair_to_nvfp4_quartet_backward_ms_eden_derived_device_scale_no_chunk_amax(
@@ -35,9 +29,15 @@ impl Nvfp4QuantModule {
 
     fn fp32_pair_to_nvfp4_quartet_backward_ms_eden_derived_device_scale_no_chunk_amax_impl(
         &self,
-        mut args: MsEdenPairDeviceScaleQuantArgs<'_, '_>,
+        args: MsEdenPairDeviceScaleQuantArgs<'_, '_>,
         out_bias: Option<&mut DeviceBuffer<f32>>,
     ) -> Result<bool, DriverError> {
+        super::launcher::validate_csf_scales(args.out_scales, args.row_count, args.dst_row_len)?;
+        super::launcher::validate_csf_scales(
+            args.transpose_out_scales,
+            args.src_row_len,
+            args.transpose_dst_row_len,
+        )?;
         let chunk_count = if let Some(chunk_count) = args.precomputed_chunk_count {
             chunk_count
         } else {
@@ -56,30 +56,44 @@ impl Nvfp4QuantModule {
             chunk_count,
         )?;
 
-        let row_pack = MsEdenPackGrid::for_elements(args.row_count * args.dst_row_len);
-        let transpose_pack =
-            MsEdenPackGrid::for_elements(args.src_row_len * args.transpose_dst_row_len);
-
-        if let Some(out_bias) = out_bias {
-            if let Some(result) = self.launch_pair_exact_bias_no_chunk_amax(
-                &mut args,
-                out_bias,
-                row_pack,
-                transpose_pack,
-            ) {
-                result?;
-                return Ok(true);
+        let mut empty_bias;
+        let fused_bias = out_bias.is_some();
+        let bias = if let Some(b) = out_bias {
+            unsafe {
+                cuda_core::memory::memset_d8_async(
+                    b.cu_deviceptr(),
+                    0,
+                    b.len() * 4,
+                    args.stream.cu_stream(),
+                )?;
             }
-        }
-
-        if let Some(result) =
-            self.launch_pair_exact_no_chunk_amax(&mut args, row_pack, transpose_pack)
-        {
-            result?;
-            return Ok(false);
-        }
-
-        self.launch_pair_fallback_no_chunk_amax(&mut args)?;
-        Ok(false)
+            b
+        } else {
+            empty_bias = DeviceBuffer::zeroed(args.stream, 0)?;
+            &mut empty_bias
+        };
+        self.ms_eden_csf.ms_eden_fp32_pair_csf_kernel(
+            args.stream,
+            crate::launch::launch_config(
+                ((args.row_count / 128) * (args.dst_row_len / 128), 1, 1),
+                512,
+            ),
+            args.x,
+            args.out_fp4,
+            args.out_scales,
+            args.transpose_out_fp4,
+            args.transpose_out_scales,
+            bias,
+            &*args.out_global_scale,
+            args.row_count,
+            args.src_row_len,
+            args.dst_row_len,
+            args.transpose_dst_row_len,
+            args.sign_seed,
+            args.scale_seed,
+            args.transpose_scale_seed,
+            args.scale_override,
+        )?;
+        Ok(fused_bias)
     }
 }

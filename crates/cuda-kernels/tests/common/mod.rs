@@ -18,6 +18,9 @@ pub fn gpu_device_index() -> usize {
 }
 
 fn ptx_path() -> String {
+    if let Ok(path) = std::env::var("CUDA_OXIDE_PTX_PATH") {
+        return path;
+    }
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../rust_kernels_cuda.ptx")
         .to_string_lossy()
@@ -91,3 +94,6 @@ pub fn bf16_bits_slice_to_f32(values: &[u16]) -> Vec<f32> {
         .map(|&value| bf16_bits_to_f32(value))
         .collect()
 }
+
+mod csf;
+pub use csf::encode_csf_scales;

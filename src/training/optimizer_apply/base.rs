@@ -18,8 +18,8 @@ pub(super) struct BaseAdamUpdateArgs<'a> {
     pub stream: &'a CudaStream,
     pub optimizer: &'a OptimizerModule,
     pub uploaded: &'a mut UploadedModel,
-    pub grads: &'a BackwardBuffers,
-    pub next_latent_grads: &'a NextLatGradBuffers,
+    pub grads: &'a mut BackwardBuffers,
+    pub next_latent_grads: &'a mut NextLatGradBuffers,
     pub scratch: &'a mut OptimizerScratch,
     pub state: &'a mut OptimizerStateBuffers,
     pub step: u32,
@@ -41,7 +41,7 @@ pub(super) fn update_base_adam(args: BaseAdamUpdateArgs<'_>) -> Result<(), Drive
             );
             adam.update_timed(
                 &mut args.uploaded.token_embedding,
-                &args.grads.d_lm_head_weight,
+                &mut args.grads.d_lm_head_weight,
                 state,
             )?
         }
@@ -71,7 +71,7 @@ pub(super) fn update_base_adam(args: BaseAdamUpdateArgs<'_>) -> Result<(), Drive
         let xsa_alphas_ms = if gpt2_nvfp4::exclusive_self_attention_enabled() {
             adam.update_timed_with_weight_decay(
                 &mut args.uploaded.xsa_alphas,
-                &args.grads.d_xsa_alphas,
+                &mut args.grads.d_xsa_alphas,
                 &mut args.state.xsa_alphas,
                 0.0,
             )?
@@ -81,7 +81,7 @@ pub(super) fn update_base_adam(args: BaseAdamUpdateArgs<'_>) -> Result<(), Drive
         let final_norm_ms = update_layer_norm_timed(
             &mut adam,
             &mut args.uploaded.ln_f,
-            &args.grads.final_norm,
+            &mut args.grads.final_norm,
             &mut args.state.ln_f,
         )?;
         (xsa_alphas_ms, final_norm_ms)

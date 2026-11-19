@@ -14,13 +14,20 @@ pub(super) fn record_skip_decision(
     candidate_step: u32,
     trace: &mut OptimizerTrace,
     skip: UpdateSkipDecision,
+    extra_non_finite: Option<(String, usize, f32)>,
 ) -> AppResult<bool> {
     trace.update_skipped = skip.skipped;
     trace.skip_loss_spike = skip.loss_spike;
     trace.skip_grad_norm_spike = skip.grad_norm_spike;
     trace.skip_non_finite = skip.non_finite;
     if skip.non_finite {
-        log_non_finite_gradient(stream, grads, next_latent_grads, candidate_step)?;
+        if let Some((name, index, value)) = extra_non_finite {
+            eprintln!(
+                "non_finite_gradient optimizer_step_candidate={candidate_step} tensor={name} index={index} value={value:.9e}"
+            );
+        } else {
+            log_non_finite_gradient(stream, grads, next_latent_grads, candidate_step)?;
+        }
     }
     Ok(skip.skipped)
 }

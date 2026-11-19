@@ -10,6 +10,7 @@ impl OptimizerModule {
         assert!(args.chunk_ptrs.len() >= args.chunk_count as usize);
         assert!(args.chunk_lens.len() >= args.chunk_count as usize);
         assert!(args.chunk_sums.len() >= args.chunk_count as usize);
+        assert!(args.extra_sums.len() >= args.extra_sum_count as usize);
         assert!(!args.scale.is_empty());
         assert!(!args.norm.is_empty());
 
@@ -26,9 +27,11 @@ impl OptimizerModule {
             args.stream,
             grid_x_config(1, GRAD_CLIP_THREADS_PER_BLOCK),
             args.chunk_sums,
+            args.extra_sums,
             args.scale,
             args.norm,
             args.chunk_count,
+            args.extra_sum_count,
             args.max_norm,
         )?;
 

@@ -3,8 +3,8 @@ use cuda_device::DisjointSlice;
 use super::thread_index;
 use crate::attention::CausalAttentionParams;
 use crate::kda_common::{
-    beta_compact_index, chunk_end_token, chunk_g_last_index, compact_elems, compact_index,
-    compact_linear_parts, kda_decay_exp,
+    beta_compact_index, chunk_end_token, compact_elems, compact_index, compact_linear_parts,
+    kda_decay_exp,
 };
 
 pub(in super::super) fn make_qg_kneg_body(
@@ -58,6 +58,8 @@ pub(in super::super) fn make_qg_kneg_kg_kpos_vbeta_body(
     beta: &[f32],
     mut kneg: DisjointSlice<f32>,
     mut kpos_beta: DisjointSlice<f32>,
+    mut native_kpos: DisjointSlice<u16>,
+    mut native_kneg: DisjointSlice<u16>,
     params: CausalAttentionParams,
 ) {
     let Some(index) = thread_index(compact_elems(&params)) else {
@@ -77,7 +79,12 @@ pub(in super::super) fn make_qg_kneg_kg_kpos_vbeta_body(
         let v_value = *v.get_unchecked_mut(compact);
         *q.get_unchecked_mut(compact) = q_value * exp_g;
         *kneg.get_unchecked_mut(compact) = k_value * kda_decay_exp(-g_value);
-        *k.get_unchecked_mut(compact) = k_value * kda_decay_exp(g_last - g_value);
+        let kg_value = k_value * kda_decay_exp(g_last - g_value);
+        *k.get_unchecked_mut(compact) = kg_value;
+        *native_kpos.get_unchecked_mut(compact) =
+            crate::f16_tc_matmul::convert::cvt_rn_f16_f32(k_value * beta_value * exp_g);
+        *native_kneg.get_unchecked_mut(compact) =
+            crate::f16_tc_matmul::convert::cvt_rn_f16_f32(k_value * kda_decay_exp(-g_value));
         *v.get_unchecked_mut(compact) = v_value * beta_value;
         *kpos_beta.get_unchecked_mut(compact) = k_value * beta_value * exp_g;
     }
@@ -105,22 +112,5 @@ pub(in super::super) fn make_qg_kg_vbeta_body(
         *q.get_unchecked_mut(compact) *= kda_decay_exp(g_value);
         *k.get_unchecked_mut(compact) *= kda_decay_exp(g_last - g_value);
         *v.get_unchecked_mut(compact) *= beta_value;
-    }
-}
-
-pub(in super::super) fn make_kneg_from_kg_body(
-    k: &[f32],
-    chunk_g_last: &[f32],
-    mut kneg: DisjointSlice<f32>,
-    params: CausalAttentionParams,
-) {
-    let Some(index) = thread_index(compact_elems(&params)) else {
-        return;
-    };
-    let (dim, token, bh, _batch, _head) = compact_linear_parts(index, &params);
-    let chunk = token / params.chunk_size;
-    let g_last = chunk_g_last[chunk_g_last_index(bh, chunk, dim, &params)];
-    unsafe {
-        *kneg.get_unchecked_mut(index as usize) = k[index as usize] * kda_decay_exp(-g_last);
     }
 }

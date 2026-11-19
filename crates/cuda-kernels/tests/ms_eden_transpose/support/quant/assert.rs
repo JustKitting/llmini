@@ -18,7 +18,7 @@ impl QuantScratch {
         stream: &CudaStream,
         expected: &Self,
     ) -> Result<(), DriverError> {
-        assert_buffer_fields_eq!(stream, self, expected, [bytes, scales, global_scales])
+        assert_buffer_fields_eq!(stream, self, expected, [bytes, scales])
     }
 
     pub(crate) fn assert_ms_eden_eq(
@@ -26,12 +26,7 @@ impl QuantScratch {
         stream: &CudaStream,
         expected: &Self,
     ) -> Result<(), DriverError> {
-        assert_buffer_fields_eq!(
-            stream,
-            self,
-            expected,
-            [bytes, scales, global_scales, chunk_amax]
-        )
+        assert_buffer_fields_eq!(stream, self, expected, [bytes, scales, chunk_amax])
     }
 
     pub(crate) fn assert_quartet_eq(
@@ -48,11 +43,6 @@ impl QuantScratch {
         stream: &CudaStream,
         expected: &Self,
     ) -> Result<(), DriverError> {
-        assert_buffer_fields_eq!(
-            stream,
-            self,
-            expected,
-            [bytes, scales, global_scales, global_scale]
-        )
+        assert_buffer_fields_eq!(stream, self, expected, [bytes, scales, global_scale])
     }
 }

@@ -15,6 +15,11 @@ pub struct AttentionWeights {
 }
 
 impl AttentionWeights {
+    pub fn forward_branch<'a, 'scratch>(
+        args: AttentionForwardArgs<'a, 'scratch>,
+    ) -> Result<HiddenStateDevice<'a>, DriverError> {
+        forward::forward_impl(args, false)
+    }
     pub(crate) fn init(rng: &mut InitRng, residual_projection_scale: f32) -> Self {
         Self {
             c_attn: QkvLinear::init(rng),

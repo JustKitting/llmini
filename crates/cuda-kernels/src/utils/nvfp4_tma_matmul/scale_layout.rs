@@ -211,3 +211,8 @@ fn validate_scale_shape(mn_extent: usize, k_dim: usize) -> (usize, usize, usize)
     let mn_blocks = mn_extent / SM120_SCALE_MN_BLOCK;
     (k_groups, k_atoms, mn_blocks)
 }
+
+/// Canonical compressed scale allocation, including exact raw-record capacity.
+pub const fn sm120_csf_scale_storage_len(rows: usize, k: usize) -> usize {
+    crate::nvfp4::csf::rowwise_encoded_len(rows, k)
+}

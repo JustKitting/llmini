@@ -16,10 +16,13 @@ pub use attention::{
     c_proj_backward as attention_c_proj_backward, causal_attention_backward,
     qkv_projection_backward,
 };
-pub use block::{BlockMlpBackwardArgs, BlockMlpBackwardModules, mlp_side_backward};
+pub use block::{
+    BlockMlpBackwardArgs, BlockMlpBackwardModules, mlp_side_backward, mlp_side_backward_branch,
+};
 pub use block_attention::{
     BlockAttentionBackwardArgs, BlockAttentionBackwardModules, BlockAttentionBackwardScratch,
-    BlockAttentionBackwardSeeds, attention_side_backward,
+    ValueRmsBackwardScratch,
+    BlockAttentionBackwardSeeds, attention_side_backward, attention_side_backward_branch,
 };
 pub use final_head::{
     FinalHeadBackwardArgs, FinalHeadBackwardModules, FinalHeadBackwardScratch,
@@ -41,4 +44,6 @@ pub use mlp::{
 pub use model::{
     Gpt2BackwardArgs, Gpt2BackwardModules, Gpt2BackwardScratch, Gpt2BackwardSeeds,
     Gpt2BackwardWeights, backward as gpt2_backward,
+    backward_with_boundaries as gpt2_backward_with_boundaries,
+    backward_with_hook as gpt2_backward_with_hook,
 };

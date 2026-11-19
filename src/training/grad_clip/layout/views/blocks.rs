@@ -1,4 +1,6 @@
-use gpt2_nvfp4::{GPT2_CANON_WEIGHT_COUNT, GPT2_MLP, GPT2_N_EMBD, GPT2_QK_SCALE_STORAGE, GPT2_QKV};
+use gpt2_nvfp4::{
+    GPT2_CANON_WEIGHT_COUNT, GPT2_MLP, GPT2_MLP_UP, GPT2_N_EMBD, GPT2_QK_SCALE_STORAGE, GPT2_QKV,
+};
 
 use crate::training::grad_block::BlockGradBuffers;
 
@@ -83,9 +85,9 @@ fn push_mlp_views<'a>(rows: &mut Vec<HostGradView<'a>>, prefix: &str, block: &'a
             (
                 "mlp_up.weight",
                 &block.d_mlp_c_fc_weight,
-                GPT2_N_EMBD * GPT2_MLP,
+                GPT2_N_EMBD * GPT2_MLP_UP,
             ),
-            ("mlp_up.bias", &block.d_mlp_c_fc_bias, GPT2_MLP),
+            ("mlp_up.bias", &block.d_mlp_c_fc_bias, GPT2_MLP_UP),
             (
                 "mlp_down.weight",
                 &block.d_mlp_c_proj_weight,

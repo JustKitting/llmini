@@ -1,4 +1,5 @@
 pub mod cute;
+pub mod gradient;
 pub mod kernels;
 pub mod launcher;
 pub mod load;

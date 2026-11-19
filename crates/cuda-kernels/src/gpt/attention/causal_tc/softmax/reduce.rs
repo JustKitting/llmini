@@ -1,12 +1,12 @@
 use cuda_device::{SharedArray, thread};
 
-use super::{NEG_INFINITY, WARPS_PER_BLOCK};
+use super::{NEG_INFINITY, REDUCE_ELEMENTS, WARPS_PER_BLOCK};
 use crate::warp_reduce::{warp_max_finite_f32, warp_sum_f32};
 
 pub(super) fn block_reduce_max(
     local: f32,
     tid: u32,
-    reduce: &mut SharedArray<f32, WARPS_PER_BLOCK>,
+    reduce: &mut SharedArray<f32, REDUCE_ELEMENTS>,
 ) -> f32 {
     let lane = tid & 31;
     let warp = tid / 32;
@@ -23,16 +23,16 @@ pub(super) fn block_reduce_max(
     };
     let block = warp_max_finite_f32(partial);
     if warp == 0 && lane == 0 {
-        reduce[0] = block;
+        reduce[WARPS_PER_BLOCK] = block;
     }
     thread::sync_threads();
-    reduce[0]
+    reduce[WARPS_PER_BLOCK]
 }
 
 pub(super) fn block_reduce_sum(
     local: f32,
     tid: u32,
-    reduce: &mut SharedArray<f32, WARPS_PER_BLOCK>,
+    reduce: &mut SharedArray<f32, REDUCE_ELEMENTS>,
 ) -> f32 {
     let lane = tid & 31;
     let warp = tid / 32;

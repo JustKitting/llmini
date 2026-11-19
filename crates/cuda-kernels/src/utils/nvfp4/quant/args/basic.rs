@@ -72,6 +72,23 @@ pub struct Nvfp4QuantPairTransposeExactArgs<'a, 'out> {
     pub source_cols: u32,
 }
 
+pub struct Nvfp4QuantPairTransposePaddedArgs<'a, 'out> {
+    pub stream: &'a CudaStream,
+    pub x: &'a DeviceBuffer<f32>,
+    pub amax: &'a DeviceBuffer<f32>,
+    pub out_fp4: &'out mut DeviceBuffer<u8>,
+    pub out_scales: &'out mut DeviceBuffer<u8>,
+    pub out_global_scale: &'out mut DeviceBuffer<f32>,
+    pub transpose_out_fp4: &'out mut DeviceBuffer<u8>,
+    pub transpose_out_scales: &'out mut DeviceBuffer<u8>,
+    pub transpose_out_global_scale: &'out mut DeviceBuffer<f32>,
+    pub next_gram_amax: &'out mut DeviceBuffer<f32>,
+    pub source_rows: u32,
+    pub source_cols: u32,
+    pub padded_rows: u32,
+    pub padded_cols: u32,
+}
+
 pub struct RowAmaxArgs<'a, 'out> {
     pub stream: &'a CudaStream,
     pub x: &'a DeviceBuffer<f32>,

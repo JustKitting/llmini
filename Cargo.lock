@@ -5730,6 +5730,8 @@ dependencies = [
  "plotters",
  "reqwest 0.13.4",
  "rust-kernels-cuda",
+ "serde_json",
+ "sha2 0.10.9",
  "synth-prep",
  "time",
 ]

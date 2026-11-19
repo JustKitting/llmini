@@ -1,12 +1,9 @@
-use cuda_device::{DisjointSlice, SharedArray, cuda_module, kernel, thread};
+use cuda_device::{DisjointSlice, cuda_module, kernel, thread};
 
-use crate::atomic::atomic_add_f32;
-use crate::block_reduce::block_sum_shared_f32;
-use crate::float_ptx::{abs_f32, exp_f32};
-use crate::warp_reduce::thread_lane_warp;
+use crate::float_ptx::{abs_f32, exp_f32, log1p_f32, sqrt_f32};
 
-use super::threads::{APPLY_THREADS_PER_BLOCK, WARPS_PER_BLOCK};
-use super::{MuonSlotDescriptor, SymExpLinSlotDescriptor};
+use super::SymExpLinSlotDescriptor;
+use super::threads::APPLY_THREADS_PER_BLOCK;
 
 #[inline(always)]
 pub(super) fn mismatch_forward_scaled(
@@ -60,33 +57,6 @@ impl Scalars {
 }
 
 #[inline(always)]
-fn mismatch_derivative(raw: f32, beta: f32) -> f32 {
-    mismatch_derivative_scaled(raw, beta, 1.0, 1.0, 1.0)
-}
-
-#[inline(always)]
-fn mismatch_derivative_scaled(
-    raw: f32,
-    beta: f32,
-    exponential_scale: f32,
-    linear_scale: f32,
-    curvature_scale: f32,
-) -> f32 {
-    if beta <= 0.0 {
-        return 1.0;
-    }
-    let sign = sign_f32(raw);
-    if sign == 0.0 {
-        // The paper initializes from a continuous Xavier distribution. This model's
-        // NVFP4-friendly initializer contains exact zeros, so choose a live
-        // subgradient rather than permanently freezing those coordinates.
-        return exponential_scale * curvature_scale;
-    }
-    exponential_scale * curvature_scale * exp_f32(beta * curvature_scale * abs_f32(raw))
-        + sign * linear_scale / beta
-}
-
-#[inline(always)]
 fn congruent_inverse(target: f32, beta: f32) -> f32 {
     if beta <= 0.0 || target == 0.0 {
         return target;
@@ -94,7 +64,10 @@ fn congruent_inverse(target: f32, beta: f32) -> f32 {
     let sign = sign_f32(target);
     let target_magnitude = abs_f32(target);
     let inverse_beta = 1.0 / beta;
-    let mut magnitude = target_magnitude / (1.0 + inverse_beta);
+    // A tight upper bound: omitting the positive linear term gives
+    // log1p(beta * target)/beta. The linear approximation can start so far
+    // above large trained weights that ten Newton steps never converge.
+    let mut magnitude = log1p_f32(beta * target_magnitude) * inverse_beta;
     let mut iteration = 0;
     while iteration < 10 {
         let exponential = exp_f32(beta * magnitude);
@@ -128,6 +101,48 @@ fn ptr_const<T>(ptr: u64) -> *const T {
 #[inline(always)]
 fn ptr_mut<T>(ptr: u64) -> *mut T {
     ptr as usize as *mut T
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "device helper mirrors the explicit AdamW state"
+)]
+#[inline(always)]
+unsafe fn scalar_adamw_update(
+    z_master_ptr: u64,
+    x_master_ptr: u64,
+    grad_ptr: u64,
+    first_ptr: u64,
+    second_ptr: u64,
+    grad_scale: f32,
+    learning_rate: f32,
+    weight_decay: f32,
+    beta1: f32,
+    beta2: f32,
+    beta1_correction: f32,
+    beta2_correction: f32,
+    eps: f32,
+    average_coefficient: f32,
+) {
+    unsafe {
+        let z_master = ptr_mut::<f32>(z_master_ptr);
+        let x_master = ptr_mut::<f32>(x_master_ptr);
+        let first = ptr_mut::<f32>(first_ptr);
+        let second = ptr_mut::<f32>(second_ptr);
+        let g = *ptr_const::<f32>(grad_ptr) * grad_scale;
+        let m = beta1 * *first + (1.0 - beta1) * g;
+        let v = beta2 * *second + (1.0 - beta2) * g * g;
+        let update = (m / beta1_correction) / (sqrt_f32(v / beta2_correction) + eps);
+        let current = *z_master;
+        let decay = 1.0 - learning_rate * weight_decay;
+        let next = current * decay - learning_rate * update;
+        let x = *x_master;
+
+        *first = m;
+        *second = v;
+        *z_master = next;
+        *x_master = x + average_coefficient * (next - x);
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -176,130 +191,100 @@ pub(super) mod module {
     use super::*;
 
     #[kernel]
+    pub fn symexp_lin_zero_scale_grads_kernel(slots: &[SymExpLinSlotDescriptor], slot_count: u32) {
+        let index = thread::blockIdx_x() * APPLY_THREADS_PER_BLOCK + thread::threadIdx_x();
+        if index < slot_count {
+            let desc = slots[index as usize];
+            if desc.exponential_grad != 0 {
+                unsafe {
+                    *ptr_mut::<f32>(desc.exponential_grad) = 0.0;
+                    *ptr_mut::<f32>(desc.linear_grad) = 0.0;
+                    *ptr_mut::<f32>(desc.curvature_grad) = 0.0;
+                }
+            }
+        }
+    }
+
+    #[kernel]
+    pub fn symexp_lin_scale_adamw_update_kernel(
+        slots: &[SymExpLinSlotDescriptor],
+        slot_count: u32,
+        grad_scale: f32,
+        exponential_linear_learning_rate: f32,
+        curvature_learning_rate: f32,
+        weight_decay: f32,
+        beta1: f32,
+        beta2: f32,
+        beta1_correction: f32,
+        beta2_correction: f32,
+        eps: f32,
+        average_coefficient: f32,
+    ) {
+        let index = thread::blockIdx_x() * APPLY_THREADS_PER_BLOCK + thread::threadIdx_x();
+        if index < slot_count {
+            let desc = slots[index as usize];
+            if desc.exponential_z != 0 {
+                unsafe {
+                    scalar_adamw_update(
+                        desc.exponential_z,
+                        desc.exponential_x,
+                        desc.exponential_grad,
+                        desc.exponential_first,
+                        desc.exponential_second,
+                        grad_scale,
+                        exponential_linear_learning_rate,
+                        weight_decay,
+                        beta1,
+                        beta2,
+                        beta1_correction,
+                        beta2_correction,
+                        eps,
+                        average_coefficient,
+                    );
+                    scalar_adamw_update(
+                        desc.linear_z,
+                        desc.linear_x,
+                        desc.linear_grad,
+                        desc.linear_first,
+                        desc.linear_second,
+                        grad_scale,
+                        exponential_linear_learning_rate,
+                        weight_decay,
+                        beta1,
+                        beta2,
+                        beta1_correction,
+                        beta2_correction,
+                        eps,
+                        average_coefficient,
+                    );
+                    scalar_adamw_update(
+                        desc.curvature_z,
+                        desc.curvature_x,
+                        desc.curvature_grad,
+                        desc.curvature_first,
+                        desc.curvature_second,
+                        grad_scale,
+                        curvature_learning_rate,
+                        0.0,
+                        beta1,
+                        beta2,
+                        beta1_correction,
+                        beta2_correction,
+                        eps,
+                        average_coefficient,
+                    );
+                }
+            }
+        }
+    }
+
+    #[kernel]
     pub fn symexp_lin_congruent_inverse_kernel(mut raw: DisjointSlice<f32>, beta: f32, len: u32) {
         let index = thread::blockIdx_x() * APPLY_THREADS_PER_BLOCK + thread::threadIdx_x();
         if index < len {
             unsafe {
                 let value = raw.as_mut_ptr().add(index as usize);
                 *value = congruent_inverse(*value, beta);
-            }
-        }
-    }
-
-    #[kernel]
-    pub fn symexp_lin_chain_rule_kernel(
-        mut grad: DisjointSlice<f32>,
-        z_master: &[f32],
-        x_master: &[f32],
-        schedule_beta: f32,
-        beta: f32,
-        len: u32,
-    ) {
-        let index = thread::blockIdx_x() * APPLY_THREADS_PER_BLOCK + thread::threadIdx_x();
-        if index < len {
-            let i = index as usize;
-            let raw = z_master[i] + schedule_beta * (x_master[i] - z_master[i]);
-            unsafe {
-                let value = grad.as_mut_ptr().add(i);
-                *value *= mismatch_derivative(raw, beta);
-            }
-        }
-    }
-
-    #[kernel]
-    pub fn symexp_lin_slot_chain_rule_kernel(
-        slots: &[MuonSlotDescriptor],
-        slot_index: u32,
-        schedule_beta: f32,
-        beta: f32,
-    ) {
-        let desc = slots[slot_index as usize];
-        let len = desc.rows * desc.cols;
-        let index = thread::blockIdx_x() * APPLY_THREADS_PER_BLOCK + thread::threadIdx_x();
-        if index < len {
-            let i = index as usize;
-            unsafe {
-                let z = *ptr_const::<f32>(desc.z_master).add(i);
-                let x = *ptr_const::<f32>(desc.x_master).add(i);
-                let raw = z + schedule_beta * (x - z);
-                let grad = ptr_mut::<f32>(desc.grad).add(i);
-                *grad *= mismatch_derivative(raw, beta);
-            }
-        }
-    }
-
-    #[kernel]
-    pub fn symexp_lin_scaled_slot_chain_rule_kernel(
-        slots: &[SymExpLinSlotDescriptor],
-        slot_index: u32,
-        schedule_beta: f32,
-        beta: f32,
-    ) {
-        static mut EXPONENTIAL_SUMS: SharedArray<f32, { WARPS_PER_BLOCK as usize }> =
-            SharedArray::UNINIT;
-        static mut LINEAR_SUMS: SharedArray<f32, { WARPS_PER_BLOCK as usize }> =
-            SharedArray::UNINIT;
-        static mut CURVATURE_SUMS: SharedArray<f32, { WARPS_PER_BLOCK as usize }> =
-            SharedArray::UNINIT;
-
-        let desc = slots[slot_index as usize];
-        let len = desc.rows * desc.cols;
-        let (thread_id, lane, warp) = thread_lane_warp();
-        let mut index = thread::blockIdx_x() * APPLY_THREADS_PER_BLOCK + thread_id;
-        let stride = thread::gridDim_x() * APPLY_THREADS_PER_BLOCK;
-        let scales = ScalePointers {
-            exponential_z: desc.exponential_z,
-            exponential_x: desc.exponential_x,
-            linear_z: desc.linear_z,
-            linear_x: desc.linear_x,
-            curvature_z: desc.curvature_z,
-            curvature_x: desc.curvature_x,
-        };
-        let (exponential_scale, linear_scale, curvature_scale) = scales.values(schedule_beta);
-        let mut exponential_grad = 0.0;
-        let mut linear_grad = 0.0;
-        let mut curvature_grad = 0.0;
-
-        while index < len {
-            let i = index as usize;
-            unsafe {
-                let z = *ptr_const::<f32>(desc.z_master).add(i);
-                let x = *ptr_const::<f32>(desc.x_master).add(i);
-                let raw = z + schedule_beta * (x - z);
-                let grad = ptr_mut::<f32>(desc.grad).add(i);
-                let effective_grad = *grad;
-                let sign = sign_f32(raw);
-                let magnitude = abs_f32(raw);
-                let exponential = exp_f32(beta * curvature_scale * magnitude);
-
-                exponential_grad += effective_grad * sign * (exponential - 1.0) / beta;
-                linear_grad += effective_grad * magnitude / beta;
-                curvature_grad +=
-                    effective_grad * sign * exponential_scale * magnitude * exponential;
-                *grad = effective_grad
-                    * mismatch_derivative_scaled(
-                        raw,
-                        beta,
-                        exponential_scale,
-                        linear_scale,
-                        curvature_scale,
-                    );
-            }
-            index += stride;
-        }
-
-        let (exponential_grad, linear_grad, curvature_grad) = unsafe {
-            (
-                block_sum_shared_f32(&mut EXPONENTIAL_SUMS, exponential_grad, lane, warp),
-                block_sum_shared_f32(&mut LINEAR_SUMS, linear_grad, lane, warp),
-                block_sum_shared_f32(&mut CURVATURE_SUMS, curvature_grad, lane, warp),
-            )
-        };
-        if thread_id == 0 {
-            unsafe {
-                atomic_add_f32(ptr_mut::<f32>(desc.exponential_grad), exponential_grad);
-                atomic_add_f32(ptr_mut::<f32>(desc.linear_grad), linear_grad);
-                atomic_add_f32(ptr_mut::<f32>(desc.curvature_grad), curvature_grad);
             }
         }
     }

@@ -14,6 +14,8 @@ mod cta_f32_causal;
 mod cta_f32_half_rhs;
 mod cta_f32_rhs;
 mod cta_half_rhs;
+mod cta_kda_fused;
+pub(crate) use cta_kda_fused::{MATRIX_ELEMS as KDA_INVERSE_SHARED_ELEMS, formed_inverse_body};
 mod cta_lower_ds;
 pub(crate) mod cta_stage;
 mod cta_stage_f32;
@@ -40,10 +42,14 @@ type CtaBTile = cuda_device::SharedArray<u16, { cta_tile::CTA_B_ELEMS }>;
 pub use args::{
     F16ConvertArgs, F16TcMatmulAddArgs, F16TcMatmulAddRhsTransposeBaseArgs, F16TcMatmulArgs,
     F16TcMatmulF32ATransposedHalfRhsArgs, F16TcMatmulF32ATransposedRhsArgs, F16TcMatmulF32Args,
-    F16TcMatmulF32HalfRhsArgs, F16TcMatmulF32RhsArgs, F16TcMatmulF32WindowArgs,
-    F16TcMatmulHalfArgs, F16TcMatmulHalfDsArgs, F16TcMatmulHalfDsSparseWindowArgs,
-    F16TcMatmulHalfDsWindowArgs, F16TcMatmulHalfRhsArgs, F16TcMatmulHalfRhsSparseWindowArgs,
-    F16TcMatmulHalfRhsWindowArgs, F16TcMatmulScratch, f16_tc_matmul_elements,
-    f16_tc_matmul_padded_k,
+    F16TcMatmulF32CausalHalfOutArgs, F16TcMatmulF32HalfArgs, F16TcMatmulF32HalfRhsArgs,
+    F16TcMatmulF32RhsArgs, F16TcMatmulF32WindowArgs, F16TcMatmulHalfAF32RhsArgs,
+    F16TcMatmulHalfAF32RhsHalfOutArgs, F16TcMatmulHalfATransposedDualRhsArgs,
+    F16TcMatmulHalfATransposedF32RhsArgs, F16TcMatmulHalfArgs, F16TcMatmulHalfDsArgs,
+    F16TcMatmulHalfDsSparseWindowArgs, F16TcMatmulHalfDsWindowArgs, F16TcMatmulHalfRhsArgs,
+    F16TcMatmulHalfRhsSparseWindowArgs, F16TcMatmulHalfRhsWindowArgs, F16TcMatmulScratch,
+    f16_tc_matmul_elements, f16_tc_matmul_padded_k,
 };
 pub use launcher::F16TcMatmulModule;
+
+pub use args::{F16TcMatmulHalfCausalHalfOutArgs, F16TcMatmulKdaInverseArgs, F16TcMatmulKdaWuArgs};

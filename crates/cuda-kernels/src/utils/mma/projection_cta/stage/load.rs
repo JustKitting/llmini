@@ -2,6 +2,7 @@ use crate::mma::projection::Nvfp4ProjectionParams;
 use crate::mma::projection::load_bytes::{
     E4M3_ONE_PACKED4, load_packed8, load_packed8_aligned, load_scale4, load_scale4_aligned,
 };
+use crate::nvfp4::csf::scale4 as csf_scale4;
 
 use super::super::tile::{
     NVFP4_PROJECTION_CTA_M, NVFP4_PROJECTION_CTA_N, NVFP4_PROJECTION_CTA_PACKS_PER_ROW,
@@ -43,7 +44,7 @@ macro_rules! pack_loader_pair {
 }
 
 macro_rules! scale_loader_pair {
-    ($checked:ident, $aligned:ident, $base:ident, $rows_per_atom:expr, |$row:ident, $col:ident, $params:ident| $bounds:expr, $index:expr) => {
+    ($checked:ident, $aligned:ident, $base:ident, $rows_per_atom:expr, $load:ident, $aligned_load:ident, |$row:ident, $col:ident, $params:ident| $bounds:expr, $index:expr) => {
         #[inline(always)]
         pub(super) fn $checked(
             scales: &[u8],
@@ -54,7 +55,7 @@ macro_rules! scale_loader_pair {
         ) -> u32 {
             let ($row, $col) = scale_coords(offset, tile.$base, $rows_per_atom, k_base);
             if $bounds {
-                load_scale4(scales, $index as usize)
+                $load(scales, $index as usize)
             } else {
                 E4M3_ONE_PACKED4
             }
@@ -69,7 +70,7 @@ macro_rules! scale_loader_pair {
             $params: &Nvfp4ProjectionParams,
         ) -> u32 {
             let ($row, $col) = scale_coords(offset, tile.$base, $rows_per_atom, k_base);
-            load_scale4_aligned(scales, $index as usize)
+            $aligned_load(scales, $index as usize)
         }
     };
 }
@@ -95,6 +96,8 @@ scale_loader_pair!(
     load_a_scale_aligned,
     row_base,
     NVFP4_PROJECTION_CTA_M,
+    load_scale4,
+    load_scale4_aligned,
     |global_row, scale_k_base, params| global_row < params.token_count
         && scale_k_base < params.input_dim,
     (global_row * params.input_dim + scale_k_base) / 16
@@ -104,6 +107,8 @@ scale_loader_pair!(
     load_b_scale_aligned,
     col_base,
     NVFP4_PROJECTION_CTA_N,
+    csf_scale4,
+    csf_scale4,
     |global_col, scale_k_base, params| global_col < params.output_dim
         && scale_k_base < params.input_dim,
     global_col * (params.input_dim / 16) + scale_k_base / 16

@@ -4,9 +4,9 @@ use super::super::gather::{gather_body, gather_norms_body};
 use super::super::probs::{ds_from_probs_f16_body, prob_ds_body, prob_ds_f16_body};
 use super::super::scatter::{scatter_amax_body, scatter_body, scatter_qknorm_amax_body};
 use super::super::selective::{
-    activate_selective_head_tiles_body, selective_attention_backward_dense_body,
-    selective_attention_backward_sparse_body, selective_attention_row_sums_dense_body,
-    selective_attention_row_sums_sparse_body,
+    SELECTIVE_BACKWARD_TILE_ELEMENTS, activate_selective_head_tiles_body,
+    selective_attention_backward_dense_body, selective_attention_backward_sparse_body,
+    selective_attention_row_sums_dense_body, selective_attention_row_sums_sparse_body,
 };
 use super::super::softmax_d::softmax_d_f16_body;
 use super::super::sparse_probs::sparsify_attention_probs_f16_body;
@@ -123,7 +123,21 @@ pub(super) mod module {
         ds: DisjointSlice<u16>,
         params: CausalAttentionParams,
     ) {
-        selective_attention_backward_dense_body(selection_mask_tape, row_sums, ds, params);
+        static mut DIRECT_TILE: SharedArray<f32, SELECTIVE_BACKWARD_TILE_ELEMENTS> =
+            SharedArray::UNINIT;
+        static mut ROW_SUM_TILE: SharedArray<f32, SELECTIVE_BACKWARD_TILE_ELEMENTS> =
+            SharedArray::UNINIT;
+        static mut SELECTION_TILE: SharedArray<u16, SELECTIVE_BACKWARD_TILE_ELEMENTS> =
+            SharedArray::UNINIT;
+        selective_attention_backward_dense_body(
+            selection_mask_tape,
+            row_sums,
+            ds,
+            params,
+            unsafe { &mut DIRECT_TILE },
+            unsafe { &mut ROW_SUM_TILE },
+            unsafe { &mut SELECTION_TILE },
+        );
     }
 
     #[kernel]
@@ -134,12 +148,21 @@ pub(super) mod module {
         ds: DisjointSlice<u16>,
         params: CausalAttentionParams,
     ) {
+        static mut DIRECT_TILE: SharedArray<f32, SELECTIVE_BACKWARD_TILE_ELEMENTS> =
+            SharedArray::UNINIT;
+        static mut ROW_SUM_TILE: SharedArray<f32, SELECTIVE_BACKWARD_TILE_ELEMENTS> =
+            SharedArray::UNINIT;
+        static mut SELECTION_TILE: SharedArray<u16, SELECTIVE_BACKWARD_TILE_ELEMENTS> =
+            SharedArray::UNINIT;
         selective_attention_backward_sparse_body(
             selection_mask_tape,
             tile_scales,
             row_sums,
             ds,
             params,
+            unsafe { &mut DIRECT_TILE },
+            unsafe { &mut ROW_SUM_TILE },
+            unsafe { &mut SELECTION_TILE },
         );
     }
 

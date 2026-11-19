@@ -3,6 +3,7 @@ use std::io;
 use std::path::Path;
 
 use tokenizers::Tokenizer;
+mod memory;
 
 pub type AppResult<T> = Result<T, Box<dyn Error>>;
 
@@ -53,6 +54,22 @@ impl TrainingTokenizer {
             .to_vec())
     }
 
+    pub fn encode_ordinary_with_offsets(
+        &self,
+        text: &str,
+    ) -> AppResult<Vec<(u32, (usize, usize))>> {
+        let encoded = self
+            .tokenizer
+            .encode(text, false)
+            .map_err(tokenizer_error)?;
+        Ok(encoded
+            .get_ids()
+            .iter()
+            .copied()
+            .zip(encoded.get_offsets().iter().copied())
+            .collect())
+    }
+
     pub fn encode_document(&self, text: &str) -> AppResult<Vec<u32>> {
         let mut ids =
             Vec::with_capacity(DOCUMENT_PREFIX.len() + text.len() / 4 + DOCUMENT_SUFFIX.len());
@@ -68,6 +85,11 @@ impl TrainingTokenizer {
 
     pub fn eos_token(&self) -> u32 {
         EOS_TOKEN
+    }
+
+    /// Static Engram addressing map; never changes the language-model tokens.
+    pub fn memory_id_map(&self) -> AppResult<Vec<u32>> {
+        memory::id_map(&self.tokenizer)
     }
 
     pub fn decode(&self, ids: &[u32]) -> AppResult<String> {
@@ -119,3 +141,6 @@ mod tests {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod memory_map_tests;

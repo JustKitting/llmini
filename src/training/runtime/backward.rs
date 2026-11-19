@@ -24,6 +24,9 @@ impl Runtime {
             },
             final_norm: &self.layer_norm_backward,
             attention: BlockAttentionBackwardModules {
+                value_rms: &self.value_rms,
+                tma: &self.tma_gemm,
+                pad: &self.tma_pad,
                 residual: &self.residual,
                 layer_norm: &self.layer_norm_backward,
                 attention: &self.attention,
@@ -36,6 +39,7 @@ impl Runtime {
                 layer_norm: &self.layer_norm_backward,
                 canon: &self.canon,
                 mlp: MlpBackwardModules {
+                    tma: &self.tma_gemm,
                     transpose: &self.transpose,
                     decode: &self.decode,
                     linear: &self.linear,

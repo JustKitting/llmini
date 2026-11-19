@@ -1,6 +1,9 @@
 mod args;
 mod kernels;
 mod launcher;
+pub mod config {
+    include!(concat!(env!("OUT_DIR"), "/mlp_config.rs"));
+}
 
 pub use args::{
     MlpBlockTopKRouteArgs, MlpDownResidualArgs, MlpUpRelu2Args, Relu2BackwardArgs,

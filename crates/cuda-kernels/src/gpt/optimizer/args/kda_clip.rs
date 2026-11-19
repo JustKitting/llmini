@@ -9,7 +9,7 @@ pub struct KdaMuonClipArgs<'a> {
     pub global_scale: &'a mut DeviceBuffer<f32>,
     pub z_master: &'a mut DeviceBuffer<f32>,
     pub x_master: &'a mut DeviceBuffer<f32>,
-    pub momentum: &'a mut DeviceBuffer<f32>,
+    pub momentum: &'a mut DeviceBuffer<u16>,
     pub scores: &'a mut DeviceBuffer<f32>,
     pub amax: &'a mut DeviceBuffer<f32>,
     pub chunk_amax: &'a mut DeviceBuffer<f32>,

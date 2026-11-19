@@ -57,7 +57,11 @@ next_latent_linear_ptrs!(
     d_output_projection_weight
 );
 
-fn linear(weight: &UploadedNvfp4, grad: &DeviceBuffer<f32>, state: &MuonState) -> HostPtrs {
+pub(super) fn linear(
+    weight: &UploadedNvfp4,
+    grad: &DeviceBuffer<f32>,
+    state: &MuonState,
+) -> HostPtrs {
     HostPtrs {
         grad: grad.cu_deviceptr(),
         momentum: state.momentum.cu_deviceptr(),
@@ -77,11 +81,17 @@ fn linear(weight: &UploadedNvfp4, grad: &DeviceBuffer<f32>, state: &MuonState) -
         symexp_exponential_z: state.symexp_lin.exponential.z_master.cu_deviceptr(),
         symexp_exponential_x: state.symexp_lin.exponential.x_master.cu_deviceptr(),
         symexp_exponential_grad: state.symexp_lin.exponential.grad.cu_deviceptr(),
+        symexp_exponential_first: state.symexp_lin.exponential.first.cu_deviceptr(),
+        symexp_exponential_second: state.symexp_lin.exponential.second.cu_deviceptr(),
         symexp_linear_z: state.symexp_lin.linear.z_master.cu_deviceptr(),
         symexp_linear_x: state.symexp_lin.linear.x_master.cu_deviceptr(),
         symexp_linear_grad: state.symexp_lin.linear.grad.cu_deviceptr(),
+        symexp_linear_first: state.symexp_lin.linear.first.cu_deviceptr(),
+        symexp_linear_second: state.symexp_lin.linear.second.cu_deviceptr(),
         symexp_curvature_z: state.symexp_lin.curvature.z_master.cu_deviceptr(),
         symexp_curvature_x: state.symexp_lin.curvature.x_master.cu_deviceptr(),
         symexp_curvature_grad: state.symexp_lin.curvature.grad.cu_deviceptr(),
+        symexp_curvature_first: state.symexp_lin.curvature.first.cu_deviceptr(),
+        symexp_curvature_second: state.symexp_lin.curvature.second.cu_deviceptr(),
     }
 }

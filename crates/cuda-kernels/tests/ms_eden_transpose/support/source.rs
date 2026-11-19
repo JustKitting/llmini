@@ -1,6 +1,8 @@
 use cuda_core::{CudaStream, DeviceBuffer, DriverError};
 use rust_kernels_cuda::nvfp4::{Nvfp4DeviceTensor, Nvfp4RowwiseDeviceTensor};
-use rust_kernels_cuda::nvfp4_quant::{Nvfp4QuantModule, Nvfp4QuantRowwiseArgs, RowAmaxArgs};
+use rust_kernels_cuda::nvfp4_quant::{
+    Nvfp4QuantArgs, Nvfp4QuantModule, Nvfp4QuantRowwiseArgs, RowAmaxArgs,
+};
 
 use super::{COLS, ROWS};
 
@@ -22,8 +24,33 @@ impl SourceScratch {
     ) -> Result<Self, DriverError> {
         Ok(Self {
             bytes: DeviceBuffer::zeroed(stream, rows * cols / 2)?,
-            scales: DeviceBuffer::zeroed(stream, rows * cols / 16)?,
+            scales: DeviceBuffer::from_host(
+                stream,
+                &rust_kernels_cuda::nvfp4::csf::encode_host(&vec![0; rows * cols / 16], rows, cols),
+            )?,
             global_scale: DeviceBuffer::zeroed(stream, 1)?,
+        })
+    }
+
+    // The GPU producer writes compressed scale records into an initialized
+    // saved-tensor CSF header, just as it does for native training weights.
+    pub(in super::super) fn quantize(
+        &mut self,
+        stream: &CudaStream,
+        quant: &Nvfp4QuantModule,
+        x: &DeviceBuffer<f32>,
+        amax: &DeviceBuffer<f32>,
+        rows: usize,
+        cols: usize,
+    ) -> Result<(), DriverError> {
+        quant.fp32_to_nvfp4_four_six(Nvfp4QuantArgs {
+            stream,
+            x,
+            amax,
+            out_fp4: &mut self.bytes,
+            out_scales: &mut self.scales,
+            out_global_scale: &mut self.global_scale,
+            group_count: (rows * cols / 16) as u32,
         })
     }
 
@@ -50,7 +77,10 @@ impl RowwiseSourceScratch {
     ) -> Result<Self, DriverError> {
         Ok(Self {
             bytes: DeviceBuffer::zeroed(stream, rows * cols / 2)?,
-            scales: DeviceBuffer::zeroed(stream, rows * cols / 16)?,
+            scales: DeviceBuffer::zeroed(
+                stream,
+                rust_kernels_cuda::nvfp4::csf::rowwise_encoded_len(rows, cols),
+            )?,
             global_scales: DeviceBuffer::zeroed(stream, rows)?,
         })
     }

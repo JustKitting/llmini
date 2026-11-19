@@ -8,6 +8,7 @@ use super::super::OptimizerTrace;
 use super::super::optimizer::OptimizerScratch;
 use super::super::tape::ForwardTapeBuffers;
 use super::timed_ms;
+use crate::AppResult;
 
 const KDA_QK_CLIP_TAU: f32 = 100.0;
 
@@ -18,8 +19,9 @@ pub(super) fn prepare_kda_muon_clip_factors(
     qk_norm_max: &DeviceBuffer<f32>,
     scratch: &mut OptimizerScratch,
     trace: &mut OptimizerTrace,
-) -> Result<(), DriverError> {
-    trace.kda_clip_ms += timed_ms(|| {
+    optimizer_step: u32,
+) -> AppResult {
+    trace.kda_clip_ms += timed_ms::<DriverError>(|| {
         for block_index in 0..gpt2_nvfp4::GPT2_N_LAYER {
             let full_attention = uses_full_attention(block_index);
             let dims = AttentionDims::new(full_attention);
@@ -45,5 +47,12 @@ pub(super) fn prepare_kda_muon_clip_factors(
         }
         Ok(())
     })?;
+    crate::training::diagnostics::kda_clip::record(
+        stream,
+        qk_norm_max,
+        &scratch.kda_clip_factors,
+        optimizer_step,
+        KDA_QK_CLIP_TAU,
+    )?;
     Ok(())
 }
