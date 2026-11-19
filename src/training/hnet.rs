@@ -3,10 +3,11 @@ use cuda_core::DeviceBuffer;
 use gpt2_nvfp4::{GPT2_BATCH_SIZE, GPT2_MLP_ROUTE_TILE, GPT2_N_EMBD, GPT2_SEQ_LEN};
 use rust_kernels_cuda::hnet_stage::{HnetStage, StagePlan, WidthAdjoints};
 
-use super::{Trainer, forward::ForwardInput};
+use super::{Trainer, forward::ForwardInput, learning_rate::schedule_free_beta, schedule_free};
 use crate::AppResult;
 
 mod hierarchy;
+mod optimizer;
 mod outer;
 mod projection;
 
@@ -42,7 +43,22 @@ impl Trainer {
             return Err("routed chunks do not fit the native backbone shape or stream".into());
         }
 
-        self.materialize_training_weights()?;
+        schedule_free::materialize_backbone_training_weights(
+            &self.runtime,
+            &mut self.uploaded,
+            &mut self.buffers.optimizer,
+            &self.buffers.optimizer_state,
+            &self.buffers.backward,
+        )?;
+        if let (Some(mhc), Some(weights)) = (&mut self.mhc, &mut self.uploaded.mhc) {
+            mhc.materialize(
+                &self.runtime,
+                weights,
+                &mut self.buffers.optimizer,
+                schedule_free_beta(self.buffers.optimizer_state.next_step()),
+                false,
+            )?;
+        }
         let chunks = stage.gather(plan, encoded)?;
         let inner_width = GPT2_N_EMBD as u32;
         stage.write_residual(

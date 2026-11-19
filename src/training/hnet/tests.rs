@@ -230,6 +230,23 @@ fn native_hnet_hierarchy_reverses_masked_byte_loss() -> AppResult {
 fn native_routed_backbone_executes_and_reverses_real_blocks() -> AppResult {
     let mut trainer = Trainer::new_full_kda(0x47505432)?;
     let stream = trainer.runtime.stream.clone();
+    let extra = DeviceBuffer::from_host(&stream, &[3.0_f32, 4.0])?;
+    trainer.prepare_hnet_optimizer(&[("hnet.test_outer_gradient", &extra)])?;
+    let unused_gradient = [f32::NAN];
+    for buffer in [
+        &trainer.buffers.backward.d_lm_head_weight,
+        &trainer.buffers.next_latent_grads.d_transition_weight,
+    ] {
+        unsafe {
+            cuda_core::memory::memcpy_htod_async(
+                buffer.cu_deviceptr(),
+                unused_gradient.as_ptr(),
+                size_of::<f32>(),
+                stream.cu_stream(),
+            )?;
+        }
+    }
+    stream.synchronize()?;
     let stage = trainer.runtime.hnet_stage_module()?;
     const BATCH: usize = 2;
     const OUTER: usize = 256;
@@ -306,5 +323,47 @@ fn native_routed_backbone_executes_and_reverses_real_blocks() -> AppResult {
             })
     );
     assert_eq!(trainer.buffers.optimizer_state.step, 0);
+    let state = &trainer.buffers.optimizer_state;
+    let before_block_affine = state.blocks[0].ln_1.bias.z_master.to_host_vec(&stream)?;
+    let before_final_affine = state.ln_f.weight.z_master.to_host_vec(&stream)?;
+    let before_next_latent_scale = state
+        .next_latent
+        .transition
+        .weight_muon
+        .schedule_amax
+        .to_host_vec(&stream)?;
+    let before_embedding_scale = trainer
+        .uploaded
+        .token_embedding
+        .global_scale_to_host(&stream)?;
+    let update = trainer.update_hnet_backbone(plan.batch() * plan.inner_stride(), None)?;
+    assert!(!update.trace.update_skipped);
+    assert!(update.trace.grad_norm.is_finite() && update.trace.grad_norm >= 5.0);
+    let state = &trainer.buffers.optimizer_state;
+    assert_eq!(state.step, 1);
+    assert_ne!(
+        state.blocks[0].ln_1.bias.z_master.to_host_vec(&stream)?,
+        before_block_affine
+    );
+    assert_eq!(
+        state.ln_f.weight.z_master.to_host_vec(&stream)?,
+        before_final_affine
+    );
+    assert_eq!(
+        state
+            .next_latent
+            .transition
+            .weight_muon
+            .schedule_amax
+            .to_host_vec(&stream)?,
+        before_next_latent_scale
+    );
+    assert_eq!(
+        trainer
+            .uploaded
+            .token_embedding
+            .global_scale_to_host(&stream)?,
+        before_embedding_scale
+    );
     Ok(())
 }

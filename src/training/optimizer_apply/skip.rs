@@ -1,7 +1,7 @@
 use cuda_core::CudaStream;
 
 use super::super::OptimizerTrace;
-use super::super::grad_clip::first_non_finite_gradient;
+use super::super::grad_clip::{first_non_finite_backbone_gradient, first_non_finite_gradient};
 use super::super::grads::BackwardBuffers;
 use super::super::next_latent::NextLatGradBuffers;
 use super::super::update_skip::UpdateSkipDecision;
@@ -10,7 +10,7 @@ use crate::AppResult;
 pub(super) fn record_skip_decision(
     stream: &CudaStream,
     grads: &BackwardBuffers,
-    next_latent_grads: &NextLatGradBuffers,
+    next_latent_grads: Option<&NextLatGradBuffers>,
     candidate_step: u32,
     trace: &mut OptimizerTrace,
     skip: UpdateSkipDecision,
@@ -35,10 +35,14 @@ pub(super) fn record_skip_decision(
 fn log_non_finite_gradient(
     stream: &CudaStream,
     grads: &BackwardBuffers,
-    next_latent_grads: &NextLatGradBuffers,
+    next_latent_grads: Option<&NextLatGradBuffers>,
     candidate_step: u32,
 ) -> AppResult {
-    if let Some(bad) = first_non_finite_gradient(stream, grads, next_latent_grads)? {
+    let bad = match next_latent_grads {
+        Some(next_latent_grads) => first_non_finite_gradient(stream, grads, next_latent_grads)?,
+        None => first_non_finite_backbone_gradient(stream, grads)?,
+    };
+    if let Some(bad) = bad {
         eprintln!(
             "non_finite_gradient optimizer_step_candidate={candidate_step} tensor={} index={} value={:.9e}",
             bad.name, bad.index, bad.value

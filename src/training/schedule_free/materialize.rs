@@ -22,6 +22,44 @@ pub(in crate::training) fn materialize_training_weights(
     grads: &BackwardBuffers,
     next_latent_grads: &NextLatGradBuffers,
 ) -> Result<(), DriverError> {
+    materialize_training_graph(
+        stream,
+        runtime,
+        uploaded,
+        scratch,
+        state,
+        grads,
+        Some(next_latent_grads),
+    )
+}
+
+pub(in crate::training) fn materialize_backbone_training_weights(
+    runtime: &Runtime,
+    uploaded: &mut UploadedModel,
+    scratch: &mut OptimizerScratch,
+    state: &OptimizerStateBuffers,
+    grads: &BackwardBuffers,
+) -> Result<(), DriverError> {
+    materialize_training_graph(
+        &runtime.stream,
+        runtime,
+        uploaded,
+        scratch,
+        state,
+        grads,
+        None,
+    )
+}
+
+fn materialize_training_graph(
+    stream: &CudaStream,
+    runtime: &Runtime,
+    uploaded: &mut UploadedModel,
+    scratch: &mut OptimizerScratch,
+    state: &OptimizerStateBuffers,
+    grads: &BackwardBuffers,
+    next_latent_grads: Option<&NextLatGradBuffers>,
+) -> Result<(), DriverError> {
     if state.training_weights_ready() {
         return Ok(());
     }
@@ -41,11 +79,13 @@ pub(in crate::training) fn materialize_training_weights(
         state.scheduled_values_valid(),
     );
 
-    materializer.token_embedding(
-        &mut uploaded.token_embedding,
-        &state.token_embedding,
-        &grads.d_lm_head_weight,
-    )?;
+    if next_latent_grads.is_some() {
+        materializer.token_embedding(
+            &mut uploaded.token_embedding,
+            &state.token_embedding,
+            &grads.d_lm_head_weight,
+        )?;
+    }
     if gpt2_nvfp4::exclusive_self_attention_enabled() {
         materializer.adam(
             &mut uploaded.xsa_alphas,
@@ -53,19 +93,21 @@ pub(in crate::training) fn materialize_training_weights(
             &grads.d_xsa_alphas,
         )?;
     }
-    materialize_layer_norm(
-        &mut materializer,
-        &mut uploaded.ln_f,
-        &state.ln_f,
-        &grads.final_norm,
-    )?;
-    materialize_next_latent(
-        &mut materializer,
-        &mut uploaded.next_latent,
-        &state.next_latent,
-        next_latent_grads,
-        reuse_muon_amax,
-    )?;
+    if let Some(next_latent_grads) = next_latent_grads {
+        materialize_layer_norm(
+            &mut materializer,
+            &mut uploaded.ln_f,
+            &state.ln_f,
+            &grads.final_norm,
+        )?;
+        materialize_next_latent(
+            &mut materializer,
+            &mut uploaded.next_latent,
+            &state.next_latent,
+            next_latent_grads,
+            reuse_muon_amax,
+        )?;
+    }
 
     for (block_index, ((block, state), grads)) in uploaded
         .blocks

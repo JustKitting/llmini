@@ -29,6 +29,7 @@ pub struct OptimizerStateBuffers {
     pub(in crate::training) blocks: [BlockState; GPT2_N_LAYER],
     adam_schedule_amax_ptrs: DeviceBuffer<u64>,
     adam_schedule_amax_count: u32,
+    backbone_schedule_amax_ptrs: DeviceBuffer<u64>,
     training_weight_step: Cell<Option<u32>>,
     scheduled_values_valid: Cell<bool>,
 }
@@ -52,9 +53,17 @@ impl OptimizerStateBuffers {
         adam_schedule_amax_ptrs.push(xsa_alphas.schedule_amax_ptr());
         ln_f.push_schedule_amax_ptrs(&mut adam_schedule_amax_ptrs);
         next_latent.push_schedule_amax_ptrs(&mut adam_schedule_amax_ptrs);
+        let backbone_start = adam_schedule_amax_ptrs.len();
         for block in &blocks {
             block.push_schedule_amax_ptrs(&mut adam_schedule_amax_ptrs);
         }
+        let mut backbone_schedule_amax_ptrs = Vec::new();
+        if gpt2_nvfp4::exclusive_self_attention_enabled() {
+            backbone_schedule_amax_ptrs.push(xsa_alphas.schedule_amax_ptr());
+        }
+        backbone_schedule_amax_ptrs.extend_from_slice(&adam_schedule_amax_ptrs[backbone_start..]);
+        let backbone_schedule_amax_ptrs =
+            DeviceBuffer::from_host(stream, &backbone_schedule_amax_ptrs)?;
         let adam_schedule_amax_count = adam_schedule_amax_ptrs.len() as u32;
         let adam_schedule_amax_ptrs = DeviceBuffer::from_host(stream, &adam_schedule_amax_ptrs)?;
 
@@ -69,6 +78,7 @@ impl OptimizerStateBuffers {
             blocks,
             adam_schedule_amax_ptrs,
             adam_schedule_amax_count,
+            backbone_schedule_amax_ptrs,
             training_weight_step: Cell::new(None),
             scheduled_values_valid: Cell::new(false),
         })
@@ -76,6 +86,13 @@ impl OptimizerStateBuffers {
 
     pub(in crate::training) fn adam_schedule_amax_table(&self) -> (&DeviceBuffer<u64>, u32) {
         (&self.adam_schedule_amax_ptrs, self.adam_schedule_amax_count)
+    }
+
+    pub(in crate::training) fn backbone_schedule_amax_table(&self) -> (&DeviceBuffer<u64>, u32) {
+        (
+            &self.backbone_schedule_amax_ptrs,
+            self.backbone_schedule_amax_ptrs.len() as u32,
+        )
     }
 
     pub(in crate::training) fn advance(&mut self) -> u32 {

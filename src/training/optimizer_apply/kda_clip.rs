@@ -1,5 +1,5 @@
 use cuda_core::{CudaStream, DeviceBuffer, DriverError};
-use gpt2_nvfp4::{AttentionDims, GPT2_TOKEN_ROWS_U32, uses_full_attention};
+use gpt2_nvfp4::{AttentionDims, uses_full_attention};
 use rust_kernels_cuda::optimizer::KdaMuonClipFactorArgs;
 
 use crate::training::runtime::Runtime;
@@ -17,6 +17,7 @@ pub(super) fn prepare_kda_muon_clip_factors(
     runtime: &Runtime,
     tape: &ForwardTapeBuffers,
     qk_norm_max: &DeviceBuffer<f32>,
+    active_rows: u32,
     scratch: &mut OptimizerScratch,
     trace: &mut OptimizerTrace,
     optimizer_step: u32,
@@ -33,7 +34,7 @@ pub(super) fn prepare_kda_muon_clip_factors(
                     qk_norm_max,
                     scores: &mut scratch.kda_clip_scores,
                     factors: &mut scratch.kda_clip_factors,
-                    row_count: GPT2_TOKEN_ROWS_U32,
+                    row_count: active_rows,
                     qkv_dim: dims.qkv_dim,
                     embedding_dim: dims.embedding_dim,
                     head_count: dims.head_count,

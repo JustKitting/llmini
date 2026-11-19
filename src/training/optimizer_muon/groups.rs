@@ -22,6 +22,7 @@ pub(in crate::training) struct MuonPointerTables {
     pub(in crate::training) slot_count: usize,
     _padding: MuonPaddingBuffers,
     conditional: Option<ConditionalDescriptors>,
+    pub(in crate::training) backbone_only: bool,
 }
 
 struct ConditionalDescriptors {
@@ -70,6 +71,26 @@ impl MuonPointerTables {
         )
     }
 
+    /// A residual backbone has no token or NextLat objective. Their matrices
+    /// must be absent from both the Muon update and its weight-decay pass.
+    pub(in crate::training) fn new_backbone(
+        stream: &CudaStream,
+        uploaded: &UploadedModel,
+        grads: &BackwardBuffers,
+        state: &OptimizerStateBuffers,
+        mhc: Option<&crate::training::mhc::Mhc>,
+    ) -> Result<Self, DriverError> {
+        let padding = MuonPaddingBuffers::new(stream)?;
+        let rows = build_slots(uploaded, grads, None, state, &padding, None, None, mhc);
+        Ok(Self {
+            all: upload_table(stream, &rows)?,
+            slot_count: rows.len(),
+            _padding: padding,
+            conditional: None,
+            backbone_only: true,
+        })
+    }
+
     pub(in crate::training) fn new_with_modules(
         stream: &CudaStream,
         uploaded: &UploadedModel,
@@ -104,7 +125,7 @@ impl MuonPointerTables {
         let rows = build_slots(
             uploaded,
             grads,
-            next_latent_grads,
+            Some(next_latent_grads),
             state,
             &padding,
             engram,
@@ -116,6 +137,7 @@ impl MuonPointerTables {
             slot_count: rows.len(),
             _padding: padding,
             conditional: None,
+            backbone_only: false,
         };
         if let Some(f) = feedback {
             let i = result

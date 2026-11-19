@@ -21,15 +21,17 @@ pub(super) struct HostGradView<'a> {
 
 pub(super) fn parameter_gradient_views<'a>(
     grads: &'a BackwardBuffers,
-    next_latent: &'a NextLatGradBuffers,
+    next_latent: Option<&'a NextLatGradBuffers>,
 ) -> Vec<HostGradView<'a>> {
     let mut rows = Vec::new();
-    push_view(
-        &mut rows,
-        "lm_head.weight",
-        &grads.d_lm_head_weight,
-        GPT2_VOCAB_SIZE * GPT2_N_EMBD,
-    );
+    if next_latent.is_some() {
+        push_view(
+            &mut rows,
+            "lm_head.weight",
+            &grads.d_lm_head_weight,
+            GPT2_VOCAB_SIZE * GPT2_N_EMBD,
+        );
+    }
     if exclusive_self_attention_enabled() {
         push_view(
             &mut rows,
@@ -38,12 +40,16 @@ pub(super) fn parameter_gradient_views<'a>(
             GPT2_XSA_ALPHA_STORAGE,
         );
     }
-    push_layer_norm_views(&mut rows, "final_norm", &grads.final_norm);
+    if next_latent.is_some() {
+        push_layer_norm_views(&mut rows, "final_norm", &grads.final_norm);
+    }
 
     for (block_index, block) in grads.blocks.iter().enumerate() {
         push_block_views(&mut rows, block_index, block);
     }
-    push_next_latent_views(&mut rows, next_latent);
+    if let Some(next_latent) = next_latent {
+        push_next_latent_views(&mut rows, next_latent);
+    }
 
     rows
 }

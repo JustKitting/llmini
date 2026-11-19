@@ -19,7 +19,7 @@ pub(super) struct BaseAdamUpdateArgs<'a> {
     pub optimizer: &'a OptimizerModule,
     pub uploaded: &'a mut UploadedModel,
     pub grads: &'a mut BackwardBuffers,
-    pub next_latent_grads: &'a mut NextLatGradBuffers,
+    pub next_latent_grads: Option<&'a mut NextLatGradBuffers>,
     pub scratch: &'a mut OptimizerScratch,
     pub state: &'a mut OptimizerStateBuffers,
     pub step: u32,
@@ -29,34 +29,38 @@ pub(super) struct BaseAdamUpdateArgs<'a> {
 }
 
 pub(super) fn update_base_adam(args: BaseAdamUpdateArgs<'_>) -> Result<(), DriverError> {
-    let token_embedding_ms = match &mut args.state.token_embedding {
-        super::super::optimizer_state::TokenEmbeddingState::Adam(state) => {
-            let mut adam = AdamUpdate::new(
+    let token_embedding_ms = if args.next_latent_grads.is_some() {
+        match &mut args.state.token_embedding {
+            super::super::optimizer_state::TokenEmbeddingState::Adam(state) => {
+                let mut adam = AdamUpdate::new(
+                    args.stream,
+                    args.optimizer,
+                    args.scratch,
+                    args.step,
+                    args.average_coefficient,
+                    args.grad_scale,
+                );
+                adam.update_timed(
+                    &mut args.uploaded.token_embedding,
+                    &mut args.grads.d_lm_head_weight,
+                    state,
+                )?
+            }
+            super::super::optimizer_state::TokenEmbeddingState::Ember(state) => EmberUpdate::new(
                 args.stream,
                 args.optimizer,
-                args.scratch,
                 args.step,
                 args.average_coefficient,
                 args.grad_scale,
-            );
-            adam.update_timed(
-                &mut args.uploaded.token_embedding,
-                &mut args.grads.d_lm_head_weight,
+            )
+            .update_timed(
+                &args.uploaded.token_embedding,
+                &args.grads.d_lm_head_weight,
                 state,
-            )?
+            )?,
         }
-        super::super::optimizer_state::TokenEmbeddingState::Ember(state) => EmberUpdate::new(
-            args.stream,
-            args.optimizer,
-            args.step,
-            args.average_coefficient,
-            args.grad_scale,
-        )
-        .update_timed(
-            &args.uploaded.token_embedding,
-            &args.grads.d_lm_head_weight,
-            state,
-        )?,
+    } else {
+        0.0
     };
 
     let (xsa_alphas_ms, final_norm_ms) = {
@@ -78,28 +82,36 @@ pub(super) fn update_base_adam(args: BaseAdamUpdateArgs<'_>) -> Result<(), Drive
         } else {
             0.0
         };
-        let final_norm_ms = update_layer_norm_timed(
-            &mut adam,
-            &mut args.uploaded.ln_f,
-            &mut args.grads.final_norm,
-            &mut args.state.ln_f,
-        )?;
+        let final_norm_ms = if args.next_latent_grads.is_some() {
+            update_layer_norm_timed(
+                &mut adam,
+                &mut args.uploaded.ln_f,
+                &mut args.grads.final_norm,
+                &mut args.state.ln_f,
+            )?
+        } else {
+            0.0
+        };
         (xsa_alphas_ms, final_norm_ms)
     };
 
-    let next_latent_ms = timed_ms(|| {
-        update_next_latent(NextLatUpdateArgs {
-            stream: args.stream,
-            optimizer: args.optimizer,
-            weights: &mut args.uploaded.next_latent,
-            grads: args.next_latent_grads,
-            scratch: args.scratch,
-            state: &mut args.state.next_latent,
-            step: args.step,
-            average_coefficient: args.average_coefficient,
-            grad_scale: args.grad_scale,
-        })
-    })?;
+    let next_latent_ms = if let Some(grads) = args.next_latent_grads {
+        timed_ms(|| {
+            update_next_latent(NextLatUpdateArgs {
+                stream: args.stream,
+                optimizer: args.optimizer,
+                weights: &mut args.uploaded.next_latent,
+                grads,
+                scratch: args.scratch,
+                state: &mut args.state.next_latent,
+                step: args.step,
+                average_coefficient: args.average_coefficient,
+                grad_scale: args.grad_scale,
+            })
+        })?
+    } else {
+        0.0
+    };
 
     args.trace.token_embedding_ms = token_embedding_ms;
     args.trace.final_norm_ms = final_norm_ms;

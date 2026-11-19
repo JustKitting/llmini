@@ -8,10 +8,10 @@ use super::super::{
 };
 use crate::upload::UploadedModel;
 
-pub struct WeightUpdateArgs<'a> {
+pub struct WeightUpdateArgs<'a, Batch = &'a TokenBatch> {
     pub stream: &'a CudaStream,
     pub runtime: &'a Runtime,
-    pub batch: &'a TokenBatch,
+    pub batch: Batch,
     pub uploaded: &'a mut UploadedModel,
     pub grads: &'a mut BackwardBuffers,
     pub next_latent_grads: &'a mut NextLatGradBuffers,

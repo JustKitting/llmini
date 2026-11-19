@@ -14,7 +14,14 @@ pub(in crate::training) fn first_non_finite_gradient(
     grads: &BackwardBuffers,
     next_latent: &NextLatGradBuffers,
 ) -> Result<Option<NonFiniteGradient>, DriverError> {
-    first_non_finite_view(stream, parameter_gradient_views(grads, next_latent))
+    first_non_finite_view(stream, parameter_gradient_views(grads, Some(next_latent)))
+}
+
+pub(in crate::training) fn first_non_finite_backbone_gradient(
+    stream: &CudaStream,
+    grads: &BackwardBuffers,
+) -> Result<Option<NonFiniteGradient>, DriverError> {
+    first_non_finite_view(stream, parameter_gradient_views(grads, None))
 }
 
 fn first_non_finite_view<'a>(

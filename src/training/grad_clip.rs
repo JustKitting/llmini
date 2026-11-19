@@ -10,8 +10,8 @@ use super::optimizer_muon::MuonPointerTables;
 mod components;
 mod layout;
 
-pub(super) use layout::first_non_finite_gradient;
 use layout::{HostGradChunk, gradient_chunks, parameter_gradients};
+pub(super) use layout::{first_non_finite_backbone_gradient, first_non_finite_gradient};
 
 const GLOBAL_GRAD_CLIP_NORM: f32 = 1.0;
 
@@ -62,6 +62,34 @@ impl GradientClipBuffers {
         stream: &CudaStream,
         grads: &BackwardBuffers,
         next_latent: &NextLatGradBuffers,
+        muon_tables: &MuonPointerTables,
+        extra: &[(&str, &DeviceBuffer<f32>)],
+        recompute: &[u64],
+    ) -> Result<Self, DriverError> {
+        Self::new_for_graph(
+            stream,
+            grads,
+            Some(next_latent),
+            muon_tables,
+            extra,
+            recompute,
+        )
+    }
+
+    pub(super) fn new_backbone(
+        stream: &CudaStream,
+        grads: &BackwardBuffers,
+        muon_tables: &MuonPointerTables,
+        extra: &[(&str, &DeviceBuffer<f32>)],
+        recompute: &[u64],
+    ) -> Result<Self, DriverError> {
+        Self::new_for_graph(stream, grads, None, muon_tables, extra, recompute)
+    }
+
+    fn new_for_graph(
+        stream: &CudaStream,
+        grads: &BackwardBuffers,
+        next_latent: Option<&NextLatGradBuffers>,
         muon_tables: &MuonPointerTables,
         extra: &[(&str, &DeviceBuffer<f32>)],
         recompute: &[u64],

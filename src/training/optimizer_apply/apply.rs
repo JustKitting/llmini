@@ -1,6 +1,6 @@
-use super::super::OptimizerTrace;
 use super::super::diagnostics::PendingTrainingDiagnostics;
 use super::super::optimizer_muon::matrix_learning_rate;
+use super::super::{OptimizerTrace, TokenBatch};
 use super::adam::adam_learning_rate;
 use super::base::{BaseAdamUpdateArgs, update_base_adam};
 use super::block::{BlockUpdateArgs, update_blocks};
@@ -13,10 +13,29 @@ use super::types::{WeightUpdateArgs, WeightUpdateResult};
 use crate::AppResult;
 
 pub fn apply_weight_updates(args: WeightUpdateArgs<'_>) -> AppResult<WeightUpdateResult> {
+    let batch = args.batch;
+    apply_graph_weight_updates(args, Some(batch), gpt2_nvfp4::GPT2_TOKEN_ROWS_U32)
+}
+
+pub(in crate::training) fn apply_backbone_weight_updates(
+    args: WeightUpdateArgs<'_, u32>,
+) -> AppResult<WeightUpdateResult> {
+    let rows = args.batch;
+    apply_graph_weight_updates(args, None, rows)
+}
+
+fn apply_graph_weight_updates<Batch>(
+    args: WeightUpdateArgs<'_, Batch>,
+    token_batch: Option<&TokenBatch>,
+    active_rows: u32,
+) -> AppResult<WeightUpdateResult> {
+    if args.muon_tables.backbone_only == token_batch.is_some() {
+        return Err("native optimizer table does not match the active training graph".into());
+    }
     let WeightUpdateArgs {
         stream,
         runtime,
-        batch,
+        batch: _,
         uploaded,
         grads,
         next_latent_grads,
@@ -34,8 +53,11 @@ pub fn apply_weight_updates(args: WeightUpdateArgs<'_>) -> AppResult<WeightUpdat
     let candidate_step = state.next_step();
     trace.adam_lr = adam_learning_rate(candidate_step);
     trace.muon_lr = matrix_learning_rate(candidate_step);
-    trace.embedding_lookup_ms =
-        timed_ms(|| add_embedding_lookup_grad(stream, optimizer, batch, grads, next_latent_grads))?;
+    if let Some(batch) = token_batch {
+        trace.embedding_lookup_ms = timed_ms(|| {
+            add_embedding_lookup_grad(stream, optimizer, batch, grads, next_latent_grads)
+        })?;
+    }
 
     let clip_result = grad_clip.clip(stream, optimizer)?;
     let extra_non_finite = if clip_result.norm.is_finite() {
@@ -50,7 +72,7 @@ pub fn apply_weight_updates(args: WeightUpdateArgs<'_>) -> AppResult<WeightUpdat
     if record_skip_decision(
         stream,
         grads,
-        next_latent_grads,
+        token_batch.map(|_| &*next_latent_grads),
         candidate_step,
         &mut trace,
         skip_decision,
@@ -68,7 +90,7 @@ pub fn apply_weight_updates(args: WeightUpdateArgs<'_>) -> AppResult<WeightUpdat
     debug_assert_eq!(step, candidate_step);
     let average_coefficient = state.schedule_free_average_coefficient(step);
 
-    let diagnostics = super::super::diagnostics::enabled()
+    let diagnostics = (token_batch.is_some() && super::super::diagnostics::enabled())
         .then(|| {
             PendingTrainingDiagnostics::collect(
                 stream,
@@ -82,7 +104,11 @@ pub fn apply_weight_updates(args: WeightUpdateArgs<'_>) -> AppResult<WeightUpdat
         })
         .transpose()?;
 
-    let (adam_schedule_amax_ptrs, adam_schedule_amax_count) = state.adam_schedule_amax_table();
+    let (adam_schedule_amax_ptrs, adam_schedule_amax_count) = if token_batch.is_some() {
+        state.adam_schedule_amax_table()
+    } else {
+        state.backbone_schedule_amax_table()
+    };
     optimizer.zero_f32_pointer_table(stream, adam_schedule_amax_ptrs, adam_schedule_amax_count)?;
 
     trace.adam_ms += timed_ms(|| {
@@ -101,7 +127,7 @@ pub fn apply_weight_updates(args: WeightUpdateArgs<'_>) -> AppResult<WeightUpdat
         optimizer,
         uploaded,
         grads,
-        next_latent_grads,
+        next_latent_grads: token_batch.map(|_| &mut *next_latent_grads),
         scratch,
         state,
         step,
@@ -128,6 +154,7 @@ pub fn apply_weight_updates(args: WeightUpdateArgs<'_>) -> AppResult<WeightUpdat
         runtime,
         tape,
         qk_norm_max,
+        active_rows,
         scratch,
         &mut trace,
         step,

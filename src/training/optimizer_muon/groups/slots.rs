@@ -19,7 +19,7 @@ use crate::{
 pub(super) fn build_slots(
     uploaded: &UploadedModel,
     grads: &BackwardBuffers,
-    next_latent_grads: &NextLatGradBuffers,
+    next_latent_grads: Option<&NextLatGradBuffers>,
     state: &OptimizerStateBuffers,
     padding: &MuonPaddingBuffers,
     engram: Option<&crate::training::engram::Engram>,
@@ -56,7 +56,7 @@ pub(super) fn build_slots(
 fn all_slots(
     uploaded: &UploadedModel,
     grads: &BackwardBuffers,
-    next_latent_grads: &NextLatGradBuffers,
+    next_latent_grads: Option<&NextLatGradBuffers>,
     state: &OptimizerStateBuffers,
 ) -> Vec<HostPtrs> {
     let mut rows = Vec::with_capacity(MUON_MATRIX_SLOTS);
@@ -80,21 +80,19 @@ fn all_slots(
     append(&mut rows, GPT2_MLP, GPT2_N_EMBD, |i| {
         ptrs::mlp_down(uploaded, grads, state, i)
     });
-    rows.push(
-        ptrs::next_latent_input_projection(uploaded, next_latent_grads, state)
-            .learning_rate_multiplier(learning_rate::next_latent_scale())
-            .shape(NEXTLAT_INPUT, NEXTLAT_HIDDEN),
-    );
-    rows.push(
-        ptrs::next_latent_transition(uploaded, next_latent_grads, state)
-            .learning_rate_multiplier(learning_rate::next_latent_scale())
-            .shape(NEXTLAT_HIDDEN, NEXTLAT_HIDDEN),
-    );
-    rows.push(
-        ptrs::next_latent_output_projection(uploaded, next_latent_grads, state)
-            .learning_rate_multiplier(learning_rate::next_latent_scale())
-            .shape(NEXTLAT_HIDDEN, GPT2_N_EMBD),
-    );
+    if let Some(next_latent_grads) = next_latent_grads {
+        rows.extend([
+            ptrs::next_latent_input_projection(uploaded, next_latent_grads, state)
+                .learning_rate_multiplier(learning_rate::next_latent_scale())
+                .shape(NEXTLAT_INPUT, NEXTLAT_HIDDEN),
+            ptrs::next_latent_transition(uploaded, next_latent_grads, state)
+                .learning_rate_multiplier(learning_rate::next_latent_scale())
+                .shape(NEXTLAT_HIDDEN, NEXTLAT_HIDDEN),
+            ptrs::next_latent_output_projection(uploaded, next_latent_grads, state)
+                .learning_rate_multiplier(learning_rate::next_latent_scale())
+                .shape(NEXTLAT_HIDDEN, GPT2_N_EMBD),
+        ]);
+    }
     rows
 }
 

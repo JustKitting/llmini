@@ -7,14 +7,14 @@ use crate::training::next_latent::NextLatGradBuffers;
 mod scan;
 mod views;
 
-pub(in crate::training) use scan::first_non_finite_gradient;
+pub(in crate::training) use scan::{first_non_finite_backbone_gradient, first_non_finite_gradient};
 use views::parameter_gradient_views;
 
 pub(super) fn named_parameter_ranges(
     grads: &BackwardBuffers,
     next_latent: &NextLatGradBuffers,
 ) -> Vec<(String, u64, usize)> {
-    parameter_gradient_views(grads, next_latent)
+    parameter_gradient_views(grads, Some(next_latent))
         .into_iter()
         .map(|view| (view.name, view.buffer.cu_deviceptr(), view.len))
         .collect()
@@ -34,7 +34,7 @@ pub(super) struct HostGradChunk {
 
 pub(super) fn parameter_gradients(
     grads: &BackwardBuffers,
-    next_latent: &NextLatGradBuffers,
+    next_latent: Option<&NextLatGradBuffers>,
 ) -> Vec<HostGradPtr> {
     let views = parameter_gradient_views(grads, next_latent);
     let mut rows = Vec::new();

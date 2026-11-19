@@ -33,6 +33,7 @@ pub(super) struct HierarchyWeights<'a> {
 }
 
 pub(super) struct HierarchyAdjoints {
+    pub backbone_rows: u32,
     pub byte_losses: DeviceBuffer<f32>,
     pub ratio_loss: DeviceBuffer<f32>,
     pub embeddings: DeviceBuffer<f32>,
@@ -198,6 +199,7 @@ impl Trainer {
             scratch.shape,
             ratio,
         )?;
+        let backbone_rows = plan.batch() * plan.inner_stride();
         let inner = self.forward_routed_backbone(
             stage,
             &plan,
@@ -245,6 +247,7 @@ impl Trainer {
         let (embeddings, encoder) =
             backward_stack(&self.runtime, &mut scratch.outer, encoder, d_encoded, rng)?;
         Ok(HierarchyAdjoints {
+            backbone_rows,
             byte_losses,
             ratio_loss,
             embeddings,
