@@ -54,6 +54,23 @@ pub struct Runtime {
 }
 
 impl Runtime {
+    pub(in crate::training) fn echelon_modules(
+        &self,
+    ) -> Result<
+        (
+            rust_kernels_cuda::optimizer::echelon::EchelonModule,
+            rust_kernels_cuda::optimizer::echelon::FrameModule,
+        ),
+        cuda_core::DriverError,
+    > {
+        use rust_kernels_cuda::optimizer::echelon::{EchelonModule, FrameModule};
+
+        Ok((
+            EchelonModule::from_module(self.cuda_module.clone())?,
+            FrameModule::from_module(self.cuda_module.clone())?,
+        ))
+    }
+
     #[cfg(test)]
     pub(in crate::training) fn value_rms_point_check_module(
         &self,

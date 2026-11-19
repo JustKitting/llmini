@@ -14,6 +14,7 @@ const DEFAULT_SHAKESPEARE_PROMPT: &str = "KING:";
 #[derive(Clone, Copy)]
 pub(in crate::training) struct TrainConfig {
     pub(in crate::training) seed: u64,
+    pub(in crate::training) echelon: bool,
     pub(in crate::training) latent_feedback: bool,
     pub(in crate::training) mhc: bool,
     pub(in crate::training) engram_mhc: bool,
@@ -30,6 +31,7 @@ impl TrainConfig {
     pub(super) fn from_env() -> Self {
         Self {
             seed: env_u64("TRAIN_SEED").unwrap_or(DEFAULT_SEED),
+            echelon: false,
             latent_feedback: env_bool("TRAIN_LATENT_FEEDBACK").unwrap_or(false),
             mhc: super::super::mhc::enabled(),
             engram_mhc: super::super::engram::multistream_enabled(),

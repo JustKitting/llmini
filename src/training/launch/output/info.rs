@@ -388,6 +388,9 @@ pub(in crate::training::launch) fn build_run_info(dataset: &str, config: &TrainC
         MUON_COOPERATIVE_BLOCKS,
     );
     push_info(&mut info, "muon_matrix_phases", MUON_MATRIX_PHASES);
+    if config.echelon {
+        push_info(&mut info, "matrix_polar", "echelon");
+    }
     push_info(
         &mut info,
         "hyperball_enabled",

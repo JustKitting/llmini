@@ -7,7 +7,9 @@ use rust_kernels_cuda::nvfp4_tma_matmul::scale_layout::{
 use rust_kernels_cuda::nvfp4_tma_matmul::tma::TmaNvfp4DeviceScaleDescriptors;
 use rust_kernels_cuda::optimizer::{MUON_COOPERATIVE_BLOCKS, MUON_MATRIX_PHASES};
 
-use super::optimizer_muon::{MUON_MATRIX_SLOTS, max_matrix_dim, max_matrix_len, max_polar_cols};
+use super::optimizer_muon::{
+    Echelon, MUON_MATRIX_SLOTS, max_matrix_dim, max_matrix_len, max_polar_cols,
+};
 
 pub struct MuonScratchBuffers {
     pub(super) oriented: DeviceBuffer<f32>,
@@ -20,6 +22,7 @@ pub struct MuonScratchBuffers {
     pub(super) normuon_chunks: DeviceBuffer<f32>,
     pub(super) hyperball_chunks: DeviceBuffer<f32>,
     pub(super) tma: MuonTmaScratch,
+    pub(super) echelon: Option<Echelon>,
 }
 
 pub(super) struct MuonTmaScratch {
@@ -61,6 +64,7 @@ impl MuonScratchBuffers {
             normuon_chunks: DeviceBuffer::zeroed(stream, 2 * max_polar_cols())?,
             hyperball_chunks: DeviceBuffer::zeroed(stream, 2 * max_polar_cols())?,
             tma: MuonTmaScratch::new(stream)?,
+            echelon: None,
         })
     }
 }

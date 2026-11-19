@@ -84,6 +84,7 @@ fn scratch(stream: &CudaStream, input: &[f32], m: u32, n: u32) -> MuonScratchBuf
         normuon_factors: z(1),
         normuon_chunks: z(1),
         hyperball_chunks: z(1),
+        echelon: None,
         tma: MuonTmaScratch {
             out_padded: z((mm * nn).max(mm * mm)),
             a: operand(stream, mm, k.max(d.k as usize)),

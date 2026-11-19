@@ -24,6 +24,9 @@ use crate::training::optimizer_tc_scratch::{
 };
 use crate::training::runtime::Runtime;
 
+mod echelon;
+pub(in crate::training) use echelon::Echelon;
+
 pub(in crate::training) struct MuonTmaArgs<'a> {
     pub(in crate::training) runtime: &'a Runtime,
     pub(in crate::training) table: &'a MuonGroupTable,
@@ -125,7 +128,8 @@ pub(in crate::training) fn apply_muon_tma(args: MuonTmaArgs<'_>) -> Result<(), D
         )?;
 
         let (polar_rows, polar_cols) = polar_shape(desc);
-        let defer_bounds = can_defer_polar_bounds(polar_rows, polar_cols);
+        let echelon = args.scratch.echelon.as_mut();
+        let defer_bounds = echelon.is_none() && can_defer_polar_bounds(polar_rows, polar_cols);
         trace_buffer(
             stream,
             trace,
@@ -137,20 +141,41 @@ pub(in crate::training) fn apply_muon_tma(args: MuonTmaArgs<'_>) -> Result<(), D
             desc,
         )?;
 
-        run_tma_polar_loop(
-            stream,
-            args.runtime,
-            args.scratch,
-            desc,
-            slot_index,
-            trace,
-            defer_bounds,
-        )?;
-
-        let polar_update = if POLAR_ITERATIONS & 1 == 0 {
-            &args.scratch.polar_x
-        } else {
+        let polar_update = if let Some(echelon) = echelon {
+            echelon.apply(
+                args.runtime,
+                slot_index,
+                &args.scratch.polar_x,
+                &mut args.scratch.polar_ax,
+                &mut args.scratch.polar_next,
+                &mut tma_refs(&mut args.scratch.tma),
+            )?;
+            trace_buffer(
+                stream,
+                trace,
+                slot_index,
+                "echelon_update",
+                &args.scratch.polar_next,
+                polar_rows * polar_cols,
+                None,
+                desc,
+            )?;
             &args.scratch.polar_next
+        } else {
+            run_tma_polar_loop(
+                stream,
+                args.runtime,
+                args.scratch,
+                desc,
+                slot_index,
+                trace,
+                defer_bounds,
+            )?;
+            if POLAR_ITERATIONS & 1 == 0 {
+                &args.scratch.polar_x
+            } else {
+                &args.scratch.polar_next
+            }
         };
         let finish = MuonTmaFinishArgs {
             stream,

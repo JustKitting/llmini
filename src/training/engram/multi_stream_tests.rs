@@ -41,6 +41,7 @@ fn native_budgeted_four_stream_engram_complete_graph_checkpoint_and_causality() 
 fn native_four_gram_engram_complete_graph_checkpoint_and_causality() -> AppResult {
     let config = crate::training::launch::TrainConfig {
         seed: 0x47505432,
+        echelon: false,
         latent_feedback: false,
         mhc: true,
         engram_mhc: true,
@@ -65,6 +66,7 @@ fn native_full_credit_engram_mhc_launcher_complete_graph_checkpoint_and_causalit
     assert!(gpt2_nvfp4::GPT2_KDA_FULL_STATE_BACKWARD);
     let config = crate::training::launch::TrainConfig {
         seed: 0x47505432,
+        echelon: false,
         latent_feedback: false,
         mhc: true,
         engram_mhc: true,

@@ -6,7 +6,7 @@ mod tma;
 use gpt2_nvfp4::{GPT2_MLP_UP, GPT2_N_EMBD, GPT2_N_LAYER, GPT2_QKV, NEXTLAT_HIDDEN, NEXTLAT_INPUT};
 
 pub(super) use groups::{MuonGroupTable, MuonPointerTables};
-pub(super) use tma::{MuonTmaArgs, apply_muon_tma};
+pub(super) use tma::{Echelon, MuonTmaArgs, apply_muon_tma};
 
 const SIGN_MUON_BETA: f32 = 0.9;
 const SIGN_MUON_PERIOD: u32 = 2;

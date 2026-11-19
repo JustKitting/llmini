@@ -24,6 +24,10 @@ pub(super) struct TrainArgs {
     #[arg(long, conflicts_with_all = ["dataset", "checkpoint_action"])]
     pub(super) training_shards: Option<PathBuf>,
 
+    /// Use Echelon head-and-tail updates on the NVFP4 matrix optimizer's polar steps.
+    #[arg(long, conflicts_with = "checkpoint_action")]
+    echelon: bool,
+
     /// Train the complete latent-feedback architecture (replaces the Engram experiment).
     #[arg(long, conflicts_with_all=["inspect_model","inspect_gradients","evaluate_model","inspect_feedback_depths"])]
     latent_feedback: bool,
@@ -146,6 +150,7 @@ pub(super) struct TrainArgs {
 impl TrainArgs {
     pub(super) fn config(&self) -> TrainConfig {
         let mut config = TrainConfig::from_env();
+        config.echelon = self.echelon;
         if self.latent_feedback {
             config.latent_feedback = true;
         }

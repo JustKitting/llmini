@@ -76,6 +76,14 @@ impl CudaTrainingStrategy {
             trainer.load_model(&path)?;
             println!("loaded_model={}", path.display());
         }
+        if self.config.echelon {
+            trainer.buffers.muon.echelon = Some(crate::training::optimizer_muon::Echelon::new(
+                &trainer.runtime,
+                &trainer.buffers.muon_tables.all,
+                self.config.seed,
+            )?);
+            println!("matrix_polar=echelon");
+        }
 
         let validation = validation_input(dataloader_valid)?;
         let mut train_batch = trainer.reusable_default_batch()?;

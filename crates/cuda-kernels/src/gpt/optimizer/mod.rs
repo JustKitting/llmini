@@ -12,6 +12,7 @@
 
 mod adam;
 mod args;
+pub mod echelon;
 mod embedding;
 mod ember;
 mod grad_clip;
