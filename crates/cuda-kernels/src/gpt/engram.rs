@@ -1,9 +1,15 @@
 //! Native Engram elementwise graph. Dense projections use the shared NVFP4 TMA path.
 use crate::{
     atomic::atomic_add_f32,
-    block_reduce::block_sum_shared_f32,
+    block_reduce::{block_max_shared_f32_for_warps, block_sum_shared_f32},
     float_ptx::{abs_f32, exp_f32, max_f32, sqrt_f32},
-    nvfp4::nvfp4_value,
+    nvfp4::{csf, nvfp4_value},
+    nvfp4_cast::{f16_value, scaled_e2m1_half2},
+    nvfp4_quant::kernels::four_six::helpers::{
+        GROUP_SIZE, GROUP_THREADS, activation_grid_group_scale, four_six_global_scale,
+        four_six_lane, store_four_six_payload_word,
+    },
+    warp_reduce::thread_lane_warp,
 };
 use cuda_device::{DisjointSlice, SharedArray, cuda_module, kernel, thread};
 const T: u32 = 256;
@@ -155,6 +161,156 @@ pub mod kernels {
             }
         }
     }
+    struct LookupTable<'a> {
+        ids: &'a [u32],
+        bytes: &'a [u8],
+        scales: &'a [u8],
+        global: f32,
+    }
+
+    #[inline(always)]
+    fn load_lookup_group<const WIDTH: usize, const DIM: usize>(
+        table: &LookupTable<'_>,
+        row: u32,
+        group: u32,
+        lane_in_group: usize,
+    ) -> [f32; 4] {
+        let column = group as usize * GROUP_SIZE + 4 * lane_in_group;
+        let id = table.ids[row as usize * (WIDTH / DIM) + column / DIM] as usize;
+        let index = id * DIM + column % DIM;
+        let scale = csf::scale_at(table.scales, index / GROUP_SIZE);
+        let lo = scaled_e2m1_half2(table.bytes[index / 2], scale);
+        let hi = scaled_e2m1_half2(table.bytes[index / 2 + 1], scale);
+        [
+            f16_value(lo as u16) * table.global,
+            f16_value((lo >> 16) as u16) * table.global,
+            f16_value(hi as u16) * table.global,
+            f16_value((hi >> 16) as u16) * table.global,
+        ]
+    }
+
+    #[inline(always)]
+    fn lookup_amax([a, b, c, d]: [f32; 4]) -> f32 {
+        max_f32(
+            max_f32(abs_f32(a), abs_f32(b)),
+            max_f32(abs_f32(c), abs_f32(d)),
+        )
+    }
+
+    #[inline(always)]
+    #[allow(clippy::too_many_arguments)]
+    fn store_lookup_group<const WIDTH: usize>(
+        [a, b, c, d]: [f32; 4],
+        payload: &mut DisjointSlice<u8>,
+        scales: &mut DisjointSlice<u8>,
+        global_scale: f32,
+        row: u32,
+        group: u32,
+        row_count: u32,
+    ) {
+        let (lane, mask, leader) = four_six_lane();
+        let (scale, word) =
+            activation_grid_group_scale(a, b, c, d, global_scale, 1.0, mask, leader, lane);
+        let base = row as usize * WIDTH + group as usize * GROUP_SIZE;
+        unsafe {
+            csf::store_row_warp(
+                scales.as_mut_ptr(),
+                row_count,
+                WIDTH as u32,
+                row,
+                group,
+                scale,
+            );
+            store_four_six_payload_word(payload.as_mut_ptr(), base, lane, word);
+        }
+    }
+
+    #[inline(always)]
+    fn gather_packed<const WIDTH: usize, const DIM: usize>(
+        table: LookupTable<'_>,
+        mut payload: DisjointSlice<u8>,
+        mut scales: DisjointSlice<u8>,
+        mut globals: DisjointSlice<f32>,
+        n: u32,
+    ) {
+        let row = thread::blockIdx_x();
+        if row >= n {
+            return;
+        }
+        let (thread, lane, warp) = thread_lane_warp();
+        let (lane_in_group, _, _) = four_six_lane();
+        let groups_per_row = (WIDTH / GROUP_SIZE) as u32;
+        let first_group = thread / GROUP_THREADS as u32;
+        let second_group = first_group + T / GROUP_THREADS as u32;
+        // Every scale tile maps to a whole warp. All threads reach the row reduction.
+        let first = if first_group < groups_per_row {
+            load_lookup_group::<WIDTH, DIM>(&table, row, first_group, lane_in_group)
+        } else {
+            [0.0; 4]
+        };
+        let second = if second_group < groups_per_row {
+            load_lookup_group::<WIDTH, DIM>(&table, row, second_group, lane_in_group)
+        } else {
+            [0.0; 4]
+        };
+        let local_amax = max_f32(lookup_amax(first), lookup_amax(second));
+        let amax =
+            block_max_shared_f32_for_warps(unsafe { &mut REDUCE }, 8, local_amax, lane, warp, 0.0);
+        let global_scale = four_six_global_scale(amax, 1.0);
+        if thread == 0 {
+            unsafe { *globals.get_unchecked_mut(row as usize) = global_scale };
+        }
+        if first_group < groups_per_row {
+            store_lookup_group::<WIDTH>(
+                first,
+                &mut payload,
+                &mut scales,
+                global_scale,
+                row,
+                first_group,
+                n,
+            );
+        }
+        if second_group < groups_per_row {
+            store_lookup_group::<WIDTH>(
+                second,
+                &mut payload,
+                &mut scales,
+                global_scale,
+                row,
+                second_group,
+                n,
+            );
+        }
+    }
+
+    #[kernel]
+    pub fn engram_gather_pack_kernel(
+        ids: &[u32],
+        bytes: &[u8],
+        scales: &[u8],
+        global: &[f32],
+        payload: DisjointSlice<u8>,
+        row_scales: DisjointSlice<u8>,
+        row_globals: DisjointSlice<f32>,
+        n: u32,
+        heads: u32,
+        dim: u32,
+    ) {
+        let table = LookupTable {
+            ids,
+            bytes,
+            scales,
+            global: global[0],
+        };
+        match (heads, dim) {
+            (16, 32) => gather_packed::<512, 32>(table, payload, row_scales, row_globals, n),
+            (16, 64) => gather_packed::<1024, 64>(table, payload, row_scales, row_globals, n),
+            (24, 64) => gather_packed::<1536, 64>(table, payload, row_scales, row_globals, n),
+            _ => unreachable!(),
+        }
+    }
+
     #[kernel]
     pub fn engram_scatter_kernel(
         ids: &[u32],

@@ -3,7 +3,9 @@
 use super::*;
 use super::{Module as Engram, ModuleWeights as Weights};
 use crate::{AppResult, training::runtime::Runtime, upload::UploadedNvfp4};
-use gpt2_nvfp4::{GPT2_BATCH_SIZE, GPT2_N_EMBD, GPT2_SEQ_LEN, HiddenStateDevice};
+use gpt2_nvfp4::{
+    GPT2_BATCH_SIZE, GPT2_N_EMBD, GPT2_SEQ_LEN, HiddenStateDevice, RowwiseNvfp4Buffers,
+};
 use std::collections::{BTreeSet, HashMap};
 
 fn code(scales: &[u8], row: usize, group: usize, k: usize, offset: usize) -> u8 {
@@ -189,14 +191,56 @@ fn check_layer(cfg: Config) -> AppResult {
     let qb = q.bytes.to_host_vec(s)?;
     let qs = q.scales.to_host_vec(s)?;
     let qg = q.global_scales.to_host_vec(s)?;
+    let mut reference_gathered = DeviceBuffer::zeroed(s, n * memory_width)?;
+    let table_nvfp4 = &w.nv[0];
+    let hash_heads = w.cfg.primes.len();
+    e.module.engram_gather_kernel(
+        s,
+        grid((n * memory_width) as u32),
+        &e.ids,
+        &table_nvfp4.bytes,
+        &table_nvfp4.scales,
+        &table_nvfp4.global_scale,
+        &mut reference_gathered,
+        n as u32,
+        hash_heads as u32,
+        w.cfg.head_dim as u32,
+    )?;
+    {
+        let mut reference_pack = RowwiseNvfp4Buffers::new(s, n * memory_width, n)?;
+        let mut amax = DeviceBuffer::zeroed(s, n)?;
+        reference_pack.scratch().quantize_row_amax(
+            &r.quant,
+            s,
+            &reference_gathered,
+            &mut amax,
+            n as u32,
+            memory_width as u32,
+        )?;
+        let reference_pack = reference_pack.rowwise();
+        assert!(
+            qb == reference_pack.bytes.to_host_vec(s)?,
+            "fused memory payload differs at width {memory_width}"
+        );
+        assert!(
+            qs == reference_pack.scales.to_host_vec(s)?,
+            "fused memory CSF scales differ at width {memory_width}"
+        );
+        assert!(
+            qg.iter().map(|x| x.to_bits()).eq(reference_pack
+                .global_scales
+                .to_host_vec(s)?
+                .iter()
+                .map(|x| x.to_bits()))
+        );
+    }
     let mut expected_u = HashMap::new();
     let mut expected_un = HashMap::new();
     let mut max_projection_error = 0f64;
     let mut max_output_error = 0f64;
     let ids = e.ids.to_host_vec(s)?;
-    let hash_heads = w.cfg.primes.len();
     for p in needed.iter().copied() {
-        let gathered = row(s, &e.memory, p, memory_width)?;
+        let gathered = row(s, &reference_gathered, p, memory_width)?;
         let mut offset = 0;
         for head in 0..hash_heads {
             let order = 2 + head / HEADS;

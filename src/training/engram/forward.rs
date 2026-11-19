@@ -25,7 +25,12 @@ impl Module {
         let s = r.stream.as_ref();
         let d = GPT2_N_EMBD as u32;
         let streams = self.cfg.streams() as u32;
-        if residual.len() < (n * d * streams) as usize {
+        if residual.len() < (n * d * streams) as usize
+            || !matches!(
+                (w.cfg.primes.len(), w.cfg.head_dim),
+                (16, 32) | (16, 64) | (24, 64)
+            )
+        {
             return Err(DriverError(1));
         }
         self.n = n;
@@ -57,25 +62,20 @@ impl Module {
         } else {
             launch_hash!(self.module, engram_hash_kernel)?;
         }
-        self.module.engram_gather_kernel(
+        let packed = self.memory_q.scratch();
+        self.module.engram_gather_pack_kernel(
             s,
-            grid(n * memory as u32),
+            rows(n),
             &self.ids,
             &w.nv[0].bytes,
             &w.nv[0].scales,
             &w.nv[0].global_scale,
-            &mut self.memory,
+            packed.bytes,
+            packed.scales,
+            packed.global_scales,
             n,
             hash_heads,
             w.cfg.head_dim as u32,
-        )?;
-        self.memory_q.scratch().quantize_row_amax(
-            &r.quant,
-            s,
-            &self.memory,
-            &mut self.row_amax,
-            n,
-            memory as u32,
         )?;
         for wi in self.cfg.projector_indices() {
             let is_value = wi == self.cfg.value_index();

@@ -1,6 +1,8 @@
 //! Independent CUDA oracle declared before implementation of native Engram.
 use cuda_core::{DeviceBuffer, LaunchConfig};
 use rust_kernels_cuda::engram::kernels;
+use rust_kernels_cuda::nvfp4::csf;
+use rust_kernels_cuda::nvfp4_quant::{Nvfp4QuantModule, Nvfp4QuantRowwiseDerivedAmaxArgs};
 use std::error::Error;
 mod common;
 fn grid(n: u32) -> LaunchConfig {
@@ -17,6 +19,115 @@ fn rows(n: u32) -> LaunchConfig {
         shared_mem_bytes: 0,
     }
 }
+
+#[test]
+#[ignore = "requires native sm_120a CUDA"]
+fn fused_engram_gather_pack_matches_materialized_rows() -> Result<(), Box<dyn Error>> {
+    let (_, stream, (engram, quant)) = common::cuda_test_module(|module| {
+        Ok((
+            kernels::from_module(module.clone())?,
+            Nvfp4QuantModule::from_module(module)?,
+        ))
+    })?;
+    let n = 129;
+    let table_heads = 256;
+    let table_global = DeviceBuffer::from_host(&stream, &[0.137])?;
+    for (heads, dim) in [(16, 32), (16, 64), (24, 64)] {
+        let width = heads * dim;
+        let elements = n * width;
+        let table_elements = table_heads * dim;
+        let mut payload = (0..table_elements / 2)
+            .map(|i| (i * 137 + i / 7) as u8)
+            .collect::<Vec<_>>();
+        payload[..dim / 2].fill(0);
+        let table = DeviceBuffer::from_host(&stream, &payload)?;
+        let codes = (0..table_elements / 16)
+            .map(|i| ((i * 13 + i / 7) % 127) as u8)
+            .collect::<Vec<_>>();
+        let table_scales = DeviceBuffer::from_host(
+            &stream,
+            &csf::encode_host(&codes, table_elements / 128, 128),
+        )?;
+        let ids = (0..n * heads)
+            .map(|i| {
+                let row = i / heads;
+                let head = i % heads;
+                if row == 0 {
+                    0
+                } else {
+                    ((row * 13 + head * 17) % table_heads) as u32
+                }
+            })
+            .collect::<Vec<_>>();
+        let ids = DeviceBuffer::from_host(&stream, &ids)?;
+        let mut gathered = DeviceBuffer::zeroed(&stream, elements)?;
+        let mut amax = DeviceBuffer::zeroed(&stream, n)?;
+        let mut expected_bytes = DeviceBuffer::zeroed(&stream, elements / 2)?;
+        let mut expected_scales =
+            DeviceBuffer::zeroed(&stream, csf::rowwise_encoded_len(n, width))?;
+        let mut expected_globals = DeviceBuffer::zeroed(&stream, n)?;
+        engram.engram_gather_kernel(
+            &stream,
+            grid(elements as u32),
+            &ids,
+            &table,
+            &table_scales,
+            &table_global,
+            &mut gathered,
+            n as u32,
+            heads as u32,
+            dim as u32,
+        )?;
+        quant.fp32_to_nvfp4_four_six_rowwise_derived_amax(Nvfp4QuantRowwiseDerivedAmaxArgs {
+            stream: &stream,
+            x: &gathered,
+            amax: &mut amax,
+            out_fp4: &mut expected_bytes,
+            out_scales: &mut expected_scales,
+            out_global_scale: &mut expected_globals,
+            row_count: n as u32,
+            row_len: width as u32,
+        })?;
+        let mut bytes = DeviceBuffer::zeroed(&stream, elements / 2)?;
+        let mut scales = DeviceBuffer::zeroed(&stream, csf::rowwise_encoded_len(n, width))?;
+        let mut globals = DeviceBuffer::zeroed(&stream, n)?;
+        engram.engram_gather_pack_kernel(
+            &stream,
+            rows(n as u32),
+            &ids,
+            &table,
+            &table_scales,
+            &table_global,
+            &mut bytes,
+            &mut scales,
+            &mut globals,
+            n as u32,
+            heads as u32,
+            dim as u32,
+        )?;
+        assert!(
+            bytes.to_host_vec(&stream)? == expected_bytes.to_host_vec(&stream)?,
+            "FP4 payload at width {width}"
+        );
+        assert!(
+            scales.to_host_vec(&stream)? == expected_scales.to_host_vec(&stream)?,
+            "CSF scales at width {width}"
+        );
+        assert!(
+            globals
+                .to_host_vec(&stream)?
+                .into_iter()
+                .map(f32::to_bits)
+                .eq(expected_globals
+                    .to_host_vec(&stream)?
+                    .into_iter()
+                    .map(f32::to_bits)),
+            "row global scales at width {width}"
+        );
+    }
+    Ok(())
+}
+
 fn sigmoid(x: f64) -> f64 {
     1.0 / (1.0 + (-x).exp())
 }
