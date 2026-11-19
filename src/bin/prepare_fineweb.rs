@@ -1,9 +1,11 @@
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use std::error::Error;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 #[path = "prepare_fineweb/curated.rs"]
 mod curated;
+#[path = "prepare_fineweb/interleave.rs"]
+mod interleave;
 #[path = "prepare_fineweb/reference.rs"]
 mod reference;
 #[path = "../reference_validation.rs"]
@@ -13,7 +15,10 @@ mod reference_validation;
 type AppResult<T = ()> = Result<T, Box<dyn Error>>;
 
 #[derive(Parser)]
+#[command(args_conflicts_with_subcommands = true)]
 struct Args {
+    #[command(subcommand)]
+    command: Option<Command>,
     /// Official GPT-2 FineWeb validation shard; prepare reference documents only.
     #[arg(long, requires_all = ["reference_vocab", "reference_output"])]
     reference_tokens: Option<PathBuf>,
@@ -37,8 +42,32 @@ struct Args {
     exclude_answers: Vec<PathBuf>,
 }
 
+#[derive(Subcommand)]
+enum Command {
+    /// Disperse curated rows using the matched B8 training mix.
+    Interleave {
+        /// Training manifest containing the original contiguous source blocks.
+        #[arg(long)]
+        source: PathBuf,
+        /// 1-based index of a curated shard. Repeat for each curated shard.
+        #[arg(long, required = true)]
+        curated_shard: Vec<NonZeroUsize>,
+        /// New directory for the mixed windows and training.json.
+        #[arg(long)]
+        output: PathBuf,
+    },
+}
+
 fn main() -> AppResult {
     let args = Args::parse();
+    if let Some(Command::Interleave {
+        source,
+        curated_shard,
+        output,
+    }) = args.command
+    {
+        return interleave::prepare(&source, &output, &curated_shard);
+    }
     if let (Some(parquet), Some(output), Some(tokens), Some(documents)) = (
         args.curated_parquet,
         args.curated_output,
