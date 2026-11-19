@@ -17,7 +17,7 @@ pub use attention::{
     qkv_projection_backward,
 };
 pub use block::{
-    BlockMlpBackwardArgs, BlockMlpBackwardModules, mlp_side_backward, mlp_side_backward_branch,
+    BlockMlpBackwardArgs, BlockMlpBackwardModules, mlp_side_backward,
 };
 pub use block_attention::{
     BlockAttentionBackwardArgs, BlockAttentionBackwardModules, BlockAttentionBackwardScratch,

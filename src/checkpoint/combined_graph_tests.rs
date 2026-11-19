@@ -26,7 +26,7 @@ fn native_complete_engram_mhc_checkpoint_387_tensors_roundtrip() -> AppResult {
     let runtime = Runtime::new()?;
     let stream = runtime.stream.as_ref();
     let (mut model, depth) = super::load_uploaded_model(stream, &baseline)?;
-    assert_eq!(depth, gpt2_nvfp4::GPT2_N_LAYER);
+    assert_eq!(depth, gpt2_nvfp4::GPT2_N_LAYER.into());
     assert!(model.engram.is_none() && model.mhc.is_none() && model.latent_feedback.is_none());
     model.mhc = Some(crate::training::mhc::Weights::new(&runtime, 0x47505432)?);
     model.engram = Some(crate::training::engram::Weights::new_multistream(&runtime)?);

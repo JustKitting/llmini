@@ -12,7 +12,8 @@ use crate::{
 
 impl Trainer {
     pub(super) fn enqueue_backward(&mut self, batch: &TokenBatch) -> AppResult {
-        let active_depth = self.active_depth();
+        let layout = self.layer_layout();
+        let active_depth = layout.depth;
         self.buffers.optimizer_state.invalidate_scheduled_values();
         super::super::symexp_lin::prepare_weight_gradients(
             &self.runtime,
@@ -78,7 +79,7 @@ impl Trainer {
             let mhc = std::cell::RefCell::new(&mut self.mhc);
             let mhc_weights = &self.uploaded.mhc;
             gpt2_backward_at_depth(
-                active_depth,
+                layout,
                 Gpt2BackwardArgs {
                     stream,
                     modules: self.runtime.backward_modules(),

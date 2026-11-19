@@ -8,12 +8,14 @@ use crate::types::HiddenStateDevice;
 pub(super) fn forward<'a, 'scratch>(
     args: MlpForwardArgs<'a, 'scratch>,
 ) -> Result<HiddenStateDevice<'a>, DriverError> {
-    forward_impl(args, true)
+    let routed = crate::uses_block_topk_mlp(args.block_index);
+    forward_impl(args, true, routed)
 }
 
 pub(super) fn forward_impl<'a, 'scratch>(
     args: MlpForwardArgs<'a, 'scratch>,
     add_residual: bool,
+    routed: bool,
 ) -> Result<HiddenStateDevice<'a>, DriverError> {
     let mut input_nvfp4 = args.scratch.input_nvfp4;
     let mut activation_nvfp4 = args.scratch.activation_nvfp4;
@@ -118,7 +120,7 @@ pub(super) fn forward_impl<'a, 'scratch>(
         Some(tape) => tape.saved(),
         None => activation_nvfp4.device(),
     };
-    let mut route_masks = if crate::uses_block_topk_mlp(args.block_index) {
+    let mut route_masks = if routed {
         Some(match saved_routes.as_mut() {
             Some(routes) => &mut **routes,
             None => &mut *args.scratch.route_masks,

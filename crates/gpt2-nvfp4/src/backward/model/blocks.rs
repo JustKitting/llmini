@@ -5,14 +5,16 @@ use cuda_core::{CudaStream, DeviceBuffer, DriverError, memory};
 use super::types::{Gpt2BackwardModules, Gpt2BackwardSeeds, Gpt2BackwardWeights};
 use crate::backward::{
     BlockAttentionBackwardArgs, BlockAttentionBackwardScratch, BlockMlpBackwardArgs,
-    MlpBackwardScratch, mlp_side_backward,
-    mlp_side_backward_branch,
+    MlpBackwardScratch,
 };
+use crate::backward::block::mlp_side_backward_impl;
 use crate::backward::block_attention::attention_side_backward_at_depth;
+use crate::depth_growth::LayerLayout;
 use crate::types::{BlockBackwardGrads, Gpt2ForwardSaved};
 use crate::{exclusive_self_attention_enabled, uses_full_attention};
 
 pub(super) struct BlocksBackwardRun<'ctx, 'a, 'scratch, 'out> {
+    pub layout: LayerLayout,
     pub stream: &'a CudaStream,
     pub modules: Gpt2BackwardModules<'a>,
     pub saved: Gpt2ForwardSaved<'a>,
@@ -69,6 +71,7 @@ pub(super) fn run_blocks(
             args.seeds,
             block_index,
             active_depth,
+            args.layout.source_slot(block_index),
             boundary,
         )?;
         if hook(block_index, &mut *args.d_embedding_residual)? {
@@ -100,6 +103,7 @@ fn run_block<'a, 'scratch, 'out>(
     seeds: Gpt2BackwardSeeds,
     block_index: usize,
     active_depth: usize,
+    source_slot: usize,
     boundary: &mut dyn FnMut(usize, bool, &mut DeviceBuffer<f32>) -> Result<bool, DriverError>,
 ) -> Result<Option<u32>, DriverError> {
     let mut grads = current.reborrow();
@@ -128,11 +132,8 @@ fn run_block<'a, 'scratch, 'out>(
         scratch: mlp_scratch.reborrow(),
         seeds: seeds.mlp[block_index],
     };
-    let d_residual_after_attention_amax_chunks = if isolated_mlp {
-        mlp_side_backward_branch(mlp_args)?
-    } else {
-        mlp_side_backward(mlp_args)?
-    };
+    let d_residual_after_attention_amax_chunks =
+        mlp_side_backward_impl(mlp_args, !isolated_mlp, source_slot)?;
     let changed = boundary(branch + 1, false, d_residual_after_attention)?;
     let isolated_attention = boundary(branch, true, d_residual_after_attention)?;
     let attention_args = BlockAttentionBackwardArgs {
@@ -161,7 +162,8 @@ fn run_block<'a, 'scratch, 'out>(
         scratch: attention_scratch.reborrow(),
         seeds: seeds.attention[block_index],
     };
-    let amax = attention_side_backward_at_depth(attention_args, !isolated_attention, active_depth)?;
+    let amax =
+        attention_side_backward_at_depth(attention_args, !isolated_attention, active_depth, source_slot)?;
     Ok(if boundary(branch, false, d_residual)? {
         None
     } else {

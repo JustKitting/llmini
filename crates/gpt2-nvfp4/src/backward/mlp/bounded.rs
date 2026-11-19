@@ -4,13 +4,16 @@ use crate::backward::linear::{
     run_rowwise_linear_backward, run_rowwise_linear_backward_routed, RowwiseLinearBackwardPass,
 };
 use crate::{
-    uses_block_topk_mlp, MlpWeights, GPT2_EMBEDDING_DIM, GPT2_MLP_DIM,
+    MlpWeights, GPT2_EMBEDDING_DIM, GPT2_MLP_DIM,
     GPT2_MLP_ROUTE_ACTIVE_FEATURE_TILES, GPT2_MLP_ROUTE_FEATURE_TILES, GPT2_MLP_UP_DIM,
 };
 use cuda_core::DriverError;
 use rust_kernels_cuda::linear_backward::LinearBackwardRoute;
 
-pub(super) fn backward(args: MlpBackwardArgs<'_, '_, '_>) -> Result<(), DriverError> {
+pub(super) fn backward(
+    args: MlpBackwardArgs<'_, '_, '_>,
+    routed: bool,
+) -> Result<(), DriverError> {
     let MlpBackwardArgs {
         block_index,
         stream,
@@ -53,7 +56,6 @@ pub(super) fn backward(args: MlpBackwardArgs<'_, '_, '_>) -> Result<(), DriverEr
         scale_seed: seeds.down_scale,
         precomputed_e_amax_chunks: precomputed_d_residual_amax_chunks,
     };
-    let routed = uses_block_topk_mlp(block_index);
     if routed {
         run_rowwise_linear_backward_routed(
             modules.linear,

@@ -4,7 +4,7 @@ use std::io::BufReader;
 use std::path::Path;
 
 use cuda_core::CudaStream;
-use gpt2_nvfp4::GPT2_N_LAYER;
+use gpt2_nvfp4::{GPT2_N_LAYER, depth_growth::LayerLayout};
 
 mod reuse;
 pub(crate) mod tensor;
@@ -18,7 +18,7 @@ use crate::upload::UploadedModel;
 
 fn read_tensors(
     path: &Path,
-) -> AppResult<(u32, usize, HashMap<String, super::format::CheckpointTensor>)> {
+) -> AppResult<(u32, LayerLayout, HashMap<String, super::format::CheckpointTensor>)> {
     let file = File::open(path)?;
     let mut reader = CheckpointReader::new(BufReader::new(file));
     let tensor_count = reader.read_header()?;
@@ -39,8 +39,8 @@ fn read_tensors(
         }
     }
 
-    let depth = super::depth::take(&mut tensors)?;
-    let graph_count = tensor_count - u32::from(depth != GPT2_N_LAYER);
+    let layout = super::depth::take(&mut tensors)?;
+    let graph_count = tensor_count - super::depth::extra_tensors(layout);
     if !supported(graph_count) {
         return Err("checkpoint tensor count disagrees with its active depth descriptor".into());
     }
@@ -91,11 +91,11 @@ fn read_tensors(
             "full-credit auxiliary checkpoint requires the complete Engram/mHC graph".into(),
         );
     }
-    Ok((graph_count, depth, tensors))
+    Ok((graph_count, layout, tensors))
 }
 
-pub fn load_uploaded_model(stream: &CudaStream, path: &Path) -> AppResult<(UploadedModel, usize)> {
-    let (tensor_count, depth, mut tensors) = read_tensors(path)?;
+pub fn load_uploaded_model(stream: &CudaStream, path: &Path) -> AppResult<(UploadedModel, LayerLayout)> {
+    let (tensor_count, layout, mut tensors) = read_tensors(path)?;
     let expected_tensor_count = schema::tensor_count(GPT2_N_LAYER);
     let mut model = topology::load_model(stream, &mut tensors)?;
     if tensors.contains_key("mhc.config") {
@@ -124,5 +124,5 @@ pub fn load_uploaded_model(stream: &CudaStream, path: &Path) -> AppResult<(Uploa
             return Err("Engram checkpoint stream graph is incompatible with its backbone".into());
         }
     }
-    Ok((model, depth))
+    Ok((model, layout))
 }

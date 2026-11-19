@@ -3,6 +3,7 @@ use cuda_core::DriverError;
 use super::args::Gpt2ForwardArgs;
 use super::weights::Gpt2Weights;
 use crate::Gpt2Rng;
+use crate::depth_growth::LayerLayout;
 use crate::types::{HiddenStateDevice, TokenEmbeddingArgs};
 
 #[derive(Clone, Debug, Default)]
@@ -15,7 +16,7 @@ impl Gpt2 {
     /// reported immediately after its last block.
     pub fn forward_at_depth<'a>(
         &self,
-        depth: usize,
+        layout: impl Into<LayerLayout>,
         args: Gpt2ForwardArgs<'a>,
         hook: &mut dyn FnMut(usize, &mut HiddenStateDevice<'_>) -> Result<(), DriverError>,
         readout: bool,
@@ -27,7 +28,7 @@ impl Gpt2 {
     ) -> Result<HiddenStateDevice<'a>, DriverError> {
         super::forward::forward_at_depth(
             self.weights().expect("Gpt2 must be initialized"),
-            depth,
+            layout.into(),
             args,
             hook,
             readout,

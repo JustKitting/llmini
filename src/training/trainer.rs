@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use cuda_core::sys;
+use gpt2_nvfp4::depth_growth::LayerLayout;
 use gpt2_nvfp4::{GPT2_N_LAYER, GPT2_SEQ_LEN, Gpt2, Gpt2Rng};
 
 use super::{ReusableTokenBatch, TokenBatch, buffers, runtime::Runtime};
@@ -16,6 +17,7 @@ pub struct Trainer {
         Option<super::bounded_swiglu_tests::RecomputeAudit>,
     pub(in crate::training) mhc: Option<super::mhc::Mhc>,
     pub(in crate::training) architecture_ready: bool,
+    pub(super) inherit_growth_block_policy: bool,
     pub(in crate::training) engram: Option<super::engram::Engram>,
     pub(in crate::training) latent_feedback: Option<super::latent_feedback::Feedback>,
     pub(in crate::training) base_seed: u64,
@@ -35,10 +37,10 @@ impl Trainer {
     /// Open saved evaluation weights directly, before allocating trainer state.
     pub(in crate::training) fn from_checkpoint(seed: u64, path: &Path) -> AppResult<Self> {
         let runtime = Runtime::new()?;
-        let (uploaded, depth) = crate::checkpoint::load_uploaded_model(&runtime.stream, path)?;
+        let (uploaded, layout) = crate::checkpoint::load_uploaded_model(&runtime.stream, path)?;
         let mut model = Gpt2::new();
         model.init(seed);
-        Self::with_uploaded_model(seed, runtime, model, uploaded, depth)
+        Self::with_uploaded_model(seed, runtime, model, uploaded, layout)
     }
 
     pub fn new_feedback(seed: u64) -> AppResult<Self> {
@@ -169,7 +171,7 @@ impl Trainer {
                 super::engram::Weights::new_multistream(&runtime)?
             });
         }
-        Self::with_uploaded_model(seed, runtime, model, uploaded, GPT2_N_LAYER)
+        Self::with_uploaded_model(seed, runtime, model, uploaded, GPT2_N_LAYER.into())
     }
 
     fn with_uploaded_model(
@@ -177,8 +179,9 @@ impl Trainer {
         runtime: Runtime,
         model: Gpt2,
         uploaded: UploadedModel,
-        depth: usize,
+        layout: LayerLayout,
     ) -> AppResult<Self> {
+        let depth = layout.depth;
         let stream = runtime.stream.as_ref();
         let mut buffers = buffers::TrainBuffers::new(stream, &runtime, &uploaded)?;
         buffers.optimizer_state.active_depth = depth;
@@ -236,6 +239,7 @@ impl Trainer {
             bounded_projection_audit: None,
             mhc,
             architecture_ready: true,
+            inherit_growth_block_policy: layout.inherit_block_policy,
             latent_feedback,
             base_seed: seed,
             engram,

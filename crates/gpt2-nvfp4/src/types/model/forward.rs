@@ -1,6 +1,7 @@
 use super::args::Gpt2ForwardArgs;
 use super::final_logits::{FinalForwardArgs, finish_forward};
 use super::weights::Gpt2Weights;
+use crate::depth_growth::LayerLayout;
 use crate::types::{BlockForwardArgs, HiddenStateDevice};
 use crate::uses_full_attention;
 use cuda_core::DriverError;
@@ -36,17 +37,18 @@ pub(super) fn forward_with_boundaries<'a>(
     readout: bool,
     boundary: &mut dyn FnMut(usize, bool, &mut HiddenStateDevice<'_>) -> Result<bool, DriverError>,
 ) -> Result<HiddenStateDevice<'a>, DriverError> {
-    forward_at_depth(weights, weights.h.len(), args, hook, readout, boundary)
+    forward_at_depth(weights, weights.h.len().into(), args, hook, readout, boundary)
 }
 
 pub(super) fn forward_at_depth<'a>(
     weights: &Gpt2Weights,
-    depth: usize,
+    layout: LayerLayout,
     args: Gpt2ForwardArgs<'a>,
     hook: &mut dyn FnMut(usize, &mut HiddenStateDevice<'_>) -> Result<(), DriverError>,
     readout: bool,
     boundary: &mut dyn FnMut(usize, bool, &mut HiddenStateDevice<'_>) -> Result<bool, DriverError>,
 ) -> Result<HiddenStateDevice<'a>, DriverError> {
+    let depth = layout.depth;
     if depth == 0 || depth > weights.h.len() {
         return Err(DriverError(1));
     }
@@ -95,6 +97,7 @@ pub(super) fn forward_at_depth<'a>(
         hook(block_index, &mut hidden)?;
         hidden = block.forward_at_depth(
             depth,
+            layout.source_slot(block_index),
             BlockForwardArgs {
                 value_rms,
                 value_projection_observer,

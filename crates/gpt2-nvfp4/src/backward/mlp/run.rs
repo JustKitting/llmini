@@ -12,11 +12,19 @@ use cuda_core::DriverError;
 use rust_kernels_cuda::linear_backward::LinearBackwardRoute;
 
 pub fn backward(args: MlpBackwardArgs<'_, '_, '_>) -> Result<(), DriverError> {
+    let routed = uses_block_topk_mlp(args.block_index);
+    backward_with_routing(args, routed)
+}
+
+pub(in crate::backward) fn backward_with_routing(
+    args: MlpBackwardArgs<'_, '_, '_>,
+    routed: bool,
+) -> Result<(), DriverError> {
     if crate::GPT2_BOUNDED_SWIGLU {
-        return super::bounded::backward(args);
+        return super::bounded::backward(args, routed);
     }
     let MlpBackwardArgs {
-        block_index,
+        block_index: _,
         stream,
         modules,
         saved,
@@ -57,7 +65,7 @@ pub fn backward(args: MlpBackwardArgs<'_, '_, '_>) -> Result<(), DriverError> {
         scale_seed: seeds.down_scale,
         precomputed_e_amax_chunks: precomputed_d_residual_amax_chunks,
     };
-    let d_mlp_up_amax_chunks = if uses_block_topk_mlp(block_index) {
+    let d_mlp_up_amax_chunks = if routed {
         run_rowwise_linear_backward_relu2_backward_f16_routed(
             modules.linear,
             modules.quant,
@@ -98,7 +106,7 @@ pub fn backward(args: MlpBackwardArgs<'_, '_, '_>) -> Result<(), DriverError> {
         scale_seed: seeds.up_scale,
         precomputed_e_amax_chunks: Some(d_mlp_up_amax_chunks),
     };
-    if uses_block_topk_mlp(block_index) {
+    if routed {
         run_rowwise_linear_backward_routed(
             modules.linear,
             modules.quant,

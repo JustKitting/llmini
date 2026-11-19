@@ -3,6 +3,7 @@ use std::io::{BufWriter, Write};
 use std::path::Path;
 
 use cuda_core::CudaStream;
+use gpt2_nvfp4::depth_growth::LayerLayout;
 
 pub(crate) mod tensor;
 mod topology;
@@ -14,13 +15,13 @@ use crate::{AppResult, fs_utils::ensure_parent};
 pub fn save_uploaded_model(
     stream: &CudaStream,
     model: &UploadedModel,
-    depth: usize,
+    layout: LayerLayout,
     path: &Path,
 ) -> AppResult {
     validate_graph(model)?;
     ensure_parent(path)?;
     let file = File::create(path)?;
-    write_uploaded_model_to(stream, model, depth, file)
+    write_uploaded_model_to(stream, model, layout, file)
 }
 
 fn validate_graph(model: &UploadedModel) -> AppResult {
@@ -66,14 +67,14 @@ fn validate_graph(model: &UploadedModel) -> AppResult {
 pub(super) fn write_uploaded_model_to(
     stream: &CudaStream,
     model: &UploadedModel,
-    depth: usize,
+    layout: LayerLayout,
     output: impl Write,
 ) -> AppResult {
     validate_graph(model)?;
     let mut writer = CheckpointWriter::new(BufWriter::new(output));
     writer.write_header(
         schema::tensor_count(model.blocks.len())
-            + u32::from(depth != model.blocks.len())
+            + super::depth::extra_tensors(layout)
             + super::activation_quant::extra_tensors()
             + super::mlp::extra_tensors()
             + super::value_rms::extra_tensors()
@@ -88,9 +89,7 @@ pub(super) fn write_uploaded_model_to(
                 0
             },
     )?;
-    // The native tensor layout stays fixed. Readers must restore only this
-    // prefix when the time budget ends before the planned final growth.
-    super::depth::write(&mut writer, depth)?;
+    super::depth::write(&mut writer, layout)?;
     topology::write_model(&mut writer, stream, model)?;
     super::activation_quant::write(&mut writer)?;
     super::mlp::write(&mut writer)?;

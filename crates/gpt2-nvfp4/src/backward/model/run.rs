@@ -5,6 +5,7 @@ use super::final_head::run_final_head;
 use super::types::Gpt2BackwardArgs;
 use crate::{GPT2_EMBEDDING_DIM, GPT2_N_LAYER};
 use crate::backward::{Gpt2LayerNormBackwardAmaxArgs, layer_norm_backward_amax};
+use crate::depth_growth::LayerLayout;
 use crate::types::Gpt2BackwardGrads;
 use rust_kernels_cuda::residual::ResidualGradAccumulateArgs;
 
@@ -34,7 +35,7 @@ pub fn backward_with_boundaries(
 /// Reverse the same prefix executed by `Gpt2::forward_at_depth`. Inactive
 /// block gradients are left untouched and must be excluded by the caller.
 pub fn backward_at_depth(
-    depth: usize,
+    layout: impl Into<LayerLayout>,
     args: Gpt2BackwardArgs<'_, '_, '_>,
     hook: &mut dyn FnMut(usize, &mut cuda_core::DeviceBuffer<f32>) -> Result<bool, DriverError>,
     boundary: &mut dyn FnMut(
@@ -43,6 +44,8 @@ pub fn backward_at_depth(
         &mut cuda_core::DeviceBuffer<f32>,
     ) -> Result<bool, DriverError>,
 ) -> Result<(), DriverError> {
+    let layout = layout.into();
+    let depth = layout.depth;
     if !(1..=GPT2_N_LAYER).contains(&depth) {
         return Err(DriverError(1));
     }
@@ -112,6 +115,7 @@ pub fn backward_at_depth(
     let head_changed = boundary(depth * 2, true, d_embedding_residual)?;
     run_blocks(
         BlocksBackwardRun {
+            layout,
             stream,
             modules,
             saved,

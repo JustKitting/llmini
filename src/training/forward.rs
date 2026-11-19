@@ -70,7 +70,8 @@ impl Trainer {
         include_next_latent: bool,
     ) -> AppResult<TrainStats> {
         let stream = self.runtime.stream.as_ref();
-        let active_depth = self.active_depth();
+        let layout = self.layer_layout();
+        let active_depth = layout.depth;
         let buffers = &mut self.buffers;
         let uploaded = &self.uploaded;
 
@@ -195,8 +196,8 @@ impl Trainer {
                 Ok(false)
             }
         };
-        let hidden = if active_depth != gpt2_nvfp4::GPT2_N_LAYER {
-            self.model.forward_at_depth(active_depth, args, &mut hook, readout, &mut boundary)?
+        let hidden = if layout.inherit_block_policy || active_depth != gpt2_nvfp4::GPT2_N_LAYER {
+            self.model.forward_at_depth(layout, args, &mut hook, readout, &mut boundary)?
         } else if has_mhc {
             self.model
                 .forward_with_boundaries(args, &mut hook, readout, &mut boundary)?

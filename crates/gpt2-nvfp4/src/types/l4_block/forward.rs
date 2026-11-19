@@ -25,12 +25,13 @@ impl Gpt2BlockWeights {
             &mut HiddenStateDevice<'_>,
         ) -> Result<bool, DriverError>,
     ) -> Result<HiddenStateDevice<'a>, DriverError> {
-        self.forward_at_depth(crate::GPT2_N_LAYER, args, boundary)
+        self.forward_at_depth(crate::GPT2_N_LAYER, args.block_index, args, boundary)
     }
 
     pub(crate) fn forward_at_depth<'a, 'scratch>(
         &self,
         active_depth: usize,
+        source_slot: usize,
         args: BlockForwardArgs<'a, 'scratch>,
         boundary: &mut dyn FnMut(
             usize,
@@ -48,7 +49,7 @@ impl Gpt2BlockWeights {
         let tma_descriptors = args.tma_descriptors;
         let tma_weight_bytes_padded = args.tma_weight_bytes_padded;
         let mut tape = args.tape;
-        let layer_norm_scale = crate::layer_norm_scale(args.block_index);
+        let layer_norm_scale = crate::layer_norm_scale(source_slot);
         let mut hidden = args.hidden;
         let branch = args.block_index * 2;
         let isolated_attention = boundary(branch, true, &mut hidden)?;
@@ -165,11 +166,11 @@ impl Gpt2BlockWeights {
             hidden,
             tape: mlp_tape,
         };
-        let mut hidden = if isolated_mlp {
-            MlpWeights::forward_branch(mlp_args)?
-        } else {
-            MlpWeights::forward(mlp_args)?
-        };
+        let mut hidden = MlpWeights::forward_with_routing(
+            mlp_args,
+            !isolated_mlp,
+            crate::uses_block_topk_mlp(source_slot),
+        )?;
         boundary(branch + 1, false, &mut hidden)?;
         Ok(hidden)
     }

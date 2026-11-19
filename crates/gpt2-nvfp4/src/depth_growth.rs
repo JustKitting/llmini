@@ -2,6 +2,40 @@
 
 use crate::config::KIMI_FULL_ATTENTION_PERIOD as GROWTH;
 
+/// Active stack layout shared by training, evaluation and checkpoint replay.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LayerLayout {
+    pub depth: usize,
+    pub inherit_block_policy: bool,
+}
+
+impl LayerLayout {
+    pub const fn grown(depth: usize) -> Self {
+        Self {
+            depth,
+            inherit_block_policy: true,
+        }
+    }
+
+    /// Each insertion moves blocks by one original four-layer period.
+    pub const fn source_slot(self, slot: usize) -> usize {
+        if self.inherit_block_policy {
+            slot % GROWTH
+        } else {
+            slot
+        }
+    }
+}
+
+impl From<usize> for LayerLayout {
+    fn from(depth: usize) -> Self {
+        Self {
+            depth,
+            inherit_block_policy: false,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct GrowthPlan {
     total_attempts: usize,
@@ -94,6 +128,30 @@ mod tests {
         }
         let applications: usize = (0..20_000).map(|attempt| plan.depth(attempt)).sum();
         assert_eq!(applications, 240_000);
+    }
+
+    #[test]
+    fn copied_blocks_keep_their_source_policy_at_each_stage() {
+        let mut slots: Vec<_> = (0..GROWTH).collect();
+        for depth in (GROWTH * 2..=GROWTH * 4).step_by(GROWTH) {
+            let transition = GrowthTransition::new(slots.len(), depth).unwrap();
+            slots.resize(depth, usize::MAX);
+            for (source, destination) in transition.copies() {
+                slots[destination] = slots[source];
+            }
+            let layout = LayerLayout::grown(depth);
+            for (slot, &source) in slots.iter().enumerate() {
+                assert_eq!(layout.source_slot(slot), source);
+                assert_eq!(uses_full_attention(slot), uses_full_attention(source));
+            }
+        }
+        let grown = LayerLayout::grown(GROWTH * 4).source_slot(GROWTH);
+        let fixed = LayerLayout::from(GROWTH * 4).source_slot(GROWTH);
+        assert_eq!(grown, 0);
+        assert_eq!(fixed, GROWTH);
+        assert_eq!(crate::layer_norm_scale(grown), crate::layer_norm_scale(0));
+        assert!(!crate::uses_block_topk_mlp(grown));
+        assert!(crate::uses_block_topk_mlp(fixed));
     }
 
     #[test]

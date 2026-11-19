@@ -11,21 +11,21 @@ impl Trainer {
         save_uploaded_model(
             self.runtime.stream.as_ref(),
             &self.uploaded,
-            self.active_depth(),
+            self.layer_layout(),
             path,
         )
     }
 
     pub fn load_model(&mut self, path: &Path) -> AppResult {
         let stream = self.runtime.stream.as_ref();
-        let (uploaded, depth) =
+        let (uploaded, layout) =
             if let Some(reload) = crate::checkpoint::prepare_reload(&mut self.uploaded, path)? {
                 stream.synchronize()?;
                 self.architecture_ready = false;
                 (None, reload.apply(stream)?)
             } else {
-                let (model, depth) = load_uploaded_model(stream, path)?;
-                (Some(model), depth)
+                let (model, layout) = load_uploaded_model(stream, path)?;
+                (Some(model), layout)
             };
         // Multi-stream tapes are large. Release the old optional graph before
         // constructing the replacement; a failed partial load stays unusable.
@@ -43,7 +43,9 @@ impl Trainer {
         if let Some(uploaded) = uploaded {
             self.uploaded = uploaded;
         }
+        let depth = layout.depth;
         self.buffers.optimizer_state.active_depth = depth;
+        self.inherit_growth_block_policy = layout.inherit_block_policy;
         let mut engram = self
             .uploaded
             .engram
