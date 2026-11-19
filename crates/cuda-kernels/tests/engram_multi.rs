@@ -12,7 +12,7 @@ type Inputs = [Vec<f64>; 7]; // query,key,shared V,query gamma,key gamma,conv ga
 fn sigmoid(x: f64) -> f64 {
     1. / (1. + (-x).exp())
 }
-fn forward(a: &Inputs) -> Vec<f64> {
+fn forward(a: &Inputs, dilation: usize) -> Vec<f64> {
     let mut u = vec![0.; N * S * D];
     let mut normalized = u.clone();
     for r in 0..N * S {
@@ -55,7 +55,7 @@ fn forward(a: &Inputs) -> Vec<f64> {
             let stream = r % S;
             let conv = (0..4)
                 .filter_map(|tap| {
-                    let lag = 3 * (3 - tap);
+                    let lag = dilation * (3 - tap);
                     (token % SEQ >= lag).then(|| {
                         a[6][(stream * D + j) * 4 + tap]
                             * normalized[((token - lag) * S + stream) * D + j]
@@ -83,6 +83,13 @@ fn rows(n: usize) -> LaunchConfig {
 #[test]
 #[ignore = "native d2048/four independent streams/shared V complete vector forward and adjoint"]
 fn full_four_stream_gates_convolution_and_shared_value_adjoint() -> Result<(), Box<dyn Error>> {
+    for dilation in [3, 4] {
+        check_four_stream_adjoint(dilation)?;
+    }
+    Ok(())
+}
+
+fn check_four_stream_adjoint(dilation: usize) -> Result<(), Box<dyn Error>> {
     let (_, stream, ptx) = common::cuda_test_context()?;
     let module = kernels::from_module(ptx.clone())?;
     let old = legacy::from_module(ptx)?;
@@ -159,9 +166,10 @@ fn full_four_stream_gates_convolution_and_shared_value_adjoint() -> Result<(), B
         N as u32,
         D as u32,
         SEQ as u32,
+        dilation as u32,
     )?;
     let result = residual.to_host_vec(&stream)?;
-    let expected = forward(&values);
+    let expected = forward(&values, dilation);
     let max_error = result
         .iter()
         .zip(&expected)
@@ -169,7 +177,7 @@ fn full_four_stream_gates_convolution_and_shared_value_adjoint() -> Result<(), B
         .fold(0_f64, f64::max);
     assert!(
         max_error < 2e-5,
-        "all four stream outputs must match the reference: {max_error}"
+        "all four stream outputs must match the reference at dilation {dilation}: {max_error}"
     );
     let mut delta = pre;
     old.engram_conv_delta_kernel(&stream, grid(N * S * D), &g, &mut delta, (N * S * D) as u32)?;
@@ -184,6 +192,7 @@ fn full_four_stream_gates_convolution_and_shared_value_adjoint() -> Result<(), B
         N as u32,
         D as u32,
         SEQ as u32,
+        dilation as u32,
     )?;
     module.engram4_norm_backward_kernel(
         &stream,
@@ -243,6 +252,7 @@ fn full_four_stream_gates_convolution_and_shared_value_adjoint() -> Result<(), B
         N as u32,
         D as u32,
         SEQ as u32,
+        dilation as u32,
     )?;
     let actual = [
         dh.to_host_vec(&stream)?,
@@ -257,7 +267,7 @@ fn full_four_stream_gates_convolution_and_shared_value_adjoint() -> Result<(), B
     // At exact-zero queries use the demo's zero signed-root subgradient.
     assert_eq!(&actual[0][..S * D], &upstream[..S * D]);
     let objective = |a: &Inputs| {
-        forward(a)
+        forward(a, dilation)
             .iter()
             .zip(&upstream)
             .map(|(&x, &g)| x * f64::from(g))

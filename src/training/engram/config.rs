@@ -7,6 +7,7 @@ pub(crate) struct Config {
     version: u32,
     pub layer: usize,
     pub head_dim: usize,
+    pub convolution_dilation: u32,
     pub primes: Vec<u32>,
     pub multipliers: Vec<u64>,
     pub legacy: bool,
@@ -99,6 +100,7 @@ impl Config {
             version: 3,
             layer,
             head_dim: HEAD_DIM,
+            convolution_dilation: 3,
             primes: reference_primes(index).to_vec(),
             multipliers: multipliers.to_vec(),
             legacy: false,
@@ -154,7 +156,7 @@ impl Config {
             2,
             self.max_ngram() as u32,
             4,
-            3,
+            self.convolution_dilation,
         ]
         .into_iter()
         .chain(self.primes.iter().copied())
@@ -177,6 +179,7 @@ impl Config {
         }
         let v = values.iter().map(|v| *v as u32).collect::<Vec<_>>();
         let max_ngram = if v[0] == 5 { 4 } else { 3 };
+        let dilation = v[8];
         let hash_heads = (max_ngram - 1) * HEADS;
         let coefficient_start = 9 + hash_heads;
         if (legacy && v[0] != 1)
@@ -184,7 +187,9 @@ impl Config {
             || (matches!(v[0], 4 | 5) && v[2] != HEAD_DIM as u32)
             || v[1] != HEADS as u32
             || v[4] >= gpt2_nvfp4::GPT2_N_LAYER as u32
-            || v[5..9] != [2, max_ngram as u32, 4, 3]
+            || v[5..8] != [2, max_ngram as u32, 4]
+            // Existing version 5 checkpoints recorded dilation three.
+            || !(dilation == 3 || (max_ngram == 4 && dilation == 4))
             || !matches!(v[2], 32 | 64)
             || v[3] != hash_heads as u32 * v[2]
             || v.len() != coefficient_start + 4 * max_ngram
@@ -223,6 +228,7 @@ impl Config {
             version: v[0],
             layer: v[4] as usize,
             head_dim: v[2] as usize,
+            convolution_dilation: dilation,
             primes,
             multipliers,
             legacy,

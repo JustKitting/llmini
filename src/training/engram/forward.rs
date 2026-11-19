@@ -180,6 +180,7 @@ impl Module {
                 n,
                 d,
                 seq,
+                self.cfg.convolution_dilation,
             );
         }
         self.module.engram_gate_kernel(

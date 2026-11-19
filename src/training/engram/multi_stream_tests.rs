@@ -56,6 +56,7 @@ fn native_four_gram_engram_complete_graph_checkpoint_and_causality() -> AppResul
     let t = config.create_trainer()?;
     for module in &t.uploaded.engram.as_ref().unwrap().modules {
         assert_eq!((module.cfg.max_ngram(), module.cfg.memory()), (4, 1536));
+        assert_eq!(module.cfg.convolution_dilation, 4);
     }
     verify_complete_trainer(t, config.engram_table_params)
 }

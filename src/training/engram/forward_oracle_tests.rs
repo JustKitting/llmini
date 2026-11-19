@@ -72,8 +72,8 @@ fn sigmoid(x: f64) -> f64 {
 #[ignore = "native full-size Engram forward oracle, zero optimizer updates"]
 fn native_engram_full_quantized_forward_matches_independent_oracle() -> AppResult {
     for i in 0..LAYERS.len() {
-        check_layer(Config::reference(i))?;
-        check_layer(Config::reference_multistream(i))?;
+        check_layer(Config::reference(i), 3)?;
+        check_layer(Config::reference_multistream(i), 3)?;
     }
     Ok(())
 }
@@ -83,12 +83,12 @@ fn native_engram_full_quantized_forward_matches_independent_oracle() -> AppResul
 fn native_four_gram_engram_forward_and_adjoint_oracle() -> AppResult {
     for config in Config::multistream_with_ngram_budget(Some(500_000_000), true)? {
         assert_eq!((config.max_ngram(), config.memory()), (4, 1536));
-        check_layer(config)?;
+        check_layer(config, 4)?;
     }
     Ok(())
 }
 
-fn check_layer(cfg: Config) -> AppResult {
+fn check_layer(cfg: Config, dilation: usize) -> AppResult {
     assert_eq!(
         (GPT2_BATCH_SIZE, GPT2_SEQ_LEN, GPT2_N_EMBD),
         (8, 2048, 2048)
@@ -98,6 +98,7 @@ fn check_layer(cfg: Config) -> AppResult {
     let mut w = Weights::new_with_config(&r, cfg)?;
     let streams = w.cfg.streams();
     let memory_width = w.cfg.memory();
+    assert_eq!(w.cfg.convolution_dilation as usize, dilation);
     // Heterogeneous nonzero biases expose the vector/matrix scale contract.
     for index in w.cfg.adam_indices().into_iter().skip(1) {
         let tensor = &mut w.nv[index];
@@ -168,12 +169,14 @@ fn check_layer(cfg: Config) -> AppResult {
             inv_std: &mut inv,
         },
     )?;
-    let outputs = [0, 1, 7, 8, 9, 10, 2047, 2048, 2057, 8191, 8192, 16383];
+    let outputs = [
+        0, 1, 7, 8, 9, 10, 11, 12, 2047, 2048, 2057, 2060, 8191, 8192, 16383,
+    ];
     let needed: BTreeSet<_> = outputs
         .into_iter()
         .flat_map(|p| {
-            [0, 3, 6, 9]
-                .into_iter()
+            (0..4)
+                .map(move |tap| dilation * tap)
                 .filter_map(move |lag| (p % GPT2_SEQ_LEN >= lag).then(|| p - lag))
         })
         .collect();
@@ -361,7 +364,7 @@ fn check_layer(cfg: Config) -> AppResult {
             for j in 0..d {
                 let conv = (0..4)
                     .filter_map(|c| {
-                        let lag = 3 * (3 - c);
+                        let lag = dilation * (3 - c);
                         (p % GPT2_SEQ_LEN >= lag).then(|| {
                             f64::from(gamma[3][(stream_index * d + j) * 4 + c])
                                 * expected_un[&(p - lag, stream_index)][j]

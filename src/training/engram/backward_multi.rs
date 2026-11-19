@@ -37,6 +37,7 @@ impl Module {
             n,
             d,
             self.seq,
+            self.cfg.convolution_dilation,
         )?;
         multi.engram4_norm_backward_kernel(
             s,
@@ -91,6 +92,7 @@ impl Module {
             n,
             d,
             self.seq,
+            self.cfg.convolution_dilation,
         )?;
 
         for wi in self.cfg.projector_indices() {

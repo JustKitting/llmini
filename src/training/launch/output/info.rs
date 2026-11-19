@@ -270,6 +270,11 @@ pub(in crate::training::launch) fn build_run_info(dataset: &str, config: &TrainC
     push_info(&mut info, "engram_embedding_adam_lr_multiplier", 5);
     push_info(
         &mut info,
+        "engram_convolution_dilation",
+        memory_config[0].convolution_dilation,
+    );
+    push_info(
+        &mut info,
         "engram_initialization",
         "reference_normal_table_uniform_linear_cuda_nvfp4_packing",
     );

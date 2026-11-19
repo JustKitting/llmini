@@ -74,6 +74,7 @@ fn four_gram_budget_serializes_all_orders_without_reinterpreting_v4() {
             let descriptor = cfg.descriptor();
             assert_eq!(descriptor.len(), 49);
             assert_eq!(descriptor[0], 5.);
+            assert_eq!(descriptor[8], 4.);
             assert_eq!(
                 Config::parse(&descriptor, false).unwrap().descriptor(),
                 descriptor
@@ -83,9 +84,28 @@ fn four_gram_budget_serializes_all_orders_without_reinterpreting_v4() {
             let mut old_tag = descriptor.clone();
             old_tag[0] = 4.;
             assert!(Config::parse(&old_tag, false).is_err());
+            let mut legacy_dilation = descriptor.clone();
+            legacy_dilation[8] = 3.;
+            assert_eq!(
+                Config::parse(&legacy_dilation, false).unwrap().descriptor(),
+                legacy_dilation
+            );
+            let mut invalid_dilation = descriptor.clone();
+            invalid_dilation[8] = 2.;
+            assert!(Config::parse(&invalid_dilation, false).is_err());
             let mut duplicate_head = descriptor.clone();
             duplicate_head[32] = duplicate_head[9];
             assert!(Config::parse(&duplicate_head, false).is_err());
         }
+    }
+}
+
+#[test]
+fn three_gram_descriptors_require_the_original_dilation() {
+    for cfg in [Config::reference(0), Config::reference_multistream(0)] {
+        let mut descriptor = cfg.descriptor();
+        assert_eq!(descriptor[8], 3.);
+        descriptor[8] = 4.;
+        assert!(Config::parse(&descriptor, false).is_err());
     }
 }

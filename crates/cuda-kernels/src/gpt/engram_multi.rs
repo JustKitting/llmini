@@ -129,6 +129,7 @@ pub mod kernels {
         n: u32,
         d: u32,
         seq: u32,
+        dilation: u32,
     ) {
         let i = thread::blockIdx_x() * T + thread::threadIdx_x();
         if i >= n * 4 * d {
@@ -139,7 +140,7 @@ pub mod kernels {
         let mut z = 0.;
         let mut c = 0;
         while c < 4 {
-            let lag = 3 * (3 - c);
+            let lag = dilation * (3 - c);
             if r / 4 % seq >= lag {
                 z += w[((r % 4 * d + j) * 4 + c) as usize] * un[((r - lag * 4) * d + j) as usize];
             }
@@ -158,6 +159,7 @@ pub mod kernels {
         n: u32,
         d: u32,
         seq: u32,
+        dilation: u32,
     ) {
         let i = thread::blockIdx_x() * T + thread::threadIdx_x();
         if i >= n * 4 * d {
@@ -168,7 +170,7 @@ pub mod kernels {
         let mut a = 0.;
         let mut c = 0;
         while c < 4 {
-            let lag = 3 * (3 - c);
+            let lag = dilation * (3 - c);
             if r / 4 % seq + lag < seq && r + lag * 4 < n * 4 {
                 a +=
                     w[((r % 4 * d + j) * 4 + c) as usize] * delta[((r + lag * 4) * d + j) as usize];
@@ -328,6 +330,7 @@ pub mod kernels {
         n: u32,
         d: u32,
         seq: u32,
+        dilation: u32,
     ) {
         let index = thread::blockIdx_x() * T + thread::threadIdx_x();
         if index >= d * 4 * 16 {
@@ -344,6 +347,8 @@ pub mod kernels {
         let mut w1 = 0.;
         let mut w2 = 0.;
         let mut w3 = 0.;
+        let first_lag = 3 * dilation;
+        let second_lag = 2 * dilation;
         let mut r = part;
         while r < n {
             let i = ((r * 4 + stream) * d + j) as usize;
@@ -354,14 +359,15 @@ pub mod kernels {
             ak += g * h0 * gh[gamma_index] * k0;
             au += dun[i] * u[i] * inv_u[(r * 4 + stream) as usize];
             let e = delta[i];
-            if r % seq >= 9 {
-                w0 += e * un[(((r - 9) * 4 + stream) * d + j) as usize];
+            let position = r % seq;
+            if position >= first_lag {
+                w0 += e * un[(((r - first_lag) * 4 + stream) * d + j) as usize];
             }
-            if r % seq >= 6 {
-                w1 += e * un[(((r - 6) * 4 + stream) * d + j) as usize];
+            if position >= second_lag {
+                w1 += e * un[(((r - second_lag) * 4 + stream) * d + j) as usize];
             }
-            if r % seq >= 3 {
-                w2 += e * un[(((r - 3) * 4 + stream) * d + j) as usize];
+            if position >= dilation {
+                w2 += e * un[(((r - dilation) * 4 + stream) * d + j) as usize];
             }
             w3 += e * un[i];
             r += 16;

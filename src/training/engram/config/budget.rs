@@ -89,6 +89,7 @@ impl Config {
             let bound = (i64::MAX as u64 / llama2_tokenizer::MODEL_VOCAB_SIZE as u64) / 2;
             let draw = (u64::from(rng.next_u32()) << 32) | u64::from(rng.next_u32());
             config.multipliers.push((draw % bound) * 2 + 1);
+            config.convolution_dilation = config.max_ngram() as u32;
         }
         Ok(configs)
     }
