@@ -4,7 +4,8 @@ use crate::{
     training::{Trainer, runtime::Runtime},
 };
 use cuda_core::{DeviceBuffer, LaunchConfig};
-use gpt2_nvfp4::{GPT2_N_EMBD, GPT2_SEQ_LEN};
+use gpt2_nvfp4::{GPT2_N_EMBD, GPT2_SEQ_LEN, RowwiseNvfp4Buffers};
+use rust_kernels_cuda::latent_feedback::FUSED_ROW_WIDTH;
 
 #[test]
 #[ignore = "CUDA real-width causal RMS oracle; no optimizer updates"]
@@ -15,25 +16,26 @@ fn native_feedback_shifted_rms_matches_independent_oracle() -> AppResult {
     let seq = 4;
     let n = 12;
     let top = (0..n * d)
-        .map(|i| ((i * 13 % 97) as f32 - 48.0) * 0.03125)
+        .map(|i| ((i * 13 % 97) as f32 - 48.0) * [0.00390625, 0.0, 0.03125, 16.0][(i / d) % seq])
         .collect::<Vec<_>>();
     let input = DeviceBuffer::from_host(s, &top)?;
     let mut out = DeviceBuffer::zeroed(s, n * d)?;
-    r.latent_feedback_module()?
-        .latent_feedback_shifted_rms_kernel(
-            s,
-            LaunchConfig {
-                grid_dim: (n as u32, 1, 1),
-                block_dim: (256, 1, 1),
-                shared_mem_bytes: 0,
-            },
-            &input,
-            &mut out,
-            n as u32,
-            d as u32,
-            seq as u32,
-            EPSILON,
-        )?;
+    let launch = || LaunchConfig {
+        grid_dim: (n as u32, 1, 1),
+        block_dim: (256, 1, 1),
+        shared_mem_bytes: 0,
+    };
+    let feedback = r.latent_feedback_module()?;
+    feedback.latent_feedback_shifted_rms_kernel(
+        s,
+        launch(),
+        &input,
+        &mut out,
+        n as u32,
+        d as u32,
+        seq as u32,
+        EPSILON,
+    )?;
     let got = out.to_host_vec(s)?;
     for row in 0..n {
         let inverse = if row % seq == 0 {
@@ -54,6 +56,43 @@ fn native_feedback_shifted_rms_matches_independent_oracle() -> AppResult {
             };
             assert!((f64::from(got[row * d + j]) - expected).abs() < 2e-6);
         }
+    }
+    if d == FUSED_ROW_WIDTH {
+        let mut expected = RowwiseNvfp4Buffers::new(s, n * d, n)?;
+        let mut row_amax = DeviceBuffer::zeroed(s, n)?;
+        expected.scratch().quantize_row_amax(
+            &r.quant,
+            s,
+            &out,
+            &mut row_amax,
+            n as u32,
+            d as u32,
+        )?;
+        let mut fused = RowwiseNvfp4Buffers::new(s, n * d, n)?;
+        let packed = fused.scratch();
+        feedback.latent_feedback_shifted_rms_pack_kernel(
+            s,
+            launch(),
+            &input,
+            packed.bytes,
+            packed.scales,
+            packed.global_scales,
+            n as u32,
+            seq as u32,
+            EPSILON,
+        )?;
+        let expected = expected.rowwise();
+        let fused = fused.rowwise();
+        assert_eq!(fused.bytes.to_host_vec(s)?, expected.bytes.to_host_vec(s)?);
+        assert_eq!(
+            fused.scales.to_host_vec(s)?,
+            expected.scales.to_host_vec(s)?
+        );
+        let bits = |values: Vec<f32>| values.into_iter().map(f32::to_bits).collect::<Vec<_>>();
+        assert_eq!(
+            bits(fused.global_scales.to_host_vec(s)?),
+            bits(expected.global_scales.to_host_vec(s)?),
+        );
     }
     Ok(())
 }

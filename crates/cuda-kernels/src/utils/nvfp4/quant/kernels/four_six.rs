@@ -287,9 +287,14 @@ pub(crate) mod module {
     ) {
         static mut ROW_AMAX: SharedArray<f32, ROWWISE_WARPS_PER_BLOCK> = SharedArray::UNINIT;
         unsafe {
-            rowwise_derived_amax_cached_body::<2048, 2>(
-                x,
-                amax,
+            pack_cached_rows::<2048, 2>(
+                |row, column| {
+                    let base = row as usize * 2048 + column;
+                    let (a, b) = load_f32x2_global(x.as_ptr(), base);
+                    let (c, d) = load_f32x2_global(x.as_ptr(), base + 2);
+                    [a, b, c, d]
+                },
+                Some(amax),
                 out_fp4,
                 out_scales,
                 out_global_scale,
@@ -642,9 +647,9 @@ pub(crate) mod module {
 
     #[inline(always)]
     #[allow(clippy::too_many_arguments)]
-    fn rowwise_derived_amax_cached_body<const ROW_LEN: usize, const GROUPS_PER_THREAD: usize>(
-        x: &[f32],
-        mut amax: DisjointSlice<f32>,
+    pub(crate) fn pack_cached_rows<const ROW_LEN: usize, const GROUPS_PER_THREAD: usize>(
+        load: impl Fn(u32, usize) -> [f32; 4],
+        mut amax: Option<DisjointSlice<f32>>,
         mut out_fp4: DisjointSlice<u8>,
         mut out_scales: DisjointSlice<u8>,
         mut out_global_scale: DisjointSlice<f32>,
@@ -669,10 +674,8 @@ pub(crate) mod module {
         let mut cache_index = 0usize;
         while cache_index < GROUPS_PER_THREAD {
             let group_in_row = group_start + cache_index as u32 * ROWWISE_GROUPS_PER_BLOCK;
-            let base =
-                row as usize * ROW_LEN + group_in_row as usize * GROUP_SIZE + 4 * lane_in_group;
-            let (value_0, value_1) = load_f32x2_global(x.as_ptr(), base);
-            let (value_2, value_3) = load_f32x2_global(x.as_ptr(), base + 2);
+            let column = group_in_row as usize * GROUP_SIZE + 4 * lane_in_group;
+            let [value_0, value_1, value_2, value_3] = load(row, column);
             cached_0[cache_index] = value_0;
             cached_1[cache_index] = value_1;
             cached_2[cache_index] = value_2;
@@ -695,7 +698,9 @@ pub(crate) mod module {
         let global_scale = four_six_global_scale(tensor_amax, scale_override);
         if thread_id == 0 {
             unsafe {
-                *amax.get_unchecked_mut(row as usize) = tensor_amax;
+                if let Some(amax) = &mut amax {
+                    *amax.get_unchecked_mut(row as usize) = tensor_amax;
+                }
                 *out_global_scale.get_unchecked_mut(row as usize) = global_scale;
             }
         }

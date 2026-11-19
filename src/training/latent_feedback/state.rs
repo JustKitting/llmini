@@ -15,7 +15,9 @@ use gpt2_nvfp4::{
     GPT2_N_EMBD, GPT2_TOKEN_ROWS, Gpt2Rng, HiddenStateDevice, LinearScratch, RowwiseNvfp4Buffers,
 };
 use rust_kernels_cuda::{
+    latent_feedback::FUSED_ROW_WIDTH,
     linear_backward::{LinearBackwardInputTranspose, LinearBackwardMsEdenWeightArgs},
+    nvfp4::Nvfp4RowwiseDecodeTransposeArgs,
     nvfp4_tma_matmul::tma::TmaNvfp4DeviceScaleDescriptors,
     residual::ResidualGradAccumulateArgs,
 };
@@ -23,11 +25,10 @@ use rust_kernels_cuda::{
 pub(in crate::training) struct Feedback {
     pub state: MuonState,
     pub grad: DeviceBuffer<f32>,
-    pub input: DeviceBuffer<f32>,
+    unpacked_input: Option<UnpackedInput>,
     pub input_q: RowwiseNvfp4Buffers,
     pub projected: DeviceBuffer<f32>,
     fusion_error: DeviceBuffer<f32>,
-    row_amax: DeviceBuffer<f32>,
     tma: TmaNvfp4DeviceScaleDescriptors,
     linear: LinearScratch,
     pub module: rust_kernels_cuda::latent_feedback::kernels::LoadedModule,
@@ -36,6 +37,12 @@ pub(in crate::training) struct Feedback {
     next_training_attempt: u64,
     rng: Gpt2Rng,
 }
+
+struct UnpackedInput {
+    normalized: DeviceBuffer<f32>,
+    row_amax: DeviceBuffer<f32>,
+}
+
 impl Feedback {
     #[cfg(test)]
     pub(in crate::training) fn integrity_metadata(&self) -> serde_json::Value {
@@ -43,11 +50,10 @@ impl Feedback {
         let Self {
             state: _,
             grad: _,
-            input: _,
+            unpacked_input: _,
             input_q: _,
             projected: _,
             fusion_error: _,
-            row_amax: _,
             tma: _,
             linear: _,
             module: _,
@@ -75,11 +81,17 @@ impl Feedback {
                 d,
             )?,
             grad: DeviceBuffer::zeroed(s, d * d)?,
-            input: DeviceBuffer::zeroed(s, total)?,
+            unpacked_input: if d == FUSED_ROW_WIDTH {
+                None
+            } else {
+                Some(UnpackedInput {
+                    normalized: DeviceBuffer::zeroed(s, total)?,
+                    row_amax: DeviceBuffer::zeroed(s, GPT2_TOKEN_ROWS)?,
+                })
+            },
             input_q: RowwiseNvfp4Buffers::gpt2_rows(s, total)?,
             projected: DeviceBuffer::zeroed(s, total)?,
             fusion_error: DeviceBuffer::zeroed(s, total)?,
-            row_amax: DeviceBuffer::zeroed(s, GPT2_TOKEN_ROWS)?,
             tma: TmaNvfp4DeviceScaleDescriptors::new(s)?,
             linear: LinearScratch::new(s, d, d)?,
             module: r.latent_feedback_module()?,
@@ -153,21 +165,47 @@ impl Feedback {
         h: &HiddenStateDevice<'_>,
     ) -> Result<(), DriverError> {
         let n = h.row_count;
-        // Normalize the preceding pass's residual while it is still live.
-        self.module.latent_feedback_shifted_rms_kernel(
-            r.stream.as_ref(),
-            LaunchConfig {
-                grid_dim: (n, 1, 1),
-                block_dim: (256, 1, 1),
-                shared_mem_bytes: 0,
-            },
-            h.residual,
-            &mut self.input,
-            n,
-            GPT2_N_EMBD as u32,
-            h.seq_len,
-            EPSILON,
-        )
+        let stream = r.stream.as_ref();
+        let launch = LaunchConfig {
+            grid_dim: (n, 1, 1),
+            block_dim: (256, 1, 1),
+            shared_mem_bytes: 0,
+        };
+        // Consume the preceding residual here, before the next embedding
+        // overwrites it. Only the packed input is needed by the projection.
+        let mut packed = self.input_q.scratch();
+        if let Some(scratch) = &mut self.unpacked_input {
+            self.module.latent_feedback_shifted_rms_kernel(
+                stream,
+                launch,
+                h.residual,
+                &mut scratch.normalized,
+                n,
+                GPT2_N_EMBD as u32,
+                h.seq_len,
+                EPSILON,
+            )?;
+            packed.quantize_row_amax(
+                &r.quant,
+                stream,
+                &scratch.normalized,
+                &mut scratch.row_amax,
+                n,
+                GPT2_N_EMBD as u32,
+            )
+        } else {
+            self.module.latent_feedback_shifted_rms_pack_kernel(
+                stream,
+                launch,
+                h.residual,
+                packed.bytes,
+                packed.scales,
+                packed.global_scales,
+                n,
+                h.seq_len,
+                EPSILON,
+            )
+        }
     }
 
     pub fn mix(
@@ -179,14 +217,6 @@ impl Feedback {
         let s = r.stream.as_ref();
         let n = h.row_count;
         let d = GPT2_N_EMBD as u32;
-        self.input_q.scratch().quantize_row_amax(
-            &r.quant,
-            s,
-            &self.input,
-            &mut self.row_amax,
-            n,
-            d,
-        )?;
         let input = self.input_q.rowwise();
         r.tma_gemm.prepare_tma_nvfp4_csf_weight_into(
             s,
@@ -218,6 +248,24 @@ impl Feedback {
             len: n * d,
         })
     }
+    /// Diagnostics read the same represented values as the fusion GEMM.
+    pub(in crate::training) fn decoded_input_transpose(
+        &self,
+        r: &Runtime,
+        rows: usize,
+    ) -> Result<Vec<f32>, DriverError> {
+        let stream = r.stream.as_ref();
+        let mut decoded = DeviceBuffer::zeroed(stream, rows * GPT2_N_EMBD)?;
+        r.decode.decode_rowwise_transpose_f32(Nvfp4RowwiseDecodeTransposeArgs {
+            stream,
+            input: self.input_q.rowwise(),
+            output: &mut decoded,
+            rows: rows as u32,
+            cols: GPT2_N_EMBD as u32,
+        })?;
+        decoded.to_host_vec(stream)
+    }
+
     pub fn backward(
         &mut self,
         r: &Runtime,

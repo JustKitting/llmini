@@ -43,8 +43,14 @@ fn native_trained_latent_feedback_causality_replay() -> AppResult {
             let a = t.eval_token_losses_for_passes(&b, passes)?;
             let f = t.latent_feedback.as_ref().unwrap();
             let top = prefix(&t, &t.buffers.residual, cut * GPT2_N_EMBD)?;
-            let norm = prefix(&t, &f.input, cut * GPT2_N_EMBD)?;
-            let projected = prefix(&t, &f.projected, cut * GPT2_N_EMBD)?;
+            let feedback_prefix = if passes > 1 {
+                Some((
+                    f.decoded_input_transpose(&t.runtime, cut)?,
+                    prefix(&t, &f.projected, cut * GPT2_N_EMBD)?,
+                ))
+            } else {
+                None
+            };
             let mut changed = flat.clone();
             for window in changed.chunks_exact_mut(GPT2_SEQ_LEN + 1) {
                 for (i, v) in window.iter_mut().enumerate().skip(cut) {
@@ -68,11 +74,17 @@ fn native_trained_latent_feedback_causality_replay() -> AppResult {
                 }
             }
             maximum = maximum.max(loss_max);
+            let (input_diff, projection_diff) = if let Some((input, projected)) = feedback_prefix {
+                (
+                    diff(&input, &f.decoded_input_transpose(&t.runtime, cut)?),
+                    diff(&projected, &prefix(&t, &f.projected, cut * GPT2_N_EMBD)?),
+                )
+            } else {
+                (0.0, 0.0)
+            };
             println!(
-                "trained_causality passes={passes} cut={cut} loss_max={loss_max} top_prefix_diff={} feedback_input_prefix_diff={} feedback_projection_prefix_diff={} first={first:?}",
+                "trained_causality passes={passes} cut={cut} loss_max={loss_max} top_prefix_diff={} feedback_input_prefix_diff={input_diff} feedback_projection_prefix_diff={projection_diff} first={first:?}",
                 diff(&top, &prefix(&t, &t.buffers.residual, cut * GPT2_N_EMBD)?),
-                diff(&norm, &prefix(&t, &f.input, cut * GPT2_N_EMBD)?),
-                diff(&projected, &prefix(&t, &f.projected, cut * GPT2_N_EMBD)?)
             );
         }
     }

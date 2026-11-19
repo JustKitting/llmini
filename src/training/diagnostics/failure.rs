@@ -216,8 +216,16 @@ impl Trainer {
             dump.muon("latent_feedback.fusion", &f.state)?;
             dump.f32("latent_feedback.fusion.gradient", &f.grad)?;
             dump.f32("forward.latent_feedback.top", &self.buffers.residual)?;
-            dump.f32("forward.latent_feedback.input", &f.input)?;
-            dump.f32("forward.latent_feedback.projected", &f.projected)?;
+            if f.active {
+                let rows = f.n as usize;
+                let width = gpt2_nvfp4::GPT2_N_EMBD;
+                let values = f.decoded_input_transpose(&self.runtime, rows)?;
+                dump.row(
+                    "forward.latent_feedback.input_nvfp4",
+                    (0..values.len()).map(|i| values[(i % width) * rows + i / width]),
+                )?;
+                dump.f32("forward.latent_feedback.projected", &f.projected)?;
+            }
         }
         if let Some(mhc) = &self.mhc {
             for unit in &mhc.units {
