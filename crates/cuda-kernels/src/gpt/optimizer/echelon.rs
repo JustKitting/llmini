@@ -100,8 +100,8 @@ impl EchelonModule {
     }
 
     /// Estimate the scale of T through its action and its transpose.
-    /// The return value is the reciprocal of the estimated norm times 1.05.
-    /// Exact-zero residuals return zero so the caller can use the head alone.
+    /// The return value is the reciprocal of 1.05 times the estimated norm.
+    /// If the probes miss the tail, use the residual's Frobenius norm.
     pub fn estimate_tail<'scratch>(
         &self,
         args: TailArgs<'_, 'scratch>,
@@ -142,8 +142,9 @@ impl EchelonModule {
                     stream,
                     vec_grid,
                     &scratch.w,
+                    residual,
                     &mut scratch.inverse,
-                    shape.short,
+                    shape,
                 )?;
             }
             self.0.echelon_tail_transpose_kernel(
@@ -376,15 +377,32 @@ mod kernels {
     }
 
     #[kernel]
-    pub fn echelon_tail_scale_kernel(w: &[f32], mut inverse: DisjointSlice<f32>, rows: u32) {
+    pub fn echelon_tail_scale_kernel(
+        w: &[f32],
+        residual: &[f32],
+        mut inverse: DisjointSlice<f32>,
+        shape: Shape,
+    ) {
         static mut REDUCTION: SharedArray<f32, WARPS> = SharedArray::UNINIT;
         let (tid, lane, warp) = thread_lane_warp();
         let mut square = 0.0;
-        for row in (tid..rows).step_by(THREADS as usize) {
+        for row in (tid..shape.short).step_by(THREADS as usize) {
             let value = w[row as usize];
             square = fma_f32(value, value, square);
         }
         let square = unsafe { block_sum_shared_f32(&mut REDUCTION, square, lane, warp) };
+        // Tz can be zero when z lies in T's null space. The whole block
+        // sees the same reduced value and enters this fallback together.
+        let square = if square == 0.0 {
+            let mut residual_square = 0.0;
+            for index in (tid..shape.short * shape.long).step_by(THREADS as usize) {
+                let value = residual[index as usize];
+                residual_square = fma_f32(value, value, residual_square);
+            }
+            unsafe { block_sum_shared_f32(&mut REDUCTION, residual_square, lane, warp) }
+        } else {
+            square
+        };
         if tid == 0 {
             let tau = TAIL_MARGIN * sqrt_f32(square);
             unsafe { *inverse.get_unchecked_mut(0) = if tau == 0.0 { 0.0 } else { 1.0 / tau } };

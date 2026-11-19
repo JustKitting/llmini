@@ -72,3 +72,36 @@ fn echelon_tail_removes_the_head_and_reuses_its_warm_vector()
     assert_eq!(estimate(&zero_residual)?, 0.0);
     Ok(())
 }
+
+#[test]
+#[ignore = "runs the native Echelon null-space case on CUDA"]
+fn echelon_tail_survives_probe_null_space() -> Result<(), Box<dyn std::error::Error>> {
+    let (_, stream, module) = common::cuda_test_module(EchelonModule::from_module)?;
+    let shape = Shape::new(3, 4, 1)?;
+    // Seed 61 starts with [+0.5, -0.5, +0.5, +0.5] and restarts
+    // from that same vector after a zero product. T annihilates it.
+    let mut state = module.new_tail_state(&stream, shape, 61)?;
+    let mut scratch = TailScratch::new(&stream, shape)?;
+    let residual = DeviceBuffer::from_host(
+        &stream,
+        &[1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    )?;
+    let inverse = module.estimate_tail(TailArgs {
+        stream: &stream,
+        residual: &residual,
+        state: &mut state,
+        scratch: &mut scratch,
+    })?;
+    let mut update = DeviceBuffer::zeroed(&stream, 12)?;
+    module.add_tail(&stream, inverse, &residual, &mut update, shape)?;
+    let expected = 1.0 / (1.05 * 2.0_f32.sqrt());
+    let values = update.to_host_vec(&stream)?;
+    common::assert_slice_close(
+        &values,
+        &[
+            expected, expected, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        ],
+        1e-6,
+    );
+    Ok(())
+}
