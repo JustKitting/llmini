@@ -290,9 +290,9 @@ impl Trainer {
             weights.backbone_norm.device(),
             false,
         )?;
-        let expanded = stage.expand(&plan, &inner)?;
+        let smoothed = stage.smooth_chunks(&plan, &inner)?;
         let decoder_input = stage.decoder_input(
-            &expanded,
+            &smoothed,
             &projections.residual,
             weights.stage.residual_bias.device(),
         )?;
@@ -370,9 +370,9 @@ impl Trainer {
             &scratch.norms,
             weights.backbone_norm.device(),
         )?;
-        let expanded = stage.expand(&plan, inner.output())?;
+        let smoothed = stage.smooth_chunks(&plan, inner.output())?;
         let decoder_input = stage.decoder_input(
-            &expanded,
+            &smoothed,
             &projections.residual,
             weights.stage.residual_bias.device(),
         )?;
@@ -412,8 +412,8 @@ impl Trainer {
             rng,
         )?;
         stage.mask_decoder_input_adjoint(&plan, &mut d_skip)?;
-        let route_adjoint = stage.backward(&expanded, &d_skip)?;
-        drop(expanded);
+        let route_adjoint = stage.backward(&smoothed, &d_skip)?;
+        drop(smoothed);
         let (inner_adjoint, backbone_norm) = inner.backward(&route_adjoint.d_inner)?;
         let mut d_encoded = stage.scatter(&plan, &inner_adjoint.d_features)?;
         let ratio_loss = plan.into_ratio_loss();

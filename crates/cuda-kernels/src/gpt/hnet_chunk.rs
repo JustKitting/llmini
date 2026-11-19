@@ -32,25 +32,30 @@ pub mod kernels {
 
     #[kernel]
     pub fn hnet_decoder_input_kernel(
-        restored: &[u16],
+        smoothed: &[u16],
+        row_to_chunk: &[u32],
         projected_skip: &[f32],
         bias_bytes: &[u8],
         bias_scales: &[u8],
         bias_global: &[f32],
-        valid_lengths: &[u32],
         mut input: DisjointSlice<f32>,
         values: u32,
-        stride: u32,
+        outer_stride: u32,
+        inner_stride: u32,
         width: u32,
     ) {
         let i = thread::blockIdx_x() * thread::blockDim_x() + thread::threadIdx_x();
         if i < values {
             let row = i / width;
+            let chunk = row_to_chunk[row as usize];
+            let column = i % width;
             let i = i as usize;
-            let value = if row % stride < valid_lengths[(row / stride) as usize] {
+            let value = if chunk != INVALID {
+                let sequence = row / outer_stride;
+                let restored = ((sequence * inner_stride + chunk) * width + column) as usize;
                 let bias =
-                    nvfp4_vector_value(bias_bytes, bias_scales, bias_global[0], i % width as usize);
-                cvt_f32_f16(restored[i]) + (projected_skip[i] + bias)
+                    nvfp4_vector_value(bias_bytes, bias_scales, bias_global[0], column as usize);
+                cvt_f32_f16(smoothed[restored]) + (projected_skip[i] + bias)
             } else {
                 0.0
             };
@@ -342,34 +347,6 @@ pub mod kernels {
         for chunk in valid..inner_stride {
             unsafe { *smoothed.get_unchecked_mut(inner_offset + chunk * features) = 0 };
         }
-    }
-
-    /// Repeat only the most recent causal chunk. STE confidence is one in forward.
-    #[kernel]
-    pub fn hnet_lift_chunk_kernel(
-        smoothed: &[u16],
-        row_to_chunk: &[u32],
-        mut decoded: DisjointSlice<u16>,
-        batch: u32,
-        outer_stride: u32,
-        inner_stride: u32,
-        features: u32,
-    ) {
-        let idx = (thread::blockIdx_x() * thread::blockDim_x() + thread::threadIdx_x()) as usize;
-        let outer_stride = outer_stride as usize;
-        let features = features as usize;
-        if idx >= batch as usize * outer_stride * features {
-            return;
-        }
-        let sequence = idx / (outer_stride * features);
-        let chunk = row_to_chunk[idx / features];
-        let value = if chunk == INVALID {
-            0
-        } else {
-            smoothed
-                [(sequence * inner_stride as usize + chunk as usize) * features + idx % features]
-        };
-        unsafe { *decoded.get_unchecked_mut(idx) = value };
     }
 
     /// Backpropagate repeat and EMA. Each lane owns one feature and visits

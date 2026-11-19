@@ -47,11 +47,10 @@ pub struct StagePlan<'a> {
     ratio_gradient: DeviceBuffer<f32>,
 }
 
-pub struct ExpandedStage<'plan, 'a> {
+pub struct SmoothedChunks<'plan, 'a> {
     plan: &'plan StagePlan<'a>,
     inner: &'plan DeviceBuffer<u16>,
-    smoothed: DeviceBuffer<u16>,
-    pub values: DeviceBuffer<u16>,
+    values: DeviceBuffer<u16>,
 }
 
 pub struct StageBackward {
@@ -396,11 +395,11 @@ impl HnetStage {
         })
     }
 
-    pub fn expand<'plan, 'a>(
+    pub fn smooth_chunks<'plan, 'a>(
         &self,
         plan: &'plan StagePlan<'a>,
         inner: &'plan DeviceBuffer<u16>,
-    ) -> Result<ExpandedStage<'plan, 'a>, DriverError> {
+    ) -> Result<SmoothedChunks<'plan, 'a>, DriverError> {
         let StageShape {
             batch,
             outer_stride,
@@ -408,11 +407,9 @@ impl HnetStage {
             ..
         } = plan.shape;
         let stream = plan.stream;
-        let outer_values = batch * outer_stride * features;
         let inner_values = plan.inner_values();
         require(stream, inner, inner_values)?;
-        let mut smoothed = DeviceBuffer::zeroed(stream, inner_values as usize)?;
-        let mut values = DeviceBuffer::zeroed(stream, outer_values as usize)?;
+        let mut values = DeviceBuffer::zeroed(stream, inner_values as usize)?;
         self.chunk.hnet_smooth_chunk_kernel(
             stream,
             linear_config(batch * features, THREADS),
@@ -420,27 +417,15 @@ impl HnetStage {
             &plan.probability,
             &plan.chunk_to_row,
             &plan.valid_chunks,
-            &mut smoothed,
-            batch,
-            outer_stride,
-            plan.inner_stride,
-            features,
-        )?;
-        self.chunk.hnet_lift_chunk_kernel(
-            stream,
-            linear_config(outer_values, THREADS),
-            &smoothed,
-            &plan.row_to_chunk,
             &mut values,
             batch,
             outer_stride,
             plan.inner_stride,
             features,
         )?;
-        Ok(ExpandedStage {
+        Ok(SmoothedChunks {
             plan,
             inner,
-            smoothed,
             values,
         })
     }
@@ -450,10 +435,10 @@ impl HnetStage {
     /// d_inner, then scatter sends its input gradient back to the outer rows.
     pub fn backward(
         &self,
-        expanded: &ExpandedStage<'_, '_>,
+        chunks: &SmoothedChunks<'_, '_>,
         d_expanded: &DeviceBuffer<f32>,
     ) -> Result<StageBackward, DriverError> {
-        let plan = expanded.plan;
+        let plan = chunks.plan;
         let StageShape {
             batch,
             outer_stride,
@@ -489,8 +474,8 @@ impl HnetStage {
             stream,
             warp_grid,
             d_expanded,
-            expanded.inner,
-            &expanded.smoothed,
+            chunks.inner,
+            &chunks.values,
             &d_smoothed,
             &plan.row_to_chunk,
             &plan.chunk_to_row,
@@ -521,13 +506,14 @@ impl HnetStage {
         })
     }
 
+    /// Repeat the latest causal chunk directly into the decoder's residual sum.
     pub fn decoder_input(
         &self,
-        expanded: &ExpandedStage<'_, '_>,
+        chunks: &SmoothedChunks<'_, '_>,
         projected_skip: &DeviceBuffer<f32>,
         skip_bias: Nvfp4DeviceTensor<'_>,
     ) -> Result<DeviceBuffer<f32>, DriverError> {
-        let plan = expanded.plan;
+        let plan = chunks.plan;
         let values = plan.outer_values();
         if !plan.features().is_multiple_of(16)
             || skip_bias.bytes.len() < plan.features() as usize / 2
@@ -541,15 +527,16 @@ impl HnetStage {
         self.chunk.hnet_decoder_input_kernel(
             plan.stream,
             linear_config(values, THREADS),
-            &expanded.values,
+            &chunks.values,
+            &plan.row_to_chunk,
             projected_skip,
             skip_bias.bytes,
             skip_bias.scales,
             skip_bias.global_scale,
-            plan.lengths,
             &mut input,
             values,
             plan.shape.outer_stride,
+            plan.inner_stride,
             plan.shape.features,
         )?;
         Ok(input)

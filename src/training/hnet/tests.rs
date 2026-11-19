@@ -442,9 +442,9 @@ fn native_routed_backbone_executes_and_reverses_real_blocks() -> AppResult {
         .map(|i| [0.0001_f32, -0.0002, 0.0003][i % 3])
         .collect::<Vec<_>>();
     let output_gradient = DeviceBuffer::from_host(&stream, &output_gradient)?;
-    let expanded = stage.expand(&plan, tape.output())?;
-    let reverse = stage.backward(&expanded, &output_gradient)?;
-    drop(expanded);
+    let smoothed = stage.smooth_chunks(&plan, tape.output())?;
+    let reverse = stage.backward(&smoothed, &output_gradient)?;
+    drop(smoothed);
     let (inner_adjoint, scale_adjoint) = tape.backward(&reverse.d_inner)?;
     let scale_adjoint = scale_adjoint.to_host_vec(&stream)?;
     assert!(scale_adjoint[..WIDTH].iter().any(|grad| *grad != 0.0));

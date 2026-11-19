@@ -18,6 +18,75 @@ fn fp16(values: &[i8]) -> Vec<u16> {
 }
 
 #[test]
+#[ignore = "uses the CUDA H-Net decoder and its generated sm_120a PTX"]
+fn fused_decoder_preserves_causal_expansion_and_skip_rounding()
+-> Result<(), Box<dyn std::error::Error>> {
+    use rust_kernels_cuda::nvfp4::{Nvfp4DeviceTensor, csf};
+
+    const WIDTH: usize = 16;
+    let (_, stream, stage) = common::cuda_test_module(HnetStage::from_module)?;
+    let mut queries = [1, 0, 0, 0].repeat(8);
+    queries[4..8].copy_from_slice(&[1, 1, 1, 1]);
+    let mut keys = [1, 0, 0, 0].repeat(8);
+    keys[8..12].copy_from_slice(&[-1, -1, -1, 1]);
+    let queries = DeviceBuffer::from_host(&stream, &fp16(&queries))?;
+    let keys = DeviceBuffer::from_host(&stream, &fp16(&keys))?;
+    let lengths = DeviceBuffer::from_host(&stream, &[4_u32, 1])?;
+    let plan = stage.route(
+        &stream,
+        &queries,
+        &keys,
+        &lengths,
+        StageShape {
+            batch: 2,
+            outer_stride: 4,
+            features: WIDTH as u32,
+            router_width: 4,
+            inner_alignment: 1,
+        },
+        RatioObjective {
+            target: 4.0,
+            weight: 0.03,
+        },
+    )?;
+    assert_eq!(plan.inner_lengths().to_host_vec(&stream)?, [2, 1]);
+
+    let mut compact = fp16(&[2; WIDTH]);
+    compact.extend(fp16(&[6; WIDTH]));
+    compact.extend(fp16(&[-3; WIDTH]));
+    compact.extend([0x7e00; WIDTH]);
+    let inner = DeviceBuffer::from_host(&stream, &compact)?;
+    let smoothed = stage.smooth_chunks(&plan, &inner)?;
+    let mut skip = [-0.75_f32; 8 * WIDTH];
+    skip[0] = 16_777_216.0;
+    skip[5 * WIDTH..].fill(f32::NAN);
+    let skip_dev = DeviceBuffer::from_host(&stream, &skip)?;
+    let biases = DeviceBuffer::from_host(&stream, &[0x22_u8; WIDTH / 2])?;
+    let scales = DeviceBuffer::from_host(&stream, &csf::encode_host(&[0x38], 1, WIDTH))?;
+    let global = DeviceBuffer::from_host(&stream, &[1.0_f32])?;
+    let actual = stage
+        .decoder_input(
+            &smoothed,
+            &skip_dev,
+            Nvfp4DeviceTensor::new(&biases, &scales, &global),
+        )?
+        .to_host_vec(&stream)?;
+    let restored = [2.0_f32, 2.0, 5.0, 5.0, -3.0];
+    assert_eq!(actual.len(), skip.len());
+    for (index, value) in actual.into_iter().enumerate() {
+        let expected = restored
+            .get(index / WIDTH)
+            .map_or(0.0, |chunk| chunk + (skip[index] + 1.0));
+        assert_eq!(
+            value.to_bits(),
+            expected.to_bits(),
+            "decoder element {index}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
 #[ignore = "uses the CUDA H-Net RMSNorm and width-truncation adjoint"]
 fn hnet_rms_uses_the_full_width_and_ignores_padding() -> Result<(), Box<dyn std::error::Error>> {
     use rust_kernels_cuda::{
@@ -156,12 +225,8 @@ fn ragged_hnet_stage_matches_causal_forward_and_backward() -> Result<(), Box<dyn
     );
 
     // Use the identity as the inner model to isolate the hierarchy operators.
-    let expanded = stage.expand(&plan, &gathered)?;
-    assert_eq!(
-        expanded.values.to_host_vec(&stream)?,
-        fp16(&[2, 4, 2, 4, 5, 7, 5, 7, 10, 12, 1, 2, 1, 2, 0, 0, 0, 0, 0, 0,])
-    );
-    let reverse = stage.backward(&expanded, &d_expanded_dev)?;
+    let smoothed = stage.smooth_chunks(&plan, &gathered)?;
+    let reverse = stage.backward(&smoothed, &d_expanded_dev)?;
     assert_eq!(
         reverse.d_inner.to_host_vec(&stream)?,
         [2.5, 2.5, 1.5, 1.5, 1., 1., 2., 2., 0., 0., 0., 0.]
