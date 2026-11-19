@@ -13,7 +13,7 @@ use super::kernels::{
     TMA_NVFP4_RESIDUAL_THREADS_PER_BLOCK, TMA_NVFP4_THREADS_PER_BLOCK, module,
     tma_nvfp4_output_amax_chunks,
 };
-use super::kernels::{affine_columns, polar};
+use super::kernels::{affine_columns, affine_strided, polar};
 use super::scale_layout::sm120_scale_tma_shape_padded;
 use super::tma::{
     TmaNvfp4DeviceScaleDescriptorKey, TmaNvfp4DeviceScaleDescriptors, encode_u4_tiled_layout,
@@ -193,6 +193,7 @@ pub struct Nvfp4GemmModule {
     module: module::LoadedModule,
     polar: polar::module::LoadedModule,
     affine_columns: Option<affine_columns::LoadedModule>,
+    affine_strided: Option<affine_strided::LoadedModule>,
 }
 
 impl Nvfp4GemmModule {
@@ -213,8 +214,13 @@ impl Nvfp4GemmModule {
             crate::module_exports::contains(&module, b"nvfp4_gemm_tma_affine_columns_kernel")?
                 .then(|| affine_columns::from_module(module.clone()))
                 .transpose()?;
+        let affine_strided =
+            crate::module_exports::contains(&module, b"nvfp4_gemm_tma_affine_strided_kernel")?
+                .then(|| affine_strided::from_module(module.clone()))
+                .transpose()?;
         Ok(Self {
             affine_columns,
+            affine_strided,
             polar: polar::module::from_module(module.clone())?,
             module: module::from_module(module)?,
         })
@@ -1347,6 +1353,79 @@ impl Nvfp4GemmModule {
             bias.global_scale,
             params,
         )
+    }
+
+    /// Write one affine projection into an aligned slice of every output row.
+    /// Return false when the loaded PTX predates strided stores.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "strided affine launch uses explicit buffers and geometry"
+    )]
+    pub fn try_gemm_tma_nvfp4_rowwise_a_scale_affine_strided(
+        &self,
+        stream: &CudaStream,
+        tma: &TmaNvfp4DeviceScaleDescriptors,
+        out: &mut DeviceBuffer<f32>,
+        bias: Nvfp4DeviceTensor<'_>,
+        token_count: u32,
+        input_dim: u32,
+        output_dim: u32,
+        output_stride: u32,
+        output_offset: u32,
+        a_global_scales: &DeviceBuffer<f32>,
+        b_global_scale: &DeviceBuffer<f32>,
+    ) -> Result<bool, DriverError> {
+        let Some(module) = &self.affine_strided else {
+            return Ok(false);
+        };
+        let invalid = DriverError(cudaError_enum_CUDA_ERROR_INVALID_VALUE);
+        let required = token_count.checked_mul(output_stride).ok_or(invalid)?;
+        if token_count == 0
+            || !token_count.is_multiple_of(TILE_M)
+            || input_dim == 0
+            || !input_dim.is_multiple_of(Sm120ScaleLayout::K_ATOM)
+            || !input_dim.is_multiple_of(TILE_K)
+            || output_dim == 0
+            || !output_dim.is_multiple_of(TILE_N)
+            || !output_stride.is_multiple_of(2)
+            || !output_offset.is_multiple_of(2)
+            || output_dim > output_stride.saturating_sub(output_offset)
+            || out.len() < required as usize
+            || a_global_scales.len() < token_count as usize
+            || b_global_scale.is_empty()
+        {
+            return Err(invalid);
+        }
+        let params = gemm_params(
+            token_count,
+            input_dim,
+            output_dim,
+            2,
+            1.0,
+            a_global_scales.cu_deviceptr(),
+            b_global_scale.cu_deviceptr(),
+            None,
+        );
+        module.nvfp4_gemm_tma_affine_strided_kernel(
+            stream,
+            LaunchConfig {
+                grid_dim: (output_dim / TILE_N, token_count / TILE_M, 1),
+                block_dim: (TMA_NVFP4_THREADS_PER_BLOCK, 1, 1),
+                shared_mem_bytes: 0,
+            },
+            tma.a_deviceptr() as *const TmaDescriptor,
+            tma.b_deviceptr() as *const TmaDescriptor,
+            tma.a_scales_deviceptr() as *const TmaDescriptor,
+            tma.b_scales_deviceptr() as *const TmaDescriptor,
+            out,
+            bias.bytes,
+            bias.scales,
+            bias.global_scale,
+            params,
+            output_stride,
+            output_offset,
+        )?;
+        Ok(true)
     }
 
     #[expect(

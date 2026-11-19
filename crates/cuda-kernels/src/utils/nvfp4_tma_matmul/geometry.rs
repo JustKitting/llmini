@@ -1208,6 +1208,8 @@ fn store_acc_affine_scaled(
     scale1: f32,
     out: &mut DisjointSlice<f32>,
     bias_tile: &BiasSmem,
+    output_stride: u32,
+    output_offset: u32,
 ) {
     let row0 = tile.mma_row_base(m_repeat) + tile.group;
     let row1 = row0 + 8;
@@ -1221,13 +1223,13 @@ fn store_acc_affine_scaled(
     let (bias0, bias1) = load_f32x2_shared(bias_tile.as_ptr(), bias_col as usize);
     store_f32x2_global(
         out,
-        row0 * output_dim + col0,
+        row0 * output_stride + output_offset + col0,
         affine_from_stored_product(acc[0], scale0, bias0),
         affine_from_stored_product(acc[1], scale0, bias1),
     );
     store_f32x2_global(
         out,
-        row1 * output_dim + col0,
+        row1 * output_stride + output_offset + col0,
         affine_from_stored_product(acc[2], scale1, bias0),
         affine_from_stored_product(acc[3], scale1, bias1),
     );
@@ -1757,7 +1759,7 @@ macro_rules! store_accumulator_affine_rows {
         $tile:expr,
         $params:expr,
         $output_scale:expr,
-        ($out:expr, $bias_tile:expr)
+        ($out:expr, $bias_tile:expr, $output_stride:expr, $output_offset:expr)
     ) => {{
         let row0 = $tile.mma_row_base($m_repeat) + $tile.group;
         let scale0 = $output_scale.row(row0);
@@ -1773,6 +1775,8 @@ macro_rules! store_accumulator_affine_rows {
                 scale1,
                 $out,
                 $bias_tile,
+                $output_stride,
+                $output_offset,
             );
         )+
         store_accumulator_affine_rows!(
@@ -1780,7 +1784,7 @@ macro_rules! store_accumulator_affine_rows {
             $tile,
             $params,
             $output_scale,
-            ($out, $bias_tile)
+            ($out, $bias_tile, $output_stride, $output_offset)
         );
     }};
 }
@@ -2782,7 +2786,9 @@ macro_rules! run_tma_nvfp4_full_tile_affine_shape {
         $tma_bars:expr,
         $empty_bars:expr,
         $out:expr,
-        $bias_tile:expr $(,)?
+        $bias_tile:expr,
+        $output_stride:expr,
+        $output_offset:expr $(,)?
     ) => {{
         run_tma_nvfp4_full_tile_shape_body!(
             [$($m_axis),+],
@@ -2801,7 +2807,7 @@ macro_rules! run_tma_nvfp4_full_tile_affine_shape {
             $tma_bars,
             $empty_bars,
             store_accumulator_affine_rows,
-            ($out, $bias_tile),
+            ($out, $bias_tile, $output_stride, $output_offset),
         );
     }};
 }

@@ -618,6 +618,68 @@ fn tma_affine_columns_replay_preserves_full_stride_and_other_columns() -> Result
 
 #[ignore = "requires generated sm_120a PTX"]
 #[test]
+fn tma_affine_strided_engram_key_matches_contiguous_output() -> Result<(), Box<dyn Error>> {
+    let n = 4 * TILE_N as usize;
+    let fixture = Fixture::new(ROWS, 3 * K, n)?;
+    let mut full = DeviceBuffer::<f32>::zeroed(&fixture.stream, ROWS * n)?;
+    fixture.tma_affine(&mut full)?;
+    let full = full.to_host_vec(&fixture.stream)?;
+    assert_eq!(sm120_scale_padded_mn_extent(n), n);
+    let mut descriptors = TmaNvfp4DeviceScaleDescriptors::new(&fixture.stream)?;
+    fixture.tma.prepare_tma_nvfp4_csf_scales_into(
+        &fixture.stream,
+        &fixture.input_bytes,
+        &fixture.input_csf_scales,
+        &fixture.weight_bytes,
+        &fixture.weight_csf_scales,
+        ROWS as u32,
+        (3 * K) as u32,
+        n as u32,
+        &mut descriptors,
+    )?;
+    let stride = 4 * n;
+    let sentinel = -1234.25_f32;
+    for slot in 0..4 {
+        let offset = slot * n;
+        let mut strided = DeviceBuffer::from_host(&fixture.stream, &vec![sentinel; ROWS * stride])?;
+        assert!(
+            fixture
+                .tma
+                .try_gemm_tma_nvfp4_rowwise_a_scale_affine_strided(
+                    &fixture.stream,
+                    &descriptors,
+                    &mut strided,
+                    fixture.bias_device(),
+                    ROWS as u32,
+                    (3 * K) as u32,
+                    n as u32,
+                    stride as u32,
+                    offset as u32,
+                    &fixture.input_globals,
+                    &fixture.weight_global,
+                )?
+        );
+        let strided = strided.to_host_vec(&fixture.stream)?;
+        for (row, values) in strided.chunks_exact(stride).enumerate() {
+            assert!(values[..offset].iter().all(|&value| value == sentinel));
+            assert!(values[offset + n..].iter().all(|&value| value == sentinel));
+            for (&actual, &expected) in values[offset..offset + n]
+                .iter()
+                .zip(&full[row * n..(row + 1) * n])
+            {
+                assert_eq!(
+                    actual.to_bits(),
+                    expected.to_bits(),
+                    "slot {slot}, row {row}"
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+#[ignore = "requires generated sm_120a PTX"]
+#[test]
 fn tma_residual_matches_old_projection_residual_add() -> Result<(), Box<dyn Error>> {
     let fixture = Fixture::new(ROWS, K, 128)?;
     let residual = residual_values(ROWS * 128);

@@ -80,13 +80,6 @@ impl Module {
         for wi in self.cfg.projector_indices() {
             let is_value = wi == self.cfg.value_index();
             let bi = wi + 1;
-            let out = if is_value {
-                &mut self.value
-            } else if streams == 4 {
-                &mut self.projection
-            } else {
-                &mut self.key
-            };
             let input = self.memory_q.rowwise();
             r.tma_gemm.prepare_tma_nvfp4_csf_weight_into(
                 s,
@@ -99,6 +92,32 @@ impl Module {
                 d,
                 &mut self.tma,
             )?;
+            if !is_value
+                && streams == 4
+                && r.tma_gemm
+                    .try_gemm_tma_nvfp4_rowwise_a_scale_affine_strided(
+                        s,
+                        &self.tma,
+                        &mut self.key,
+                        w.nv[bi].device(),
+                        n,
+                        memory as u32,
+                        d,
+                        d * streams,
+                        ((wi - 1) / 2) as u32 * d,
+                        input.global_scales,
+                        &w.nv[wi].global_scale,
+                    )?
+            {
+                continue;
+            }
+            let out = if is_value {
+                &mut self.value
+            } else if streams == 4 {
+                &mut self.projection
+            } else {
+                &mut self.key
+            };
             r.tma_gemm
                 .gemm_tma_nvfp4_rowwise_a_scale_affine_padded_output(
                     s,

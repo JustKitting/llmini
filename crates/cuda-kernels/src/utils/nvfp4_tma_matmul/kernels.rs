@@ -38,7 +38,9 @@ macro_rules! run_affine_tile {
         $bias_scales:ident,
         $bias_global_scale:ident,
         $params:ident,
-        $output_tile:expr $(,)?
+        $output_tile:expr,
+        $output_stride:expr,
+        $output_offset:expr $(,)?
     ) => {{
         $params.global_scale_mode = 2;
         $params.route_mode = ROUTE_NONE;
@@ -118,6 +120,8 @@ macro_rules! run_affine_tile {
             empty_bars,
             &mut $out,
             bias_tile,
+            $output_stride,
+            $output_offset,
         );
     }};
 }
@@ -239,6 +243,45 @@ pub mod affine_columns {
             bias_global_scale,
             params,
             first_output_tile + thread::blockIdx_x(),
+            params.output_dim,
+            0,
+        );
+    }
+}
+
+#[cuda_module]
+pub mod affine_strided {
+    use super::*;
+
+    #[kernel]
+    #[launch_bounds(288, 1)]
+    #[allow(unused_variables)]
+    pub fn nvfp4_gemm_tma_affine_strided_kernel(
+        a_tma: *const TmaDescriptor,
+        b_tma: *const TmaDescriptor,
+        a_scale_tma: *const TmaDescriptor,
+        b_scale_tma: *const TmaDescriptor,
+        mut out: DisjointSlice<f32>,
+        bias_bytes: &[u8],
+        bias_scales: &[u8],
+        bias_global_scale: &[f32],
+        mut params: Nvfp4GemmParams,
+        output_stride: u32,
+        output_offset: u32,
+    ) {
+        run_affine_tile!(
+            a_tma,
+            b_tma,
+            a_scale_tma,
+            b_scale_tma,
+            out,
+            bias_bytes,
+            bias_scales,
+            bias_global_scale,
+            params,
+            thread::blockIdx_x(),
+            output_stride,
+            output_offset,
         );
     }
 }
@@ -756,6 +799,8 @@ pub mod module {
             bias_global_scale,
             params,
             thread::blockIdx_x(),
+            params.output_dim,
+            0,
         );
     }
 
