@@ -1,6 +1,7 @@
 //! Real complete-model rejection semantics; declared before adding the test hook.
 mod feedback;
 mod fingerprint;
+mod first_update_replay;
 use super::Trainer;
 use crate::AppResult;
 use fingerprint::Snapshot;
