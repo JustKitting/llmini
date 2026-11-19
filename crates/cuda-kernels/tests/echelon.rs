@@ -66,6 +66,24 @@ fn echelon_tail_removes_the_head_and_reuses_its_warm_vector()
     assert!(warm < cold);
     common::assert_close(warm, (4097.0_f32 / 16385.0).sqrt() / 1.05, 1e-6);
 
+    let expected_residual = residual.to_host_vec(&stream)?;
+    let mut fused_state = module.new_tail_state(&stream, shape, 61)?;
+    let mut fused_scratch = TailScratch::new(&stream, shape)?;
+    for expected in [cold, warm] {
+        let mut projected = DeviceBuffer::from_host(&stream, &projection)?;
+        let actual = module
+            .estimate_tail_from_projection(
+                &stream,
+                &momentum,
+                &mut projected,
+                &mut fused_state,
+                &mut fused_scratch,
+            )?
+            .to_host_vec(&stream)?;
+        assert_eq!(actual[0].to_bits(), expected.to_bits());
+        assert_eq!(projected.to_host_vec(&stream)?, expected_residual);
+    }
+
     let zero_tail = DeviceBuffer::from_host(&stream, &projection)?;
     let mut zero_residual = DeviceBuffer::from_host(&stream, &projection)?;
     module.residual(&stream, &zero_tail, &mut zero_residual, shape)?;
@@ -103,5 +121,18 @@ fn echelon_tail_survives_probe_null_space() -> Result<(), Box<dyn std::error::Er
         ],
         1e-6,
     );
+    let actual_inverse = inverse.to_host_vec(&stream)?[0];
+    let mut projected = DeviceBuffer::zeroed(&stream, 12)?;
+    let mut fused_state = module.new_tail_state(&stream, shape, 61)?;
+    let fused_inverse = module
+        .estimate_tail_from_projection(
+            &stream,
+            &residual,
+            &mut projected,
+            &mut fused_state,
+            &mut scratch,
+        )?
+        .to_host_vec(&stream)?[0];
+    assert_eq!(actual_inverse.to_bits(), fused_inverse.to_bits());
     Ok(())
 }

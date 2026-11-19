@@ -1,12 +1,13 @@
 use cuda_core::{DeviceBuffer, DriverError};
 use rust_kernels_cuda::f32_matrix_ops::{F32Linear2Args, F32Linear3Args};
 use rust_kernels_cuda::optimizer::echelon::{
-    EchelonModule, FrameModule, Shape, TailArgs, TailScratch, TailState,
+    EchelonModule, FrameModule, Shape, TailScratch, TailState,
 };
 
 use super::{
     MuonGroupTable, MuonTmaOperandScratch, Runtime, TmaDims, TmaScratchRefs, crop_tma_out,
-    operand_refs, polar_shape, quantize_operand_padded, quantize_operand_transposed_padded,
+    operand_refs, polar_shape, quantize_operand_padded, quantize_operand_padded_with_amax,
+    quantize_operand_transposed_padded, quantize_operand_transposed_padded_with_amax,
     run_tma_gemm_self_prepared,
 };
 
@@ -188,13 +189,13 @@ impl Echelon {
             lift,
             rank,
         )?;
-        self.kernels.residual(stream, x, residual, slot.shape)?;
-        let inverse = self.kernels.estimate_tail(TailArgs {
+        let inverse = self.kernels.estimate_tail_from_projection(
             stream,
+            x,
             residual,
-            state: &mut slot.tail,
-            scratch: &mut s.tail,
-        })?;
+            &mut slot.tail,
+            &mut s.tail,
+        )?;
 
         self.kernels.normalize_head(
             stream,
@@ -264,8 +265,8 @@ impl Echelon {
     }
 }
 
-/// These two layouts are read-only across every refresh and the final head
-/// projection of this slot. Keep the ordinary packers and their exact extents.
+/// Both layouts use the exact amax emitted by momentum preparation. The
+/// packed operands are read-only until the final head projection of this slot.
 fn pack_momentum(
     runtime: &Runtime,
     tma: &mut TmaScratchRefs<'_>,
@@ -277,21 +278,18 @@ fn pack_momentum(
     let (short, long, rank) = shape.dimensions();
     let sample = TmaDims::new(rank, long, short);
     let refresh = TmaDims::new(rank, short, long);
-    quantize_operand_transposed_padded(
-        stream,
-        runtime,
-        momentum,
-        operand_refs(transpose),
-        short,
-        long,
-        sample.n,
-        sample.k,
+    let mut transpose = operand_refs(transpose);
+    transpose.amax = &mut *tma.a.amax;
+    quantize_operand_transposed_padded_with_amax(
+        stream, runtime, momentum, transpose, short, long, sample.n, sample.k,
     )?;
-    quantize_operand_padded(
+    let mut direct = tma.b.reborrow();
+    direct.amax = &mut *tma.a.amax;
+    quantize_operand_padded_with_amax(
         stream,
         runtime,
         momentum,
-        tma.b.reborrow(),
+        direct,
         short,
         long,
         refresh.n,
@@ -419,6 +417,21 @@ fn product(
 mod tests {
     use super::*;
     use crate::training::optimizer_tc_scratch::MuonScratchBuffers;
+    use rust_kernels_cuda::nvfp4_quant::TensorAmaxArgs;
+
+    fn prepare_fixture_amax(
+        runtime: &Runtime,
+        x: &DeviceBuffer<f32>,
+        tma: &mut TmaScratchRefs<'_>,
+    ) -> Result<(), DriverError> {
+        runtime.quant.tensor_amax_f32(TensorAmaxArgs {
+            stream: &runtime.stream,
+            x,
+            chunk_amax: &mut *tma.a.chunk_amax,
+            out: &mut *tma.a.amax,
+            element_count: x.len() as u32,
+        })
+    }
 
     #[test]
     #[ignore = "uses the Blackwell NVFP4 TMA optimizer path"]
@@ -452,6 +465,7 @@ mod tests {
             let mut expected_right = DeviceBuffer::zeroed(stream, (rank * long) as usize)?;
             let mut actual_left = DeviceBuffer::zeroed(stream, (rank * short) as usize)?;
             let mut expected_left = DeviceBuffer::zeroed(stream, (rank * short) as usize)?;
+            prepare_fixture_amax(&runtime, &momentum, &mut tma)?;
             let (sample, refresh) = pack_momentum(
                 &runtime,
                 &mut tma,
@@ -521,14 +535,9 @@ mod tests {
         let mut residual = DeviceBuffer::zeroed(stream, 15)?;
         let mut update = DeviceBuffer::zeroed(stream, 15)?;
         for _ in 0..2 {
-            echelon.apply(
-                &runtime,
-                0,
-                &x,
-                &mut residual,
-                &mut update,
-                &mut super::super::tma_refs(&mut muon.tma),
-            )?;
+            let mut tma = super::super::tma_refs(&mut muon.tma);
+            prepare_fixture_amax(&runtime, &x, &mut tma)?;
+            echelon.apply(&runtime, 0, &x, &mut residual, &mut update, &mut tma)?;
             let actual = update.to_host_vec(stream)?;
             let mut dominant = 1.0_f32;
             for _ in 0..HEAD_ITERATIONS {
@@ -549,14 +558,9 @@ mod tests {
             }
         }
         let zero = DeviceBuffer::zeroed(stream, 15)?;
-        echelon.apply(
-            &runtime,
-            0,
-            &zero,
-            &mut residual,
-            &mut update,
-            &mut super::super::tma_refs(&mut muon.tma),
-        )?;
+        let mut tma = super::super::tma_refs(&mut muon.tma);
+        prepare_fixture_amax(&runtime, &zero, &mut tma)?;
+        echelon.apply(&runtime, 0, &zero, &mut residual, &mut update, &mut tma)?;
         assert_eq!(update.to_host_vec(stream)?, [0.0; 15]);
         Ok(())
     }

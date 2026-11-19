@@ -106,6 +106,74 @@ impl EchelonModule {
         &self,
         args: TailArgs<'_, 'scratch>,
     ) -> Result<&'scratch DeviceBuffer<f32>, DriverError> {
+        self.load_tail_probe(args.stream, args.state, args.scratch, args.residual.len())?;
+        self.finish_tail_estimate(args, false)
+    }
+
+    /// Replace QH with the residual and calculate its first power probe in
+    /// the same pass. Later iterations and zero-probe recovery use this residual.
+    pub fn estimate_tail_from_projection<'scratch>(
+        &self,
+        stream: &CudaStream,
+        momentum: &DeviceBuffer<f32>,
+        projection: &mut DeviceBuffer<f32>,
+        state: &'scratch mut TailState,
+        scratch: &'scratch mut TailScratch,
+    ) -> Result<&'scratch DeviceBuffer<f32>, DriverError> {
+        let shape = state.shape;
+        if momentum.len() < (shape.short * shape.long) as usize {
+            return Err(DriverError(1));
+        }
+        self.load_tail_probe(stream, state, scratch, projection.len())?;
+        self.0.echelon_residual_probe_kernel(
+            stream,
+            grid_x_config(shape.short, THREADS),
+            momentum,
+            projection,
+            &scratch.z,
+            &mut scratch.w,
+            shape.long,
+        )?;
+        self.finish_tail_estimate(
+            TailArgs {
+                stream,
+                residual: projection,
+                state,
+                scratch,
+            },
+            true,
+        )
+    }
+
+    fn load_tail_probe(
+        &self,
+        stream: &CudaStream,
+        state: &TailState,
+        scratch: &mut TailScratch,
+        residual_len: usize,
+    ) -> Result<(), DriverError> {
+        let shape = state.shape;
+        if residual_len < (shape.short * shape.long) as usize
+            || scratch.z.len() < shape.long as usize
+            || scratch.w.len() < shape.short as usize
+        {
+            return Err(DriverError(1));
+        }
+        self.0.echelon_load_tail_kernel(
+            stream,
+            grid_x_config(1, THREADS),
+            &state.warm,
+            &mut scratch.z,
+            shape.long,
+            state.seed,
+        )
+    }
+
+    fn finish_tail_estimate<'scratch>(
+        &self,
+        args: TailArgs<'_, 'scratch>,
+        first_probe_ready: bool,
+    ) -> Result<&'scratch DeviceBuffer<f32>, DriverError> {
         let TailArgs {
             stream,
             residual,
@@ -113,30 +181,18 @@ impl EchelonModule {
             scratch,
         } = args;
         let shape = state.shape;
-        if residual.len() < (shape.short * shape.long) as usize
-            || scratch.z.len() < shape.long as usize
-            || scratch.w.len() < shape.short as usize
-        {
-            return Err(DriverError(1));
-        }
         let vec_grid = grid_x_config(1, THREADS);
-        self.0.echelon_load_tail_kernel(
-            stream,
-            vec_grid,
-            &state.warm,
-            &mut scratch.z,
-            shape.long,
-            state.seed,
-        )?;
         for iteration in 0..TAIL_ITERATIONS {
-            self.0.echelon_thin_vector_kernel(
-                stream,
-                grid_x_config(shape.short, THREADS),
-                residual,
-                &scratch.z,
-                &mut scratch.w,
-                shape.long,
-            )?;
+            if iteration != 0 || !first_probe_ready {
+                self.0.echelon_thin_vector_kernel(
+                    stream,
+                    grid_x_config(shape.short, THREADS),
+                    residual,
+                    &scratch.z,
+                    &mut scratch.w,
+                    shape.long,
+                )?;
+            }
             if iteration + 1 == TAIL_ITERATIONS {
                 self.0.echelon_tail_scale_kernel(
                     stream,
@@ -348,6 +404,31 @@ mod kernels {
                 vector[column as usize],
                 sum,
             );
+        }
+        let sum = unsafe { block_sum_shared_f32(&mut REDUCTION, sum, lane, warp) };
+        if tid == 0 {
+            unsafe { *output.get_unchecked_mut(row as usize) = sum };
+        }
+    }
+
+    #[kernel]
+    pub fn echelon_residual_probe_kernel(
+        momentum: &[f32],
+        mut projection: DisjointSlice<f32>,
+        vector: &[f32],
+        mut output: DisjointSlice<f32>,
+        width: u32,
+    ) {
+        static mut REDUCTION: SharedArray<f32, WARPS> = SharedArray::UNINIT;
+        let row = thread::blockIdx_x();
+        let (tid, lane, warp) = thread_lane_warp();
+        let mut sum = 0.0;
+        for column in (tid..width).step_by(THREADS as usize) {
+            let index = (row * width + column) as usize;
+            let projected = unsafe { projection.get_unchecked_mut(index) };
+            let residual = momentum[index] - *projected;
+            *projected = residual;
+            sum = fma_f32(residual, vector[column as usize], sum);
         }
         let sum = unsafe { block_sum_shared_f32(&mut REDUCTION, sum, lane, warp) };
         if tid == 0 {
