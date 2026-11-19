@@ -7,7 +7,14 @@ use std::{
     path::Path,
 };
 
-const MAGIC: &[u8] = b"NVFP4_REFERENCE_BYTES_V1\n";
+pub(super) const MAGIC: &[u8] = b"NVFP4_REFERENCE_BYTES_V1\n";
+
+pub(super) fn write_document(output: &mut impl Write, raw: &[u8], closed: bool) -> AppResult {
+    output.write_all(&u32::try_from(raw.len())?.to_le_bytes())?;
+    output.write_all(&[u8::from(closed)])?;
+    output.write_all(raw)?;
+    Ok(())
+}
 
 /// Export the exact text from the verified tokenized reference. A record has
 /// byte length, termination flag, then its original bytes. BOS and EOS are
@@ -51,9 +58,7 @@ fn export(source: &Path, mut output: impl Write, tokenizer: &TrainingTokenizer) 
             .collect();
         let text = tokenizer.decode(&text_ids)?;
         let raw = text.as_bytes();
-        output.write_all(&u32::try_from(raw.len())?.to_le_bytes())?;
-        output.write_all(&[u8::from(closed)])?;
-        output.write_all(raw)?;
+        write_document(&mut output, raw, closed)?;
         raw_hash.update(raw);
         raw_bytes += raw.len();
         index += 1;

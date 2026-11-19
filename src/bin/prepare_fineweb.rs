@@ -4,6 +4,8 @@ use std::num::NonZeroUsize;
 use std::path::PathBuf;
 #[path = "prepare_fineweb/byte_reference.rs"]
 mod byte_reference;
+#[path = "prepare_fineweb/byte_training.rs"]
+mod byte_training;
 #[path = "prepare_fineweb/curated.rs"]
 mod curated;
 #[path = "prepare_fineweb/reference.rs"]
@@ -16,6 +18,16 @@ type AppResult<T = ()> = Result<T, Box<dyn Error>>;
 
 #[derive(Parser)]
 struct Args {
+    /// Reproduce byte documents from the local FineWeb Parquets and native training shards.
+    #[arg(long, requires_all = ["training_byte_output", "training_byte_documents"],
+        conflicts_with_all = ["reference_tokens", "reference_byte_documents", "curated_parquet"])]
+    training_byte_fineweb: Option<PathBuf>,
+    /// Destination for the verified byte training frames.
+    #[arg(long, requires = "training_byte_fineweb")]
+    training_byte_output: Option<PathBuf>,
+    /// Number of complete native training documents to replay.
+    #[arg(long, requires = "training_byte_fineweb")]
+    training_byte_documents: Option<NonZeroUsize>,
     /// Official GPT-2 FineWeb validation shard; prepare reference documents only.
     #[arg(long, requires_all = ["reference_vocab", "reference_output"])]
     reference_tokens: Option<PathBuf>,
@@ -47,7 +59,16 @@ struct Args {
 
 fn main() -> AppResult {
     let args = Args::parse();
-    if let (Some(source), Some(output)) = (args.reference_byte_documents, args.reference_byte_output) {
+    if let (Some(source), Some(output), Some(documents)) = (
+        args.training_byte_fineweb,
+        args.training_byte_output,
+        args.training_byte_documents,
+    ) {
+        return byte_training::prepare(&source, &output, documents.get());
+    }
+    if let (Some(source), Some(output)) =
+        (args.reference_byte_documents, args.reference_byte_output)
+    {
         return byte_reference::prepare(&source, &output);
     }
     if let (Some(parquet), Some(output), Some(tokens), Some(documents)) = (
