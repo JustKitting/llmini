@@ -58,7 +58,12 @@ fn capped_history_rejects_a_second_gradient_spike() {
 #[test]
 fn skips_non_finite_without_history() {
     let mut state = state();
-    let decision = state.observe(Some(f32::NAN), 1.0);
-    assert!(decision.skipped);
-    assert!(decision.non_finite);
+    for (loss, norm) in [
+        (Some(f32::NAN), 1.0),
+        (None, f32::NAN),
+        (None, f32::INFINITY),
+    ] {
+        let decision = state.observe(loss, norm);
+        assert!(decision.skipped && decision.non_finite);
+    }
 }

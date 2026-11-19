@@ -40,7 +40,12 @@ pub(crate) fn nextlat_smooth_l1_body(
                 diff
             } else {
                 local += abs - 0.5;
-                if diff < 0.0 { -1.0 } else { 1.0 }
+                if abs <= f32::MAX {
+                    if diff < 0.0 { -1.0 } else { 1.0 }
+                } else {
+                    // Preserve invalid differences for steps without loss readback.
+                    diff
+                }
             };
             unsafe {
                 *d_predicted_next_states.get_unchecked_mut(offset) = grad * grad_scale;
