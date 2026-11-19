@@ -45,7 +45,7 @@ impl Trainer {
         if passes == 0 || (self.latent_feedback.is_none() && passes != 1) {
             return Err("invalid feedback pass count".into());
         }
-        if let Some(f) = &mut self.latent_feedback {
+        if include_next_latent && let Some(f) = &mut self.latent_feedback {
             f.begin(
                 &self.runtime,
                 &mut self.buffers.muon_tables,

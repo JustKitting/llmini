@@ -50,12 +50,17 @@ fn native_latent_feedback_recurrence_gradients_conditional_update_checkpoint() -
     println!("feedback_test_stage=initialized");
     assert!(t.engram.is_none());
     let b = batch(&t)?;
+    let feedback_state = t.latent_feedback.as_ref().unwrap().integrity_metadata();
     let one = t.eval_token_losses_for_passes(&b, 1)?;
     println!("feedback_test_stage=one_pass");
     let two = t.eval_token_losses_for_passes(&b, 2)?;
     println!("feedback_test_stage=two_pass");
     let four = t.eval_token_losses_for_passes(&b, 4)?;
     println!("feedback_test_stage=four_pass");
+    assert_eq!(
+        t.latent_feedback.as_ref().unwrap().integrity_metadata(),
+        feedback_state,
+    );
     assert!(one.iter().chain(&two).chain(&four).all(|v| v.is_finite()));
     for seq in 0..GPT2_BATCH_SIZE {
         let i = seq * GPT2_SEQ_LEN;

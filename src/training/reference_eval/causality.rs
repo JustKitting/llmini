@@ -2,7 +2,11 @@ use super::{Trainer, input::Window};
 use crate::AppResult;
 use gpt2_nvfp4::{GPT2_BATCH_SIZE, GPT2_SEQ_LEN};
 
-pub(super) fn verify(trainer: &mut Trainer, windows: &[Window]) -> AppResult<serde_json::Value> {
+pub(super) fn verify(
+    trainer: &mut Trainer,
+    windows: &[Window],
+    passes: usize,
+) -> AppResult<serde_json::Value> {
     let window_len = GPT2_SEQ_LEN + 1;
     let selected = &windows[..GPT2_BATCH_SIZE];
     let flat = selected
@@ -10,15 +14,15 @@ pub(super) fn verify(trainer: &mut Trainer, windows: &[Window]) -> AppResult<ser
         .flat_map(|w| w.ids.iter().copied())
         .collect::<Vec<_>>();
     let batch = trainer.batch_from_windows(&flat, GPT2_BATCH_SIZE)?;
-    let baseline = trainer.eval_token_losses(&batch)?;
-    let repeated = trainer.eval_token_losses(&batch)?;
+    let baseline = trainer.eval_token_losses_for_passes(&batch, passes)?;
+    let repeated = trainer.eval_token_losses_for_passes(&batch, passes)?;
     let repeat_max = max_difference(&baseline, &repeated)?;
     let mut changed_padding = flat.clone();
     for (sequence, window) in selected.iter().enumerate() {
         changed_padding[sequence * window_len + window.hi + 1..(sequence + 1) * window_len].fill(2);
     }
     let padding_batch = trainer.batch_from_windows(&changed_padding, GPT2_BATCH_SIZE)?;
-    let padding_losses = trainer.eval_token_losses(&padding_batch)?;
+    let padding_losses = trainer.eval_token_losses_for_passes(&padding_batch, passes)?;
     let mut padding_max = 0_f32;
     for (sequence, window) in selected.iter().enumerate() {
         let start = sequence * GPT2_SEQ_LEN + window.lo;
@@ -39,7 +43,7 @@ pub(super) fn verify(trainer: &mut Trainer, windows: &[Window]) -> AppResult<ser
         }
         let mut changed_batch = trainer.batch_from_windows(&changed, GPT2_BATCH_SIZE)?;
         changed_batch.targets = trainer.batch_from_windows(&flat, GPT2_BATCH_SIZE)?.targets;
-        let changed_losses = trainer.eval_token_losses(&changed_batch)?;
+        let changed_losses = trainer.eval_token_losses_for_passes(&changed_batch, passes)?;
         let mut difference = 0_f32;
         for sequence in 0..GPT2_BATCH_SIZE {
             let start = sequence * GPT2_SEQ_LEN;
@@ -55,7 +59,7 @@ pub(super) fn verify(trainer: &mut Trainer, windows: &[Window]) -> AppResult<ser
     let mut changed = flat.clone();
     changed[window_len..].fill(22557);
     let changed_batch = trainer.batch_from_windows(&changed, GPT2_BATCH_SIZE)?;
-    let changed_losses = trainer.eval_token_losses(&changed_batch)?;
+    let changed_losses = trainer.eval_token_losses_for_passes(&changed_batch, passes)?;
     let sequence_max = max_difference(&baseline[..GPT2_SEQ_LEN], &changed_losses[..GPT2_SEQ_LEN])?;
     if repeat_max > 1e-5 || padding_max > 1e-5 || prefix_max > 1e-5 || sequence_max > 1e-5 {
         return Err(format!("reference causality failure: repeat={repeat_max}, padding={padding_max}, prefix={prefix_max}, sequence={sequence_max}").into());

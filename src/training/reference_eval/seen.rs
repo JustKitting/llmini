@@ -9,6 +9,7 @@ use std::{fs, path::Path};
 pub(super) fn score(
     trainer: &mut Trainer,
     checkpoint: &Path,
+    passes: usize,
 ) -> AppResult<Option<serde_json::Value>> {
     let Some(parent) = checkpoint.parent() else {
         return Ok(None);
@@ -56,7 +57,7 @@ pub(super) fn score(
             return Err("seen-data replay decoded to zero target bytes".into());
         }
         let batch = trainer.batch_from_windows(&flat, GPT2_BATCH_SIZE)?;
-        let losses = trainer.eval_token_losses(&batch)?;
+        let losses = trainer.eval_token_losses_for_passes(&batch, passes)?;
         if losses.len() != GPT2_BATCH_SIZE * GPT2_SEQ_LEN || losses.iter().any(|v| !v.is_finite()) {
             return Err(
                 "seen-data replay has nonfinite losses or an unexpected target count".into(),

@@ -64,6 +64,7 @@ pub(crate) fn launch_from_args() -> AppResult {
                 .expect("clap requires validation documents"),
             args.evaluation_output.as_deref(),
             args.replay_provenance.as_deref(),
+            args.feedback_evaluation_passes.map(usize::from),
         );
     }
     let config = args.config();

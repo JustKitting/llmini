@@ -88,7 +88,8 @@ fn native_trained_latent_feedback_causality_replay() -> AppResult {
     let v = TokenDataLoader::fineweb_validation_tokens()?;
     let native = t.eval_loss_windows(&v, super::super::data::VALIDATION_WINDOWS)?;
     println!("corrected_native_validation_ce={native:.9}");
-    let full = causality::verify(&mut t, &windows)?;
+    let passes = t.evaluation_passes();
+    let full = causality::verify(&mut t, &windows, passes)?;
     println!("corrected_full_causality={full}");
     let certificate = serde_json::json!({"type":"native_kda_causal_repair_replay_v1","passed":true,"checkpoint_sha256":crate::reference_validation::sha256(&path)?,"checkpoint_unchanged":true,"ptx_sha256":crate::reference_validation::sha256(std::path::Path::new(&super::super::runtime::ptx_path()))?,"reference_documents_sha256":crate::reference_validation::DATA_SHA,"producer_recorded_native_ce":expected_native_ce(&path)?,"corrected_native_ce":native,"causality":full,"optimizer_updates":t.buffers.optimizer_state.step,"method":"AQK consumes original causal Kneg; removed future chunk-end decay reconstruction","scope":"Read-only replay of unchanged trained weights under the repaired graph, not a new training trial"});
     std::fs::write(
