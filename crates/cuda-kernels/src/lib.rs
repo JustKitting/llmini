@@ -66,6 +66,8 @@ pub mod engram;
 pub mod engram_multi;
 #[path = "gpt/hnet_chunk.rs"]
 pub mod hnet_chunk;
+#[path = "gpt/hnet_router.rs"]
+pub mod hnet_router;
 #[path = "utils/f16_tc_matmul/mod.rs"]
 pub mod f16_tc_matmul;
 #[path = "utils/f32_matrix_ops.rs"]

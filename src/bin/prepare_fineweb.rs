@@ -2,6 +2,8 @@ use clap::Parser;
 use std::error::Error;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
+#[path = "prepare_fineweb/byte_reference.rs"]
+mod byte_reference;
 #[path = "prepare_fineweb/curated.rs"]
 mod curated;
 #[path = "prepare_fineweb/reference.rs"]
@@ -21,6 +23,12 @@ struct Args {
     reference_vocab: Option<PathBuf>,
     #[arg(long, requires = "reference_tokens")]
     reference_output: Option<PathBuf>,
+    /// Export the identical raw text and document endings for byte-level BPB.
+    #[arg(long, requires = "reference_byte_output",
+        conflicts_with_all = ["reference_tokens", "curated_parquet"])]
+    reference_byte_documents: Option<PathBuf>,
+    #[arg(long, requires = "reference_byte_documents")]
+    reference_byte_output: Option<PathBuf>,
     /// Read a local Parquet file and write a screened, train-only token stream.
     #[arg(long, conflicts_with = "reference_tokens",
         requires_all = ["curated_output", "curated_tokens", "exclude_documents"])]
@@ -39,6 +47,9 @@ struct Args {
 
 fn main() -> AppResult {
     let args = Args::parse();
+    if let (Some(source), Some(output)) = (args.reference_byte_documents, args.reference_byte_output) {
+        return byte_reference::prepare(&source, &output);
+    }
     if let (Some(parquet), Some(output), Some(tokens), Some(documents)) = (
         args.curated_parquet,
         args.curated_output,

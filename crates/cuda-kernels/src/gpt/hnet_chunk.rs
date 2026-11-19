@@ -32,7 +32,7 @@ pub mod kernels {
     /// is the actual inner length, including rows whose final chunk is partial.
     #[kernel]
     pub fn hnet_causal_layout_kernel(
-        probability: &[f32],
+        probability: &[u16],
         lengths: &[u32],
         mut row_to_chunk: DisjointSlice<u32>,
         mut chunk_to_row: DisjointSlice<u32>,
@@ -48,7 +48,7 @@ pub mod kernels {
         let offset = sequence as usize * outer_stride as usize;
         let count = causal_layout(
             valid,
-            |row| probability[offset + row as usize],
+            |row| cvt_f32_f16(probability[offset + row as usize]),
             |row, chunk, boundary| unsafe {
                 *row_to_chunk.get_unchecked_mut(offset + row as usize) = chunk;
                 if boundary {
@@ -102,7 +102,7 @@ pub mod kernels {
     #[kernel]
     pub fn hnet_smooth_chunk_kernel(
         inner: &[u16],
-        probability: &[f32],
+        probability: &[u16],
         chunk_to_row: &[u32],
         counts: &[u32],
         mut smoothed: DisjointSlice<u16>,
@@ -129,7 +129,7 @@ pub mod kernels {
             let next = if chunk == 0 {
                 value
             } else {
-                let p = probability[outer_offset + row];
+                let p = cvt_f32_f16(probability[outer_offset + row]);
                 cvt_rn_f16_f32(p * cvt_f32_f16(value) + (1.0 - p) * cvt_f32_f16(previous))
             };
             unsafe { *smoothed.get_unchecked_mut(index) = next };
@@ -173,7 +173,7 @@ pub mod kernels {
     #[kernel]
     pub fn hnet_smooth_chunk_backward_kernel(
         d_decoder_input: &[f32],
-        probability: &[f32],
+        probability: &[u16],
         chunk_to_row: &[u32],
         counts: &[u32],
         lengths: &[u32],
@@ -205,7 +205,7 @@ pub mod kernels {
             let p = if chunk == 0 {
                 1.0
             } else {
-                probability[outer_offset + row]
+                cvt_f32_f16(probability[outer_offset + row])
             };
             let index = inner_offset + chunk * features;
             unsafe {
