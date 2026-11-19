@@ -3,6 +3,7 @@ use gpt2_nvfp4::{GPT2_MLP_ROUTE_TILE, Gpt2Rng, RowwiseNvfp4Buffers};
 use rust_kernels_cuda::{
     embedding::EmbeddingArgs,
     hnet_byte_head::{BYTE_BOS, BYTE_LOGIT_STRIDE, ByteHeadModule, ByteLossArgs, ByteProjection},
+    hnet_rms_norm::{RmsForward, RmsNormModule, RmsShape, RmsTape},
     hnet_stage::{HnetStage, RatioObjective, StageShape},
     linear_backward::{
         LinearBackwardInputTranspose, LinearBackwardMsEdenArgs, LinearBackwardMsEdenScratchBuffers,
@@ -49,6 +50,9 @@ impl EmbeddedBatch {
 pub(super) struct HierarchyWeights<'a> {
     pub encoder: &'a [OuterWeights<'a>],
     pub decoder: &'a [OuterWeights<'a>],
+    pub encoder_norm: &'a UploadedNvfp4,
+    pub backbone_norm: &'a UploadedNvfp4,
+    pub decoder_norm: &'a UploadedNvfp4,
     pub stage: StageWeights<'a>,
     pub width_padding: Option<&'a DeviceBuffer<u16>>,
     pub byte_readout: &'a UploadedNvfp4,
@@ -61,6 +65,9 @@ pub(super) struct HierarchyAdjoints {
     pub embeddings: DeviceBuffer<f32>,
     pub encoder: Vec<OuterParameterAdjoints>,
     pub decoder: Vec<OuterParameterAdjoints>,
+    pub encoder_norm: DeviceBuffer<f32>,
+    pub backbone_norm: DeviceBuffer<f32>,
+    pub decoder_norm: DeviceBuffer<f32>,
     pub stage: StageParameterAdjoints,
     pub width_padding: Option<DeviceBuffer<f32>>,
     pub byte_readout: DeviceBuffer<f32>,
@@ -71,6 +78,7 @@ pub(super) struct HierarchyScratch {
     stage: HnetStage,
     stage_projection: StageProjectionScratch,
     outer: OuterScratch,
+    norms: RmsNormModule,
     byte: ByteReadoutScratch,
 }
 
@@ -104,6 +112,7 @@ impl HierarchyScratch {
             stage: runtime.hnet_stage_module()?,
             stage_projection: StageProjectionScratch::new(runtime, shape)?,
             outer: OuterScratch::new(runtime, batch, stride, width)?,
+            norms: runtime.hnet_rms_norm_module()?,
             byte: ByteReadoutScratch {
                 byte_head: runtime.hnet_byte_head_module()?,
                 byte_descriptors: TmaNvfp4DeviceScaleDescriptors::new(stream)?,
@@ -243,12 +252,21 @@ impl Trainer {
     ) -> AppResult<Vec<f32>> {
         let shape = scratch.shape;
         let embedded = embed_byte_batch(&self.runtime, batch, shape, embedding)?;
-        let (encoded, _) = forward_stack(
+        let (encoder_output, _) = forward_stack(
             &self.runtime,
             &mut scratch.outer,
             weights.encoder,
             &embedded.embeddings,
         )?;
+        let (encoded, _) = normalize_outer(
+            &scratch.norms,
+            &self.runtime,
+            shape,
+            &embedded.lengths,
+            &encoder_output,
+            weights.encoder_norm,
+        )?;
+        drop(encoder_output);
         let projections =
             scratch
                 .stage_projection
@@ -263,21 +281,36 @@ impl Trainer {
             shape,
             ratio,
         )?;
-        let inner = self.forward_routed_features(
+        let (inner, _) = self.forward_routed_features(
             stage,
             &plan,
             &projections.encoded,
             weights.width_padding,
+            &scratch.norms,
+            weights.backbone_norm.device(),
             false,
         )?;
         let expanded = stage.expand(&plan, &inner)?;
-        let decoder_input = stage.decoder_input(&expanded, &projections.residual)?;
-        let (decoded, _) = forward_stack(
+        let decoder_input = stage.decoder_input(
+            &expanded,
+            &projections.residual,
+            weights.stage.residual_bias.device(),
+        )?;
+        let (decoder_output, _) = forward_stack(
             &self.runtime,
             &mut scratch.outer,
             weights.decoder,
             &decoder_input,
         )?;
+        let (decoded, _) = normalize_outer(
+            &scratch.norms,
+            &self.runtime,
+            shape,
+            &embedded.lengths,
+            &decoder_output,
+            weights.decoder_norm,
+        )?;
+        drop(decoder_output);
         let (losses, _) = scratch.byte.score(
             &self.runtime,
             &decoded,
@@ -299,12 +332,21 @@ impl Trainer {
         ratio: RatioObjective,
         rng: &mut Gpt2Rng,
     ) -> AppResult<HierarchyAdjoints> {
-        let (encoded, encoder) = forward_stack(
+        let (encoder_output, encoder) = forward_stack(
             &self.runtime,
             &mut scratch.outer,
             weights.encoder,
             batch.embeddings,
         )?;
+        let (encoded, encoder_normalization) = normalize_outer(
+            &scratch.norms,
+            &self.runtime,
+            scratch.shape,
+            batch.valid_lengths,
+            &encoder_output,
+            weights.encoder_norm,
+        )?;
+        drop(encoder_output);
         let projections =
             scratch
                 .stage_projection
@@ -325,15 +367,30 @@ impl Trainer {
             &plan,
             &projections.encoded,
             weights.width_padding,
+            &scratch.norms,
+            weights.backbone_norm.device(),
         )?;
         let expanded = stage.expand(&plan, inner.output())?;
-        let decoder_input = stage.decoder_input(&expanded, &projections.residual)?;
-        let (decoded, decoder) = forward_stack(
+        let decoder_input = stage.decoder_input(
+            &expanded,
+            &projections.residual,
+            weights.stage.residual_bias.device(),
+        )?;
+        let (decoder_output, decoder) = forward_stack(
             &inner.trainer.runtime,
             &mut scratch.outer,
             weights.decoder,
             &decoder_input,
         )?;
+        let (decoded, decoder_normalization) = normalize_outer(
+            &scratch.norms,
+            &inner.trainer.runtime,
+            scratch.shape,
+            batch.valid_lengths,
+            &decoder_output,
+            weights.decoder_norm,
+        )?;
+        drop(decoder_output);
         // The decoder tape is independent of the byte loss and projection scratch.
         let (byte_losses, d_decoded, byte_readout) = scratch.byte.readout(
             &inner.trainer.runtime,
@@ -343,6 +400,10 @@ impl Trainer {
             scratch.shape.features,
             rng,
         )?;
+        let (d_decoded, decoder_norm) =
+            scratch
+                .norms
+                .backward(&stream, decoder_normalization, &d_decoded)?;
         let (mut d_skip, decoder) = backward_stack(
             &inner.trainer.runtime,
             &mut scratch.outer,
@@ -353,7 +414,7 @@ impl Trainer {
         stage.mask_decoder_input_adjoint(&plan, &mut d_skip)?;
         let route_adjoint = stage.backward(&expanded, &d_skip)?;
         drop(expanded);
-        let inner_adjoint = inner.backward(&route_adjoint.d_inner)?;
+        let (inner_adjoint, backbone_norm) = inner.backward(&route_adjoint.d_inner)?;
         let mut d_encoded = stage.scatter(&plan, &inner_adjoint.d_features)?;
         let ratio_loss = plan.into_ratio_loss();
         let stage = scratch.stage_projection.backward(
@@ -364,6 +425,10 @@ impl Trainer {
             &mut d_encoded,
             [rng.next_u32(), rng.next_u32()],
         )?;
+        let (d_encoded, encoder_norm) =
+            scratch
+                .norms
+                .backward(&stream, encoder_normalization, &d_encoded)?;
         let (embeddings, encoder) =
             backward_stack(&self.runtime, &mut scratch.outer, encoder, d_encoded, rng)?;
         Ok(HierarchyAdjoints {
@@ -373,11 +438,36 @@ impl Trainer {
             embeddings,
             encoder,
             decoder,
+            encoder_norm,
+            backbone_norm,
+            decoder_norm,
             stage,
             width_padding: inner_adjoint.d_padding,
             byte_readout,
         })
     }
+}
+
+fn normalize_outer<'a>(
+    module: &RmsNormModule,
+    runtime: &Runtime,
+    shape: StageShape,
+    lengths: &DeviceBuffer<u32>,
+    residual: &DeviceBuffer<f32>,
+    scale: &'a UploadedNvfp4,
+) -> AppResult<(DeviceBuffer<f32>, RmsTape<'a>)> {
+    Ok(module.residual(RmsForward {
+        stream: &runtime.stream,
+        residual,
+        lengths,
+        scale: scale.device(),
+        shape: RmsShape {
+            batch: shape.batch,
+            stride: shape.outer_stride,
+            width: shape.features,
+            output_width: shape.features,
+        },
+    })?)
 }
 
 fn embed_byte_batch(

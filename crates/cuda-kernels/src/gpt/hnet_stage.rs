@@ -7,6 +7,7 @@ use crate::{
     hnet_chunk::kernels as chunk,
     hnet_router::kernels as router,
     launch::{grid_x_config, linear_config},
+    nvfp4::Nvfp4DeviceTensor,
 };
 
 const THREADS: u32 = 128;
@@ -524,9 +525,17 @@ impl HnetStage {
         &self,
         expanded: &ExpandedStage<'_, '_>,
         projected_skip: &DeviceBuffer<f32>,
+        skip_bias: Nvfp4DeviceTensor<'_>,
     ) -> Result<DeviceBuffer<f32>, DriverError> {
         let plan = expanded.plan;
         let values = plan.outer_values();
+        if !plan.features().is_multiple_of(16)
+            || skip_bias.bytes.len() < plan.features() as usize / 2
+            || skip_bias.scales.len() < crate::nvfp4::csf::encoded_len(1, plan.features() as usize)
+            || skip_bias.global_scale.is_empty()
+        {
+            return Err(DriverError(1));
+        }
         require(plan.stream, projected_skip, values)?;
         let mut input = DeviceBuffer::zeroed(plan.stream, values as usize)?;
         self.chunk.hnet_decoder_input_kernel(
@@ -534,6 +543,9 @@ impl HnetStage {
             linear_config(values, THREADS),
             &expanded.values,
             projected_skip,
+            skip_bias.bytes,
+            skip_bias.scales,
+            skip_bias.global_scale,
             plan.lengths,
             &mut input,
             values,

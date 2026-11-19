@@ -19,6 +19,11 @@ fn packed_matrix(
     UploadedNvfp4::from_host(stream, &bytes, &scales, 0.013, rows * width)
 }
 
+fn unit_norm_scale(stream: &CudaStream, width: usize) -> AppResult<UploadedNvfp4> {
+    let scales = csf::encode_host(&vec![0x38; width / 16], 1, width);
+    UploadedNvfp4::from_host(stream, &vec![0x22; width / 2], &scales, 1.0, width)
+}
+
 #[test]
 #[ignore = "requires sm_120a PTX and the native NVFP4 H-Net outer block"]
 fn outer_hnet_block_is_causal_and_preserves_recurrent_adjoint() -> AppResult {
@@ -163,10 +168,14 @@ fn native_hnet_hierarchy_reverses_masked_byte_loss() -> AppResult {
         HierarchyWeights {
             encoder: &encoder,
             decoder: &decoder,
+            encoder_norm: &norm_scale,
+            backbone_norm: &unit_norm_scale(stream, GPT2_N_EMBD)?,
+            decoder_norm: &norm_scale,
             stage: StageWeights {
                 query: &query,
                 key: &key,
                 residual: &residual,
+                residual_bias: &norm_bias,
             },
             width_padding: Some(&padding),
             byte_readout: &byte_readout,
@@ -214,6 +223,10 @@ fn native_hnet_hierarchy_reverses_masked_byte_loss() -> AppResult {
         &adjoints.stage.query,
         &adjoints.stage.key,
         &adjoints.stage.residual,
+        &adjoints.stage.residual_bias,
+        &adjoints.encoder_norm,
+        &adjoints.backbone_norm,
+        &adjoints.decoder_norm,
         adjoints.width_padding.as_ref().unwrap(),
     ] {
         let values = matrix.to_host_vec(stream)?;
@@ -385,7 +398,16 @@ fn native_routed_backbone_executes_and_reverses_real_blocks() -> AppResult {
     assert_eq!(plan.inner_stride(), GPT2_MLP_ROUTE_TILE as u32);
     let gathered = stage.gather(&plan, &encoded)?.to_host_vec(&stream)?;
     let padding = DeviceBuffer::zeroed(&stream, GPT2_N_EMBD - WIDTH)?;
-    let tape = trainer.forward_routed_backbone(&stage, &plan, &encoded, Some(&padding))?;
+    let rms = trainer.runtime.hnet_rms_norm_module()?;
+    let scale = unit_norm_scale(&stream, GPT2_N_EMBD)?;
+    let tape = trainer.forward_routed_backbone(
+        &stage,
+        &plan,
+        &encoded,
+        Some(&padding),
+        &rms,
+        scale.device(),
+    )?;
     let native = tape.output().to_host_vec(&stream)?;
     assert_ne!(native, gathered);
     for (sequence, valid) in [3, 2].into_iter().enumerate() {
@@ -404,7 +426,10 @@ fn native_routed_backbone_executes_and_reverses_real_blocks() -> AppResult {
     let expanded = stage.expand(&plan, tape.output())?;
     let reverse = stage.backward(&expanded, &output_gradient)?;
     drop(expanded);
-    let inner_adjoint = tape.backward(&reverse.d_inner)?;
+    let (inner_adjoint, scale_adjoint) = tape.backward(&reverse.d_inner)?;
+    let scale_adjoint = scale_adjoint.to_host_vec(&stream)?;
+    assert!(scale_adjoint[..WIDTH].iter().any(|grad| *grad != 0.0));
+    assert!(scale_adjoint[WIDTH..].iter().all(|grad| *grad == 0.0));
     let d_padding = inner_adjoint.d_padding.unwrap().to_host_vec(&stream)?;
     assert_eq!(d_padding.len(), GPT2_N_EMBD - WIDTH);
     assert!(d_padding.iter().all(|grad| grad.is_finite()));

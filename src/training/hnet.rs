@@ -1,7 +1,11 @@
 //! Run the native backbone on H-Net chunks and keep its training tape live.
 use cuda_core::DeviceBuffer;
 use gpt2_nvfp4::{GPT2_BATCH_SIZE, GPT2_MLP_ROUTE_TILE, GPT2_N_EMBD, GPT2_SEQ_LEN};
-use rust_kernels_cuda::hnet_stage::{HnetStage, StagePlan, WidthAdjoints};
+use rust_kernels_cuda::{
+    hnet_rms_norm::{RmsForward, RmsNormModule, RmsShape, RmsTape},
+    hnet_stage::{HnetStage, StagePlan, WidthAdjoints},
+    nvfp4::Nvfp4DeviceTensor,
+};
 
 use super::{Trainer, forward::ForwardInput, learning_rate::schedule_free_beta, schedule_free};
 use crate::AppResult;
@@ -16,38 +20,47 @@ mod projection;
 
 pub(super) use launch::run as run_hnet_training;
 
-pub(in crate::training) struct RoutedBackboneTape<'trainer, 'stage, 'plan> {
+pub(in crate::training) struct RoutedBackboneTape<'trainer, 'stage, 'plan, 'scale> {
     trainer: &'trainer mut Trainer,
     stage: &'stage HnetStage,
     plan: &'stage StagePlan<'plan>,
     output: DeviceBuffer<u16>,
+    norm: &'stage RmsNormModule,
+    norm_tape: RmsTape<'scale>,
 }
 
 impl Trainer {
-    pub(in crate::training) fn forward_routed_backbone<'trainer, 'stage, 'plan>(
+    pub(in crate::training) fn forward_routed_backbone<'trainer, 'stage, 'plan, 'scale>(
         &'trainer mut self,
         stage: &'stage HnetStage,
         plan: &'stage StagePlan<'plan>,
         encoded: &DeviceBuffer<u16>,
         learned_padding: Option<&DeviceBuffer<u16>>,
-    ) -> AppResult<RoutedBackboneTape<'trainer, 'stage, 'plan>> {
-        let output = self.forward_routed_features(stage, plan, encoded, learned_padding, true)?;
+        norm: &'stage RmsNormModule,
+        scale: Nvfp4DeviceTensor<'scale>,
+    ) -> AppResult<RoutedBackboneTape<'trainer, 'stage, 'plan, 'scale>> {
+        let (output, norm_tape) =
+            self.forward_routed_features(stage, plan, encoded, learned_padding, norm, scale, true)?;
         Ok(RoutedBackboneTape {
             trainer: self,
             stage,
             plan,
             output,
+            norm,
+            norm_tape,
         })
     }
 
-    fn forward_routed_features(
+    fn forward_routed_features<'scale>(
         &mut self,
         stage: &HnetStage,
         plan: &StagePlan<'_>,
         encoded: &DeviceBuffer<u16>,
         learned_padding: Option<&DeviceBuffer<u16>>,
+        norm: &RmsNormModule,
+        scale: Nvfp4DeviceTensor<'scale>,
         training: bool,
-    ) -> AppResult<DeviceBuffer<u16>> {
+    ) -> AppResult<(DeviceBuffer<u16>, RmsTape<'scale>)> {
         self.ensure_ready()?;
         if self.engram.is_some() || self.latent_feedback.is_some() {
             return Err(
@@ -101,14 +114,25 @@ impl Trainer {
             false,
             false,
         )?;
-        Ok(stage.read_residual(plan, &self.buffers.residual, inner_width)?)
+        Ok(norm.represented(RmsForward {
+            stream: &self.runtime.stream,
+            residual: &self.buffers.residual,
+            lengths: plan.inner_lengths(),
+            scale,
+            shape: RmsShape {
+                batch: batch_size,
+                stride: seq_len,
+                width: inner_width,
+                output_width: plan.features(),
+            },
+        })?)
     }
 }
 
 #[cfg(test)]
 mod tests;
 
-impl RoutedBackboneTape<'_, '_, '_> {
+impl RoutedBackboneTape<'_, '_, '_, '_> {
     pub(in crate::training) fn output(&self) -> &DeviceBuffer<u16> {
         &self.output
     }
@@ -118,20 +142,23 @@ impl RoutedBackboneTape<'_, '_, '_> {
     pub(in crate::training) fn backward(
         self,
         output_gradient: &DeviceBuffer<f32>,
-    ) -> AppResult<WidthAdjoints> {
+    ) -> AppResult<(WidthAdjoints, DeviceBuffer<f32>)> {
         let inner_width = GPT2_N_EMBD as u32;
-        let output_gradient =
-            self.stage
-                .widen_output_adjoint(self.plan, output_gradient, inner_width)?;
+        let (output_gradient, scale_gradient) = self.norm.backward(
+            &self.trainer.runtime.stream,
+            self.norm_tape,
+            output_gradient,
+        )?;
         self.trainer.enqueue_residual_backward(
             self.plan.batch(),
             self.plan.inner_stride(),
             &output_gradient,
         )?;
-        Ok(self.stage.split_input_adjoint(
+        let width = self.stage.split_input_adjoint(
             self.plan,
             &self.trainer.buffers.backward.d_embedding_residual,
             inner_width,
-        )?)
+        )?;
+        Ok((width, scale_gradient))
     }
 }

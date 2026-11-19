@@ -19,6 +19,7 @@ pub(super) struct StageWeights<'a> {
     pub query: &'a UploadedNvfp4,
     pub key: &'a UploadedNvfp4,
     pub residual: &'a UploadedNvfp4,
+    pub residual_bias: &'a UploadedNvfp4,
 }
 
 pub(super) struct StageProjections<'a> {
@@ -34,6 +35,7 @@ pub(super) struct StageParameterAdjoints {
     pub query: DeviceBuffer<f32>,
     pub key: DeviceBuffer<f32>,
     pub residual: DeviceBuffer<f32>,
+    pub residual_bias: DeviceBuffer<f32>,
 }
 
 pub(super) struct StageProjectionScratch {
@@ -93,6 +95,8 @@ impl StageProjectionScratch {
         let stream = &runtime.stream;
         let values = self.rows * self.width;
         if encoded.len() != values as usize
+            || weights.residual_bias.scale_rows != 1
+            || weights.residual_bias.scale_k != self.width
             || [weights.query, weights.key, weights.residual]
                 .iter()
                 .any(|weight| weight.scale_k != self.width || weight.scale_rows != self.width)
@@ -182,13 +186,26 @@ impl StageProjectionScratch {
             query: DeviceBuffer::zeroed(stream, weight_values)?,
             key: DeviceBuffer::zeroed(stream, weight_values)?,
             residual: DeviceBuffer::zeroed(stream, weight_values)?,
+            residual_bias: DeviceBuffer::zeroed(stream, self.width as usize)?,
         };
         let paths = [
-            (tape.weights.query, &route.d_queries, &mut adjoints.query),
-            (tape.weights.key, &route.d_keys, &mut adjoints.key),
-            (tape.weights.residual, d_skip, &mut adjoints.residual),
+            (
+                tape.weights.query,
+                &route.d_queries,
+                &mut adjoints.query,
+                None,
+            ),
+            (tape.weights.key, &route.d_keys, &mut adjoints.key, None),
+            (
+                tape.weights.residual,
+                d_skip,
+                &mut adjoints.residual,
+                Some(&mut adjoints.residual_bias),
+            ),
         ];
-        for (index, (weight, output_gradient, weight_gradient)) in paths.into_iter().enumerate() {
+        for (index, (weight, output_gradient, weight_gradient, dbias)) in
+            paths.into_iter().enumerate()
+        {
             runtime.linear.backward_ms_eden(LinearBackwardMsEdenArgs {
                 stream,
                 quant_module: &runtime.quant,
@@ -198,7 +215,7 @@ impl StageProjectionScratch {
                 scratch: self.linear.as_args(),
                 dinput: &mut self.intermediate,
                 dweight: weight_gradient,
-                dbias: None,
+                dbias,
                 token_count: self.rows,
                 input_dim: self.width,
                 output_dim: self.width,

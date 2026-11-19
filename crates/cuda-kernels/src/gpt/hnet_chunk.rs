@@ -2,6 +2,7 @@
 use cuda_device::{DisjointSlice, cuda_module, kernel, thread, warp};
 
 use crate::f16_tc_matmul::convert::{cvt_f32_f16, cvt_rn_f16_f32};
+use crate::nvfp4::nvfp4_vector_value;
 use crate::warp_reduce::warp_sum_f32;
 
 const INVALID: u32 = u32::MAX;
@@ -32,6 +33,9 @@ pub mod kernels {
     pub fn hnet_decoder_input_kernel(
         restored: &[u16],
         projected_skip: &[f32],
+        bias_bytes: &[u8],
+        bias_scales: &[u8],
+        bias_global: &[f32],
         valid_lengths: &[u32],
         mut input: DisjointSlice<f32>,
         values: u32,
@@ -43,7 +47,9 @@ pub mod kernels {
             let row = i / width;
             let i = i as usize;
             let value = if row % stride < valid_lengths[(row / stride) as usize] {
-                cvt_f32_f16(restored[i]) + projected_skip[i]
+                let bias =
+                    nvfp4_vector_value(bias_bytes, bias_scales, bias_global[0], i % width as usize);
+                cvt_f32_f16(restored[i]) + (projected_skip[i] + bias)
             } else {
                 0.0
             };

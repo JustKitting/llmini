@@ -72,6 +72,12 @@ impl Runtime {
         rust_kernels_cuda::hnet_optimizer::CompactAdamModule::from_module(self.cuda_module.clone())
     }
 
+    pub(in crate::training) fn hnet_rms_norm_module(
+        &self,
+    ) -> Result<rust_kernels_cuda::hnet_rms_norm::RmsNormModule, cuda_core::DriverError> {
+        rust_kernels_cuda::hnet_rms_norm::RmsNormModule::from_module(self.cuda_module.clone())
+    }
+
     #[cfg(test)]
     pub(in crate::training) fn value_rms_point_check_module(
         &self,

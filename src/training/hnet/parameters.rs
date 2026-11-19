@@ -48,11 +48,15 @@ pub(super) struct Parameters {
     optimizer: CompactAdamModule,
     encoder: Vec<OuterBlock>,
     decoder: Vec<OuterBlock>,
+    encoder_norm: Parameter,
+    backbone_norm: Parameter,
+    decoder_norm: Parameter,
     embedding: Parameter,
     readout: Parameter,
     query: Parameter,
     key: Parameter,
     residual: Parameter,
+    residual_bias: Parameter,
     padding: Parameter,
     represented_padding: DeviceBuffer<u16>,
     scheduled: DeviceBuffer<f32>,
@@ -61,6 +65,9 @@ pub(super) struct Parameters {
 pub(super) struct WeightViews<'a> {
     encoder: Vec<OuterWeights<'a>>,
     decoder: Vec<OuterWeights<'a>>,
+    encoder_norm: &'a UploadedNvfp4,
+    backbone_norm: &'a UploadedNvfp4,
+    decoder_norm: &'a UploadedNvfp4,
     stage: StageWeights<'a>,
     padding: &'a DeviceBuffer<u16>,
     readout: &'a UploadedNvfp4,
@@ -72,6 +79,9 @@ impl WeightViews<'_> {
         HierarchyWeights {
             encoder: &self.encoder,
             decoder: &self.decoder,
+            encoder_norm: self.encoder_norm,
+            backbone_norm: self.backbone_norm,
+            decoder_norm: self.decoder_norm,
             stage: self.stage,
             width_padding: Some(self.padding),
             byte_readout: self.readout,
@@ -95,11 +105,15 @@ impl Parameters {
                 ]
             })
             .chain([
+                &self.encoder_norm,
+                &self.backbone_norm,
+                &self.decoder_norm,
                 &self.embedding,
                 &self.readout,
                 &self.query,
                 &self.key,
                 &self.residual,
+                &self.residual_bias,
                 &self.padding,
             ]);
         let mut writer = CheckpointWriter::new(BufWriter::new(File::create_new(path)?));
@@ -203,6 +217,30 @@ impl Parameters {
         };
         let encoder = build_stack("encoder")?;
         let decoder = build_stack("decoder")?;
+        let encoder_norm = initialize(
+            "hnet.encoder.rms_scale".into(),
+            1,
+            width,
+            &vec![1.0; width],
+            false,
+            outer_lr,
+        )?;
+        let backbone_norm = initialize(
+            "hnet.backbone.rms_scale".into(),
+            1,
+            GPT2_N_EMBD,
+            &vec![1.0; GPT2_N_EMBD],
+            false,
+            1.0,
+        )?;
+        let decoder_norm = initialize(
+            "hnet.decoder.rms_scale".into(),
+            1,
+            width,
+            &vec![1.0; width],
+            false,
+            outer_lr,
+        )?;
         let vocabulary = (BYTE_BOS + 1) as usize;
         let classes = BYTE_LOGIT_STRIDE as usize;
         let mut output_weights = normal(&mut rng, vocabulary.saturating_sub(1) * width, 0.02);
@@ -251,6 +289,21 @@ impl Parameters {
             true,
             outer_lr,
         )?;
+        let bias_bound = (width as f32).sqrt().recip();
+        let residual_bias: Vec<_> = (0..width)
+            .map(|_| {
+                let uniform = rng.next_u32() as f32 / 4294967296.0;
+                (2.0 * uniform - 1.0) * bias_bound
+            })
+            .collect();
+        let residual_bias = initialize(
+            "hnet.skip.bias".into(),
+            1,
+            width,
+            &residual_bias,
+            false,
+            outer_lr,
+        )?;
         let padding = initialize(
             "hnet.width_padding".into(),
             1,
@@ -263,11 +316,15 @@ impl Parameters {
             optimizer,
             encoder,
             decoder,
+            encoder_norm,
+            backbone_norm,
+            decoder_norm,
             embedding,
             readout,
             query,
             key,
             residual,
+            residual_bias,
             padding,
             represented_padding: DeviceBuffer::zeroed(stream, added)?,
             scheduled: DeviceBuffer::zeroed(stream, packed_qkv * width)?,
@@ -284,11 +341,15 @@ impl Parameters {
             }
         }
         for parameter in [
+            &parameters.encoder_norm,
+            &parameters.backbone_norm,
+            &parameters.decoder_norm,
             &parameters.embedding,
             &parameters.readout,
             &parameters.query,
             &parameters.key,
             &parameters.residual,
+            &parameters.residual_bias,
             &parameters.padding,
         ] {
             gradients.push((parameter.name.as_str(), &parameter.gradient));
@@ -301,10 +362,14 @@ impl Parameters {
         WeightViews {
             encoder: self.encoder.iter().map(OuterBlock::weights).collect(),
             decoder: self.decoder.iter().map(OuterBlock::weights).collect(),
+            encoder_norm: &self.encoder_norm.tensor,
+            backbone_norm: &self.backbone_norm.tensor,
+            decoder_norm: &self.decoder_norm.tensor,
             stage: StageWeights {
                 query: &self.query.tensor,
                 key: &self.key.tensor,
                 residual: &self.residual.tensor,
+                residual_bias: &self.residual_bias.tensor,
             },
             padding: &self.represented_padding,
             readout: &self.readout.tensor,
@@ -325,11 +390,15 @@ impl Parameters {
             .chain(&mut self.decoder)
             .flat_map(OuterBlock::parameters_mut)
             .chain([
+                &mut self.encoder_norm,
+                &mut self.backbone_norm,
+                &mut self.decoder_norm,
                 &mut self.embedding,
                 &mut self.readout,
                 &mut self.query,
                 &mut self.key,
                 &mut self.residual,
+                &mut self.residual_bias,
                 &mut self.padding,
             ])
         {
@@ -377,11 +446,15 @@ impl Parameters {
             .as_ref()
             .ok_or("the learned width has no adjoint")?;
         for (parameter, gradient) in [
+            (&mut self.encoder_norm, &adjoints.encoder_norm),
+            (&mut self.backbone_norm, &adjoints.backbone_norm),
+            (&mut self.decoder_norm, &adjoints.decoder_norm),
             (&mut self.embedding, lookup),
             (&mut self.readout, &adjoints.byte_readout),
             (&mut self.query, &adjoints.stage.query),
             (&mut self.key, &adjoints.stage.key),
             (&mut self.residual, &adjoints.stage.residual),
+            (&mut self.residual_bias, &adjoints.stage.residual_bias),
             (&mut self.padding, padding),
         ] {
             parameter.bind_gradient(stream, gradient)?;
@@ -406,11 +479,15 @@ impl Parameters {
             .chain(&mut self.decoder)
             .flat_map(OuterBlock::parameters_mut)
             .chain([
+                &mut self.encoder_norm,
+                &mut self.backbone_norm,
+                &mut self.decoder_norm,
                 &mut self.embedding,
                 &mut self.readout,
                 &mut self.query,
                 &mut self.key,
                 &mut self.residual,
+                &mut self.residual_bias,
                 &mut self.padding,
             ])
         {

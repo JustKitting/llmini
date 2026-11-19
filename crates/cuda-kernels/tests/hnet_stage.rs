@@ -18,6 +18,57 @@ fn fp16(values: &[i8]) -> Vec<u16> {
 }
 
 #[test]
+#[ignore = "uses the CUDA H-Net RMSNorm and width-truncation adjoint"]
+fn hnet_rms_uses_the_full_width_and_ignores_padding() -> Result<(), Box<dyn std::error::Error>> {
+    use rust_kernels_cuda::{
+        hnet_rms_norm::{RmsForward, RmsNormModule, RmsShape},
+        nvfp4::{Nvfp4DeviceTensor, csf},
+    };
+
+    const WIDTH: usize = 128;
+    let (_, stream, norm) = common::cuda_test_module(RmsNormModule::from_module)?;
+    let mut rows = [1.0_f32; 2 * WIDTH];
+    rows[WIDTH - 1] = 3.0;
+    rows[WIDTH..].fill(f32::NAN);
+    let input = DeviceBuffer::from_host(&stream, &rows)?;
+    let lengths = DeviceBuffer::from_host(&stream, &[1_u32])?;
+    let bytes = DeviceBuffer::from_host(&stream, &[0x22_u8; WIDTH / 2])?;
+    let scales =
+        DeviceBuffer::from_host(&stream, &csf::encode_host(&[0x38; WIDTH / 16], 1, WIDTH))?;
+    let global = DeviceBuffer::from_host(&stream, &[1.0_f32])?;
+    let (value, tape) = norm.residual(RmsForward {
+        stream: &stream,
+        residual: &input,
+        lengths: &lengths,
+        scale: Nvfp4DeviceTensor::new(&bytes, &scales, &global),
+        shape: RmsShape {
+            batch: 1,
+            stride: 2,
+            width: WIDTH as u32,
+            output_width: 2,
+        },
+    })?;
+    let inverse = (136.0_f32 / WIDTH as f32 + 1e-5).sqrt().recip();
+    common::assert_slice_close(
+        &value.to_host_vec(&stream)?,
+        &[inverse, inverse, 0.0, 0.0],
+        1e-6,
+    );
+
+    let gradient = DeviceBuffer::from_host(&stream, &[1.0_f32, 0.0, f32::NAN, f32::NAN])?;
+    let (d_input, d_scale) = norm.backward(&stream, tape, &gradient)?;
+    let d_input = d_input.to_host_vec(&stream)?;
+    let mean = inverse * inverse / WIDTH as f32;
+    common::assert_close(d_input[0], inverse * (1.0 - mean), 2e-5);
+    common::assert_close(d_input[WIDTH - 1], -3.0 * inverse * mean, 3e-5);
+    assert!(d_input[WIDTH..].iter().all(|&grad| grad == 0.0));
+    let d_scale = d_scale.to_host_vec(&stream)?;
+    common::assert_close(d_scale[0], inverse, 3e-4);
+    assert!(d_scale[1..].iter().all(|&grad| grad == 0.0));
+    Ok(())
+}
+
+#[test]
 #[ignore = "uses the CUDA H-Net stage and its generated sm_120a PTX"]
 fn ragged_hnet_stage_matches_causal_forward_and_backward() -> Result<(), Box<dyn std::error::Error>>
 {
