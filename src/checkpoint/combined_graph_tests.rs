@@ -25,15 +25,17 @@ fn native_complete_engram_mhc_checkpoint_387_tensors_roundtrip() -> AppResult {
     )?;
     let runtime = Runtime::new()?;
     let stream = runtime.stream.as_ref();
-    let mut model = super::load_uploaded_model(stream, &baseline)?;
+    let (mut model, depth) = super::load_uploaded_model(stream, &baseline)?;
+    assert_eq!(depth, gpt2_nvfp4::GPT2_N_LAYER);
     assert!(model.engram.is_none() && model.mhc.is_none() && model.latent_feedback.is_none());
     model.mhc = Some(crate::training::mhc::Weights::new(&runtime, 0x47505432)?);
     model.engram = Some(crate::training::engram::Weights::new_multistream(&runtime)?);
     let path = root.join("target/checks/20261115/engram-mhc-complete-weight-serialization.ckpt");
-    super::save_uploaded_model(stream, &model, &path)?;
+    super::save_uploaded_model(stream, &model, depth, &path)?;
     let original_hash = crate::reference_validation::sha256(&path)?;
     drop(model);
-    let loaded = super::load_uploaded_model(stream, &path)?;
+    let (loaded, restored_depth) = super::load_uploaded_model(stream, &path)?;
+    assert_eq!(restored_depth, depth);
     assert!(loaded.latent_feedback.is_none());
     let memory = loaded.engram.as_ref().unwrap();
     assert_eq!(memory.streams(), Some(4));
@@ -48,7 +50,7 @@ fn native_complete_engram_mhc_checkpoint_387_tensors_roundtrip() -> AppResult {
     );
     assert_eq!(loaded.mhc.as_ref().unwrap().tensor_count(), 100);
     let mut hash = Sha256::new();
-    super::save::write_uploaded_model_to(stream, &loaded, HashOutput(&mut hash))?;
+    super::save::write_uploaded_model_to(stream, &loaded, depth, HashOutput(&mut hash))?;
     let restored_hash = format!("{:x}", hash.finalize());
     assert_eq!(
         original_hash, restored_hash,

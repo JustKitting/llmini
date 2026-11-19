@@ -11,11 +11,16 @@ use super::{format::CheckpointWriter, schema};
 use crate::upload::UploadedModel;
 use crate::{AppResult, fs_utils::ensure_parent};
 
-pub fn save_uploaded_model(stream: &CudaStream, model: &UploadedModel, path: &Path) -> AppResult {
+pub fn save_uploaded_model(
+    stream: &CudaStream,
+    model: &UploadedModel,
+    depth: usize,
+    path: &Path,
+) -> AppResult {
     validate_graph(model)?;
     ensure_parent(path)?;
     let file = File::create(path)?;
-    write_uploaded_model_to(stream, model, file)
+    write_uploaded_model_to(stream, model, depth, file)
 }
 
 fn validate_graph(model: &UploadedModel) -> AppResult {
@@ -61,12 +66,14 @@ fn validate_graph(model: &UploadedModel) -> AppResult {
 pub(super) fn write_uploaded_model_to(
     stream: &CudaStream,
     model: &UploadedModel,
+    depth: usize,
     output: impl Write,
 ) -> AppResult {
     validate_graph(model)?;
     let mut writer = CheckpointWriter::new(BufWriter::new(output));
     writer.write_header(
         schema::tensor_count(model.blocks.len())
+            + u32::from(depth != model.blocks.len())
             + super::activation_quant::extra_tensors()
             + super::mlp::extra_tensors()
             + super::value_rms::extra_tensors()
@@ -81,6 +88,9 @@ pub(super) fn write_uploaded_model_to(
                 0
             },
     )?;
+    // The native tensor layout stays fixed. Readers must restore only this
+    // prefix when the time budget ends before the planned final growth.
+    super::depth::write(&mut writer, depth)?;
     topology::write_model(&mut writer, stream, model)?;
     super::activation_quant::write(&mut writer)?;
     super::mlp::write(&mut writer)?;

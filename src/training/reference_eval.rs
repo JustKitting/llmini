@@ -154,6 +154,7 @@ pub(in crate::training) fn run(
         "context_tokens": reference::CONTEXT,
         "sliding_stride_tokens": reference::STRIDE,
         "batch_size": GPT2_BATCH_SIZE,
+        "active_depth": trainer.active_depth(),
         "windows": windows.len(),
         "batches": batches,
         "native_checkpoint_replay_ce": native_ce,

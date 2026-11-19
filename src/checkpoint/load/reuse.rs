@@ -18,11 +18,12 @@ struct Copy {
 
 pub(crate) struct PreparedReload<'a> {
     copies: Vec<Copy>,
+    depth: usize,
     _model: PhantomData<&'a mut UploadedModel>,
 }
 
 impl PreparedReload<'_> {
-    pub(crate) fn apply(self, stream: &CudaStream) -> AppResult {
+    pub(crate) fn apply(self, stream: &CudaStream) -> AppResult<usize> {
         let copied = (|| -> AppResult {
             for copy in &self.copies {
                 // All lengths/layouts and every destination have been validated.
@@ -43,7 +44,7 @@ impl PreparedReload<'_> {
         let synchronized = stream.synchronize();
         copied?;
         synchronized?;
-        Ok(())
+        Ok(self.depth)
     }
 }
 
@@ -160,7 +161,7 @@ pub(crate) fn prepare_reload<'a>(
     {
         return Ok(None);
     }
-    let (_, mut tensors) = super::read_tensors(path)?;
+    let (_, depth, mut tensors) = super::read_tensors(path)?;
     let mut descriptors = vec![
         (
             "mhc.config".to_string(),
@@ -210,6 +211,7 @@ pub(crate) fn prepare_reload<'a>(
     }
     Ok(Some(PreparedReload {
         copies: builder.copies,
+        depth,
         _model: PhantomData,
     }))
 }

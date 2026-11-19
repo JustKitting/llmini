@@ -80,6 +80,9 @@ impl CudaTrainingStrategy {
         }
         if let Some(path) = load_model_path() {
             trainer.load_model(&path)?;
+            if trainer.active_depth() != gpt2_nvfp4::GPT2_N_LAYER {
+                return Err("a partial growth checkpoint stores evaluation weights without a live optimizer".into());
+            }
             println!("loaded_model={}", path.display());
         }
 
@@ -116,9 +119,7 @@ impl CudaTrainingStrategy {
                     batch,
                     &self.run_output.path("numerical_failure_state.tsv"),
                 )?;
-                if trainer.active_depth() == gpt2_nvfp4::GPT2_N_LAYER {
-                    trainer.save_model(&self.run_output.path("numerical_failure_weights.ckpt"))?;
-                }
+                trainer.save_model(&self.run_output.path("numerical_failure_weights.ckpt"))?;
                 eprintln!("numerical_failure_capture_complete completed_steps={completed_steps}");
             }
 

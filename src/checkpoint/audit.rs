@@ -48,8 +48,16 @@ pub(crate) fn audit_model(path: &Path) -> AppResult<serde_json::Value> {
     let mut tensors = Vec::new();
     let mut total = 0;
     let mut nonfinite = 0;
+    let mut active_depth = gpt2_nvfp4::GPT2_N_LAYER;
     for _ in 0..count {
         let tensor = reader.read_tensor()?;
+        if tensor.name == super::depth::NAME {
+            active_depth = super::depth::read(&tensor)?;
+            tensors.push(serde_json::json!({
+                "name": tensor.name, "format": "graph_metadata", "active_depth": active_depth,
+            }));
+            continue;
+        }
         let stats = inspect(&tensor)?;
         total += stats.count;
         nonfinite += stats.nonfinite;
@@ -63,7 +71,7 @@ pub(crate) fn audit_model(path: &Path) -> AppResult<serde_json::Value> {
         }));
     }
     Ok(serde_json::json!({
-        "checkpoint": path, "tensor_count": count, "allocated_values": total,
+        "checkpoint": path, "tensor_count": count, "allocated_values": total, "active_depth": active_depth,
         "nonfinite_values": nonfinite, "tensors": tensors,
         "purpose": "Inspect represented checkpoint values only; no training, no optimizer updates.",
     }))

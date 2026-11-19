@@ -110,13 +110,6 @@ fn native_depth_growth_copies_state_and_reduces_only_active_parameters() -> AppR
                 "depth {depth}, slot {slot}"
             );
         }
-        if depth != 16 {
-            let error = trainer
-                .save_model(std::path::Path::new("partial.ckpt"))
-                .unwrap_err();
-            assert!(error.to_string().contains("partial growth stage"));
-        }
-
         // An all-zero optimizer state would hide an update to an inactive head.
         // Set nonzero moments after the initial prefix has been selected.
         if depth == 4 && exclusive_self_attention_enabled() {
@@ -167,5 +160,38 @@ fn native_depth_growth_copies_state_and_reduces_only_active_parameters() -> AppR
         assert!(count("mhc.head.") > 0);
         previous = depth;
     }
+    Ok(())
+}
+
+#[test]
+#[ignore = "uses the native NVFP4 CUDA evaluator and a partial Engram/mHC checkpoint"]
+fn partial_growth_checkpoint_replays_the_active_prefix() -> AppResult {
+    let mut trainer = Trainer::new_engram_mhc_with_table_budget(0x47505432, 500_000_000)?;
+    let windows = TokenDataLoader::fineweb_validation_tokens()?;
+    let batch = trainer.batch_from_windows(&windows, crate::training::data::VALIDATION_WINDOWS)?;
+    trainer.select_training_depth(4)?;
+    trainer.materialize_evaluation_weights()?;
+    let expected = trainer.eval_token_losses(&batch)?;
+    assert!(expected.iter().all(|loss| loss.is_finite()));
+
+    let directory =
+        std::env::temp_dir().join(format!("nvfp4-growth-replay-{}", std::process::id()));
+    std::fs::create_dir(&directory)?;
+    let path = directory.join("model.ckpt");
+    let result = (|| -> AppResult {
+        trainer.save_model(&path)?;
+        trainer.select_training_depth(8)?;
+        assert_eq!(trainer.active_depth(), 8);
+        trainer.load_model(&path)?;
+        assert_eq!(trainer.active_depth(), 4);
+        assert_eq!(trainer.mhc.as_ref().unwrap().active_boundaries, 8);
+        assert_eq!(trainer.engram.as_ref().unwrap().active_depth, 4);
+        assert_eq!(trainer.eval_token_losses(&batch)?, expected);
+        assert_eq!(trainer.buffers.optimizer_state.step, 0);
+        Ok(())
+    })();
+    let cleanup = std::fs::remove_dir_all(&directory);
+    result?;
+    cleanup?;
     Ok(())
 }

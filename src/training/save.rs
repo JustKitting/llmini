@@ -1,29 +1,31 @@
 use std::path::Path;
 
-use super::optimizer_state::OptimizerStateBuffers;
 use super::Trainer;
-use crate::checkpoint::{load_uploaded_model, save_uploaded_model};
+use super::optimizer_state::OptimizerStateBuffers;
 use crate::AppResult;
+use crate::checkpoint::{load_uploaded_model, save_uploaded_model};
 
 impl Trainer {
     pub fn save_model(&self, path: &Path) -> AppResult {
         self.ensure_ready()?;
-        if self.active_depth() != gpt2_nvfp4::GPT2_N_LAYER {
-            return Err("cannot write a full-depth checkpoint from a partial growth stage".into());
-        }
-        save_uploaded_model(self.runtime.stream.as_ref(), &self.uploaded, path)
+        save_uploaded_model(
+            self.runtime.stream.as_ref(),
+            &self.uploaded,
+            self.active_depth(),
+            path,
+        )
     }
 
     pub fn load_model(&mut self, path: &Path) -> AppResult {
         let stream = self.runtime.stream.as_ref();
-        let uploaded =
+        let (uploaded, depth) =
             if let Some(reload) = crate::checkpoint::prepare_reload(&mut self.uploaded, path)? {
                 stream.synchronize()?;
                 self.architecture_ready = false;
-                reload.apply(stream)?;
-                None
+                (None, reload.apply(stream)?)
             } else {
-                Some(load_uploaded_model(stream, path)?)
+                let (model, depth) = load_uploaded_model(stream, path)?;
+                (Some(model), depth)
             };
         // Multi-stream tapes are large. Release the old optional graph before
         // constructing the replacement; a failed partial load stays unusable.
@@ -41,7 +43,8 @@ impl Trainer {
         if let Some(uploaded) = uploaded {
             self.uploaded = uploaded;
         }
-        let engram = self
+        self.buffers.optimizer_state.active_depth = depth;
+        let mut engram = self
             .uploaded
             .engram
             .as_ref()
@@ -53,12 +56,18 @@ impl Trainer {
             .as_ref()
             .map(|w| super::latent_feedback::Feedback::new(&self.runtime, w))
             .transpose()?;
-        let mhc = self
+        let mut mhc = self
             .uploaded
             .mhc
             .as_ref()
             .map(|w| super::mhc::Mhc::new(&self.runtime, w))
             .transpose()?;
+        if let Some(engram) = &mut engram {
+            engram.active_depth = depth;
+        }
+        if let Some(mhc) = &mut mhc {
+            mhc.active_boundaries = depth * 2;
+        }
         self.buffers.configure_optimizer_graph(
             stream,
             &self.uploaded,

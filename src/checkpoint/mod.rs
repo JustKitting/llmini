@@ -4,6 +4,7 @@ mod activation_quant_tests;
 mod audit;
 #[cfg(test)]
 mod combined_graph_tests;
+mod depth;
 mod engram;
 mod format;
 mod kda_backward;
