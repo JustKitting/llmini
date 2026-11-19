@@ -41,7 +41,6 @@ pub(super) struct OuterScratch {
     qkv: DeviceBuffer<f32>,
     d_qkv: DeviceBuffer<f32>,
     row_amax: DeviceBuffer<f32>,
-    qkv_amax: DeviceBuffer<f32>,
     log_sum_exp: DeviceBuffer<f32>,
     unused_qk_scale_grad: DeviceBuffer<f32>,
 }
@@ -74,6 +73,22 @@ pub(super) struct OuterBlockGradients<'a> {
 }
 
 impl OuterScratch {
+    #[cfg(test)]
+    pub(super) fn assert_qkv_pack_matches_rescan(
+        &self,
+        runtime: &Runtime,
+        seeds: [u32; 2],
+    ) -> AppResult {
+        super::tests::assert_gradient_pack_matches_rescan(
+            runtime,
+            &self.d_qkv,
+            &self.qkv_backward,
+            self.shape.rows,
+            self.shape.qkv,
+            seeds,
+        )
+    }
+
     pub fn new(runtime: &Runtime, batch: u32, sequence: u32, width: u32) -> AppResult<Self> {
         let rows = batch.checked_mul(sequence).ok_or("outer batch overflows")?;
         if rows == 0
@@ -129,7 +144,6 @@ impl OuterScratch {
             // unused columns at zero for the projection's weight adjoint.
             d_qkv: DeviceBuffer::zeroed(stream, qkv_values)?,
             row_amax: DeviceBuffer::zeroed(stream, rows as usize)?,
-            qkv_amax: DeviceBuffer::zeroed(stream, attention_rows)?,
             log_sum_exp: DeviceBuffer::zeroed(stream, attention_rows)?,
             unused_qk_scale_grad: DeviceBuffer::zeroed(stream, heads as usize)?,
         })
@@ -307,50 +321,54 @@ impl OuterTape<'_> {
             precomputed_e_amax_chunks: None,
         })?;
         let attention = scratch.attention.args();
-        runtime
-            .attention
-            .kda_attention_backward_tc(CausalAttentionBackwardTcArgs {
-                stream,
-                tc_module: &runtime.f16_tc_matmul,
-                reuse_forward_probs: false,
-                forward_probs_f16: None,
-                qkv: &self.qkv,
-                attention_out: &self.chunk_states,
-                kda_v_new: None,
-                kda_akk_inv: None,
-                kda_w: None,
-                kda_aqk: None,
-                d_out: &scratch.features,
-                qk_scale: weights.norm_scale.device(),
-                log_sum_exp: &scratch.log_sum_exp,
-                softmax_d: attention.softmax_d,
-                qk_norm_max: attention.qk_norm_max,
-                d_qkv: &mut scratch.d_qkv,
-                d_qkv_chunk_amax: &mut scratch.qkv_amax,
-                d_qk_scale: &mut scratch.unused_qk_scale_grad,
-                accumulate_value_grad: false,
-                scratch: attention.tc,
-                row_count: shape.rows,
-                seq_len: shape.sequence,
-                batch_size: shape.batch,
-                embedding_dim: shape.width,
-                qkv_dim: shape.qkv,
-                head_count: shape.heads,
-                head_dim: HEAD_DIM,
-                attention_window: shape.sequence,
-                partial_key_offset: false,
-                selective_attention: false,
-                qk_norm_offset: 0,
-                backward_mask_seed: 0,
-                backward_tile_budget: 0.0,
-            })?;
+        // Full-state correction reduces the active columns after their final
+        // write. The unused projection columns stay zero.
+        let qkv_scratch = scratch.qkv_backward.as_args();
+        let qkv_amax_chunks =
+            runtime
+                .attention
+                .kda_attention_backward_tc(CausalAttentionBackwardTcArgs {
+                    stream,
+                    tc_module: &runtime.f16_tc_matmul,
+                    reuse_forward_probs: false,
+                    forward_probs_f16: None,
+                    qkv: &self.qkv,
+                    attention_out: &self.chunk_states,
+                    kda_v_new: None,
+                    kda_akk_inv: None,
+                    kda_w: None,
+                    kda_aqk: None,
+                    d_out: &scratch.features,
+                    qk_scale: weights.norm_scale.device(),
+                    log_sum_exp: &scratch.log_sum_exp,
+                    softmax_d: attention.softmax_d,
+                    qk_norm_max: attention.qk_norm_max,
+                    d_qkv: &mut scratch.d_qkv,
+                    d_qkv_chunk_amax: &mut *qkv_scratch.e_h.chunk_amax,
+                    d_qk_scale: &mut scratch.unused_qk_scale_grad,
+                    accumulate_value_grad: false,
+                    scratch: attention.tc,
+                    row_count: shape.rows,
+                    seq_len: shape.sequence,
+                    batch_size: shape.batch,
+                    embedding_dim: shape.width,
+                    qkv_dim: shape.qkv,
+                    head_count: shape.heads,
+                    head_dim: HEAD_DIM,
+                    attention_window: shape.sequence,
+                    partial_key_offset: false,
+                    selective_attention: false,
+                    qk_norm_offset: 0,
+                    backward_mask_seed: 0,
+                    backward_tile_budget: 0.0,
+                })?;
         runtime.linear.backward_ms_eden(LinearBackwardMsEdenArgs {
             stream,
             quant_module: &runtime.quant,
             e: &scratch.d_qkv,
             weight_t: LinearBackwardWeightTranspose::Nvfp4(weights.qkv.device()),
             input_t: LinearBackwardInputTranspose::RowwiseNvfp4(self.normalized.rowwise()),
-            scratch: scratch.qkv_backward.as_args(),
+            scratch: qkv_scratch,
             dinput: &mut scratch.features,
             dweight: adjoints.qkv,
             dbias: None,
@@ -359,7 +377,7 @@ impl OuterTape<'_> {
             output_dim: shape.qkv,
             sign_seed: sign_seed.wrapping_add(1),
             scale_seed: scale_seed.wrapping_add(1),
-            precomputed_e_amax_chunks: None,
+            precomputed_e_amax_chunks: Some(qkv_amax_chunks),
         })?;
         runtime
             .layer_norm_backward

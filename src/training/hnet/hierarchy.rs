@@ -95,6 +95,22 @@ struct ByteReadoutScratch {
 }
 
 impl HierarchyScratch {
+    #[cfg(test)]
+    pub(super) fn assert_byte_pack_matches_rescan(
+        &self,
+        runtime: &Runtime,
+        seeds: [u32; 2],
+    ) -> AppResult {
+        super::tests::assert_gradient_pack_matches_rescan(
+            runtime,
+            &self.byte.d_logits,
+            &self.byte.byte_backward,
+            self.shape.batch * self.shape.outer_stride,
+            BYTE_LOGIT_STRIDE,
+            seeds,
+        )
+    }
+
     pub fn new(runtime: &Runtime, batch: u32, stride: u32, width: u32) -> AppResult<Self> {
         let shape = StageShape {
             batch,
@@ -173,7 +189,7 @@ impl ByteReadoutScratch {
             targets: batch.targets,
             losses: &mut losses,
             dlogits: &mut self.d_logits,
-            row_amax: &mut self.row_amax,
+            row_amax: &mut self.byte_backward.e_h.chunk_amax,
             rows,
             valid_targets: batch.scored_targets,
         })?;
@@ -209,7 +225,7 @@ impl ByteReadoutScratch {
             output_dim: BYTE_LOGIT_STRIDE,
             sign_seed: rng.next_u32(),
             scale_seed: rng.next_u32(),
-            precomputed_e_amax_chunks: None,
+            precomputed_e_amax_chunks: Some(rows),
         })?;
         Ok((losses, d_decoder, d_weight))
     }

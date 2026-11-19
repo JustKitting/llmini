@@ -1,10 +1,72 @@
 use cuda_core::{CudaStream, DeviceBuffer};
 use gpt2_nvfp4::{GPT2_MLP_ROUTE_TILE, GPT2_N_EMBD, Gpt2Rng};
-use rust_kernels_cuda::hnet_stage::{RatioObjective, StageShape};
-use rust_kernels_cuda::nvfp4::csf;
+use rust_kernels_cuda::{
+    hnet_stage::{RatioObjective, StageShape},
+    linear_backward::LinearBackwardMsEdenScratchBuffers,
+    nvfp4::csf,
+    nvfp4_quant::MsEdenPairDeviceScaleQuantArgs,
+    nvfp4_tc_matmul::{QUARTET_MS_EDEN_SCALE_OVERRIDE, nvfp4_tc_matmul_padded_k},
+};
 
 use super::{Trainer, outer::OuterBlockGradients};
-use crate::{AppResult, upload::UploadedNvfp4};
+use crate::{AppResult, training::runtime::Runtime, upload::UploadedNvfp4};
+
+pub(super) fn assert_gradient_pack_matches_rescan(
+    runtime: &Runtime,
+    gradient: &DeviceBuffer<f32>,
+    actual: &LinearBackwardMsEdenScratchBuffers,
+    rows: u32,
+    columns: u32,
+    seeds: [u32; 2],
+) -> AppResult {
+    let stream = &runtime.stream;
+    let mut bytes = DeviceBuffer::zeroed(stream, actual.e_h.bytes.len())?;
+    let mut scales = DeviceBuffer::zeroed(stream, actual.e_h.scales.len())?;
+    let mut transpose_bytes = DeviceBuffer::zeroed(stream, actual.e_t_h.bytes.len())?;
+    let mut transpose_scales = DeviceBuffer::zeroed(stream, actual.e_t_h.scales.len())?;
+    let mut chunks = DeviceBuffer::zeroed(stream, actual.e_h.chunk_amax.len())?;
+    let mut global = DeviceBuffer::zeroed(stream, 1)?;
+    runtime
+        .quant
+        .fp32_pair_to_nvfp4_quartet_backward_ms_eden_derived_device_scale_no_chunk_amax(
+            MsEdenPairDeviceScaleQuantArgs {
+                stream,
+                x: gradient,
+                out_fp4: &mut bytes,
+                out_scales: &mut scales,
+                transpose_out_fp4: &mut transpose_bytes,
+                transpose_out_scales: &mut transpose_scales,
+                out_chunk_amax: &mut chunks,
+                out_global_scale: &mut global,
+                row_count: rows,
+                src_row_len: columns,
+                dst_row_len: nvfp4_tc_matmul_padded_k(columns),
+                transpose_dst_row_len: nvfp4_tc_matmul_padded_k(rows),
+                scale_override: QUARTET_MS_EDEN_SCALE_OVERRIDE,
+                sign_seed: seeds[0],
+                scale_seed: seeds[1],
+                transpose_scale_seed: seeds[1] ^ 0x85eb_ca6b,
+                precomputed_chunk_count: None,
+            },
+        )?;
+    assert_eq!(
+        actual.e_h.global_scale.to_host_vec(stream)?[0].to_bits(),
+        global.to_host_vec(stream)?[0].to_bits(),
+        "gradient global scale"
+    );
+    for (name, observed, expected) in [
+        ("row payload", &actual.e_h.bytes, &bytes),
+        ("row scales", &actual.e_h.scales, &scales),
+        ("transpose payload", &actual.e_t_h.bytes, &transpose_bytes),
+        ("transpose scales", &actual.e_t_h.scales, &transpose_scales),
+    ] {
+        assert!(
+            observed.to_host_vec(stream)? == expected.to_host_vec(stream)?,
+            "gradient {name} differs from a full rescan"
+        );
+    }
+    Ok(())
+}
 
 fn packed_matrix(
     stream: &CudaStream,
@@ -56,7 +118,6 @@ impl TestBlockGradients {
 #[ignore = "requires sm_120a PTX and the native NVFP4 H-Net outer block"]
 fn outer_hnet_block_is_causal_and_preserves_recurrent_adjoint() -> AppResult {
     use super::outer::{OuterScratch, OuterWeights};
-    use crate::training::runtime::Runtime;
 
     const BATCH: usize = 2;
     const SEQUENCE: usize = 128;
@@ -111,6 +172,7 @@ fn outer_hnet_block_is_causal_and_preserves_recurrent_adjoint() -> AppResult {
     // kernels must overwrite every entry, including padded projection columns.
     let mut adjoint = TestBlockGradients::poisoned(stream, QKV, WIDTH)?;
     let d_input = tape.backward(&runtime, &mut scratch, &gradient, adjoint.view(), 17, 19)?;
+    scratch.assert_qkv_pack_matches_rescan(&runtime, [18, 20])?;
     let d_input = d_input.to_host_vec(stream)?;
     assert!(d_input.iter().all(|value| value.is_finite()));
     assert!(d_input[..64 * WIDTH].iter().any(|value| *value != 0.0));
@@ -192,8 +254,12 @@ fn native_hnet_hierarchy_reverses_masked_byte_loss() -> AppResult {
     let mut source = ByteDocuments::new(framed.as_slice())?;
     let batch = source.next_batch(2, STRIDE as u32)?.unwrap();
     assert_eq!(batch.lengths, lengths);
-    let mut encoder_adjoints = TestBlockGradients::poisoned(stream, encoder_mixer.scale_rows as usize, WIDTH)?;
-    let mut decoder_adjoints = TestBlockGradients::poisoned(stream, decoder_mixer.scale_rows as usize, WIDTH)?;
+    let mut encoder_adjoints =
+        TestBlockGradients::poisoned(stream, encoder_mixer.scale_rows as usize, WIDTH)?;
+    let mut decoder_adjoints =
+        TestBlockGradients::poisoned(stream, decoder_mixer.scale_rows as usize, WIDTH)?;
+    let mut byte_rng = rng.clone();
+    let byte_seeds = [byte_rng.next_u32(), byte_rng.next_u32()];
     let (adjoints, d_lookup) = trainer.backward_hnet_bytes(
         &mut scratch,
         &batch,
@@ -223,6 +289,7 @@ fn native_hnet_hierarchy_reverses_masked_byte_loss() -> AppResult {
         },
         &mut rng,
     )?;
+    scratch.assert_byte_pack_matches_rescan(&trainer.runtime, byte_seeds)?;
     assert!(adjoints.ratio_loss.to_host_vec(stream)?[0].is_finite());
     let losses = adjoints.byte_losses.to_host_vec(stream)?;
     let d_embeddings = adjoints.embeddings.to_host_vec(stream)?;
