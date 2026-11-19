@@ -23,7 +23,6 @@ use rust_kernels_cuda::{
 pub(in crate::training) struct Feedback {
     pub state: MuonState,
     pub grad: DeviceBuffer<f32>,
-    pub top: DeviceBuffer<f32>,
     pub input: DeviceBuffer<f32>,
     pub input_q: RowwiseNvfp4Buffers,
     pub projected: DeviceBuffer<f32>,
@@ -44,7 +43,6 @@ impl Feedback {
         let Self {
             state: _,
             grad: _,
-            top: _,
             input: _,
             input_q: _,
             projected: _,
@@ -77,7 +75,6 @@ impl Feedback {
                 d,
             )?,
             grad: DeviceBuffer::zeroed(s, d * d)?,
-            top: DeviceBuffer::zeroed(s, total)?,
             input: DeviceBuffer::zeroed(s, total)?,
             input_q: RowwiseNvfp4Buffers::gpt2_rows(s, total)?,
             projected: DeviceBuffer::zeroed(s, total)?,
@@ -120,8 +117,10 @@ impl Feedback {
         tables: &mut MuonPointerTables,
         clip: &GradientClipBuffers,
         passes: usize,
+        rows: u32,
     ) -> AppResult {
         self.active = passes > 1;
+        self.n = rows;
         tables.set_conditional_matrix_enabled(self.grad.cu_deviceptr(), self.active)?;
         let s = r.stream.as_ref();
         for (_, g) in self.named_gradients() {
@@ -148,6 +147,29 @@ impl Feedback {
         }
         Ok(())
     }
+    pub fn prepare_input(
+        &mut self,
+        r: &Runtime,
+        h: &HiddenStateDevice<'_>,
+    ) -> Result<(), DriverError> {
+        let n = h.row_count;
+        // Normalize the preceding pass's residual while it is still live.
+        self.module.latent_feedback_shifted_rms_kernel(
+            r.stream.as_ref(),
+            LaunchConfig {
+                grid_dim: (n, 1, 1),
+                block_dim: (256, 1, 1),
+                shared_mem_bytes: 0,
+            },
+            h.residual,
+            &mut self.input,
+            n,
+            GPT2_N_EMBD as u32,
+            h.seq_len,
+            EPSILON,
+        )
+    }
+
     pub fn mix(
         &mut self,
         r: &Runtime,
@@ -157,21 +179,6 @@ impl Feedback {
         let s = r.stream.as_ref();
         let n = h.row_count;
         let d = GPT2_N_EMBD as u32;
-        self.n = n;
-        self.module.latent_feedback_shifted_rms_kernel(
-            s,
-            LaunchConfig {
-                grid_dim: (n, 1, 1),
-                block_dim: (256, 1, 1),
-                shared_mem_bytes: 0,
-            },
-            &self.top,
-            &mut self.input,
-            n,
-            d,
-            h.seq_len,
-            EPSILON,
-        )?;
         self.input_q.scratch().quantize_row_amax(
             &r.quant,
             s,
@@ -210,21 +217,6 @@ impl Feedback {
             out: h.residual,
             len: n * d,
         })
-    }
-    pub fn capture_top(
-        &mut self,
-        r: &Runtime,
-        h: &HiddenStateDevice<'_>,
-    ) -> Result<(), DriverError> {
-        self.n = h.row_count;
-        unsafe {
-            cuda_core::memory::memcpy_dtod_async(
-                self.top.cu_deviceptr(),
-                h.residual.cu_deviceptr(),
-                h.row_count as usize * GPT2_N_EMBD * 4,
-                r.stream.cu_stream(),
-            )
-        }
     }
     pub fn backward(
         &mut self,

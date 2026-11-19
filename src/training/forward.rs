@@ -31,6 +31,7 @@ impl Trainer {
                 &mut self.buffers.muon_tables,
                 &self.buffers.grad_clip,
                 passes,
+                batch.token_count as u32,
             )?;
         }
         let mut stats = TrainStats::default();
@@ -154,9 +155,9 @@ impl Trainer {
                     e.forward_at(index, runtime, w, &batch.tokens, hidden)?;
                 }
             }
-            if index == gpt2_nvfp4::GPT2_N_LAYER {
+            if index == gpt2_nvfp4::GPT2_N_LAYER && !readout {
                 if let Some(f) = feedback.as_mut() {
-                    f.capture_top(runtime, hidden)?;
+                    f.prepare_input(runtime, hidden)?;
                 }
             }
             Ok(())

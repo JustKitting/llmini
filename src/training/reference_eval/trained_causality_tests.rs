@@ -42,7 +42,7 @@ fn native_trained_latent_feedback_causality_replay() -> AppResult {
         for cut in [1, 64, 128, 1023] {
             let a = t.eval_token_losses_for_passes(&b, passes)?;
             let f = t.latent_feedback.as_ref().unwrap();
-            let top = prefix(&t, &f.top, cut * GPT2_N_EMBD)?;
+            let top = prefix(&t, &t.buffers.residual, cut * GPT2_N_EMBD)?;
             let norm = prefix(&t, &f.input, cut * GPT2_N_EMBD)?;
             let projected = prefix(&t, &f.projected, cut * GPT2_N_EMBD)?;
             let mut changed = flat.clone();
@@ -70,7 +70,7 @@ fn native_trained_latent_feedback_causality_replay() -> AppResult {
             maximum = maximum.max(loss_max);
             println!(
                 "trained_causality passes={passes} cut={cut} loss_max={loss_max} top_prefix_diff={} feedback_input_prefix_diff={} feedback_projection_prefix_diff={} first={first:?}",
-                diff(&top, &prefix(&t, &f.top, cut * GPT2_N_EMBD)?),
+                diff(&top, &prefix(&t, &t.buffers.residual, cut * GPT2_N_EMBD)?),
                 diff(&norm, &prefix(&t, &f.input, cut * GPT2_N_EMBD)?),
                 diff(&projected, &prefix(&t, &f.projected, cut * GPT2_N_EMBD)?)
             );

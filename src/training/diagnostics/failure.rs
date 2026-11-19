@@ -215,7 +215,7 @@ impl Trainer {
         if let Some(f) = &self.latent_feedback {
             dump.muon("latent_feedback.fusion", &f.state)?;
             dump.f32("latent_feedback.fusion.gradient", &f.grad)?;
-            dump.f32("forward.latent_feedback.top", &f.top)?;
+            dump.f32("forward.latent_feedback.top", &self.buffers.residual)?;
             dump.f32("forward.latent_feedback.input", &f.input)?;
             dump.f32("forward.latent_feedback.projected", &f.projected)?;
         }
