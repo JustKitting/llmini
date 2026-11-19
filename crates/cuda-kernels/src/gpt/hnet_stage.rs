@@ -59,6 +59,11 @@ pub struct StageBackward {
     pub d_keys: DeviceBuffer<f32>,
 }
 
+pub struct WidthAdjoints {
+    pub d_features: DeviceBuffer<f32>,
+    pub d_padding: Option<DeviceBuffer<f32>>,
+}
+
 fn require<T>(stream: &CudaStream, buffer: &DeviceBuffer<T>, len: u32) -> Result<(), DriverError> {
     if buffer.len() != len as usize || !Arc::ptr_eq(stream.context(), buffer.context()) {
         return Err(DriverError(1));
@@ -99,6 +104,13 @@ impl StagePlan<'_> {
 
     fn inner_values(&self) -> u32 {
         self.shape.batch * self.inner_stride * self.shape.features
+    }
+
+    fn residual_values(&self, width: u32) -> Result<u32, DriverError> {
+        if width < self.shape.features {
+            return Err(DriverError(1));
+        }
+        area(self.shape.batch * self.inner_stride, width)
     }
 }
 
@@ -244,10 +256,20 @@ impl HnetStage {
         &self,
         plan: &StagePlan<'_>,
         represented: &DeviceBuffer<u16>,
+        inner_width: u32,
+        learned_padding: Option<&DeviceBuffer<u16>>,
         residual: &mut DeviceBuffer<f32>,
     ) -> Result<(), DriverError> {
-        let values = plan.inner_values();
-        require(plan.stream, represented, values)?;
+        let values = plan.residual_values(inner_width)?;
+        require(plan.stream, represented, plan.inner_values())?;
+        let padding = match learned_padding {
+            Some(padding) => {
+                require(plan.stream, padding, inner_width - plan.shape.features)?;
+                padding
+            }
+            None if inner_width == plan.shape.features => represented,
+            None => return Err(DriverError(1)),
+        };
         if residual.len() < values as usize
             || !Arc::ptr_eq(plan.stream.context(), residual.context())
         {
@@ -257,11 +279,13 @@ impl HnetStage {
             plan.stream,
             linear_config(values, THREADS),
             represented,
+            padding,
             &plan.valid_chunks,
             residual,
             values,
             plan.inner_stride,
             plan.shape.features,
+            inner_width,
         )
     }
 
@@ -269,9 +293,10 @@ impl HnetStage {
         &self,
         plan: &StagePlan<'_>,
         residual: &DeviceBuffer<f32>,
+        inner_width: u32,
     ) -> Result<DeviceBuffer<u16>, DriverError> {
         let values = plan.inner_values();
-        if residual.len() < values as usize
+        if residual.len() < plan.residual_values(inner_width)? as usize
             || !Arc::ptr_eq(plan.stream.context(), residual.context())
         {
             return Err(DriverError(1));
@@ -286,8 +311,80 @@ impl HnetStage {
             values,
             plan.inner_stride,
             plan.shape.features,
+            inner_width,
         )?;
         Ok(represented)
+    }
+
+    pub fn widen_output_adjoint(
+        &self,
+        plan: &StagePlan<'_>,
+        d_represented: &DeviceBuffer<f32>,
+        inner_width: u32,
+    ) -> Result<DeviceBuffer<f32>, DriverError> {
+        require(plan.stream, d_represented, plan.inner_values())?;
+        let values = plan.residual_values(inner_width)?;
+        let mut output = DeviceBuffer::zeroed(plan.stream, values as usize)?;
+        self.chunk.hnet_widen_output_adjoint_kernel(
+            plan.stream,
+            linear_config(values, THREADS),
+            d_represented,
+            &plan.valid_chunks,
+            &mut output,
+            values,
+            plan.inner_stride,
+            plan.shape.features,
+            inner_width,
+        )?;
+        Ok(output)
+    }
+
+    pub fn split_input_adjoint(
+        &self,
+        plan: &StagePlan<'_>,
+        d_residual: &DeviceBuffer<f32>,
+        inner_width: u32,
+    ) -> Result<WidthAdjoints, DriverError> {
+        if d_residual.len() < plan.residual_values(inner_width)? as usize
+            || !Arc::ptr_eq(plan.stream.context(), d_residual.context())
+        {
+            return Err(DriverError(1));
+        }
+        let values = plan.inner_values();
+        let mut d_features = DeviceBuffer::zeroed(plan.stream, values as usize)?;
+        self.chunk.hnet_split_input_adjoint_kernel(
+            plan.stream,
+            linear_config(values, THREADS),
+            d_residual,
+            &plan.valid_chunks,
+            &mut d_features,
+            values,
+            plan.inner_stride,
+            plan.shape.features,
+            inner_width,
+        )?;
+        let width = inner_width - plan.shape.features;
+        let d_padding = if width == 0 {
+            None
+        } else {
+            let mut gradient = DeviceBuffer::zeroed(plan.stream, width as usize)?;
+            self.chunk.hnet_padding_adjoint_kernel(
+                plan.stream,
+                linear_config(width, THREADS),
+                d_residual,
+                &plan.valid_chunks,
+                &mut gradient,
+                plan.batch(),
+                plan.inner_stride,
+                plan.shape.features,
+                inner_width,
+            )?;
+            Some(gradient)
+        };
+        Ok(WidthAdjoints {
+            d_features,
+            d_padding,
+        })
     }
 
     pub fn expand<'plan, 'a>(

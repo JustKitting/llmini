@@ -13,7 +13,7 @@ fn native_routed_backbone_executes_and_reverses_real_blocks() -> AppResult {
     let stage = trainer.runtime.hnet_stage_module()?;
     const BATCH: usize = 2;
     const OUTER: usize = 256;
-    const WIDTH: usize = GPT2_N_EMBD;
+    const WIDTH: usize = 512;
     let lengths = [192, 91];
     let mut queries = [0x3c00_u16, 0].repeat(BATCH * OUTER);
     for row in [41, 98, OUTER + 32] {
@@ -47,7 +47,8 @@ fn native_routed_backbone_executes_and_reverses_real_blocks() -> AppResult {
     assert_eq!(plan.inner_lengths().to_host_vec(&stream)?, [3, 2]);
     assert_eq!(plan.inner_stride(), GPT2_MLP_ROUTE_TILE as u32);
     let gathered = stage.gather(&plan, &encoded)?.to_host_vec(&stream)?;
-    let tape = trainer.forward_routed_backbone(&stage, &plan, &encoded)?;
+    let padding = DeviceBuffer::zeroed(&stream, GPT2_N_EMBD - WIDTH)?;
+    let tape = trainer.forward_routed_backbone(&stage, &plan, &encoded, Some(&padding))?;
     let native = tape.output().to_host_vec(&stream)?;
     assert_ne!(native, gathered);
     for (sequence, valid) in [3, 2].into_iter().enumerate() {
@@ -67,7 +68,13 @@ fn native_routed_backbone_executes_and_reverses_real_blocks() -> AppResult {
     let reverse = stage.backward(&expanded, &output_gradient)?;
     drop(expanded);
     let inner_adjoint = tape.backward(&reverse.d_inner)?;
-    let encoder_adjoint = stage.scatter(&plan, &inner_adjoint)?.to_host_vec(&stream)?;
+    let d_padding = inner_adjoint.d_padding.unwrap().to_host_vec(&stream)?;
+    assert_eq!(d_padding.len(), GPT2_N_EMBD - WIDTH);
+    assert!(d_padding.iter().all(|grad| grad.is_finite()));
+    assert!(d_padding.iter().any(|grad| *grad != 0.0));
+    let encoder_adjoint = stage
+        .scatter(&plan, &inner_adjoint.d_features)?
+        .to_host_vec(&stream)?;
     assert!(encoder_adjoint.iter().all(|value| value.is_finite()));
     assert!(
         encoder_adjoint

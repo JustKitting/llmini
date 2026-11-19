@@ -31,18 +31,26 @@ pub mod kernels {
     #[kernel]
     pub fn hnet_inner_to_residual_kernel(
         represented: &[u16],
+        learned_padding: &[u16],
         lengths: &[u32],
         mut residual: DisjointSlice<f32>,
         values: u32,
         stride: u32,
-        features: u32,
+        outer_width: u32,
+        inner_width: u32,
     ) {
         let index = thread::blockIdx_x() * thread::blockDim_x() + thread::threadIdx_x();
         if index < values {
-            let row = index / features;
+            let row = index / inner_width;
+            let column = index % inner_width;
             let valid = row % stride < lengths[(row / stride) as usize];
             let value = if valid {
-                cvt_f32_f16(represented[index as usize])
+                let bits = if column < outer_width {
+                    represented[(row * outer_width + column) as usize]
+                } else {
+                    learned_padding[(column - outer_width) as usize]
+                };
+                cvt_f32_f16(bits)
             } else {
                 0.0
             };
@@ -57,19 +65,93 @@ pub mod kernels {
         mut represented: DisjointSlice<u16>,
         values: u32,
         stride: u32,
-        features: u32,
+        outer_width: u32,
+        inner_width: u32,
     ) {
         let index = thread::blockIdx_x() * thread::blockDim_x() + thread::threadIdx_x();
         if index < values {
-            let row = index / features;
+            let row = index / outer_width;
+            let column = index % outer_width;
             let valid = row % stride < lengths[(row / stride) as usize];
             let value = if valid {
-                cvt_rn_f16_f32(residual[index as usize])
+                cvt_rn_f16_f32(residual[(row * inner_width + column) as usize])
             } else {
                 0
             };
             unsafe { *represented.get_unchecked_mut(index as usize) = value };
         }
+    }
+
+    #[kernel]
+    pub fn hnet_widen_output_adjoint_kernel(
+        d_represented: &[f32],
+        lengths: &[u32],
+        mut d_residual: DisjointSlice<f32>,
+        values: u32,
+        stride: u32,
+        outer_width: u32,
+        inner_width: u32,
+    ) {
+        let index = thread::blockIdx_x() * thread::blockDim_x() + thread::threadIdx_x();
+        if index < values {
+            let row = index / inner_width;
+            let column = index % inner_width;
+            let valid = row % stride < lengths[(row / stride) as usize];
+            let value = if valid && column < outer_width {
+                d_represented[(row * outer_width + column) as usize]
+            } else {
+                0.0
+            };
+            unsafe { *d_residual.get_unchecked_mut(index as usize) = value };
+        }
+    }
+
+    #[kernel]
+    pub fn hnet_split_input_adjoint_kernel(
+        d_residual: &[f32],
+        lengths: &[u32],
+        mut d_represented: DisjointSlice<f32>,
+        values: u32,
+        stride: u32,
+        outer_width: u32,
+        inner_width: u32,
+    ) {
+        let index = thread::blockIdx_x() * thread::blockDim_x() + thread::threadIdx_x();
+        if index < values {
+            let row = index / outer_width;
+            let column = index % outer_width;
+            let valid = row % stride < lengths[(row / stride) as usize];
+            let value = if valid {
+                d_residual[(row * inner_width + column) as usize]
+            } else {
+                0.0
+            };
+            unsafe { *d_represented.get_unchecked_mut(index as usize) = value };
+        }
+    }
+
+    #[kernel]
+    pub fn hnet_padding_adjoint_kernel(
+        d_residual: &[f32],
+        lengths: &[u32],
+        mut d_padding: DisjointSlice<f32>,
+        batch: u32,
+        stride: u32,
+        outer_width: u32,
+        inner_width: u32,
+    ) {
+        let column = thread::blockIdx_x() * thread::blockDim_x() + thread::threadIdx_x();
+        if column >= inner_width - outer_width {
+            return;
+        }
+        let mut gradient = 0.0;
+        for sequence in 0..batch {
+            let offset = (sequence * stride * inner_width + outer_width + column) as usize;
+            for row in 0..lengths[sequence as usize] {
+                gradient += d_residual[offset + (row * inner_width) as usize];
+            }
+        }
+        unsafe { *d_padding.get_unchecked_mut(column as usize) = gradient };
     }
 
     /// Probabilities and indices have layout [batch, outer_stride]. The count

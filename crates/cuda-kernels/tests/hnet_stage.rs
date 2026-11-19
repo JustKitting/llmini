@@ -64,6 +64,42 @@ fn ragged_hnet_stage_matches_causal_forward_and_backward() -> Result<(), Box<dyn
         gathered.to_host_vec(&stream)?,
         fp16(&[2, 4, 6, 8, 10, 12, 1, 2, 0, 0, 0, 0])
     );
+    let padding = DeviceBuffer::from_host(&stream, &fp16(&[3, 5]))?;
+    let mut residual = DeviceBuffer::zeroed(&stream, 24)?;
+    stage.write_residual(&plan, &gathered, 4, Some(&padding), &mut residual)?;
+    assert_eq!(
+        residual.to_host_vec(&stream)?,
+        [
+            2., 4., 3., 5., 6., 8., 3., 5., 10., 12., 3., 5., 1., 2., 3., 5., 0., 0., 0., 0., 0.,
+            0., 0., 0.,
+        ]
+    );
+    assert_eq!(
+        stage
+            .read_residual(&plan, &residual, 4)?
+            .to_host_vec(&stream)?,
+        gathered.to_host_vec(&stream)?
+    );
+    let d_narrow = DeviceBuffer::from_host(&stream, &[1.0; 12])?;
+    let d_wide = stage.widen_output_adjoint(&plan, &d_narrow, 4)?;
+    assert_eq!(
+        d_wide.to_host_vec(&stream)?,
+        [
+            1., 1., 0., 0., 1., 1., 0., 0., 1., 1., 0., 0., 1., 1., 0., 0., 0., 0., 0., 0., 0., 0.,
+            0., 0.,
+        ]
+    );
+    let d_wide = DeviceBuffer::from_host(&stream, &[1.0, 2.0, 3.0, 4.0].repeat(6))?;
+    let width_adjoint = stage.split_input_adjoint(&plan, &d_wide, 4)?;
+    assert_eq!(
+        width_adjoint.d_features.to_host_vec(&stream)?,
+        [1., 2., 1., 2., 1., 2., 1., 2., 0., 0., 0., 0.]
+    );
+    assert_eq!(
+        width_adjoint.d_padding.unwrap().to_host_vec(&stream)?,
+        [12., 16.]
+    );
+
     // Use the identity as the inner model to isolate the hierarchy operators.
     let expanded = stage.expand(&plan, &gathered)?;
     assert_eq!(
