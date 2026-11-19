@@ -72,12 +72,13 @@ impl Trainer {
             &mut self.buffers.optimizer,
             schedule_free_beta(step),
         )?;
-        let weights = parameters.weights();
+        let (weights, gradients) = parameters.training_views();
         let (adjoints, lookup) = self.backward_hnet_bytes(
             scratch,
             batch,
             weights.embedding,
             weights.hierarchy(),
+            gradients,
             ratio,
             rng,
         )?;

@@ -12,8 +12,8 @@ use rust_kernels_cuda::{
 
 use super::{
     Trainer,
-    hierarchy::{HierarchyAdjoints, HierarchyWeights},
-    outer::{OuterParameterAdjoints, OuterWeights},
+    hierarchy::{HierarchyAdjoints, HierarchyWeights, OuterGradients},
+    outer::{OuterBlockGradients, OuterWeights},
     projection::StageWeights,
 };
 use crate::{
@@ -393,6 +393,34 @@ impl Parameters {
         }
     }
 
+    pub fn training_views(&mut self) -> (WeightViews<'_>, OuterGradients<'_>) {
+        let (encoder, encoder_gradients) =
+            self.encoder.iter_mut().map(OuterBlock::training_views).unzip();
+        let (decoder, decoder_gradients) =
+            self.decoder.iter_mut().map(OuterBlock::training_views).unzip();
+        let weights = WeightViews {
+            encoder,
+            decoder,
+            encoder_norm: &self.encoder_norm.tensor,
+            backbone_norm: &self.backbone_norm.tensor,
+            decoder_norm: &self.decoder_norm.tensor,
+            stage: StageWeights {
+                query: &self.query.tensor,
+                key: &self.key.tensor,
+                residual: &self.residual.tensor,
+                residual_bias: &self.residual_bias.tensor,
+            },
+            padding: &self.represented_padding,
+            readout: &self.readout.tensor,
+            embedding: &self.embedding.tensor,
+        };
+        let gradients = OuterGradients {
+            encoder: encoder_gradients,
+            decoder: decoder_gradients,
+        };
+        (weights, gradients)
+    }
+
     pub fn materialize(
         &mut self,
         runtime: &Runtime,
@@ -437,17 +465,6 @@ impl Parameters {
         adjoints: &HierarchyAdjoints,
         lookup: &DeviceBuffer<f32>,
     ) -> AppResult {
-        for (stack, gradients) in [
-            (&mut self.encoder, &adjoints.encoder),
-            (&mut self.decoder, &adjoints.decoder),
-        ] {
-            if stack.len() != gradients.len() {
-                return Err("outer adjoints do not match the H-Net stack".into());
-            }
-            for (block, gradient) in stack.iter_mut().zip(gradients) {
-                block.bind_gradients(stream, gradient)?;
-            }
-        }
         let padding = adjoints
             .width_padding
             .as_ref()
@@ -568,20 +585,20 @@ impl OuterBlock {
         ]
     }
 
-    fn bind_gradients(
-        &mut self,
-        stream: &CudaStream,
-        gradient: &OuterParameterAdjoints,
-    ) -> AppResult {
-        for (parameter, gradient) in self.parameters_mut().into_iter().zip([
-            &gradient.qkv,
-            &gradient.output,
-            &gradient.norm_scale,
-            &gradient.norm_bias,
-        ]) {
-            parameter.bind_gradient(stream, gradient)?;
-        }
-        Ok(())
+    fn training_views(&mut self) -> (OuterWeights<'_>, OuterBlockGradients<'_>) {
+        let weights = OuterWeights {
+            qkv: &self.qkv.tensor,
+            output: &self.output.tensor,
+            norm_scale: &self.norm_scale.tensor,
+            norm_bias: &self.norm_bias.tensor,
+        };
+        let gradients = OuterBlockGradients {
+            qkv: &mut self.qkv.gradient,
+            output: &mut self.output.gradient,
+            norm_scale: &mut self.norm_scale.gradient,
+            norm_bias: &mut self.norm_bias.gradient,
+        };
+        (weights, gradients)
     }
 }
 

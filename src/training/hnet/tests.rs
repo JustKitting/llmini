@@ -3,7 +3,7 @@ use gpt2_nvfp4::{GPT2_MLP_ROUTE_TILE, GPT2_N_EMBD, Gpt2Rng};
 use rust_kernels_cuda::hnet_stage::{RatioObjective, StageShape};
 use rust_kernels_cuda::nvfp4::csf;
 
-use super::Trainer;
+use super::{Trainer, outer::OuterBlockGradients};
 use crate::{AppResult, upload::UploadedNvfp4};
 
 fn packed_matrix(
@@ -22,6 +22,34 @@ fn packed_matrix(
 fn unit_norm_scale(stream: &CudaStream, width: usize) -> AppResult<UploadedNvfp4> {
     let scales = csf::encode_host(&vec![0x38; width / 16], 1, width);
     UploadedNvfp4::from_host(stream, &vec![0x22; width / 2], &scales, 1.0, width)
+}
+
+struct TestBlockGradients {
+    qkv: DeviceBuffer<f32>,
+    output: DeviceBuffer<f32>,
+    norm_scale: DeviceBuffer<f32>,
+    norm_bias: DeviceBuffer<f32>,
+}
+
+impl TestBlockGradients {
+    fn poisoned(stream: &CudaStream, qkv: usize, width: usize) -> AppResult<Self> {
+        let buffer = |len| DeviceBuffer::from_host(stream, &vec![f32::NAN; len]);
+        Ok(Self {
+            qkv: buffer(qkv * width)?,
+            output: buffer(width * width)?,
+            norm_scale: buffer(width)?,
+            norm_bias: buffer(width)?,
+        })
+    }
+
+    fn view(&mut self) -> OuterBlockGradients<'_> {
+        OuterBlockGradients {
+            qkv: &mut self.qkv,
+            output: &mut self.output,
+            norm_scale: &mut self.norm_scale,
+            norm_bias: &mut self.norm_bias,
+        }
+    }
 }
 
 #[test]
@@ -79,7 +107,10 @@ fn outer_hnet_block_is_causal_and_preserves_recurrent_adjoint() -> AppResult {
         *value = [0.001, -0.002, 0.003][i % 3];
     }
     let gradient = DeviceBuffer::from_host(stream, &gradient)?;
-    let (d_input, adjoint) = tape.backward(&runtime, &mut scratch, &gradient, 17, 19)?;
+    // The optimizer reuses these destinations between batches. The reverse
+    // kernels must overwrite every entry, including padded projection columns.
+    let mut adjoint = TestBlockGradients::poisoned(stream, QKV, WIDTH)?;
+    let d_input = tape.backward(&runtime, &mut scratch, &gradient, adjoint.view(), 17, 19)?;
     let d_input = d_input.to_host_vec(stream)?;
     assert!(d_input.iter().all(|value| value.is_finite()));
     assert!(d_input[..64 * WIDTH].iter().any(|value| *value != 0.0));
@@ -111,7 +142,7 @@ fn native_hnet_hierarchy_reverses_masked_byte_loss() -> AppResult {
 
     use super::{
         bytes::{ByteDocuments, MAGIC},
-        hierarchy::{HierarchyScratch, HierarchyWeights},
+        hierarchy::{HierarchyScratch, HierarchyWeights, OuterGradients},
         outer::OuterWeights,
         projection::StageWeights,
     };
@@ -161,6 +192,8 @@ fn native_hnet_hierarchy_reverses_masked_byte_loss() -> AppResult {
     let mut source = ByteDocuments::new(framed.as_slice())?;
     let batch = source.next_batch(2, STRIDE as u32)?.unwrap();
     assert_eq!(batch.lengths, lengths);
+    let mut encoder_adjoints = TestBlockGradients::poisoned(stream, encoder_mixer.scale_rows as usize, WIDTH)?;
+    let mut decoder_adjoints = TestBlockGradients::poisoned(stream, decoder_mixer.scale_rows as usize, WIDTH)?;
     let (adjoints, d_lookup) = trainer.backward_hnet_bytes(
         &mut scratch,
         &batch,
@@ -179,6 +212,10 @@ fn native_hnet_hierarchy_reverses_masked_byte_loss() -> AppResult {
             },
             width_padding: Some(&padding),
             byte_readout: &byte_readout,
+        },
+        OuterGradients {
+            encoder: vec![encoder_adjoints.view()],
+            decoder: vec![decoder_adjoints.view()],
         },
         RatioObjective {
             target: 4.0,
@@ -218,8 +255,8 @@ fn native_hnet_hierarchy_reverses_masked_byte_loss() -> AppResult {
     assert!(d_lookup[eos..bos].iter().all(|g| *g == 0.0));
     assert!(d_lookup[bos..].iter().any(|g| *g != 0.0));
     for matrix in [
-        &adjoints.encoder[0].qkv,
-        &adjoints.decoder[0].qkv,
+        &encoder_adjoints.qkv,
+        &decoder_adjoints.qkv,
         &adjoints.stage.query,
         &adjoints.stage.key,
         &adjoints.stage.residual,

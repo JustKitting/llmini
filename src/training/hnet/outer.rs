@@ -66,11 +66,11 @@ pub(super) struct OuterTape<'a> {
     chunk_states: DeviceBuffer<u16>,
 }
 
-pub(super) struct OuterParameterAdjoints {
-    pub qkv: DeviceBuffer<f32>,
-    pub output: DeviceBuffer<f32>,
-    pub norm_scale: DeviceBuffer<f32>,
-    pub norm_bias: DeviceBuffer<f32>,
+pub(super) struct OuterBlockGradients<'a> {
+    pub qkv: &'a mut DeviceBuffer<f32>,
+    pub output: &'a mut DeviceBuffer<f32>,
+    pub norm_scale: &'a mut DeviceBuffer<f32>,
+    pub norm_bias: &'a mut DeviceBuffer<f32>,
 }
 
 impl OuterScratch {
@@ -269,9 +269,10 @@ impl OuterTape<'_> {
         runtime: &Runtime,
         scratch: &mut OuterScratch,
         gradient: &DeviceBuffer<f32>,
+        adjoints: OuterBlockGradients<'_>,
         sign_seed: u32,
         scale_seed: u32,
-    ) -> AppResult<(DeviceBuffer<f32>, OuterParameterAdjoints)> {
+    ) -> AppResult<DeviceBuffer<f32>> {
         let shape = self.shape;
         let features = (shape.rows * shape.width) as usize;
         if scratch.shape != shape || gradient.len() != features {
@@ -281,12 +282,13 @@ impl OuterTape<'_> {
         let width = shape.width as usize;
         let weights = self.weights;
         let mut d_input = DeviceBuffer::zeroed(stream, features)?;
-        let mut adjoints = OuterParameterAdjoints {
-            qkv: DeviceBuffer::zeroed(stream, width * shape.qkv as usize)?,
-            output: DeviceBuffer::zeroed(stream, width * width)?,
-            norm_scale: DeviceBuffer::zeroed(stream, width)?,
-            norm_bias: DeviceBuffer::zeroed(stream, width)?,
-        };
+        if adjoints.qkv.len() != width * shape.qkv as usize
+            || adjoints.output.len() != width * width
+            || adjoints.norm_scale.len() != width
+            || adjoints.norm_bias.len() != width
+        {
+            return Err("H-Net outer weight gradients do not match the block shape".into());
+        }
         runtime.linear.backward_ms_eden(LinearBackwardMsEdenArgs {
             stream,
             quant_module: &runtime.quant,
@@ -295,7 +297,7 @@ impl OuterTape<'_> {
             input_t: LinearBackwardInputTranspose::RowwiseNvfp4(self.mixed.rowwise()),
             scratch: scratch.output_backward.as_args(),
             dinput: &mut scratch.features,
-            dweight: &mut adjoints.output,
+            dweight: adjoints.output,
             dbias: None,
             token_count: shape.rows,
             input_dim: shape.width,
@@ -350,7 +352,7 @@ impl OuterTape<'_> {
             input_t: LinearBackwardInputTranspose::RowwiseNvfp4(self.normalized.rowwise()),
             scratch: scratch.qkv_backward.as_args(),
             dinput: &mut scratch.features,
-            dweight: &mut adjoints.qkv,
+            dweight: adjoints.qkv,
             dbias: None,
             token_count: shape.rows,
             input_dim: shape.width,
@@ -367,8 +369,8 @@ impl OuterTape<'_> {
                 d_normalized: &scratch.features,
                 mean: &self.mean,
                 inv_std: &self.inv_std,
-                d_weight: &mut adjoints.norm_scale,
-                d_bias: &mut adjoints.norm_bias,
+                d_weight: adjoints.norm_scale,
+                d_bias: adjoints.norm_bias,
                 output_scale: 1.0,
                 row_count: shape.rows,
                 embedding_dim: shape.width,
@@ -388,6 +390,6 @@ impl OuterTape<'_> {
                 row_count: shape.rows,
                 embedding_dim: shape.width,
             })?;
-        Ok((d_input, adjoints))
+        Ok(d_input)
     }
 }

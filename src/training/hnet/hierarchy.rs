@@ -16,7 +16,7 @@ use rust_kernels_cuda::{
 use super::{
     Trainer,
     bytes::ByteBatch,
-    outer::{OuterParameterAdjoints, OuterScratch, OuterTape, OuterWeights},
+    outer::{OuterBlockGradients, OuterScratch, OuterTape, OuterWeights},
     projection::{StageParameterAdjoints, StageProjectionScratch, StageWeights},
 };
 use crate::{AppResult, training::runtime::Runtime, upload::UploadedNvfp4};
@@ -58,13 +58,16 @@ pub(super) struct HierarchyWeights<'a> {
     pub byte_readout: &'a UploadedNvfp4,
 }
 
+pub(super) struct OuterGradients<'a> {
+    pub encoder: Vec<OuterBlockGradients<'a>>,
+    pub decoder: Vec<OuterBlockGradients<'a>>,
+}
+
 pub(super) struct HierarchyAdjoints {
     pub backbone_rows: u32,
     pub byte_losses: DeviceBuffer<f32>,
     pub ratio_loss: DeviceBuffer<f32>,
     pub embeddings: DeviceBuffer<f32>,
-    pub encoder: Vec<OuterParameterAdjoints>,
-    pub decoder: Vec<OuterParameterAdjoints>,
     pub encoder_norm: DeviceBuffer<f32>,
     pub backbone_norm: DeviceBuffer<f32>,
     pub decoder_norm: DeviceBuffer<f32>,
@@ -219,6 +222,7 @@ impl Trainer {
         batch: &ByteBatch,
         embedding: &UploadedNvfp4,
         weights: HierarchyWeights<'_>,
+        gradients: OuterGradients<'_>,
         ratio: RatioObjective,
         rng: &mut Gpt2Rng,
     ) -> AppResult<(HierarchyAdjoints, DeviceBuffer<f32>)> {
@@ -226,7 +230,7 @@ impl Trainer {
         let rows = shape.batch * shape.outer_stride;
         let stream = self.runtime.stream.clone();
         let embedded = embed_byte_batch(&self.runtime, batch, shape, embedding)?;
-        let adjoints = self.backward_hnet(scratch, embedded.view(), weights, ratio, rng)?;
+        let adjoints = self.backward_hnet(scratch, embedded.view(), weights, gradients, ratio, rng)?;
         let mut lookup = DeviceBuffer::zeroed(&stream, embedding.len)?;
         self.runtime
             .optimizer
@@ -323,12 +327,13 @@ impl Trainer {
 
     /// Differentiate the native byte hierarchy. The trunk gradients stay in
     /// the trainer's existing optimizer buffers, and the outer adjoints are
-    /// returned in the same order as the parameter slices.
+    /// written into the supplied encoder and decoder gradient buffers.
     pub(super) fn backward_hnet(
         &mut self,
         scratch: &mut HierarchyScratch,
         batch: HierarchyBatch<'_>,
         weights: HierarchyWeights<'_>,
+        gradients: OuterGradients<'_>,
         ratio: RatioObjective,
         rng: &mut Gpt2Rng,
     ) -> AppResult<HierarchyAdjoints> {
@@ -404,10 +409,11 @@ impl Trainer {
             scratch
                 .norms
                 .backward(&stream, decoder_normalization, &d_decoded)?;
-        let (mut d_skip, decoder) = backward_stack(
+        let mut d_skip = backward_stack(
             &inner.trainer.runtime,
             &mut scratch.outer,
             decoder,
+            gradients.decoder,
             d_decoded,
             rng,
         )?;
@@ -429,15 +435,19 @@ impl Trainer {
             scratch
                 .norms
                 .backward(&stream, encoder_normalization, &d_encoded)?;
-        let (embeddings, encoder) =
-            backward_stack(&self.runtime, &mut scratch.outer, encoder, d_encoded, rng)?;
+        let embeddings = backward_stack(
+            &self.runtime,
+            &mut scratch.outer,
+            encoder,
+            gradients.encoder,
+            d_encoded,
+            rng,
+        )?;
         Ok(HierarchyAdjoints {
             backbone_rows,
             byte_losses,
             ratio_loss,
             embeddings,
-            encoder,
-            decoder,
             encoder_norm,
             backbone_norm,
             decoder_norm,
@@ -533,16 +543,22 @@ fn backward_stack(
     runtime: &Runtime,
     scratch: &mut OuterScratch,
     tapes: Vec<OuterTape<'_>>,
+    gradients: Vec<OuterBlockGradients<'_>>,
     mut gradient: DeviceBuffer<f32>,
     rng: &mut Gpt2Rng,
-) -> AppResult<(DeviceBuffer<f32>, Vec<OuterParameterAdjoints>)> {
-    let mut parameters = Vec::with_capacity(tapes.len());
-    for tape in tapes.into_iter().rev() {
-        let (input, adjoints) =
-            tape.backward(runtime, scratch, &gradient, rng.next_u32(), rng.next_u32())?;
-        gradient = input;
-        parameters.push(adjoints);
+) -> AppResult<DeviceBuffer<f32>> {
+    if tapes.len() != gradients.len() {
+        return Err("outer adjoints do not match the H-Net stack".into());
     }
-    parameters.reverse();
-    Ok((gradient, parameters))
+    for (tape, adjoints) in tapes.into_iter().zip(gradients).rev() {
+        gradient = tape.backward(
+            runtime,
+            scratch,
+            &gradient,
+            adjoints,
+            rng.next_u32(),
+            rng.next_u32(),
+        )?;
+    }
+    Ok(gradient)
 }
