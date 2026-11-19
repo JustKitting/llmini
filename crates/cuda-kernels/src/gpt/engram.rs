@@ -16,6 +16,90 @@ fn sum(s: &mut SharedArray<f32, 8>, x: f32) -> f32 {
     let t = thread::threadIdx_x();
     block_sum_shared_f32(s, x, t % 32, t / 32)
 }
+#[inline(always)]
+fn hash_ngrams(
+    tokens: &[u32],
+    map: &[u32],
+    primes: &[u32],
+    offsets: &[u32],
+    multipliers: &[u64],
+    ids: &mut DisjointSlice<u32>,
+    n: u32,
+    seq: u32,
+    heads: u32,
+    bos: u32,
+    eos: u32,
+    pad: u32,
+    orders: u32,
+) {
+    let i = thread::blockIdx_x() * T + thread::threadIdx_x();
+    if i >= n * heads * orders {
+        return;
+    }
+    let r = i / (heads * orders);
+    let h = i % (heads * orders);
+    let order = 2 + h / heads;
+    let mut mix = 0u64;
+    let mut valid = true;
+    let mut lag = 0;
+    while lag < order {
+        let mut token = pad;
+        if valid && lag <= r % seq {
+            let raw = tokens[(r - lag) as usize] as u32;
+            if lag > 0 && (raw == bos || raw == eos) {
+                valid = false;
+            } else {
+                token = map[raw as usize];
+                if raw == bos || raw == eos {
+                    valid = false;
+                }
+            }
+        }
+        mix ^= (token as u64).wrapping_mul(multipliers[lag as usize]);
+        lag += 1;
+    }
+    unsafe {
+        *ids.get_unchecked_mut(i as usize) =
+            offsets[h as usize] + (mix % primes[h as usize] as u64) as u32;
+    }
+}
+
+#[cuda_module]
+pub mod four_gram_hash {
+    use super::*;
+    #[kernel]
+    pub fn engram_four_gram_hash_kernel(
+        tokens: &[u32],
+        map: &[u32],
+        primes: &[u32],
+        offsets: &[u32],
+        multipliers: &[u64],
+        mut ids: DisjointSlice<u32>,
+        n: u32,
+        seq: u32,
+        heads: u32,
+        bos: u32,
+        eos: u32,
+        pad: u32,
+    ) {
+        hash_ngrams(
+            tokens,
+            map,
+            primes,
+            offsets,
+            multipliers,
+            &mut ids,
+            n,
+            seq,
+            heads,
+            bos,
+            eos,
+            pad,
+            3,
+        );
+    }
+}
+
 #[cuda_module]
 pub mod kernels {
     static mut REDUCE: SharedArray<f32, 8> = SharedArray::UNINIT;
@@ -35,36 +119,21 @@ pub mod kernels {
         eos: u32,
         pad: u32,
     ) {
-        let i = thread::blockIdx_x() * T + thread::threadIdx_x();
-        if i >= n * heads * 2 {
-            return;
-        }
-        let r = i / (heads * 2);
-        let h = i % (heads * 2);
-        let order = 2 + h / heads;
-        let mut mix = 0u64;
-        let mut valid = true;
-        let mut lag = 0;
-        while lag < order {
-            let mut token = pad;
-            if valid && lag <= r % seq {
-                let raw = tokens[(r - lag) as usize] as u32;
-                if lag > 0 && (raw == bos || raw == eos) {
-                    valid = false;
-                } else {
-                    token = map[raw as usize];
-                    if raw == bos || raw == eos {
-                        valid = false;
-                    }
-                }
-            }
-            mix ^= (token as u64).wrapping_mul(multipliers[lag as usize]);
-            lag += 1;
-        }
-        unsafe {
-            *ids.get_unchecked_mut(i as usize) =
-                offsets[h as usize] + (mix % primes[h as usize] as u64) as u32;
-        }
+        hash_ngrams(
+            tokens,
+            map,
+            primes,
+            offsets,
+            multipliers,
+            &mut ids,
+            n,
+            seq,
+            heads,
+            bos,
+            eos,
+            pad,
+            2,
+        );
     }
     #[kernel]
     pub fn engram_gather_kernel(

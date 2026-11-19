@@ -21,8 +21,16 @@ impl Weights {
         r: &Runtime,
         requested: Option<usize>,
     ) -> AppResult<Self> {
+        Self::new_multistream_with_ngram_budget(r, requested, false)
+    }
+
+    pub fn new_multistream_with_ngram_budget(
+        r: &Runtime,
+        requested: Option<usize>,
+        four_grams: bool,
+    ) -> AppResult<Self> {
         Ok(Self {
-            modules: Config::multistream_with_table_budget(requested)?
+            modules: Config::multistream_with_ngram_budget(requested, four_grams)?
                 .into_iter()
                 .map(|cfg| ModuleWeights::new_with_config(r, cfg))
                 .collect::<AppResult<_>>()?,

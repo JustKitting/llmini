@@ -13,6 +13,7 @@ pub(in crate::training) struct Module {
     pub cfg: Config,
     pub names: Vec<String>,
     pub module: kernels::LoadedModule,
+    pub four_gram_hash: Option<rust_kernels_cuda::engram::four_gram_hash::LoadedModule>,
     pub multi: Option<rust_kernels_cuda::engram_multi::kernels::LoadedModule>,
     pub nv_states: Vec<AdamState>,
     pub projector_states: Vec<MuonState>,
@@ -51,7 +52,7 @@ impl Module {
         let mem = GPT2_TOKEN_ROWS * memory;
         let mut offsets = Vec::new();
         let mut at = 0;
-        for p in w.cfg.primes {
+        for &p in &w.cfg.primes {
             offsets.push(at);
             at += p;
         }
@@ -117,6 +118,9 @@ impl Module {
                     .map(|n| format!("{}.{n}", w.cfg.prefix()))
                     .collect(),
                 module: runtime.engram_module()?,
+                four_gram_hash: (w.cfg.max_ngram() == 4)
+                    .then(|| runtime.engram_four_gram_hash_module())
+                    .transpose()?,
                 multi: (streams == 4)
                     .then(|| runtime.engram_multi_module())
                     .transpose()?,
@@ -125,7 +129,7 @@ impl Module {
                 fp_states,
                 ng,
                 fg,
-                ids: z!(GPT2_TOKEN_ROWS * HEADS * 2),
+                ids: z!(GPT2_TOKEN_ROWS * w.cfg.primes.len()),
                 primes: DeviceBuffer::from_host(s, &w.cfg.primes)?,
                 offsets: DeviceBuffer::from_host(s, &offsets)?,
                 multipliers: DeviceBuffer::from_host(s, &w.cfg.multipliers)?,

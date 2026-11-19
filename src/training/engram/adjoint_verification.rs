@@ -41,11 +41,11 @@ impl MemoryAdjointVerification {
         table: &DeviceBuffer<f32>,
         ids: &DeviceBuffer<u32>,
         n: usize,
-        head_dim: usize,
-        projectors: &[usize],
+        config: &super::Config,
     ) -> AppResult {
         assert_eq!(
-            self.projectors, projectors,
+            self.projectors,
+            config.projector_indices(),
             "all independent K adjoints and exactly one shared V adjoint must contribute"
         );
         let actual = accumulated.to_host_vec(stream)?;
@@ -59,7 +59,8 @@ impl MemoryAdjointVerification {
         }
         let ids = ids.to_host_vec(stream)?;
         let table = table.to_host_vec(stream)?;
-        let heads = super::HEADS * 2;
+        let heads = config.primes.len();
+        let head_dim = config.head_dim;
         assert_eq!(self.sum.len(), n * heads * head_dim);
         let mut expected = vec![0f64; table.len()];
         let mut absolute = vec![0f32; table.len()];

@@ -42,3 +42,29 @@ fn table_budget_requires_the_complete_graph_and_positive_input() {
         assert!(TrainArgs::try_parse_from(&args).is_err(), "args={args:?}");
     }
 }
+
+#[test]
+fn four_gram_launch_selects_the_complete_graph_and_reports_its_shape() {
+    assert!(TrainArgs::try_parse_from(["rust-kernels", "--engram-four-grams"]).is_err());
+    let config = TrainArgs::try_parse_from([
+        "rust-kernels",
+        "--stationary-rope-engram-mhc",
+        "--value-rms-engram-mhc",
+        "--full-kda-backward",
+        "--engram-four-grams",
+        "--engram-table-params",
+        "500000000",
+    ])
+    .unwrap()
+    .config();
+    assert!(config.engram_mhc && config.engram_four_grams);
+    assert_eq!(config.engram_table_params, Some(500_000_000));
+    let info = build_run_info("fineweb", &config);
+    for expected in [
+        "engram_checkpoint_graph_version=5",
+        "engram_memory_width=1536",
+        "engram_ngram_orders=2,3,4",
+    ] {
+        assert!(info.lines().any(|line| line == expected), "{expected}");
+    }
+}

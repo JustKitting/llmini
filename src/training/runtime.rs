@@ -159,6 +159,12 @@ impl Runtime {
     ) -> Result<rust_kernels_cuda::engram::kernels::LoadedModule, cuda_core::DriverError> {
         rust_kernels_cuda::engram::kernels::from_module(self.cuda_module.clone())
     }
+    pub(in crate::training) fn engram_four_gram_hash_module(
+        &self,
+    ) -> Result<rust_kernels_cuda::engram::four_gram_hash::LoadedModule, cuda_core::DriverError>
+    {
+        rust_kernels_cuda::engram::four_gram_hash::from_module(self.cuda_module.clone())
+    }
 }
 
 impl Runtime {

@@ -45,3 +45,47 @@ fn invalid_table_budgets_are_rejected_without_cuda() {
         );
     }
 }
+
+#[test]
+fn four_gram_budget_serializes_all_orders_without_reinterpreting_v4() {
+    for (requested, minimum) in [
+        (None, 328_044_672),
+        (Some(500_000_000), 500_000_000),
+        (Some(2_000_000_000), 2_000_000_000),
+    ] {
+        let ordinary = Config::multistream_with_table_budget(requested).unwrap();
+        let configured = Config::multistream_with_ngram_budget(requested, true).unwrap();
+        let actual = configured.iter().map(Config::table_len).sum::<usize>();
+        assert!((minimum..minimum + 1_000_000).contains(&actual));
+        assert_eq!(
+            actual,
+            ordinary.iter().map(Config::table_len).sum::<usize>()
+        );
+        println!("four_gram_engram_budget requested={minimum} actual={actual}");
+        let mut primes = std::collections::HashSet::new();
+        for (cfg, original) in configured.iter().zip(ordinary) {
+            assert_eq!((original.max_ngram(), original.memory()), (3, 1024));
+            assert_eq!((cfg.max_ngram(), cfg.memory(), cfg.streams()), (4, 1536, 4));
+            assert_eq!(cfg.projector_indices(), original.projector_indices());
+            assert_eq!(cfg.multipliers[..3], original.multipliers);
+            assert_eq!(cfg.primes.len(), 24);
+            assert!(cfg.primes.iter().all(|p| primes.insert(*p)));
+
+            let descriptor = cfg.descriptor();
+            assert_eq!(descriptor.len(), 49);
+            assert_eq!(descriptor[0], 5.);
+            assert_eq!(
+                Config::parse(&descriptor, false).unwrap().descriptor(),
+                descriptor
+            );
+            assert!(Config::parse(&descriptor, true).is_err());
+            assert!(Config::parse(&descriptor[..37], false).is_err());
+            let mut old_tag = descriptor.clone();
+            old_tag[0] = 4.;
+            assert!(Config::parse(&old_tag, false).is_err());
+            let mut duplicate_head = descriptor.clone();
+            duplicate_head[32] = duplicate_head[9];
+            assert!(Config::parse(&duplicate_head, false).is_err());
+        }
+    }
+}

@@ -229,12 +229,21 @@ pub(in crate::training::launch) fn build_run_info(dataset: &str, config: &TrainC
     push_info(
         &mut info,
         "engram_checkpoint_graph_version",
-        if config.engram_mhc { 4 } else { 3 },
+        if config.engram_four_grams {
+            5
+        } else if config.engram_mhc {
+            4
+        } else {
+            3
+        },
     );
     push_info(&mut info, "engram_implementation", "full_native_nvfp4");
     let memory_config = if config.engram_mhc {
-        crate::training::engram::Config::multistream_with_table_budget(config.engram_table_params)
-            .expect("launcher validates the Engram table budget before writing run info")
+        crate::training::engram::Config::multistream_with_ngram_budget(
+            config.engram_table_params,
+            config.engram_four_grams,
+        )
+        .expect("launcher validates the Engram table budget before writing run info")
     } else {
         std::array::from_fn(crate::training::engram::Config::reference)
     };
@@ -266,7 +275,15 @@ pub(in crate::training::launch) fn build_run_info(dataset: &str, config: &TrainC
         "engram_insert_before_block",
         crate::training::engram::LAYER,
     );
-    push_info(&mut info, "engram_ngram_orders", "2,3");
+    push_info(
+        &mut info,
+        "engram_ngram_orders",
+        if config.engram_four_grams {
+            "2,3,4"
+        } else {
+            "2,3"
+        },
+    );
     push_info(
         &mut info,
         "engram_heads_per_order",
@@ -277,11 +294,7 @@ pub(in crate::training::launch) fn build_run_info(dataset: &str, config: &TrainC
         "engram_head_dimension",
         crate::training::engram::HEAD_DIM,
     );
-    push_info(
-        &mut info,
-        "engram_memory_width",
-        crate::training::engram::MEMORY,
-    );
+    push_info(&mut info, "engram_memory_width", memory_config[0].memory());
     push_info(
         &mut info,
         "engram_table_parameters",

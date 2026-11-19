@@ -37,6 +37,29 @@ fn native_budgeted_four_stream_engram_complete_graph_checkpoint_and_causality() 
 }
 
 #[test]
+#[ignore = "full 500M-table native four-gram Engram/mHC checkpoint and backward"]
+fn native_four_gram_engram_complete_graph_checkpoint_and_causality() -> AppResult {
+    let config = crate::training::launch::TrainConfig {
+        seed: 0x47505432,
+        latent_feedback: false,
+        mhc: true,
+        engram_mhc: true,
+        engram_table_params: Some(500_000_000),
+        engram_four_grams: true,
+        step_cap: 20000,
+        log_interval: 1,
+        eval_interval: Some(1000),
+        eval_repeats: 1,
+        max_seconds: 43200.,
+    };
+    let t = config.create_trainer()?;
+    for module in &t.uploaded.engram.as_ref().unwrap().modules {
+        assert_eq!((module.cfg.max_ngram(), module.cfg.memory()), (4, 1536));
+    }
+    verify_complete_trainer(t, config.engram_table_params)
+}
+
+#[test]
 #[ignore = "actual launcher factory + complete B8 full-credit KDA/Engram/mHC graph, all gradients, checkpoint and causality"]
 fn native_full_credit_engram_mhc_launcher_complete_graph_checkpoint_and_causality() -> AppResult {
     assert!(gpt2_nvfp4::GPT2_KDA_FULL_STATE_BACKWARD);
@@ -46,6 +69,7 @@ fn native_full_credit_engram_mhc_launcher_complete_graph_checkpoint_and_causalit
         mhc: true,
         engram_mhc: true,
         engram_table_params: None,
+        engram_four_grams: false,
         step_cap: 20000,
         log_interval: 1,
         eval_interval: Some(1000),
@@ -92,11 +116,14 @@ pub(in crate::training) fn verify_complete_trainer(
     let w = t.uploaded.engram.as_ref().unwrap();
     assert_eq!(w.tensor_count(), 35);
     assert_eq!(w.modules.len(), 2);
+    let max_ngram = w.modules[0].cfg.max_ngram();
+    let memory_width = (max_ngram - 1) * super::HEADS * super::HEAD_DIM;
     let ranges = t.buffers.muon_tables.matrix_grad_ranges();
     for (i, module) in w.modules.iter().enumerate() {
         assert_eq!(module.cfg.layer, [1, 5][i]);
         assert_eq!(module.cfg.streams(), 4);
-        assert_eq!(module.cfg.memory(), 1024);
+        assert_eq!(module.cfg.max_ngram(), max_ngram);
+        assert_eq!(module.cfg.memory(), memory_width);
         assert_eq!(module.nv.len(), 11);
         for f in &module.fp[..3] {
             assert_eq!(f.weight.len(), 4 * GPT2_N_EMBD);
@@ -296,55 +323,55 @@ pub(in crate::training) fn verify_complete_trainer(
     t.materialize_evaluation_weights()?;
     let before = t.eval_token_losses(&b)?;
     assert!(before.iter().all(|x| x.is_finite()));
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(
-        if gpt2_nvfp4::GPT2_STATIONARY_ROPE_ENGRAM_MHC {
-            format!(
-                "target/checks/20261116/stationary-engram-{}-{}-{}-roundtrip.ckpt",
-                if gpt2_nvfp4::GPT2_BOUNDED_SWIGLU {
-                    "bounded"
-                } else {
-                    "relu"
-                },
-                if gpt2_nvfp4::GPT2_VALUE_RMS {
-                    "value"
-                } else {
-                    "plain"
-                },
-                if table_budget.is_some() {
-                    "budgeted"
-                } else {
-                    "default"
-                }
-            )
-        } else if gpt2_nvfp4::GPT2_KDA_FULL_STATE_BACKWARD && gpt2_nvfp4::GPT2_VALUE_RMS {
-            format!(
-                "target/checks/20261116/value-engram-{}-{}-roundtrip.ckpt",
-                if gpt2_nvfp4::GPT2_BOUNDED_SWIGLU {
-                    "bounded"
-                } else {
-                    "relu"
-                },
-                if table_budget.is_some() {
-                    "budgeted"
-                } else {
-                    "default"
-                }
-            )
-        } else if gpt2_nvfp4::GPT2_KDA_FULL_STATE_BACKWARD && gpt2_nvfp4::GPT2_BOUNDED_SWIGLU {
-            if table_budget.is_some() {
-                "target/checks/20261116/bounded-engram-budgeted-roundtrip.ckpt"
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(if max_ngram == 4 {
+        "target/checks/four-gram-engram-mhc-roundtrip.ckpt".into()
+    } else if gpt2_nvfp4::GPT2_STATIONARY_ROPE_ENGRAM_MHC {
+        format!(
+            "target/checks/20261116/stationary-engram-{}-{}-{}-roundtrip.ckpt",
+            if gpt2_nvfp4::GPT2_BOUNDED_SWIGLU {
+                "bounded"
             } else {
-                "target/checks/20261116/bounded-engram-default-roundtrip.ckpt"
+                "relu"
+            },
+            if gpt2_nvfp4::GPT2_VALUE_RMS {
+                "value"
+            } else {
+                "plain"
+            },
+            if table_budget.is_some() {
+                "budgeted"
+            } else {
+                "default"
             }
-            .to_string()
-        } else if gpt2_nvfp4::GPT2_KDA_FULL_STATE_BACKWARD {
-            "target/checks/20261116/full-credit-engram-mhc-roundtrip.ckpt".to_string()
-        } else if table_budget.is_some() {
-            "target/checks/20261115/engram-mhc-budgeted-full-roundtrip.ckpt".to_string()
+        )
+    } else if gpt2_nvfp4::GPT2_KDA_FULL_STATE_BACKWARD && gpt2_nvfp4::GPT2_VALUE_RMS {
+        format!(
+            "target/checks/20261116/value-engram-{}-{}-roundtrip.ckpt",
+            if gpt2_nvfp4::GPT2_BOUNDED_SWIGLU {
+                "bounded"
+            } else {
+                "relu"
+            },
+            if table_budget.is_some() {
+                "budgeted"
+            } else {
+                "default"
+            }
+        )
+    } else if gpt2_nvfp4::GPT2_KDA_FULL_STATE_BACKWARD && gpt2_nvfp4::GPT2_BOUNDED_SWIGLU {
+        if table_budget.is_some() {
+            "target/checks/20261116/bounded-engram-budgeted-roundtrip.ckpt"
         } else {
-            "target/checks/20261115/engram-mhc-full-roundtrip.ckpt".to_string()
-        },
-    );
+            "target/checks/20261116/bounded-engram-default-roundtrip.ckpt"
+        }
+        .to_string()
+    } else if gpt2_nvfp4::GPT2_KDA_FULL_STATE_BACKWARD {
+        "target/checks/20261116/full-credit-engram-mhc-roundtrip.ckpt".to_string()
+    } else if table_budget.is_some() {
+        "target/checks/20261115/engram-mhc-budgeted-full-roundtrip.ckpt".to_string()
+    } else {
+        "target/checks/20261115/engram-mhc-full-roundtrip.ckpt".to_string()
+    });
     t.save_model(&path)?;
     let header = crate::checkpoint::CheckpointReader::new(std::io::BufReader::new(
         std::fs::File::open(&path)?,
@@ -469,7 +496,7 @@ pub(in crate::training) fn verify_complete_trainer(
         "memory/convolution/mHC must not mix independent sequences"
     );
     println!(
-        "full_four_stream_engram_verified modules=2 memory=1024 independent_keys=8 shared_values=2 streams=4 boundaries=32 extra_gradient_groups=258 checkpoint=bit_exact causality=true prefix_cases=9 cross_sequence=bit_exact fixture_updates=2"
+        "full_four_stream_engram_verified modules=2 memory={memory_width} max_ngram={max_ngram} independent_keys=8 shared_values=2 streams=4 boundaries=32 extra_gradient_groups=258 checkpoint=bit_exact causality=true prefix_cases=9 cross_sequence=bit_exact fixture_updates=2"
     );
     println!(
         "full_credit_combined_lifecycle_verified full_recurrent_credit={} checkpoint_tensors={header}",

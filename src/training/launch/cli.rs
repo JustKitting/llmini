@@ -51,6 +51,10 @@ pub(super) struct TrainArgs {
     #[arg(long, requires = "complete_engram", conflicts_with_all = ["mhc", "latent_feedback", "bounded_swiglu", "value_rms", "stationary_rope", "inspect_model", "inspect_gradients", "evaluate_model", "inspect_feedback_depths"])]
     engram_table_params: Option<NonZeroUsize>,
 
+    /// Include four-gram lookup heads in both complete Engram insertions at the selected table budget.
+    #[arg(long, requires = "complete_engram")]
+    engram_four_grams: bool,
+
     /// Train the separate complete bounded-SwiGLU graph; requires its matching native build.
     #[arg(long, conflicts_with_all=["engram_mhc","mhc","latent_feedback","inspect_model","inspect_gradients","evaluate_model","inspect_feedback_depths"])]
     pub(super) bounded_swiglu: bool,
@@ -158,6 +162,7 @@ impl TrainArgs {
             config.mhc = true;
         }
         config.engram_table_params = self.engram_table_params.map(NonZeroUsize::get);
+        config.engram_four_grams = self.engram_four_grams;
         if let Some(steps) = self.steps {
             config.step_cap = steps.get();
         }

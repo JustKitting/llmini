@@ -70,7 +70,11 @@ impl Trainer {
     }
     pub fn new_engram_mhc_with_table_budget(seed: u64, requested: usize) -> AppResult<Self> {
         super::engram::Config::multistream_with_table_budget(Some(requested))?;
-        Self::new_architecture_with_table_budget(seed, false, true, true, Some(requested))
+        Self::new_architecture_with_table_budget(seed, false, true, true, Some(requested), false)
+    }
+    pub fn new_engram_mhc_with_four_grams(seed: u64, requested: Option<usize>) -> AppResult<Self> {
+        super::engram::Config::multistream_with_ngram_budget(requested, true)?;
+        Self::new_architecture_with_table_budget(seed, false, true, true, requested, true)
     }
     fn new_architecture(
         seed: u64,
@@ -78,7 +82,7 @@ impl Trainer {
         use_mhc: bool,
         multi_memory: bool,
     ) -> AppResult<Self> {
-        Self::new_architecture_with_table_budget(seed, feedback, use_mhc, multi_memory, None)
+        Self::new_architecture_with_table_budget(seed, feedback, use_mhc, multi_memory, None, false)
     }
     fn new_architecture_with_table_budget(
         seed: u64,
@@ -86,6 +90,7 @@ impl Trainer {
         use_mhc: bool,
         multi_memory: bool,
         table_budget: Option<usize>,
+        four_grams: bool,
     ) -> AppResult<Self> {
         let bounded_combined = gpt2_nvfp4::GPT2_BOUNDED_SWIGLU_ENGRAM_MHC;
         if gpt2_nvfp4::GPT2_REQUIRES_ENGRAM_MHC && !(use_mhc && multi_memory && !feedback) {
@@ -142,7 +147,13 @@ impl Trainer {
             uploaded.mhc = Some(super::mhc::Weights::new(&runtime, seed)?);
         }
         if multi_memory {
-            uploaded.engram = Some(if table_budget.is_some() {
+            uploaded.engram = Some(if four_grams {
+                super::engram::Weights::new_multistream_with_ngram_budget(
+                    &runtime,
+                    table_budget,
+                    true,
+                )?
+            } else if table_budget.is_some() {
                 super::engram::Weights::new_multistream_with_table_budget(&runtime, table_budget)?
             } else {
                 super::engram::Weights::new_multistream(&runtime)?

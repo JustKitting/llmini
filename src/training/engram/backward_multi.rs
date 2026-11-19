@@ -159,7 +159,7 @@ impl Module {
             &scratch.d_mem_key,
             &mut self.ng[0],
             n,
-            (HEADS * 2) as u32,
+            self.cfg.primes.len() as u32,
             self.cfg.head_dim as u32,
         )
     }

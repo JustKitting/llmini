@@ -75,6 +75,17 @@ fn native_engram_full_quantized_forward_matches_independent_oracle() -> AppResul
     }
     Ok(())
 }
+
+#[test]
+#[ignore = "native full-size four-gram lookup, NVFP4 projectors and shared table adjoint"]
+fn native_four_gram_engram_forward_and_adjoint_oracle() -> AppResult {
+    for config in Config::multistream_with_ngram_budget(Some(500_000_000), true)? {
+        assert_eq!((config.max_ngram(), config.memory()), (4, 1536));
+        check_layer(config)?;
+    }
+    Ok(())
+}
+
 fn check_layer(cfg: Config) -> AppResult {
     assert_eq!(
         (GPT2_BATCH_SIZE, GPT2_SEQ_LEN, GPT2_N_EMBD),
@@ -84,6 +95,7 @@ fn check_layer(cfg: Config) -> AppResult {
     let s = r.stream.as_ref();
     let mut w = Weights::new_with_config(&r, cfg)?;
     let streams = w.cfg.streams();
+    let memory_width = w.cfg.memory();
     // Heterogeneous nonzero biases expose the vector/matrix scale contract.
     for index in w.cfg.adam_indices().into_iter().skip(1) {
         let tensor = &mut w.nv[index];
@@ -181,10 +193,12 @@ fn check_layer(cfg: Config) -> AppResult {
     let mut expected_un = HashMap::new();
     let mut max_projection_error = 0f64;
     let mut max_output_error = 0f64;
+    let ids = e.ids.to_host_vec(s)?;
+    let hash_heads = w.cfg.primes.len();
     for p in needed.iter().copied() {
-        let gathered = row(s, &e.memory, p, MEMORY)?;
+        let gathered = row(s, &e.memory, p, memory_width)?;
         let mut offset = 0;
-        for head in 0..HEADS * 2 {
+        for head in 0..hash_heads {
             let order = 2 + head / HEADS;
             let mut mix = 0u64;
             let mut valid = true;
@@ -207,6 +221,7 @@ fn check_layer(cfg: Config) -> AppResult {
                 mix ^= u64::from(token).wrapping_mul(w.cfg.multipliers[lag]);
             }
             let id = offset + (mix % u64::from(w.cfg.primes[head])) as usize;
+            assert_eq!(ids[p * hash_heads + head] as usize, id);
             for j in 0..HEAD_DIM {
                 // Exact stored-value decode rounded to the FP32 gather output.
                 // An absolute1e-7 bound rejects correct values above2 by <0.5ULP.
@@ -218,8 +233,15 @@ fn check_layer(cfg: Config) -> AppResult {
             }
             offset += w.cfg.primes[head] as usize;
         }
-        let memory = (0..MEMORY)
-            .map(|j| decode(&qb, code(&qs, p, j / 16, MEMORY, 0), qg[p], p * MEMORY + j))
+        let memory = (0..memory_width)
+            .map(|j| {
+                decode(
+                    &qb,
+                    code(&qs, p, j / 16, memory_width, 0),
+                    qg[p],
+                    p * memory_width + j,
+                )
+            })
             .collect::<Vec<_>>();
         for stream_index in 0..streams {
             let mut projections = Vec::new();
@@ -234,8 +256,8 @@ fn check_layer(cfg: Config) -> AppResult {
                 let expected = (0..d)
                     .map(|j| {
                         bias[j]
-                            + (0..MEMORY)
-                                .map(|k| weights[j * MEMORY + k] * memory[k])
+                            + (0..memory_width)
+                                .map(|k| weights[j * memory_width + k] * memory[k])
                                 .sum::<f64>()
                     })
                     .collect::<Vec<_>>();
@@ -341,8 +363,7 @@ fn check_layer(cfg: Config) -> AppResult {
             &e.ng[0],
             &e.ids,
             n,
-            w.cfg.head_dim,
-            &w.cfg.projector_indices(),
+            &w.cfg,
         )?;
         let names = e.named_gradients();
         // Learned optimizer controls belong to the common Muon preparation;

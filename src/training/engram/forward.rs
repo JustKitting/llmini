@@ -31,22 +31,32 @@ impl Module {
         self.n = n;
         self.seq = seq;
         copy(s, residual, &self.hidden, (n * d * streams) as usize)?;
-        self.module.engram_hash_kernel(
-            s,
-            grid(n * (HEADS * 2) as u32),
-            tokens,
-            &w.token_map,
-            &self.primes,
-            &self.offsets,
-            &self.multipliers,
-            &mut self.ids,
-            n,
-            seq,
-            HEADS as u32,
-            llama2_tokenizer::BOS_TOKEN,
-            llama2_tokenizer::EOS_TOKEN,
-            llama2_tokenizer::EOS_TOKEN,
-        )?;
+        let hash_heads = w.cfg.primes.len() as u32;
+        macro_rules! launch_hash {
+            ($module:expr, $kernel:ident) => {
+                $module.$kernel(
+                    s,
+                    grid(n * hash_heads),
+                    tokens,
+                    &w.token_map,
+                    &self.primes,
+                    &self.offsets,
+                    &self.multipliers,
+                    &mut self.ids,
+                    n,
+                    seq,
+                    HEADS as u32,
+                    llama2_tokenizer::BOS_TOKEN,
+                    llama2_tokenizer::EOS_TOKEN,
+                    llama2_tokenizer::EOS_TOKEN,
+                )
+            };
+        }
+        if let Some(hash) = &self.four_gram_hash {
+            launch_hash!(hash, engram_four_gram_hash_kernel)?;
+        } else {
+            launch_hash!(self.module, engram_hash_kernel)?;
+        }
         self.module.engram_gather_kernel(
             s,
             grid(n * memory as u32),
@@ -56,7 +66,7 @@ impl Module {
             &w.nv[0].global_scale,
             &mut self.memory,
             n,
-            (HEADS * 2) as u32,
+            hash_heads,
             w.cfg.head_dim as u32,
         )?;
         self.memory_q.scratch().quantize_row_amax(
