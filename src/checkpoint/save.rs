@@ -20,7 +20,7 @@ pub fn save_uploaded_model(stream: &CudaStream, model: &UploadedModel, path: &Pa
 
 fn validate_graph(model: &UploadedModel) -> AppResult {
     if gpt2_nvfp4::GPT2_REQUIRES_ENGRAM_MHC
-        && !(model.engram.is_some() && model.mhc.is_some() && model.latent_feedback.is_none())
+        && !(model.engram.is_some() && model.mhc.is_some())
     {
         return Err(
             "composite full-credit checkpoint requires the complete Engram/mHC graph".into(),
@@ -35,14 +35,11 @@ fn validate_graph(model: &UploadedModel) -> AppResult {
     }
     if gpt2_nvfp4::GPT2_KDA_FULL_STATE_BACKWARD
         && (model.engram.is_some() || model.mhc.is_some() || model.latent_feedback.is_some())
-        && !(model.engram.is_some() && model.mhc.is_some() && model.latent_feedback.is_none())
+        && !(model.engram.is_some() && model.mhc.is_some())
     {
         return Err(
             "full-credit auxiliary checkpoint requires the complete Engram/mHC graph".into(),
         );
-    }
-    if model.mhc.is_some() && model.latent_feedback.is_some() {
-        return Err("mHC and latent feedback are separate native checkpoint graphs".into());
     }
     if let Some(e) = &model.engram {
         let expected = if model.mhc.is_some() { 4 } else { 1 };
@@ -50,15 +47,16 @@ fn validate_graph(model: &UploadedModel) -> AppResult {
             return Err("Engram checkpoint stream graph is incompatible with its backbone".into());
         }
     }
-    if model.engram.is_some() && model.latent_feedback.is_some() {
-        return Err(
-            "Engram and latent feedback are separate native architecture experiments".into(),
-        );
+    if model.latent_feedback.is_some()
+        && (model.engram.is_some() || model.mhc.is_some())
+        && !(model.engram.is_some() && model.mhc.is_some() && gpt2_nvfp4::GPT2_KDA_FULL_STATE_BACKWARD)
+    {
+        return Err("combined feedback checkpoints require full-KDA Engram/mHC".into());
     }
     Ok(())
 }
 
-pub(super) fn write_uploaded_model_to(
+pub(crate) fn write_uploaded_model_to(
     stream: &CudaStream,
     model: &UploadedModel,
     output: impl Write,
@@ -76,7 +74,7 @@ pub(super) fn write_uploaded_model_to(
             + model.engram.as_ref().map_or(0, |w| w.tensor_count())
             + model.mhc.as_ref().map_or(0, |w| w.tensor_count())
             + if model.latent_feedback.is_some() {
-                2
+                super::latent_feedback::TENSOR_COUNT
             } else {
                 0
             },

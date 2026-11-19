@@ -103,8 +103,7 @@ pub(in crate::training) fn run(
 
     let checkpoint_sha = reference_validation::sha256(checkpoint)?;
     let started = Instant::now();
-    let mut trainer = Trainer::new(0x47505432)?;
-    trainer.load_model(checkpoint)?;
+    let mut trainer = Trainer::from_checkpoint(0x47505432, checkpoint)?;
     let (expected_ce, verified_replay) = super::replay_expectation(checkpoint, replay_record)?;
     if replay_record.is_some() {
         let validation = TokenDataLoader::fineweb_validation_tokens()?;

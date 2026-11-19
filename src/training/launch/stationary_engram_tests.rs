@@ -51,7 +51,6 @@ fn complete_stationary_cli_rejects_missing_credit_and_standalone_graph_mixtures(
     for other in [
         "--engram-mhc",
         "--mhc",
-        "--latent-feedback",
         "--stationary-rope",
         "--bounded-swiglu",
         "--value-rms",

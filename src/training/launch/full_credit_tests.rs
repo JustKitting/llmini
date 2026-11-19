@@ -22,14 +22,16 @@ fn full_credit_combined_cli_keeps_the_complete_graph() {
 fn full_credit_combined_cli_retains_explicit_table_capacity() {
     let args = TrainArgs::try_parse_from([
         "rust-kernels",
-        "--engram-mhc",
+        "--stationary-rope-engram-mhc",
+        "--value-rms-engram-mhc",
+        "--latent-feedback",
         "--full-kda-backward",
         "--engram-table-params",
         "500000000",
     ])
-    .expect("backward semantics must not drop the declared complete table configuration");
+    .expect("the feedback run must retain the complete backbone and lookup budget");
     let config = args.config();
-    assert!(config.engram_mhc && config.mhc);
+    assert!(config.engram_mhc && config.mhc && config.latent_feedback);
     assert_eq!(config.engram_table_params, Some(500_000_000));
 }
 
@@ -54,7 +56,6 @@ fn full_credit_combined_report_keeps_memory_active() {
 fn full_credit_keeps_other_unverified_graph_combinations_rejected() {
     for other in [
         "--mhc",
-        "--latent-feedback",
         "--bounded-swiglu",
         "--value-rms",
         "--stationary-rope",

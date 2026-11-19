@@ -8,12 +8,15 @@ use crate::AppResult;
 
 impl Trainer {
     pub fn forward_step(&mut self, batch: &TokenBatch) -> AppResult<TrainStats> {
-        let passes = if self.latent_feedback.is_some() {
+        self.forward_for_passes(batch, self.evaluation_passes())
+    }
+
+    pub(super) fn evaluation_passes(&self) -> usize {
+        if self.latent_feedback.is_some() {
             super::latent_feedback::EVAL_PASSES
         } else {
             1
-        };
-        self.forward_for_passes(batch, passes)
+        }
     }
 
     pub(in crate::training) fn forward_for_passes(
@@ -21,21 +24,39 @@ impl Trainer {
         batch: &TokenBatch,
         passes: usize,
     ) -> AppResult<TrainStats> {
+        self.run_forward(batch, passes, true)
+    }
+
+    pub(super) fn forward_for_scoring(
+        &mut self,
+        batch: &TokenBatch,
+        passes: usize,
+    ) -> AppResult<TrainStats> {
+        self.run_forward(batch, passes, false)
+    }
+
+    fn run_forward(
+        &mut self,
+        batch: &TokenBatch,
+        passes: usize,
+        prepare_backward: bool,
+    ) -> AppResult<TrainStats> {
         self.ensure_ready()?;
         if passes == 0 || (self.latent_feedback.is_none() && passes != 1) {
             return Err("invalid feedback pass count".into());
         }
-        if let Some(f) = &mut self.latent_feedback {
+        if prepare_backward && let Some(f) = &mut self.latent_feedback {
             f.begin(
                 &self.runtime,
                 &mut self.buffers.muon_tables,
                 &self.buffers.grad_clip,
                 passes,
+                batch.token_count as u32,
             )?;
         }
         let mut stats = TrainStats::default();
         for pass in 0..passes {
-            stats = self.forward_pass(batch, pass > 0, pass + 1 == passes)?;
+            stats = self.forward_pass(batch, pass > 0, pass + 1 == passes, prepare_backward)?;
         }
         stats.feedback_passes = passes;
         Ok(stats)
@@ -46,6 +67,7 @@ impl Trainer {
         batch: &TokenBatch,
         apply_feedback: bool,
         readout: bool,
+        prepare_backward: bool,
     ) -> AppResult<TrainStats> {
         let stream = self.runtime.stream.as_ref();
         let buffers = &mut self.buffers;
@@ -178,7 +200,7 @@ impl Trainer {
             self.model.forward_hidden_with_hook(args, &mut hook)?
         };
 
-        if readout {
+        if readout && prepare_backward {
             next_latent_forward(NextLatForwardArgs {
                 stream,
                 embedding: &self.runtime.embedding,

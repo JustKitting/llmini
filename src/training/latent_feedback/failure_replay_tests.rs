@@ -34,6 +34,7 @@ fn native_feedback_failure_15559_layernorm_tape_and_backward() -> AppResult {
     let batch = t.batch_from_windows(&windows, GPT2_BATCH_SIZE)?;
     let losses = t.eval_token_losses_for_passes(&batch, 2)?;
     assert!(losses.iter().all(|x| x.is_finite()));
+    t.forward_for_passes(&batch, 2)?;
     let tape = t.buffers.tape.saved(
         &batch.tokens,
         8,

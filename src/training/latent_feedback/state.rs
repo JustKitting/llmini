@@ -114,8 +114,10 @@ impl Feedback {
         tables: &mut MuonPointerTables,
         clip: &GradientClipBuffers,
         passes: usize,
+        rows: u32,
     ) -> AppResult {
         self.active = passes > 1;
+        self.n = rows;
         tables.set_conditional_matrix_enabled(self.grad.cu_deviceptr(), self.active)?;
         let s = r.stream.as_ref();
         for (_, g) in self.named_gradients() {
@@ -151,7 +153,6 @@ impl Feedback {
         let s = r.stream.as_ref();
         let n = h.row_count;
         let d = GPT2_N_EMBD as u32;
-        self.n = n;
         self.module.latent_feedback_shifted_rms_kernel(
             s,
             LaunchConfig {
@@ -210,7 +211,6 @@ impl Feedback {
         r: &Runtime,
         h: &HiddenStateDevice<'_>,
     ) -> Result<(), DriverError> {
-        self.n = h.row_count;
         unsafe {
             cuda_core::memory::memcpy_dtod_async(
                 self.top.cu_deviceptr(),

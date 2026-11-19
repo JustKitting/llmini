@@ -51,7 +51,6 @@ fn complete_value_cli_rejects_missing_credit_and_unsupported_graphs() {
         for other in [
             "--engram-mhc",
             "--mhc",
-            "--latent-feedback",
             "--value-rms",
             "--bounded-swiglu",
             "--stationary-rope",

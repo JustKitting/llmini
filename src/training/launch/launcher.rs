@@ -63,6 +63,7 @@ pub(crate) fn launch_from_args() -> AppResult {
                 .expect("clap requires validation documents"),
             args.evaluation_output.as_deref(),
             args.replay_provenance.as_deref(),
+            args.feedback_evaluation_passes.map(usize::from),
         );
     }
     let config = args.config();
@@ -109,9 +110,10 @@ pub(crate) fn launch_from_args() -> AppResult {
         );
     }
     if args.full_kda_backward
+        && !config.engram_mhc
         && (config.latent_feedback
-            || (!config.engram_mhc
-                && (config.mhc || std::env::var("TRAIN_ENGRAM").is_ok_and(|s| s == "1"))))
+            || config.mhc
+            || std::env::var("TRAIN_ENGRAM").is_ok_and(|s| s == "1"))
     {
         return Err("full recurrent KDA credit supports the standalone backbone or complete --engram-mhc graph".into());
     }
@@ -141,10 +143,8 @@ pub(crate) fn launch_from_args() -> AppResult {
     {
         return Err("bounded-SwiGLU selects a separate complete native architecture trial".into());
     }
-    if config.mhc && config.latent_feedback {
-        return Err(
-            "mHC and latent feedback currently select separate native training graphs".into(),
-        );
+    if config.mhc && config.latent_feedback && !(config.engram_mhc && args.full_kda_backward) {
+        return Err("latent feedback with mHC requires the complete Engram/mHC full-KDA graph".into());
     }
     if config.mhc && !config.engram_mhc && std::env::var("TRAIN_ENGRAM").is_ok_and(|s| s == "1") {
         return Err("four-stream mHC cannot use the single-stream Engram hook; unset TRAIN_ENGRAM or select TRAIN_ENGRAM=0".into());

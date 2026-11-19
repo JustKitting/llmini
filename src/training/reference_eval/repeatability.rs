@@ -6,6 +6,7 @@ pub(super) fn verify(
     trainer: &mut Trainer,
     validation: &[u16],
     baseline: &[f32],
+    passes: usize,
 ) -> AppResult<serde_json::Value> {
     let native_windows = validation.len() / (GPT2_SEQ_LEN + 1);
     if native_windows == 0
@@ -27,7 +28,7 @@ pub(super) fn verify(
     let mut all_finite = true;
     for repetition in 0..128 {
         let batch = if repetition % 2 == 0 { &native } else { &full };
-        let losses = trainer.eval_token_losses(batch)?;
+        let losses = trainer.eval_token_losses_for_passes(batch, passes)?;
         for (index, (&expected, &actual)) in baseline.iter().zip(&losses).enumerate() {
             let difference = (expected - actual).abs();
             all_finite &= actual.is_finite();

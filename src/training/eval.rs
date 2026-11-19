@@ -14,9 +14,7 @@ impl Trainer {
         &mut self,
         batch: &TokenBatch,
     ) -> AppResult<Vec<f32>> {
-        self.forward_step(batch)?;
-
-        self.collect_token_losses(batch)
+        self.eval_token_losses_for_passes(batch, self.evaluation_passes())
     }
 
     pub(in crate::training) fn eval_token_losses_for_passes(
@@ -24,7 +22,7 @@ impl Trainer {
         batch: &TokenBatch,
         passes: usize,
     ) -> AppResult<Vec<f32>> {
-        self.forward_for_passes(batch, passes)?;
+        self.forward_for_scoring(batch, passes)?;
         self.collect_token_losses(batch)
     }
 

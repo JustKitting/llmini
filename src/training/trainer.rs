@@ -1,3 +1,5 @@
+use std::{fs::File, io::Read, path::Path};
+
 use cuda_core::sys;
 use gpt2_nvfp4::{GPT2_SEQ_LEN, Gpt2, Gpt2Rng};
 
@@ -25,6 +27,22 @@ pub struct Trainer {
 }
 
 impl Trainer {
+    pub(in crate::training) fn from_checkpoint(seed: u64, path: &Path) -> AppResult<Self> {
+        Self::from_checkpoint_reader(seed, File::open(path)?)
+    }
+
+    pub(in crate::training) fn from_checkpoint_reader(
+        seed: u64,
+        input: impl Read,
+    ) -> AppResult<Self> {
+        let runtime = Runtime::new()?;
+        let uploaded =
+            crate::checkpoint::load_uploaded_model_from_reader(&runtime.stream, input)?;
+        let mut model = Gpt2::new();
+        model.init(seed);
+        Self::with_uploaded_model(seed, runtime, model, uploaded)
+    }
+
     pub fn new(seed: u64) -> AppResult<Self> {
         let memory = gpt2_nvfp4::GPT2_REQUIRES_ENGRAM_MHC || super::engram::multistream_enabled();
         Self::new_architecture(seed, false, memory || super::mhc::enabled(), memory)
@@ -32,6 +50,14 @@ impl Trainer {
 
     pub fn new_feedback(seed: u64) -> AppResult<Self> {
         Self::new_architecture(seed, true, super::mhc::enabled(), false)
+    }
+
+    pub(in crate::training) fn new_feedback_engram_mhc(
+        seed: u64,
+        table_budget: Option<usize>,
+    ) -> AppResult<Self> {
+        super::engram::Config::multistream_with_table_budget(table_budget)?;
+        Self::new_architecture_with_table_budget(seed, true, true, true, table_budget)
     }
 
     pub fn new_mhc(seed: u64) -> AppResult<Self> {
@@ -88,7 +114,7 @@ impl Trainer {
         table_budget: Option<usize>,
     ) -> AppResult<Self> {
         let bounded_combined = gpt2_nvfp4::GPT2_BOUNDED_SWIGLU_ENGRAM_MHC;
-        if gpt2_nvfp4::GPT2_REQUIRES_ENGRAM_MHC && !(use_mhc && multi_memory && !feedback) {
+        if gpt2_nvfp4::GPT2_REQUIRES_ENGRAM_MHC && !(use_mhc && multi_memory) {
             return Err("the composite full-credit build requires the complete four-stream Engram/mHC graph".into());
         }
         if ((!bounded_combined && gpt2_nvfp4::GPT2_BOUNDED_SWIGLU)
@@ -103,23 +129,22 @@ impl Trainer {
         }
         if gpt2_nvfp4::GPT2_KDA_FULL_STATE_BACKWARD
             && (feedback || use_mhc || multi_memory || super::engram::enabled())
-            && !(use_mhc && multi_memory && !feedback)
+            && !(use_mhc && multi_memory)
         {
             return Err("full recurrent KDA credit supports the standalone backbone or complete four-stream Engram/mHC graph".into());
         }
-        if feedback && super::engram::multistream_enabled() {
+        if feedback && !multi_memory && super::engram::multistream_enabled() {
             return Err(
                 "four-stream Engram and latent feedback select separate native graphs".into(),
             );
         }
-        if use_mhc
-            && (feedback
-                || (!multi_memory && std::env::var("TRAIN_ENGRAM").is_ok_and(|s| s == "1")))
-        {
-            return Err("select full mHC as a separate native graph with TRAIN_ENGRAM=0 and no latent feedback; the single-stream memory hook is not a four-stream integration".into());
+        if use_mhc && feedback && !(multi_memory && gpt2_nvfp4::GPT2_KDA_FULL_STATE_BACKWARD) {
+            return Err("latent feedback with mHC requires the complete Engram/mHC full-KDA graph".into());
+        }
+        if use_mhc && !multi_memory && std::env::var("TRAIN_ENGRAM").is_ok_and(|s| s == "1") {
+            return Err("standalone mHC requires TRAIN_ENGRAM=0".into());
         }
         let runtime = Runtime::new()?;
-        let stream = runtime.stream.as_ref();
         let mut model = Gpt2::new();
         model.init(seed);
         let weights = model.weights().expect("Gpt2::init must create weights");
@@ -148,6 +173,16 @@ impl Trainer {
                 super::engram::Weights::new_multistream(&runtime)?
             });
         }
+        Self::with_uploaded_model(seed, runtime, model, uploaded)
+    }
+
+    fn with_uploaded_model(
+        seed: u64,
+        runtime: Runtime,
+        model: Gpt2,
+        uploaded: UploadedModel,
+    ) -> AppResult<Self> {
+        let stream = runtime.stream.as_ref();
         let mut buffers = buffers::TrainBuffers::new(stream, &runtime, &uploaded)?;
         let engram = uploaded
             .engram

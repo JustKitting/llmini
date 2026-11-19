@@ -23,7 +23,7 @@ pub(super) struct TrainArgs {
     #[arg(long, conflicts_with_all = ["dataset", "checkpoint_action"])]
     pub(super) training_shards: Option<PathBuf>,
 
-    /// Train the complete latent-feedback architecture (replaces the Engram experiment).
+    /// Train detached latent feedback, including on the complete full-KDA Engram/mHC backbone.
     #[arg(long, conflicts_with_all=["inspect_model","inspect_gradients","evaluate_model","inspect_feedback_depths"])]
     latent_feedback: bool,
 
@@ -31,7 +31,7 @@ pub(super) struct TrainArgs {
     #[arg(long, conflicts_with_all=["latent_feedback","inspect_model","inspect_gradients","evaluate_model","inspect_feedback_depths"])]
     mhc: bool,
     /// Train complete four-stream Engram with32 mHC boundaries and learned HyperHead.
-    #[arg(long, conflicts_with_all=["mhc","latent_feedback","inspect_model","inspect_gradients","evaluate_model","inspect_feedback_depths"])]
+    #[arg(long, conflicts_with_all=["mhc","inspect_model","inspect_gradients","evaluate_model","inspect_feedback_depths"])]
     engram_mhc: bool,
 
     /// Train complete Engram/mHC with bounded SwiGLU and full recurrent KDA credit; matching build required.
@@ -39,15 +39,15 @@ pub(super) struct TrainArgs {
     pub(super) bounded_swiglu_engram_mhc: bool,
 
     /// Train complete Engram/mHC/full-credit value RMS; add the bounded composite selector to retain its matching MLP.
-    #[arg(long, requires="full_kda_backward", conflicts_with_all=["engram_mhc","mhc","latent_feedback","bounded_swiglu","value_rms","stationary_rope","inspect_model","inspect_gradients","evaluate_model","inspect_feedback_depths"])]
+    #[arg(long, requires="full_kda_backward", conflicts_with_all=["engram_mhc","mhc","bounded_swiglu","value_rms","stationary_rope","inspect_model","inspect_gradients","evaluate_model","inspect_feedback_depths"])]
     pub(super) value_rms_engram_mhc: bool,
 
     /// Train complete stationary-position/Engram/mHC/full-credit; retain selected numerical components with their composite selectors.
-    #[arg(long, requires="full_kda_backward", conflicts_with_all=["engram_mhc","mhc","latent_feedback","bounded_swiglu","value_rms","stationary_rope","inspect_model","inspect_gradients","evaluate_model","inspect_feedback_depths"])]
+    #[arg(long, requires="full_kda_backward", conflicts_with_all=["engram_mhc","mhc","bounded_swiglu","value_rms","stationary_rope","inspect_model","inspect_gradients","evaluate_model","inspect_feedback_depths"])]
     pub(super) stationary_rope_engram_mhc: bool,
 
     /// Minimum lookup-table values across both full Engram insertions; fresh training only.
-    #[arg(long, requires = "complete_engram", conflicts_with_all = ["mhc", "latent_feedback", "bounded_swiglu", "value_rms", "stationary_rope", "inspect_model", "inspect_gradients", "evaluate_model", "inspect_feedback_depths"])]
+    #[arg(long, requires = "complete_engram", conflicts_with_all = ["mhc", "bounded_swiglu", "value_rms", "stationary_rope", "inspect_model", "inspect_gradients", "evaluate_model", "inspect_feedback_depths"])]
     engram_table_params: Option<NonZeroUsize>,
 
     /// Train the separate complete bounded-SwiGLU graph; requires its matching native build.
@@ -59,7 +59,7 @@ pub(super) struct TrainArgs {
     pub(super) value_rms: bool,
 
     /// Train full recurrent KDA credit, optionally with --engram-mhc; matching native build required.
-    #[arg(long, conflicts_with_all=["value_rms","bounded_swiglu","mhc","latent_feedback","inspect_model","inspect_gradients","evaluate_model","inspect_feedback_depths"])]
+    #[arg(long, conflicts_with_all=["value_rms","bounded_swiglu","mhc","inspect_model","inspect_gradients","evaluate_model","inspect_feedback_depths"])]
     pub(super) full_kda_backward: bool,
 
     /// Train half-truncated base1024 RoPE with stationary-half key offset; matching build required.
@@ -91,7 +91,11 @@ pub(super) struct TrainArgs {
     #[arg(long, requires = "evaluate_model")]
     pub(super) validation_answers: Option<PathBuf>,
 
-    /// JSON destination; defaults to reference_validation.json beside the checkpoint.
+    /// Feedback passes for the full reference-document holdout. Defaults to the checkpoint's usual depth.
+    #[arg(long, requires = "validation_documents", conflicts_with = "validation_answers")]
+    pub(super) feedback_evaluation_passes: Option<NonZeroUsize>,
+
+    /// JSON destination beside the checkpoint, with the explicit pass count in the default filename.
     #[arg(long, requires = "evaluate_model")]
     pub(super) evaluation_output: Option<PathBuf>,
 
@@ -234,5 +238,39 @@ mod gradient_window_cli_tests {
         ] {
             assert!(TrainArgs::try_parse_from(args).is_err());
         }
+    }
+}
+
+#[cfg(test)]
+mod feedback_holdout_cli_tests {
+    use super::*;
+
+    #[test]
+    fn feedback_holdout_depth_is_optional_positive_and_document_only() {
+        let documents = [
+            "rust-kernels", "--evaluate-model", "model.ckpt", "--validation-documents", "documents.bin",
+        ];
+        let default = TrainArgs::try_parse_from(documents).unwrap();
+        assert_eq!(default.feedback_evaluation_passes, None);
+        for (flag_value, passes) in [("2", 2), ("4", 4)] {
+            let args = TrainArgs::try_parse_from(
+                documents.into_iter().chain(["--feedback-evaluation-passes", flag_value]),
+            )
+            .unwrap();
+            assert_eq!(args.feedback_evaluation_passes.map(usize::from), Some(passes));
+        }
+        assert!(TrainArgs::try_parse_from(
+            documents.into_iter().chain(["--feedback-evaluation-passes", "0"]),
+        )
+        .is_err());
+        assert!(TrainArgs::try_parse_from([
+            "rust-kernels", "--evaluate-model", "model.ckpt", "--validation-answers", "answers.jsonl",
+            "--feedback-evaluation-passes", "2",
+        ])
+        .is_err());
+        assert!(TrainArgs::try_parse_from([
+            "rust-kernels", "--latent-feedback", "--feedback-evaluation-passes", "2",
+        ])
+        .is_err());
     }
 }

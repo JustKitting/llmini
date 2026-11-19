@@ -19,6 +19,7 @@ pub(in crate::training) fn run(
     documents: &Path,
     output: Option<&Path>,
     replay_record: Option<&Path>,
+    requested_feedback_passes: Option<usize>,
 ) -> AppResult {
     // Parse and identify every input before creating a CUDA context.
     if !checkpoint.is_file() {
@@ -27,10 +28,14 @@ pub(in crate::training) fn run(
     let windows = input::load(documents)?;
     let checkpoint_sha = reference::sha256(checkpoint)?;
     let output = output.map(Path::to_path_buf).unwrap_or_else(|| {
+        let filename = requested_feedback_passes.map_or_else(
+            || "reference_validation.json".to_owned(),
+            |passes| format!("reference_validation_p{passes}.json"),
+        );
         checkpoint
             .parent()
             .unwrap_or(Path::new("."))
-            .join("reference_validation.json")
+            .join(filename)
     });
     let checkpoint_audit = crate::checkpoint::audit_model(checkpoint)?;
     let audit_path = output.with_extension("quantization.json");
@@ -46,9 +51,14 @@ pub(in crate::training) fn run(
         return Err("nonfinite represented checkpoint values; quantization audit saved".into());
     }
     let started = Instant::now();
-    let mut trainer = Trainer::new(0x47505432)?;
-    trainer.load_model(checkpoint)?;
+    let mut trainer = Trainer::from_checkpoint(0x47505432, checkpoint)?;
+    if requested_feedback_passes.is_some() && trainer.latent_feedback.is_none() {
+        return Err("--feedback-evaluation-passes requires a latent-feedback checkpoint".into());
+    }
+    let default_passes = trainer.evaluation_passes();
+    let passes = requested_feedback_passes.unwrap_or(default_passes);
     println!("reference_checkpoint={}", checkpoint.display());
+    println!("reference_evaluation_passes={passes}");
 
     // The saved checkpoint contains the already-materialized evaluation weights.
     // Do not interpolate or remap them through newly initialized optimizer state.
@@ -74,7 +84,16 @@ pub(in crate::training) fn run(
         .into());
     }
     println!("reference_native_replay_ce={native_ce:.9} tokenwise_ce={tokenwise_ce:.9}");
-    let repeatability = repeatability::verify(&mut trainer, &validation, &token_losses)?;
+    // Producer CE is defined at the default depth. The repeatability and
+    // causality checks below follow the selected depth of the full score.
+    let selected_losses = if passes == default_passes {
+        token_losses
+    } else {
+        trainer.eval_token_losses_for_passes(&native_batch, passes)?
+    };
+    let selected_native_ce =
+        selected_losses.iter().map(|&v| f64::from(v)).sum::<f64>() / selected_losses.len() as f64;
+    let repeatability = repeatability::verify(&mut trainer, &validation, &selected_losses, passes)?;
     let repeatability_path = output.with_extension("repeatability.json");
     fs::write(
         &repeatability_path,
@@ -88,12 +107,13 @@ pub(in crate::training) fn run(
         )
         .into());
     }
-    let causality = causality::verify(&mut trainer, &windows)?;
-    let seen_data_replay = seen::score(&mut trainer, checkpoint)?;
+    let causality = causality::verify(&mut trainer, &windows, passes)?;
+    let seen_data_replay = seen::score(&mut trainer, checkpoint, passes)?;
 
     let mut nats = 0_f64;
     let mut targets = 0_usize;
     let mut batches = 0;
+    let scoring_started = Instant::now();
     for group in windows.chunks(GPT2_BATCH_SIZE) {
         let mut flat = group
             .iter()
@@ -101,7 +121,7 @@ pub(in crate::training) fn run(
             .collect::<Vec<_>>();
         flat.resize(GPT2_BATCH_SIZE * (GPT2_SEQ_LEN + 1), 0);
         let batch = trainer.batch_from_windows(&flat, GPT2_BATCH_SIZE)?;
-        let losses = trainer.eval_token_losses(&batch)?;
+        let losses = trainer.eval_token_losses_for_passes(&batch, passes)?;
         for (sequence, window) in group.iter().enumerate() {
             for &loss in
                 &losses[sequence * GPT2_SEQ_LEN + window.lo..sequence * GPT2_SEQ_LEN + window.hi]
@@ -125,6 +145,7 @@ pub(in crate::training) fn run(
             );
         }
     }
+    let scoring_elapsed_s = scoring_started.elapsed().as_secs_f64();
     if targets != reference::TARGETS || trainer.buffers.optimizer_state.step != 0 {
         return Err("reference evaluation changed optimizer state or target accounting".into());
     }
@@ -156,6 +177,10 @@ pub(in crate::training) fn run(
         "batch_size": GPT2_BATCH_SIZE,
         "windows": windows.len(),
         "batches": batches,
+        "evaluation_passes": passes,
+        "default_evaluation_passes": default_passes,
+        "selected_depth_native_ce": selected_native_ce,
+        "scoring_elapsed_s": scoring_elapsed_s,
         "native_checkpoint_replay_ce": native_ce,
         "tokenwise_native_replay_ce": tokenwise_ce,
         "recorded_final_native_ce": expected_native_ce(checkpoint)?,

@@ -39,8 +39,15 @@ fn supported_graph_tensor_count(block_count: usize, count: u32) -> bool {
             && count == base + mhc + four_stream_engram + 3)
         || (gpt2_nvfp4::GPT2_BOUNDED_SWIGLU_ENGRAM_MHC && gpt2_nvfp4::GPT2_VALUE_RMS_ENGRAM_MHC && gpt2_nvfp4::GPT2_STATIONARY_ROPE_ENGRAM_MHC
             && count == base + mhc + four_stream_engram + 4)
+        || (gpt2_nvfp4::GPT2_KDA_FULL_STATE_BACKWARD
+            && count == base + mhc + four_stream_engram
+                + super::kda_backward::extra_tensors()
+                + super::mlp::extra_tensors()
+                + super::value_rms::extra_tensors()
+                + super::stationary_rope::extra_tensors()
+                + super::latent_feedback::TENSOR_COUNT)
         || count == base + 11
-        || count == base + 2
+        || count == base + super::latent_feedback::TENSOR_COUNT
         || (count > base + 1
             && (count - base - 1) % 11 == 0
             && (count - base - 1) / 11 <= block_count as u32)
@@ -77,7 +84,7 @@ mod tests {
                 "legacy graph header {count}"
             );
         }
-        for count in [0, base - 1, base + 3, base + mhc + engram + 5, u32::MAX] {
+        for count in [0, base - 1, base + 3, base + mhc + engram + 7, u32::MAX] {
             assert!(
                 !supported_tensor_count(layers, count),
                 "unknown header {count}"
@@ -113,6 +120,15 @@ mod tests {
                 && gpt2_nvfp4::GPT2_VALUE_RMS
                 && gpt2_nvfp4::GPT2_STATIONARY_ROPE
         );
-        assert!(!supported_tensor_count(16, 392));
+        let feedback_count = 387
+            + super::super::kda_backward::extra_tensors()
+            + super::super::mlp::extra_tensors()
+            + super::super::value_rms::extra_tensors()
+            + super::super::stationary_rope::extra_tensors()
+            + super::super::latent_feedback::TENSOR_COUNT;
+        if gpt2_nvfp4::GPT2_KDA_FULL_STATE_BACKWARD {
+            assert!(supported_tensor_count(16, feedback_count));
+        }
+        assert!(!supported_tensor_count(16, 394));
     }
 }

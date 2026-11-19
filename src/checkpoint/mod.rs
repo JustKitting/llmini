@@ -23,5 +23,8 @@ pub(crate) use audit::audit_model;
 #[cfg(test)]
 pub(crate) use format::CheckpointReader;
 pub use load::load_uploaded_model;
+pub(crate) use load::load_uploaded_model_from_reader;
 pub(crate) use load::prepare_reload;
 pub use save::save_uploaded_model;
+#[cfg(test)]
+pub(crate) use save::write_uploaded_model_to;

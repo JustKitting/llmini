@@ -26,12 +26,15 @@ impl TrainConfig {
             );
         }
         if gpt2_nvfp4::GPT2_KDA_FULL_STATE_BACKWARD
-            && (self.latent_feedback || (self.mhc && !self.engram_mhc))
+            && (self.latent_feedback || self.mhc)
+            && !self.engram_mhc
         {
             return Err("full recurrent KDA credit supports the standalone backbone or complete four-stream Engram/mHC graph".into());
         }
         if self.engram_mhc {
-            if let Some(requested) = self.engram_table_params {
+            if self.latent_feedback {
+                Trainer::new_feedback_engram_mhc(self.seed, self.engram_table_params)
+            } else if let Some(requested) = self.engram_table_params {
                 Trainer::new_engram_mhc_with_table_budget(self.seed, requested)
             } else {
                 Trainer::new_engram_mhc(self.seed)

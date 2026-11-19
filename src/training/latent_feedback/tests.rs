@@ -1,7 +1,6 @@
 use super::*;
-use crate::training::{TokenDataLoader, Trainer};
+use crate::training::{TokenDataLoader, Trainer, launch::TrainConfig};
 use gpt2_nvfp4::{GPT2_BATCH_SIZE, GPT2_N_EMBD, GPT2_SEQ_LEN};
-use std::path::Path;
 
 fn batch(t: &Trainer) -> crate::AppResult<crate::training::TokenBatch> {
     let v = TokenDataLoader::fineweb_validation_tokens()?;
@@ -46,16 +45,36 @@ fn state_bits(
 #[test]
 #[ignore = "full approximately1B native CUDA feedback contract; fixture updates are not convergence evidence"]
 fn native_latent_feedback_recurrence_gradients_conditional_update_checkpoint() -> crate::AppResult {
-    let mut t = Trainer::new_feedback(0x47505432)?;
+    let combined = gpt2_nvfp4::GPT2_REQUIRES_ENGRAM_MHC;
+    let config = TrainConfig {
+        seed: 0x47505432,
+        latent_feedback: true,
+        mhc: combined,
+        engram_mhc: combined,
+        engram_table_params: combined.then_some(500_000_000),
+        step_cap: 20_000,
+        log_interval: 1,
+        eval_interval: Some(1000),
+        eval_repeats: 1,
+        max_seconds: 43_200.0,
+    };
+    let mut t = config.create_trainer()?;
     println!("feedback_test_stage=initialized");
-    assert!(t.engram.is_none());
+    assert!(t.latent_feedback.is_some());
+    assert_eq!(t.engram.is_some(), combined);
+    assert_eq!(t.mhc.is_some(), combined);
     let b = batch(&t)?;
+    let feedback_state = t.latent_feedback.as_ref().unwrap().integrity_metadata();
     let one = t.eval_token_losses_for_passes(&b, 1)?;
     println!("feedback_test_stage=one_pass");
     let two = t.eval_token_losses_for_passes(&b, 2)?;
     println!("feedback_test_stage=two_pass");
     let four = t.eval_token_losses_for_passes(&b, 4)?;
     println!("feedback_test_stage=four_pass");
+    assert_eq!(
+        t.latent_feedback.as_ref().unwrap().integrity_metadata(),
+        feedback_state,
+    );
     assert!(one.iter().chain(&two).chain(&four).all(|v| v.is_finite()));
     for seq in 0..GPT2_BATCH_SIZE {
         let i = seq * GPT2_SEQ_LEN;
@@ -198,18 +217,25 @@ fn native_latent_feedback_recurrence_gradients_conditional_update_checkpoint() -
     );
     assert!(t.completed_gradient_components(2, inactive.optimizer.grad_norm)?["passed"] == true);
     t.materialize_evaluation_weights()?;
-    let expected = t.eval_token_losses_for_passes(&b, 4)?;
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("target/checks/20261115/latent-feedback-native-roundtrip.ckpt");
-    t.save_model(&path)?;
-    t.load_model(&path)?;
+    let expected_p2 = t.eval_token_losses_for_passes(&b, 2)?;
+    let expected_p4 = t.eval_token_losses_for_passes(&b, 4)?;
+    let mut checkpoint = Vec::new();
+    crate::checkpoint::write_uploaded_model_to(&t.runtime.stream, &t.uploaded, &mut checkpoint)?;
+    drop(b);
+    drop(t);
+    let mut t = Trainer::from_checkpoint_reader(config.seed.wrapping_add(1), checkpoint.as_slice())?;
+    drop(checkpoint);
+    let b = batch(&t)?;
     println!("feedback_test_stage=checkpoint_reload");
-    assert!(t.latent_feedback.is_some() && t.engram.is_none());
+    assert!(t.latent_feedback.is_some());
+    assert_eq!(t.engram.is_some(), combined);
+    assert_eq!(t.mhc.is_some(), combined);
     assert_eq!(
         t.buffers.optimizer_state.step, 0,
         "model-only reload must not pretend to continue"
     );
-    assert_eq!(expected, t.eval_token_losses_for_passes(&b, 4)?);
+    assert_eq!(expected_p2, t.eval_token_losses_for_passes(&b, 2)?);
+    assert_eq!(expected_p4, t.eval_token_losses_for_passes(&b, 4)?);
     let f = t.latent_feedback.as_ref().unwrap();
     let nan = [f32::NAN];
     unsafe {
