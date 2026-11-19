@@ -51,3 +51,32 @@ fn reference_gate_rms_epsilon_matches_the_fp32_demo_default() {
         assert_eq!(restored.gate_rms_epsilon(), f32::EPSILON);
     }
 }
+
+#[test]
+fn second_engram_placement_preserves_the_two_modules_and_their_hashes() -> crate::AppResult {
+    use super::MultistreamOptions;
+
+    for four_grams in [false, true] {
+        let control = MultistreamOptions {
+            requested_values: Some(500_000_000),
+            four_grams,
+            ..MultistreamOptions::default()
+        };
+        let moved = MultistreamOptions { second_layer: Some(8), ..control }.configs()?;
+        for (index, (before, after)) in control.configs()?.into_iter().zip(moved).enumerate() {
+            assert_eq!(after.layer, [1, 8][index]);
+            assert_eq!(before.primes, after.primes);
+            assert_eq!(before.multipliers, after.multipliers);
+            assert_eq!(before.initialization_layer(), after.initialization_layer());
+            assert_eq!(before.table_len(), after.table_len());
+            assert_eq!(before.trainable_parameters(), after.trainable_parameters());
+            let read = Config::parse(&after.descriptor(), false)?;
+            assert_eq!(read.layer, after.layer);
+            assert_eq!(read.descriptor(), after.descriptor());
+        }
+        for invalid in [0, 1, gpt2_nvfp4::GPT2_N_LAYER] {
+            assert!(MultistreamOptions { second_layer: Some(invalid), ..control }.configs().is_err());
+        }
+    }
+    Ok(())
+}

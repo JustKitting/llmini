@@ -15,8 +15,10 @@ impl Mhc {
     ) -> Result<(), DriverError> {
         let s = r.stream.as_ref();
         let n = self.n;
-        let slot = tape_slot(index);
-        let stream_input = boundary_input(&self.checkpoints, &self.replay_inputs, index);
+        let slot = self.replay_windows.tape_slot(index);
+        let stream_input = self
+            .replay_windows
+            .input(&self.checkpoints, &self.replay_inputs, index);
         let projection = &mut self.projections[index];
         let weights = &w.units[index];
         let packed = projection.input_q.scratch();
@@ -86,14 +88,14 @@ impl Mhc {
         r: &Runtime,
         _w: &Weights,
     ) -> Result<(), DriverError> {
-        let start = window_start(index);
+        let window = self.replay_windows.range(index);
+        let (start, end) = (window.start, window.end);
         if self.active_window == Some(start) {
             return Ok(());
         }
         let s = r.stream.as_ref();
-        let checkpoint = &self.checkpoints[checkpoint_slot(start)];
+        let checkpoint = &self.checkpoints[self.replay_windows.checkpoint_slot(index)];
         self.tape_units = [None; WINDOW];
-        let end = window_end(start);
         let fused = self.window_post.as_ref().filter(|_| end - start == WINDOW);
         if let Some(fused) = fused {
             let [first, second, third] = self.replay_inputs.as_mut_slice() else {
@@ -115,7 +117,7 @@ impl Mhc {
             })?;
         }
         for boundary in start..end {
-            let slot = tape_slot(boundary);
+            let slot = boundary - start;
             self.tape_units[slot] = Some(boundary);
             #[cfg(test)]
             if let Some(verification) = &mut self.recompute_verification {
@@ -123,14 +125,15 @@ impl Mhc {
                     s,
                     boundary,
                     true,
-                    boundary_input(&self.checkpoints, &self.replay_inputs, boundary),
+                    self.replay_windows
+                        .input(&self.checkpoints, &self.replay_inputs, boundary),
                     &self.projections[boundary],
                     self.n as usize,
                 )?;
             }
             if fused.is_none() && boundary + 1 < end {
                 let (previous, next) = self.replay_inputs.split_at_mut(slot);
-                let input = boundary_input(&self.checkpoints, previous, boundary);
+                let input = self.replay_windows.input(&self.checkpoints, previous, boundary);
                 // `current` holds the reverse stream gradient here. Rebuild
                 // directly into the next tape so that gradient survives.
                 post_mix(

@@ -55,7 +55,7 @@ impl Trainer {
             .uploaded
             .mhc
             .as_ref()
-            .map(|w| super::mhc::Mhc::new(&self.runtime, w))
+            .map(|w| super::mhc::Mhc::new(&self.runtime, w, self.uploaded.engram.as_ref()))
             .transpose()?;
         let muon_tables = MuonPointerTables::new_with_architectures(
             stream,

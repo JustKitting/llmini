@@ -153,7 +153,7 @@ impl Module {
                         ^ if w.cfg.legacy {
                             0
                         } else {
-                            (w.cfg.layer as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15)
+                            (w.cfg.initialization_layer() as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15)
                         },
                 ),
             })

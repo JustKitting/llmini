@@ -21,6 +21,7 @@ impl ModuleWeights {
         let s = r.stream.as_ref();
         let memory = cfg.memory();
         let streams = cfg.streams();
+        let seed_offset = 10007 * cfg.initialization_layer() as u64;
         let map = llama2_tokenizer::TrainingTokenizer::from_default_assets()?.memory_id_map()?;
         let mut nv = vec![init_nv(
             r,
@@ -28,7 +29,7 @@ impl ModuleWeights {
             128,
             memory,
             true,
-            13 + 10007 * cfg.layer as u64,
+            13 + seed_offset,
         )?];
         for index in 0..=streams {
             // Preserve every legacy seed. Extra keys have independent seeds;
@@ -46,7 +47,7 @@ impl ModuleWeights {
                 memory,
                 memory,
                 false,
-                ws + 10007 * cfg.layer as u64,
+                ws + seed_offset,
             )?);
             nv.push(init_nv(
                 r,
@@ -54,7 +55,7 @@ impl ModuleWeights {
                 GPT2_N_EMBD,
                 memory,
                 false,
-                bs + 10007 * cfg.layer as u64,
+                bs + seed_offset,
             )?);
         }
         let uploaded = Self {

@@ -46,6 +46,7 @@ fn native_four_gram_engram_complete_graph_checkpoint_and_causality() -> AppResul
         engram_mhc: true,
         engram_table_params: Some(500_000_000),
         engram_four_grams: true,
+        engram_second_layer: None,
         step_cap: 20000,
         log_interval: 1,
         eval_interval: Some(1000),
@@ -70,6 +71,7 @@ fn native_full_credit_engram_mhc_launcher_complete_graph_checkpoint_and_causalit
         engram_mhc: true,
         engram_table_params: None,
         engram_four_grams: false,
+        engram_second_layer: None,
         step_cap: 20000,
         log_interval: 1,
         eval_interval: Some(1000),
@@ -78,6 +80,17 @@ fn native_full_credit_engram_mhc_launcher_complete_graph_checkpoint_and_causalit
     };
     let trainer = config.create_trainer()?;
     verify_complete_trainer(trainer, None)
+}
+
+#[test]
+#[ignore = "full native B8/L16/d2048 with the second Engram in an original mHC window interior"]
+fn native_relocated_engram_recomputes_and_replays_the_complete_graph() -> AppResult {
+    let trainer = Trainer::new_engram_mhc_with_options(0x47505432, super::MultistreamOptions {
+        requested_values: Some(500_000_000),
+        second_layer: Some(8),
+        ..super::MultistreamOptions::default()
+    })?;
+    verify_complete_trainer_at(trainer, Some(500_000_000), [1, 8])
 }
 
 fn verify_complete_graph(table_budget: Option<usize>) -> AppResult {
@@ -90,8 +103,16 @@ fn verify_complete_graph(table_budget: Option<usize>) -> AppResult {
 }
 
 pub(in crate::training) fn verify_complete_trainer(
+    t: Trainer,
+    table_budget: Option<usize>,
+) -> AppResult {
+    verify_complete_trainer_at(t, table_budget, super::LAYERS)
+}
+
+fn verify_complete_trainer_at(
     mut t: Trainer,
     table_budget: Option<usize>,
+    layers: [usize; 2],
 ) -> AppResult {
     t.buffers
         .muon_tables
@@ -119,8 +140,10 @@ pub(in crate::training) fn verify_complete_trainer(
     let max_ngram = w.modules[0].cfg.max_ngram();
     let memory_width = (max_ngram - 1) * super::HEADS * super::HEAD_DIM;
     let ranges = t.buffers.muon_tables.matrix_grad_ranges();
+    let checkpoints = &t.mhc.as_ref().unwrap().checkpoints;
+    assert!(layers.iter().all(|&layer| checkpoints.iter().any(|c| c.index == 2 * layer)));
     for (i, module) in w.modules.iter().enumerate() {
-        assert_eq!(module.cfg.layer, [1, 5][i]);
+        assert_eq!(module.cfg.layer, layers[i]);
         assert_eq!(module.cfg.streams(), 4);
         assert_eq!(module.cfg.max_ngram(), max_ngram);
         assert_eq!(module.cfg.memory(), memory_width);
@@ -279,7 +302,7 @@ pub(in crate::training) fn verify_complete_trainer(
             .unwrap();
         assert!(c["finite"] == true && c["l2"].as_f64().unwrap() > 0.);
     }
-    for layer in [1, 5] {
+    for layer in layers {
         assert_eq!(
             components
                 .iter()
@@ -323,7 +346,9 @@ pub(in crate::training) fn verify_complete_trainer(
     t.materialize_evaluation_weights()?;
     let before = t.eval_token_losses(&b)?;
     assert!(before.iter().all(|x| x.is_finite()));
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(if max_ngram == 4 {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(if layers != super::LAYERS {
+        format!("target/checks/engram-relocated-{}-roundtrip.ckpt", layers[1])
+    } else if max_ngram == 4 {
         "target/checks/four-gram-engram-mhc-roundtrip.ckpt".into()
     } else if gpt2_nvfp4::GPT2_STATIONARY_ROPE_ENGRAM_MHC {
         format!(
@@ -383,6 +408,8 @@ pub(in crate::training) fn verify_complete_trainer(
             + u32::from(gpt2_nvfp4::GPT2_BOUNDED_SWIGLU)
             + u32::from(gpt2_nvfp4::GPT2_VALUE_RMS)
             + u32::from(gpt2_nvfp4::GPT2_STATIONARY_ROPE)
+            + u32::from(gpt2_nvfp4::GPT2_KDA_RATIONAL_OUTPUT_GATE)
+            + u32::from(rust_kernels_cuda::nvfp4_quant::ACTIVATION_MAE_FOUR_SIX)
     );
     let expected = t.eval_token_losses(&b)?;
     let allocation_identity = || {
@@ -495,6 +522,19 @@ pub(in crate::training) fn verify_complete_trainer(
         &independent_loss[GPT2_SEQ_LEN..],
         "memory/convolution/mHC must not mix independent sequences"
     );
+    if layers != super::LAYERS {
+        drop(independent_batch);
+        drop(b);
+        drop(t);
+        let mut reopened = Trainer::from_checkpoint(0x47505432, &path)?;
+        assert_eq!(
+            reopened.uploaded.engram.as_ref().unwrap().modules.iter()
+                .map(|module| module.cfg.layer).collect::<Vec<_>>(),
+            layers,
+        );
+        let input = reopened.batch_from_windows(&windows, GPT2_BATCH_SIZE)?;
+        assert_eq!(reopened.eval_token_losses(&input)?, actual);
+    }
     println!(
         "full_four_stream_engram_verified modules=2 memory={memory_width} max_ngram={max_ngram} independent_keys=8 shared_values=2 streams=4 boundaries=32 extra_gradient_groups=258 checkpoint=bit_exact causality=true prefix_cases=9 cross_sequence=bit_exact fixture_updates=2"
     );

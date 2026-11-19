@@ -9,9 +9,10 @@ mod state;
 mod tests;
 mod update;
 mod weights;
+mod windows;
 use cuda_core::{CudaStream, DeviceBuffer, DriverError, LaunchConfig, memory};
 use rust_kernels_cuda::mhc_post_reuse::{MhcPostReuseModule, PostArgs};
-use state::Checkpoint;
+use windows::ReplayWindows;
 pub(in crate::training) use state::Mhc;
 pub(crate) use weights::{UnitWeights, Weights};
 pub(crate) const STREAMS: usize = 4;
@@ -19,45 +20,6 @@ pub(crate) const WIDTH: usize = STREAMS * gpt2_nvfp4::GPT2_N_EMBD;
 pub(crate) const PAD: usize = 128;
 pub(crate) const BOUNDARIES: usize = 2 * gpt2_nvfp4::GPT2_N_LAYER;
 pub(crate) const WINDOW: usize = 4;
-fn window_start(index: usize) -> usize {
-    if index < 2 {
-        0
-    } else {
-        2 + (index - 2) / WINDOW * WINDOW
-    }
-}
-fn window_end(start: usize) -> usize {
-    if start == 0 {
-        2.min(BOUNDARIES + 1)
-    } else {
-        (start + WINDOW).min(BOUNDARIES + 1)
-    }
-}
-fn tape_slot(index: usize) -> usize {
-    index - window_start(index)
-}
-fn checkpoint_slot(start: usize) -> usize {
-    debug_assert_eq!(start, window_start(start));
-    if start == 0 {
-        0
-    } else {
-        1 + (start - 2) / WINDOW
-    }
-}
-pub(in crate::training) fn boundary_input<'a>(
-    checkpoints: &'a [Checkpoint],
-    replay_inputs: &'a [DeviceBuffer<f32>],
-    index: usize,
-) -> &'a DeviceBuffer<f32> {
-    let start = window_start(index);
-    if index == start {
-        let checkpoint = &checkpoints[checkpoint_slot(start)];
-        debug_assert_eq!(checkpoint.index, start);
-        &checkpoint.input
-    } else {
-        &replay_inputs[index - start - 1]
-    }
-}
 pub(crate) fn enabled() -> bool {
     std::env::var("TRAIN_MHC").is_ok_and(|s| s == "1")
 }

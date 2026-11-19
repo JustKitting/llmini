@@ -2,6 +2,36 @@
 use super::{Config, HEAD_DIM, HEADS, LAYERS, is_prime};
 use crate::AppResult;
 
+#[derive(Clone, Copy, Default)]
+pub(crate) struct MultistreamOptions {
+    pub requested_values: Option<usize>,
+    pub four_grams: bool,
+    pub second_layer: Option<usize>,
+}
+
+impl MultistreamOptions {
+    pub fn configs(self) -> AppResult<[Config; LAYERS.len()]> {
+        let second_layer = self.second_layer.unwrap_or(LAYERS[1]);
+        if !valid_multistream_layers(LAYERS[0], second_layer) {
+            return Err(format!(
+                "the second Engram insertion must be after block {} and before the readout",
+                LAYERS[0],
+            )
+            .into());
+        }
+        let mut configs =
+            Config::multistream_with_ngram_budget(self.requested_values, self.four_grams)?;
+        // Keep the existing table geometry and hash coefficients for a
+        // position-only comparison.
+        configs[1].layer = second_layer;
+        Ok(configs)
+    }
+}
+
+pub(crate) fn valid_multistream_layers(first: usize, second: usize) -> bool {
+    first == LAYERS[0] && second > first && second < gpt2_nvfp4::GPT2_N_LAYER
+}
+
 impl Config {
     pub fn multistream_with_table_budget(
         requested: Option<usize>,

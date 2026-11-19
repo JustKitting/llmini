@@ -100,6 +100,7 @@ pub(in crate::training) struct Mhc {
     pub current: DeviceBuffer<f32>,
     pub dx: DeviceBuffer<f32>,
     pub checkpoints: Vec<Checkpoint>,
+    pub replay_windows: ReplayWindows,
     pub replay_inputs: Vec<DeviceBuffer<f32>>,
     pub projections: Vec<ProjectionTape>,
     pub tape_units: [Option<usize>; WINDOW],
@@ -115,7 +116,11 @@ pub(in crate::training) struct Mhc {
     pub rng: Gpt2Rng,
 }
 impl Mhc {
-    pub fn new(r: &Runtime, w: &Weights) -> Result<Self, DriverError> {
+    pub fn new(
+        r: &Runtime,
+        w: &Weights,
+        memory: Option<&super::super::engram::Weights>,
+    ) -> Result<Self, DriverError> {
         let s = r.stream.as_ref();
         let total = GPT2_TOKEN_ROWS * WIDTH;
         if WIDTH != 8192 {
@@ -131,6 +136,9 @@ impl Mhc {
             .then(|| r.mhc_window_post_module())
             .transpose()?;
         let rms_quant = r.mhc_rms_quant_module()?;
+        let replay_windows = ReplayWindows::new(memory.into_iter().flat_map(|weights| {
+            weights.modules.iter().map(|module| 2 * module.cfg.layer)
+        }));
         Ok(Self {
             units: w
                 .units
@@ -146,15 +154,17 @@ impl Mhc {
             rms_quant,
             current: DeviceBuffer::zeroed(s, total)?,
             dx: DeviceBuffer::zeroed(s, total)?,
-            checkpoints: (0..=BOUNDARIES)
-                .filter(|&index| index == window_start(index))
-                .map(|index| {
+            checkpoints: replay_windows
+                .starts()
+                .iter()
+                .map(|&index| {
                     Ok(Checkpoint {
                         index,
                         input: DeviceBuffer::zeroed(s, total)?,
                     })
                 })
                 .collect::<Result<_, DriverError>>()?,
+            replay_windows,
             replay_inputs: (1..WINDOW)
                 .map(|_| DeviceBuffer::zeroed(s, total))
                 .collect::<Result<_, _>>()?,

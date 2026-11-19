@@ -55,6 +55,10 @@ pub(super) struct TrainArgs {
     #[arg(long, requires = "complete_engram")]
     engram_four_grams: bool,
 
+    /// Zero-based block before which to insert the second complete Engram module.
+    #[arg(long, requires = "complete_engram", conflicts_with = "checkpoint_action")]
+    engram_second_layer: Option<NonZeroUsize>,
+
     /// Train the separate complete bounded-SwiGLU graph; requires its matching native build.
     #[arg(long, conflicts_with_all=["engram_mhc","mhc","latent_feedback","inspect_model","inspect_gradients","evaluate_model","inspect_feedback_depths"])]
     pub(super) bounded_swiglu: bool,
@@ -163,6 +167,7 @@ impl TrainArgs {
         }
         config.engram_table_params = self.engram_table_params.map(NonZeroUsize::get);
         config.engram_four_grams = self.engram_four_grams;
+        config.engram_second_layer = self.engram_second_layer.map(NonZeroUsize::get);
         if let Some(steps) = self.steps {
             config.step_cap = steps.get();
         }
@@ -252,5 +257,23 @@ mod gradient_window_cli_tests {
         ] {
             assert!(TrainArgs::try_parse_from(args).is_err());
         }
+    }
+}
+
+#[cfg(test)]
+mod engram_placement_cli_tests {
+    use super::*;
+
+    #[test]
+    fn engram_second_layer_selects_the_complete_training_graph() {
+        let args = TrainArgs::try_parse_from([
+            "rust-kernels", "--stationary-rope-engram-mhc", "--value-rms-engram-mhc",
+            "--full-kda-backward", "--engram-second-layer", "8",
+        ]).unwrap();
+        assert!(args.config().engram_mhc);
+        assert_eq!(args.config().engram_options().configs().unwrap()[1].layer, 8);
+        assert!(TrainArgs::try_parse_from([
+            "rust-kernels", "--engram-second-layer", "8",
+        ]).is_err());
     }
 }

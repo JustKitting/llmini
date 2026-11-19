@@ -9,7 +9,7 @@ mod forward;
 mod modules;
 mod state;
 mod weights;
-pub(crate) use config::Config;
+pub(crate) use config::{Config, MultistreamOptions};
 pub(super) use modules::Engram;
 pub(crate) use modules::Weights;
 pub(super) use state::Module;

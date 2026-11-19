@@ -1,7 +1,9 @@
+use std::path::Path;
+
 use cuda_core::sys;
 use gpt2_nvfp4::{GPT2_SEQ_LEN, Gpt2, Gpt2Rng};
 
-use super::{ReusableTokenBatch, TokenBatch, buffers, runtime::Runtime};
+use super::{ReusableTokenBatch, TokenBatch, buffers, engram::MultistreamOptions, runtime::Runtime};
 use crate::{AppResult, upload::UploadedModel};
 
 pub struct Trainer {
@@ -28,6 +30,15 @@ impl Trainer {
     pub fn new(seed: u64) -> AppResult<Self> {
         let memory = gpt2_nvfp4::GPT2_REQUIRES_ENGRAM_MHC || super::engram::multistream_enabled();
         Self::new_architecture(seed, false, memory || super::mhc::enabled(), memory)
+    }
+
+    /// Open the saved topology without allocating a second set of model weights.
+    pub(in crate::training) fn from_checkpoint(seed: u64, path: &Path) -> AppResult<Self> {
+        let runtime = Runtime::new()?;
+        let uploaded = crate::checkpoint::load_uploaded_model(&runtime.stream, path)?;
+        let mut model = Gpt2::new();
+        model.init(seed);
+        Self::with_uploaded_model(seed, runtime, model, uploaded)
     }
 
     pub fn new_feedback(seed: u64) -> AppResult<Self> {
@@ -57,6 +68,7 @@ impl Trainer {
         }
         Self::new_architecture(seed, false, false, false)
     }
+    #[cfg(test)]
     pub fn new_engram_mhc(seed: u64) -> AppResult<Self> {
         Self::new_architecture(seed, false, true, true)
     }
@@ -68,13 +80,22 @@ impl Trainer {
         }
         Self::new_architecture(seed, false, false, false)
     }
+    #[cfg(test)]
     pub fn new_engram_mhc_with_table_budget(seed: u64, requested: usize) -> AppResult<Self> {
-        super::engram::Config::multistream_with_table_budget(Some(requested))?;
-        Self::new_architecture_with_table_budget(seed, false, true, true, Some(requested), false)
+        Self::new_engram_mhc_with_options(
+            seed,
+            MultistreamOptions {
+                requested_values: Some(requested),
+                ..MultistreamOptions::default()
+            },
+        )
     }
-    pub fn new_engram_mhc_with_four_grams(seed: u64, requested: Option<usize>) -> AppResult<Self> {
-        super::engram::Config::multistream_with_ngram_budget(requested, true)?;
-        Self::new_architecture_with_table_budget(seed, false, true, true, requested, true)
+
+    pub(in crate::training) fn new_engram_mhc_with_options(
+        seed: u64,
+        options: MultistreamOptions,
+    ) -> AppResult<Self> {
+        Self::new_architecture_with_engram_options(seed, false, true, true, options)
     }
     fn new_architecture(
         seed: u64,
@@ -82,15 +103,20 @@ impl Trainer {
         use_mhc: bool,
         multi_memory: bool,
     ) -> AppResult<Self> {
-        Self::new_architecture_with_table_budget(seed, feedback, use_mhc, multi_memory, None, false)
+        Self::new_architecture_with_engram_options(
+            seed,
+            feedback,
+            use_mhc,
+            multi_memory,
+            MultistreamOptions::default(),
+        )
     }
-    fn new_architecture_with_table_budget(
+    fn new_architecture_with_engram_options(
         seed: u64,
         feedback: bool,
         use_mhc: bool,
         multi_memory: bool,
-        table_budget: Option<usize>,
-        four_grams: bool,
+        engram_options: MultistreamOptions,
     ) -> AppResult<Self> {
         let bounded_combined = gpt2_nvfp4::GPT2_BOUNDED_SWIGLU_ENGRAM_MHC;
         if gpt2_nvfp4::GPT2_REQUIRES_ENGRAM_MHC && !(use_mhc && multi_memory && !feedback) {
@@ -124,7 +150,6 @@ impl Trainer {
             return Err("select full mHC as a separate native graph with TRAIN_ENGRAM=0 and no latent feedback; the single-stream memory hook is not a four-stream integration".into());
         }
         let runtime = Runtime::new()?;
-        let stream = runtime.stream.as_ref();
         let mut model = Gpt2::new();
         model.init(seed);
         let weights = model.weights().expect("Gpt2::init must create weights");
@@ -147,18 +172,21 @@ impl Trainer {
             uploaded.mhc = Some(super::mhc::Weights::new(&runtime, seed)?);
         }
         if multi_memory {
-            uploaded.engram = Some(if four_grams {
-                super::engram::Weights::new_multistream_with_ngram_budget(
-                    &runtime,
-                    table_budget,
-                    true,
-                )?
-            } else if table_budget.is_some() {
-                super::engram::Weights::new_multistream_with_table_budget(&runtime, table_budget)?
-            } else {
-                super::engram::Weights::new_multistream(&runtime)?
-            });
+            uploaded.engram = Some(super::engram::Weights::new_multistream_with_options(
+                &runtime,
+                engram_options,
+            )?);
         }
+        Self::with_uploaded_model(seed, runtime, model, uploaded)
+    }
+
+    fn with_uploaded_model(
+        seed: u64,
+        runtime: Runtime,
+        model: Gpt2,
+        uploaded: UploadedModel,
+    ) -> AppResult<Self> {
+        let stream = runtime.stream.as_ref();
         let mut buffers = buffers::TrainBuffers::new(stream, &runtime, &uploaded)?;
         let engram = uploaded
             .engram
@@ -173,7 +201,7 @@ impl Trainer {
         let mhc = uploaded
             .mhc
             .as_ref()
-            .map(|w| super::mhc::Mhc::new(&runtime, w))
+            .map(|w| super::mhc::Mhc::new(&runtime, w, uploaded.engram.as_ref()))
             .transpose()?;
         if engram.is_some() || latent_feedback.is_some() || mhc.is_some() {
             buffers.muon_tables = super::optimizer_muon::MuonPointerTables::new_with_architectures(

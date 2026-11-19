@@ -239,11 +239,10 @@ pub(in crate::training::launch) fn build_run_info(dataset: &str, config: &TrainC
     );
     push_info(&mut info, "engram_implementation", "full_native_nvfp4");
     let memory_config = if config.engram_mhc {
-        crate::training::engram::Config::multistream_with_ngram_budget(
-            config.engram_table_params,
-            config.engram_four_grams,
-        )
-        .expect("launcher validates the Engram table budget before writing run info")
+        config
+            .engram_options()
+            .configs()
+            .expect("launcher validates the Engram configuration before writing run info")
     } else {
         std::array::from_fn(crate::training::engram::Config::reference)
     };
@@ -263,7 +262,11 @@ pub(in crate::training::launch) fn build_run_info(dataset: &str, config: &TrainC
         "engram_module_count",
         crate::training::engram::LAYERS.len(),
     );
-    push_info(&mut info, "engram_insert_before_blocks", "1,5");
+    push_info(
+        &mut info,
+        "engram_insert_before_blocks",
+        format!("{},{}", memory_config[0].layer, memory_config[1].layer),
+    );
     push_info(&mut info, "engram_embedding_adam_lr_multiplier", 5);
     push_info(
         &mut info,

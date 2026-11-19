@@ -13,12 +13,12 @@ impl Mhc {
         let s = r.stream.as_ref();
         let n = h.row_count;
         let d = GPT2_N_EMBD as u32;
-        let slot = tape_slot(index);
+        let slot = self.replay_windows.tape_slot(index);
         if before {
             self.n = n;
             let input = if slot == 0 {
                 self.tape_units = [None; WINDOW];
-                &mut self.checkpoints[checkpoint_slot(index)].input
+                &mut self.checkpoints[self.replay_windows.checkpoint_slot(index)].input
             } else {
                 &mut self.replay_inputs[slot - 1]
             };
@@ -44,7 +44,9 @@ impl Mhc {
                 std::mem::swap(&mut self.current, input);
             }
             self.prepare_tape(index, r, w, false)?;
-            let input = boundary_input(&self.checkpoints, &self.replay_inputs, index);
+            let input = self
+                .replay_windows
+                .input(&self.checkpoints, &self.replay_inputs, index);
             self.module.mhc_pre_kernel(
                 s,
                 grid(n * d),
@@ -55,7 +57,7 @@ impl Mhc {
                 d,
             )?;
             if index == BOUNDARIES {
-                self.active_window = Some(window_start(index));
+                self.active_window = Some(self.replay_windows.range(index).start);
                 #[cfg(test)]
                 if self.recompute_verification.is_some() {
                     // The fixture checks this window by rebuilding it too.
@@ -69,7 +71,9 @@ impl Mhc {
             // Keep this result for backward. The next pre map overwrites
             // the recycled buffer before the next branch reads it.
             std::mem::swap(h.residual, branch);
-            let input = boundary_input(&self.checkpoints, &self.replay_inputs, index);
+            let input = self
+                .replay_windows
+                .input(&self.checkpoints, &self.replay_inputs, index);
             post_mix(
                 self.post_reuse.as_ref(),
                 &self.module,

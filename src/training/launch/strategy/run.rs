@@ -31,13 +31,7 @@ impl TrainConfig {
             return Err("full recurrent KDA credit supports the standalone backbone or complete four-stream Engram/mHC graph".into());
         }
         if self.engram_mhc {
-            if self.engram_four_grams {
-                Trainer::new_engram_mhc_with_four_grams(self.seed, self.engram_table_params)
-            } else if let Some(requested) = self.engram_table_params {
-                Trainer::new_engram_mhc_with_table_budget(self.seed, requested)
-            } else {
-                Trainer::new_engram_mhc(self.seed)
-            }
+            Trainer::new_engram_mhc_with_options(self.seed, self.engram_options())
         } else if gpt2_nvfp4::GPT2_STATIONARY_ROPE {
             Trainer::new_stationary_rope(self.seed)
         } else if gpt2_nvfp4::GPT2_VALUE_RMS {

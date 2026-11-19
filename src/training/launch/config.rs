@@ -19,6 +19,7 @@ pub(in crate::training) struct TrainConfig {
     pub(in crate::training) engram_mhc: bool,
     pub(in crate::training) engram_table_params: Option<usize>,
     pub(in crate::training) engram_four_grams: bool,
+    pub(in crate::training) engram_second_layer: Option<usize>,
     pub(in crate::training) step_cap: usize,
     pub(in crate::training) log_interval: usize,
     pub(in crate::training) eval_interval: Option<usize>,
@@ -27,6 +28,14 @@ pub(in crate::training) struct TrainConfig {
 }
 
 impl TrainConfig {
+    pub(super) fn engram_options(&self) -> crate::training::engram::MultistreamOptions {
+        crate::training::engram::MultistreamOptions {
+            requested_values: self.engram_table_params,
+            four_grams: self.engram_four_grams,
+            second_layer: self.engram_second_layer,
+        }
+    }
+
     pub(super) fn from_env() -> Self {
         Self {
             seed: env_u64("TRAIN_SEED").unwrap_or(DEFAULT_SEED),
@@ -35,6 +44,7 @@ impl TrainConfig {
             engram_mhc: super::super::engram::multistream_enabled(),
             engram_table_params: None,
             engram_four_grams: false,
+            engram_second_layer: None,
             step_cap: env_usize("TRAIN_STEPS").unwrap_or(DEFAULT_TRAIN_STEP_CAP),
             log_interval: env_usize("TRAIN_LOG_INTERVAL").unwrap_or(1).max(1),
             eval_interval: env_usize("TRAIN_EVAL_INTERVAL").filter(|interval| *interval > 0),

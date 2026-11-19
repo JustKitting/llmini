@@ -14,23 +14,14 @@ impl Weights {
                 .collect::<AppResult<_>>()?,
         })
     }
+    #[cfg(test)]
     pub fn new_multistream(r: &Runtime) -> AppResult<Self> {
-        Self::new_multistream_with_table_budget(r, None)
-    }
-    pub fn new_multistream_with_table_budget(
-        r: &Runtime,
-        requested: Option<usize>,
-    ) -> AppResult<Self> {
-        Self::new_multistream_with_ngram_budget(r, requested, false)
+        Self::new_multistream_with_options(r, MultistreamOptions::default())
     }
 
-    pub fn new_multistream_with_ngram_budget(
-        r: &Runtime,
-        requested: Option<usize>,
-        four_grams: bool,
-    ) -> AppResult<Self> {
+    pub fn new_multistream_with_options(r: &Runtime, options: MultistreamOptions) -> AppResult<Self> {
         Ok(Self {
-            modules: Config::multistream_with_ngram_budget(requested, four_grams)?
+            modules: options.configs()?
                 .into_iter()
                 .map(|cfg| ModuleWeights::new_with_config(r, cfg))
                 .collect::<AppResult<_>>()?,
@@ -38,8 +29,13 @@ impl Weights {
     }
     pub fn streams(&self) -> Option<usize> {
         let streams = self.modules.first()?.cfg.streams();
-        if streams == 4 && self.modules.iter().map(|w| w.cfg.layer).collect::<Vec<_>>() != LAYERS {
-            return None;
+        if streams == 4 {
+            let [first, second] = self.modules.as_slice() else {
+                return None;
+            };
+            if !config::valid_multistream_layers(first.cfg.layer, second.cfg.layer) {
+                return None;
+            }
         }
         self.modules
             .iter()

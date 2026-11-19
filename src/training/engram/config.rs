@@ -1,6 +1,7 @@
 //! Reference-sized configuration; checkpoints carry their exact per-layer graph.
 use super::{HEAD_DIM, HEADS, LAYERS, MULTIPLIERS};
 mod budget;
+pub(crate) use budget::{MultistreamOptions, valid_multistream_layers};
 #[derive(Clone, Debug)]
 pub(crate) struct Config {
     version: u32,
@@ -103,6 +104,14 @@ impl Config {
             legacy: false,
         }
     }
+    pub(super) fn initialization_layer(&self) -> usize {
+        if self.streams() == 4 && self.layer != LAYERS[0] {
+            LAYERS[1]
+        } else {
+            self.layer
+        }
+    }
+
     pub fn memory(&self) -> usize {
         self.primes.len() * self.head_dim
     }

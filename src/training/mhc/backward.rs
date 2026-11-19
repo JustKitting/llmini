@@ -15,7 +15,9 @@ impl Mhc {
         let s = r.stream.as_ref();
         let n = self.n;
         let unit = &mut self.units[index];
-        let input = boundary_input(&self.checkpoints, &self.replay_inputs, index);
+        let input = self
+            .replay_windows
+            .input(&self.checkpoints, &self.replay_inputs, index);
         let projection = &self.projections[index];
         let weights = &w.units[index];
         let [bias_grad, alpha_grad] = &mut unit.fg;
@@ -99,7 +101,9 @@ impl Mhc {
                     zero(s, gradient)?;
                 }
             }
-            let input = boundary_input(&self.checkpoints, &self.replay_inputs, index);
+            let input = self
+                .replay_windows
+                .input(&self.checkpoints, &self.replay_inputs, index);
             self.reverse.pre(rust_kernels_cuda::mhc_reverse::PreArgs {
                 stream: s,
                 input,
@@ -112,7 +116,9 @@ impl Mhc {
             self.coefficient_backward(index, r, w, gradient)?;
         } else if before {
             let unit = &self.units[index];
-            let input = boundary_input(&self.checkpoints, &self.replay_inputs, index);
+            let input = self
+                .replay_windows
+                .input(&self.checkpoints, &self.replay_inputs, index);
             self.reverse
                 .post(rust_kernels_cuda::mhc_reverse::PostArgs {
                     stream: s,
@@ -126,7 +132,9 @@ impl Mhc {
                     dim: d,
                 })?;
         } else {
-            let input = boundary_input(&self.checkpoints, &self.replay_inputs, index);
+            let input = self
+                .replay_windows
+                .input(&self.checkpoints, &self.replay_inputs, index);
             self.reverse.pre(rust_kernels_cuda::mhc_reverse::PreArgs {
                 stream: s,
                 input,

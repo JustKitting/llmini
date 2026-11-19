@@ -97,13 +97,13 @@ pub(crate) fn launch_from_args() -> AppResult {
     {
         return Err("stationary RoPE requires its stationary-half key offset".into());
     }
-    if config.engram_table_params.is_some() || config.engram_four_grams {
-        crate::training::engram::Config::multistream_with_ngram_budget(
-            config.engram_table_params,
-            config.engram_four_grams,
-        )?;
+    if config.engram_table_params.is_some()
+        || config.engram_four_grams
+        || config.engram_second_layer.is_some()
+    {
+        config.engram_options().configs()?;
         if super::config::load_model_path().is_some() {
-            return Err("an explicit Engram table budget or four-gram lookup requires fresh model, optimizer, RNG and warmup state; TRAIN_LOAD_MODEL is not a continuation".into());
+            return Err("an explicit Engram table budget, lookup order or placement requires fresh model, optimizer, RNG and warmup state; TRAIN_LOAD_MODEL is not a continuation".into());
         }
     }
     if args.full_kda_backward != gpt2_nvfp4::GPT2_KDA_FULL_STATE_BACKWARD {
